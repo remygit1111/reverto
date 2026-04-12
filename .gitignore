@@ -8,3 +8,4 @@ logs/
 data/
 ml/model_store/
 *.log
+*:Zone.Identifier
