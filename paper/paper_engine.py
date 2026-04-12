@@ -11,6 +11,7 @@ from core.schedule_guard import ScheduleGuard
 from exchanges.base_exchange import BaseExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
+from strategies.indicator_engine import IndicatorEngine
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class PaperEngine:
         self.notifier = notifier
         self.state = PaperState(initial_balance_btc)
         self.guard = ScheduleGuard(config.schedule)
+        self.indicator_engine = IndicatorEngine(config)
+        self._closes: list[float] = []  # Rolling window of closing prices
         self.poll_interval = poll_interval  # seconds between price checks
         self.running = False
 
@@ -135,16 +138,32 @@ class PaperEngine:
     def _check_entry(self, price: float):
         """
         Check if conditions are met to start a new deal.
-        For now uses a simple price-based trigger.
-        Indicator logic will be added in the strategies module.
+        Fetches latest candles and evaluates all configured indicators.
         """
         # Only one open deal at a time for now
         if len(self.state.open_deals) > 0:
             return
 
-        # Placeholder: always enter if no open deal and schedule is open
-        # Real indicator logic replaces this later
-        self._open_deal(price)
+        # Fetch latest candles for indicator calculation
+        try:
+            candles = self.exchange.get_ohlcv(self.config.pair, "1h", 100)
+            self._closes = [c[4] for c in candles]
+        except Exception as e:
+            logger.error(f"Failed to fetch candles: {e}")
+            return
+
+        # Log current indicator snapshot
+        snapshot = self.indicator_engine.get_indicator_snapshot(self._closes)
+        logger.info(
+            f"Indicators — RSI: {snapshot.get('rsi_14', '?')} | "
+            f"EMA9: {snapshot.get('ema_9', '?')} | "
+            f"EMA21: {snapshot.get('ema_21', '?')} | "
+            f"MACD hist: {snapshot.get('macd_histogram', '?')}"
+        )
+
+        # Check entry signal
+        if self.indicator_engine.check_entry_signal(self._closes):
+            self._open_deal(price)
 
     def _open_deal(self, price: float):
         """Open a new paper deal at the current price."""
@@ -195,8 +214,13 @@ class PaperEngine:
         target_price = avg * (1 + target_pct / 100)
 
         if price >= target_price:
+            # Check TP confirmation indicator if configured
+            if self._closes and not self.indicator_engine.check_tp_confirmation(self._closes):
+                logger.info(f"TP price reached but confirmation indicator not met — holding")
+                return
+
             pnl_btc, pnl_pct = deal.calculate_pnl(price)
-            closed = self.state.close_deal(deal.id, price, "tp")
+            self.state.close_deal(deal.id, price, "tp")
             logger.info(f"TP hit: {deal.id} at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC")
             self.notifier.notify_take_profit(
                 self.config.name, deal.symbol,
