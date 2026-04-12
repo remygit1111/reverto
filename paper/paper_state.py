@@ -116,7 +116,7 @@ class PaperState:
 
     def total_pnl_btc(self) -> float:
         """Total realized PnL across all closed deals."""
-        return sum(d.pnl_btc for d in self.closed_deals)
+        return round(sum(d.pnl_btc for d in self.closed_deals), 10)
 
     def summary(self) -> dict:
         """Returns a summary of current paper trading performance."""

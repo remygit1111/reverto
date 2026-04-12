@@ -54,6 +54,21 @@ class TelegramNotifier:
             loop.run_until_complete(self._send(message))
         except RuntimeError:
             asyncio.run(self._send(message))
+    
+    def _warm_up(self):
+        """
+        Silently initializes the Telegram connection.
+        Prevents timestamp skew on the first real notification.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            # Just verify the connection without sending a message
+            loop.run_until_complete(self.bot.get_me())
+        except Exception:
+            pass        
 
     # ------------------------------------------------------------------
     # Bot lifecycle
