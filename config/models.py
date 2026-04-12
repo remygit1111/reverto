@@ -1,7 +1,7 @@
 # config/models.py
 # Defines the structure and validation rules for bot configurations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Literal, Optional
 from enum import Enum
 
@@ -76,8 +76,7 @@ class ScheduleWindow(BaseModel):
     from_time: str = Field(alias="from")
     to_time: str = Field(alias="to")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class ScheduleConfig(BaseModel):
@@ -88,8 +87,8 @@ class ScheduleConfig(BaseModel):
 
 class TelegramConfig(BaseModel):
     # Controls which events trigger a Telegram notification.
-    # Using Literal ensures typos like 'tp-hit' raise a validation error
-    # instead of silently dropping the notification.
+    # Valid values: entry, dca_trigger, tp_hit, sl_hit, liquidation_warn,
+    #               schedule_open, schedule_close, error, startup, shutdown
     notify_on: list[Literal[
         "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn",
         "schedule_open", "schedule_close", "error", "startup", "shutdown"
