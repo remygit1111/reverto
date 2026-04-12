@@ -36,6 +36,11 @@ class PaperDeal:
     pnl_btc: float = 0.0
     pnl_pct: float = 0.0
 
+    # Trailing stop peak price — stored in dataclass so it is part of the
+    # deal object and survives serialization to/from state JSON.
+    # 0.0 = not yet initialized; set to entry price on first tick.
+    _peak_price: float = field(default=0.0, repr=False)
+
     @property
     def total_size(self) -> float:
         """Total position size across all orders."""
@@ -83,8 +88,6 @@ class PaperState:
     Tracks balance, open deals and closed deal history.
 
     Thread-safe: open_deals and balance_btc are protected by a Lock.
-    This allows the LiquidationGuard background thread to safely read
-    positions without racing against the main engine loop.
     """
 
     def __init__(self, initial_balance_btc: float = 0.1):
@@ -120,7 +123,6 @@ class PaperState:
             deal.close_reason = reason
             deal.pnl_btc, deal.pnl_pct = deal.calculate_pnl(close_price)
 
-            # Update balance
             self.balance_btc += deal.pnl_btc
             self.closed_deals.append(deal)
             return deal
@@ -128,31 +130,49 @@ class PaperState:
     def get_open_deals_snapshot(self) -> dict[str, PaperDeal]:
         """
         Return a shallow copy of open_deals for safe iteration.
-        Use this when iterating deals in the engine to avoid
-        holding the lock during the full monitoring loop.
+        Use this when iterating deals in the engine to avoid holding
+        the lock during the full monitoring loop.
         """
         with self._lock:
             return dict(self.open_deals)
 
+    def get_closed_deals_snapshot(self) -> list[PaperDeal]:
+        """
+        Return a shallow copy of closed_deals for safe iteration.
+        closed_deals is mutated by close_deal() inside the lock.
+        Reading it outside the lock risks a RuntimeError on list resize.
+        """
+        with self._lock:
+            return list(self.closed_deals)
+
     def total_pnl_btc(self) -> float:
-        """Total realized PnL across all closed deals."""
-        return round(sum(d.pnl_btc for d in self.closed_deals), 10)
+        """Total realized PnL across all closed deals. Uses a snapshot for safety."""
+        snap = self.get_closed_deals_snapshot()
+        return round(sum(d.pnl_btc for d in snap), 10)
 
     def summary(self) -> dict:
         """Returns a summary of current paper trading performance."""
+        # Take a single consistent snapshot for all derived values
+        closed_snap = self.get_closed_deals_snapshot()
+        total_pnl   = round(sum(d.pnl_btc for d in closed_snap), 10)
+        win_rate    = self._win_rate(closed_snap)
         with self._lock:
             return {
-                "balance_btc": round(self.balance_btc, 8),
+                "balance_btc":         round(self.balance_btc, 8),
                 "initial_balance_btc": self.initial_balance_btc,
-                "total_pnl_btc": round(self.total_pnl_btc(), 8),
-                "open_deals": len(self.open_deals),
-                "closed_deals": len(self.closed_deals),
-                "win_rate": self._win_rate(),
+                "total_pnl_btc":       round(total_pnl, 8),
+                "open_deals":          len(self.open_deals),
+                "closed_deals":        len(closed_snap),
+                "win_rate":            win_rate,
             }
 
-    def _win_rate(self) -> float:
-        """Calculate win rate across all closed deals."""
-        if not self.closed_deals:
+    def _win_rate(self, closed_snap: list[PaperDeal] = None) -> float:
+        """
+        Calculate win rate across all closed deals.
+        Accepts an optional pre-fetched snapshot to avoid double locking.
+        """
+        snap = closed_snap if closed_snap is not None else self.get_closed_deals_snapshot()
+        if not snap:
             return 0.0
-        wins = len([d for d in self.closed_deals if d.pnl_btc > 0])
-        return round((wins / len(self.closed_deals)) * 100, 2)
+        wins = len([d for d in snap if d.pnl_btc > 0])
+        return round((wins / len(snap)) * 100, 2)

@@ -88,9 +88,12 @@ class ScheduleConfig(BaseModel):
 
 class TelegramConfig(BaseModel):
     # Controls which events trigger a Telegram notification.
-    # Valid values: entry, dca_trigger, tp_hit, sl_hit, liquidation_warn,
-    #               schedule_open, schedule_close, error, startup, shutdown
-    notify_on: list[str] = [
+    # Using Literal ensures typos like 'tp-hit' raise a validation error
+    # instead of silently dropping the notification.
+    notify_on: list[Literal[
+        "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn",
+        "schedule_open", "schedule_close", "error", "startup", "shutdown"
+    ]] = [
         "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn",
         "schedule_open", "schedule_close", "error", "startup", "shutdown"
     ]
