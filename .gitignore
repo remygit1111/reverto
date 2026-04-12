@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+config/bots/*.yaml
+logs/
+data/
+ml/model_store/
+*.log
