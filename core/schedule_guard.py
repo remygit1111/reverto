@@ -3,7 +3,7 @@
 # based on the trading schedule defined in the bot configuration.
 # Running deals (DCA, TP, SL) are always allowed regardless of schedule.
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from config.models import ScheduleConfig
 
@@ -54,8 +54,6 @@ class ScheduleGuard:
         """
         now = self.now()
         open_ = self.is_open()
-
-        # Find next opening time
         next_open = self._next_open(now)
 
         return {
@@ -74,8 +72,6 @@ class ScheduleGuard:
         Finds the next trading window opening time from now.
         Looks up to 7 days ahead.
         """
-        from datetime import timedelta
-
         for days_ahead in range(8):
             future = now + timedelta(days=days_ahead)
             future_day = future.weekday()

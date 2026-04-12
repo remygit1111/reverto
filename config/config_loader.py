@@ -1,9 +1,12 @@
 # config/config_loader.py
 # Loads and validates a YAML bot configuration file
 
+import logging
 import yaml
 from pathlib import Path
 from config.models import BotConfig
+
+logger = logging.getLogger(__name__)
 
 
 def load_bot_config(path: str) -> BotConfig:
@@ -21,7 +24,9 @@ def load_bot_config(path: str) -> BotConfig:
 
     try:
         config = BotConfig(**raw.get("bot", {}))
-        print(f"✅ Config loaded: {config.name} ({config.mode} on {config.exchange})")
+        logger.info(
+            f"Config loaded: {config.name} ({config.mode} on {config.exchange})"
+        )
         return config
     except Exception as e:
-        raise ValueError(f"❌ Invalid bot configuration in {path}:\n{e}")
+        raise ValueError(f"Invalid bot configuration in {path}:\n{e}")

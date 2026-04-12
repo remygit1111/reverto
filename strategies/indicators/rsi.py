@@ -11,9 +11,16 @@ def calculate_rsi(closes: list[float], period: int = 14) -> float:
     Calculate the current RSI value from a list of closing prices.
     Returns the latest RSI value (0-100).
     Requires at least period + 1 data points.
+
+    Handles edge cases:
+    - All prices identical (no movement) → returns 50.0
+    - All gains, no losses → returns 100.0
+    - All losses, no gains → returns 0.0
     """
     if len(closes) < period + 1:
-        raise ValueError(f"RSI requires at least {period + 1} data points, got {len(closes)}")
+        raise ValueError(
+            f"RSI requires at least {period + 1} data points, got {len(closes)}"
+        )
 
     series = pd.Series(closes)
     delta = series.diff()
@@ -24,13 +31,20 @@ def calculate_rsi(closes: list[float], period: int = 14) -> float:
     avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
 
-    rs = avg_gain / avg_loss
+    # Replace zero avg_loss with NaN to avoid ZeroDivisionError
+    avg_loss_safe = avg_loss.replace(0, float("nan"))
+    rs = avg_gain / avg_loss_safe
+
     rsi = 100 - (100 / (1 + rs))
+
+    # Fill NaN: no losses means RSI = 100 (all gain)
+    rsi = rsi.fillna(100)
 
     return round(float(rsi.iloc[-1]), 2)
 
 
-def check_rsi_signal(closes: list[float], period: int = 14, threshold: str = "below_35") -> bool:
+def check_rsi_signal(closes: list[float], period: int = 14,
+                     threshold: str = "below_35") -> bool:
     """
     Check if RSI meets the configured threshold condition.
     Supported thresholds:
@@ -50,6 +64,9 @@ def check_rsi_signal(closes: list[float], period: int = 14, threshold: str = "be
     }
 
     if threshold not in conditions:
-        raise ValueError(f"Unknown RSI threshold: {threshold}. Choose from: {list(conditions.keys())}")
+        raise ValueError(
+            f"Unknown RSI threshold: {threshold}. "
+            f"Choose from: {list(conditions.keys())}"
+        )
 
     return conditions[threshold]
