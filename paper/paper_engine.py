@@ -48,12 +48,14 @@ class PaperEngine:
     def start(self):
         """Start the paper engine loop."""
         logger.info(f"Starting paper engine: {self.config.name}")
+        self.running = True
+
+        # Send startup notification after logging — prevents timestamp skew
         self.notifier.notify_startup(
             self.config.name,
             self.config.mode.value,
             self.config.exchange.value
         )
-        self.running = True
 
         try:
             while self.running:
