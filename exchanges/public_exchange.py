@@ -51,12 +51,21 @@ class PublicExchange(BaseExchange):
     def get_ticker(self, symbol: str) -> Ticker:
         """Fetch current price data for a symbol."""
         data = self.client.fetch_ticker(self._symbol(symbol))
+
+        # mark_price comes as a string from Bitget's info dict (e.g. "71027.5").
+        # Convert defensively: fall back to None if absent, empty, or unparseable.
+        raw_mark = data.get("info", {}).get("markPrice")
+        try:
+            mark_price = float(raw_mark) if raw_mark else None
+        except (ValueError, TypeError):
+            mark_price = None
+
         return Ticker(
             symbol=symbol,
             bid=data["bid"] or 0.0,
             ask=data["ask"] or 0.0,
             last=data["last"] or 0.0,
-            mark_price=data.get("info", {}).get("markPrice"),
+            mark_price=mark_price,
             funding_rate=data.get("info", {}).get("fundingRate"),
             timestamp=data["timestamp"]
         )

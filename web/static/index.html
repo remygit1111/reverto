@@ -5,459 +5,875 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
 <link rel="stylesheet" href="/static/style.css">
+<style>
+/* ── Extra styles for multi-bot ─────────────────────────────────────────── */
+.summary-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 16px 20px 0;
+}
+
+.bot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+.bot-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color .15s;
+}
+.bot-card:hover { border-color: var(--accent); }
+
+.bot-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bot-card-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bot-card-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bot-card-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0;
+  padding: 10px 16px;
+}
+
+.bot-stat {
+  padding: 4px 0;
+}
+.bot-stat-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.bot-stat-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bot-card-deals {
+  padding: 0 16px 8px;
+}
+.bot-card-deal-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.bot-card-deal-row:last-child { border-bottom: none; }
+
+.bot-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface2);
+}
+
+.btn-sm {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 0 10px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid;
+  background: none;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-start  { border-color: var(--accent); color: var(--accent); }
+.btn-start:hover  { background: rgba(0,212,170,.1); }
+.btn-stop   { border-color: var(--red); color: var(--red); }
+.btn-stop:hover   { background: rgba(255,77,109,.1); }
+.btn-restart{ border-color: var(--amber); color: var(--amber); }
+.btn-restart:hover{ background: rgba(255,179,71,.1); }
+.btn-open   { border-color: var(--border); color: var(--muted); }
+.btn-open:hover   { border-color: var(--text); color: var(--text); }
+
+.all-deals-section { padding: 0 20px 20px; }
+
+/* Detail page */
+.detail-subnav {
+  display: flex;
+  padding: 0 20px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-content { padding: 20px; }
+
+.indicator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.indicator-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.indicator-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.indicator-value {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-grid {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  padding: 40px;
+  grid-column: 1/-1;
+}
+</style>
 </head>
 <body>
 
 <!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <header>
   <span class="logo">Reverto</span>
-  <span class="logo-sub">BTC DCA Bot</span>
+  <span class="logo-sub" id="hdr-context">Multi-Bot Portal</span>
   <div class="header-spacer"></div>
   <span class="header-pair" id="hdr-pair">BTC/USD</span>
   <span class="header-price" id="hdr-price">—</span>
-  <div id="status-pill" class="pill stopped">
-    <div class="dot"></div>
-    <span id="status-text">Stopped</span>
+  <div id="hdr-pill" style="display:none">
+    <div id="status-pill" class="pill stopped">
+      <div class="dot"></div>
+      <span id="status-text">Stopped</span>
+    </div>
   </div>
-  <span class="uptime-chip" id="uptime">—</span>
+  <span class="uptime-chip" id="hdr-uptime"></span>
+  <button class="hbtn hbtn-theme" id="restart-btn" onclick="restartPortal()" title="Restart dashboard">Restart Dashboard</button>
   <button class="hbtn hbtn-theme" onclick="toggleTheme()" title="Toggle light/dark">☀︎</button>
 </header>
 
-<!-- ── Navigation ──────────────────────────────────────────────────────────── -->
-<nav>
-  <button class="tab active" onclick="showPage('dashboard', this)">Dashboard</button>
-  <button class="tab" onclick="showPage('deals', this)">Deals</button>
-  <button class="tab" onclick="showPage('log', this)">Log</button>
+<!-- ── Main nav ────────────────────────────────────────────────────────────── -->
+<nav id="main-nav">
+  <button class="tab active" onclick="goOverview()">Overview</button>
+  <span id="detail-nav-item" style="display:none">
+    <button class="tab active" id="detail-nav-btn">—</button>
+  </span>
 </nav>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- PAGE: Dashboard                                                           -->
+<!-- VIEW: Overview                                                            -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
-<div class="page active" id="page-dashboard">
+<div id="view-overview" class="page active">
 
-  <!-- Stat cards -->
-  <div class="stat-grid">
-    <div class="card">
-      <div class="card-label">Balance</div>
-      <div class="card-value" id="s-balance">—</div>
-      <div class="card-sub">BTC</div>
-    </div>
+  <!-- Summary bar -->
+  <div class="summary-bar">
     <div class="card">
       <div class="card-label">Total PnL</div>
-      <div class="card-value" id="s-pnl">—</div>
-      <div class="card-sub" id="s-pnl-sub">realized</div>
+      <div class="card-value" id="ov-pnl">—</div>
+      <div class="card-sub">all bots combined</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Active bots</div>
+      <div class="card-value" id="ov-active">—</div>
+      <div class="card-sub" id="ov-total-sub">of — configured</div>
     </div>
     <div class="card">
       <div class="card-label">Open deals</div>
-      <div class="card-value" id="s-open">—</div>
-      <div class="card-sub">active</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Closed deals</div>
-      <div class="card-value" id="s-closed">—</div>
-      <div class="card-sub">total</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Win rate</div>
-      <div class="card-value" id="s-winrate">—</div>
-      <div class="card-sub">of closed deals</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Schedule</div>
-      <div class="card-value" id="s-schedule">—</div>
-      <div class="card-sub" id="s-schedule-sub">trading window</div>
+      <div class="card-value" id="ov-deals">—</div>
+      <div class="card-sub">across all bots</div>
     </div>
   </div>
 
-  <!-- Two column: open deals + log -->
-  <div class="two-col">
+  <!-- Bot cards -->
+  <div class="bot-grid" id="bot-grid">
+    <div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:20px">Loading bots...</div>
+  </div>
 
-    <!-- Open deals -->
-    <div>
-      <div class="section-title">Open deals</div>
-      <div class="card" style="padding:0">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Entry</th>
-              <th>Avg entry</th>
-              <th>Orders</th>
-              <th>PnL</th>
-              <th>Opened</th>
-            </tr>
-          </thead>
-          <tbody id="open-tbody">
-            <tr class="empty-row"><td colspan="6">No open deals</td></tr>
-          </tbody>
-        </table>
-      </div>
+  <!-- All open deals table -->
+  <div class="all-deals-section">
+    <div class="section-title">All open deals</div>
+    <div class="card" style="padding:0;margin-bottom:20px">
+      <table>
+        <thead>
+          <tr>
+            <th>Bot</th><th>Deal ID</th><th>Pair</th><th>Entry</th>
+            <th>Avg entry</th><th>Orders</th><th>PnL</th><th>Opened</th>
+          </tr>
+        </thead>
+        <tbody id="all-deals-tbody">
+          <tr class="empty-row"><td colspan="8">No open deals</td></tr>
+        </tbody>
+      </table>
     </div>
 
-    <!-- Live log -->
-    <div>
-      <div class="section-title">Live log</div>
-      <div class="log-wrap">
-        <div class="log-header">
-          <span class="log-title">Streaming</span>
-          <div style="display:flex;align-items:center;gap:6px">
-            <div class="live-dot" id="ws-dot"></div>
-            <span class="log-status-text" id="ws-label">connecting</span>
-          </div>
+    <!-- Live INFO log — all bots combined -->
+    <div class="section-title">Live log</div>
+    <div class="log-wrap" style="height:280px">
+      <div class="log-header">
+        <span class="log-title">All bots + dashboard (INFO+)</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button class="hbtn hbtn-theme" style="font-size:10px;height:24px" onclick="$('ov-log-body').innerHTML=''">Clear</button>
+          <div class="live-dot" id="ov-ws-dot"></div>
+          <span class="log-status-text" id="ov-ws-label">connecting</span>
         </div>
-        <div class="log-body" id="log-dash"></div>
       </div>
-    </div>
-
-  </div>
-
-  <!-- Bot info bar -->
-  <div class="card" style="margin-top:16px">
-    <div class="section-title" style="margin-bottom:14px">Bot info</div>
-    <div class="info-bar">
-      <div class="info-item">
-        <div class="info-item-label">Mode</div>
-        <div class="info-item-value" id="i-mode">—</div>
-      </div>
-      <div class="info-item">
-        <div class="info-item-label">Exchange</div>
-        <div class="info-item-value" id="i-exchange">—</div>
-      </div>
-      <div class="info-item">
-        <div class="info-item-label">Pair</div>
-        <div class="info-item-value" id="i-pair">—</div>
-      </div>
-      <div class="info-item">
-        <div class="info-item-label">Bot name</div>
-        <div class="info-item-value" id="i-name">—</div>
-      </div>
-      <div class="info-item">
-        <div class="info-item-label">Initial balance</div>
-        <div class="info-item-value" id="i-init">—</div>
-      </div>
+      <div class="log-body" id="ov-log-body"></div>
     </div>
   </div>
 
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- PAGE: Deals                                                               -->
+<!-- VIEW: Bot detail                                                          -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
-<div class="page" id="page-deals">
+<div id="view-detail" class="page">
 
-  <div class="section-title">Open deals</div>
-  <div class="card" style="padding:0;margin-bottom:20px">
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Entry price</th>
-          <th>Avg entry</th>
-          <th>Size</th>
-          <th>Orders</th>
-          <th>Current PnL</th>
-          <th>Opened</th>
-        </tr>
-      </thead>
-      <tbody id="open-tbody-full">
-        <tr class="empty-row"><td colspan="7">No open deals</td></tr>
-      </tbody>
-    </table>
+  <!-- Sub-nav -->
+  <div class="detail-subnav">
+    <button class="tab active" onclick="showDTab('dashboard',this)">Dashboard</button>
+    <button class="tab" onclick="showDTab('deals',this)">Deals</button>
+    <button class="tab" onclick="showDTab('log',this)">Log</button>
   </div>
 
-  <div class="section-title">Closed deals</div>
-  <div class="card" style="padding:0">
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Reason</th>
-          <th>Entry price</th>
-          <th>Close price</th>
-          <th>PnL BTC</th>
-          <th>PnL %</th>
-          <th>Closed</th>
-        </tr>
-      </thead>
-      <tbody id="closed-tbody">
-        <tr class="empty-row"><td colspan="7">No closed deals</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-</div>
-
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- PAGE: Log                                                                 -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<div class="page" id="page-log">
-  <div class="section-title">Full log stream</div>
-  <div class="log-wrap" style="height:calc(100vh - 160px)">
-    <div class="log-header">
-      <span class="log-title">reverto.log — live tail</span>
-      <div style="display:flex;align-items:center;gap:10px">
-        <label style="font-family:var(--mono);font-size:10px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="autoscroll" checked style="accent-color:var(--accent)">
-          Auto-scroll
-        </label>
-        <button class="hbtn hbtn-theme" style="font-size:10px;height:24px" onclick="clearLog()">Clear</button>
-        <div class="live-dot connected" id="ws-dot2"></div>
+  <!-- Dashboard tab -->
+  <div id="dtab-dashboard" class="detail-content">
+    <div class="stat-grid" style="margin-bottom:16px">
+      <div class="card">
+        <div class="card-label">Price</div>
+        <div class="card-value" id="d-price">—</div>
+        <div class="card-sub" id="d-pair-sub">BTC/USD</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Balance</div>
+        <div class="card-value" id="d-balance">—</div>
+        <div class="card-sub">BTC</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Total PnL</div>
+        <div class="card-value" id="d-pnl">—</div>
+        <div class="card-sub">realized</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Open deals</div>
+        <div class="card-value" id="d-open-count">—</div>
+        <div class="card-sub">active</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Win rate</div>
+        <div class="card-value" id="d-winrate">—</div>
+        <div class="card-sub">of closed deals</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Schedule</div>
+        <div class="card-value" id="d-schedule">—</div>
+        <div class="card-sub">trading window</div>
       </div>
     </div>
-    <div class="log-body" id="log-full" style="font-size:11.5px"></div>
+
+    <!-- Indicators -->
+    <div class="section-title">Last indicator values</div>
+    <div class="indicator-grid" id="indicator-grid">
+      <div class="empty-grid">No indicator data yet</div>
+    </div>
+
+    <!-- Bot info -->
+    <div class="section-title" style="margin-top:16px">Bot info</div>
+    <div class="card">
+      <div class="info-bar">
+        <div class="info-item">
+          <div class="info-item-label">Config</div>
+          <div class="info-item-value" id="d-config" style="font-size:11px">—</div>
+        </div>
+        <div class="info-item">
+          <div class="info-item-label">Mode</div>
+          <div class="info-item-value" id="d-mode">—</div>
+        </div>
+        <div class="info-item">
+          <div class="info-item-label">Exchange</div>
+          <div class="info-item-value" id="d-exchange">—</div>
+        </div>
+        <div class="info-item">
+          <div class="info-item-label">Initial balance</div>
+          <div class="info-item-value" id="d-init">—</div>
+        </div>
+      </div>
+    </div>
   </div>
+
+  <!-- Deals tab -->
+  <div id="dtab-deals" class="detail-content" style="display:none">
+    <div class="section-title">Open deals</div>
+    <div class="card" style="padding:0;margin-bottom:16px">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Entry</th><th>Avg entry</th><th>Orders</th><th>Size</th><th>PnL</th><th>Opened</th></tr>
+        </thead>
+        <tbody id="d-open-tbody">
+          <tr class="empty-row"><td colspan="7">No open deals</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="section-title">Closed deals</div>
+    <div class="card" style="padding:0">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Reason</th><th>Entry</th><th>Close</th><th>PnL BTC</th><th>PnL %</th><th>Closed</th></tr>
+        </thead>
+        <tbody id="d-closed-tbody">
+          <tr class="empty-row"><td colspan="7">No closed deals</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Log tab -->
+  <div id="dtab-log" class="detail-content" style="display:none;padding:0">
+    <div class="log-wrap" style="height:calc(100vh - 145px);border-radius:0;border-left:none;border-right:none;border-bottom:none">
+      <div class="log-header">
+        <span class="log-title" id="log-title">bot.log</span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <label style="font-family:var(--mono);font-size:10px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="autoscroll" checked style="accent-color:var(--accent)">
+            Auto-scroll
+          </label>
+          <button class="hbtn hbtn-theme" style="font-size:10px;height:24px" onclick="clearLog()">Clear</button>
+          <div class="live-dot" id="ws-dot"></div>
+          <span class="log-status-text" id="ws-label">connecting</span>
+        </div>
+      </div>
+      <div class="log-body" id="log-body"></div>
+    </div>
+  </div>
+
 </div>
 
-<!-- ── JavaScript ──────────────────────────────────────────────────────────── -->
 <script>
 // ── Theme ─────────────────────────────────────────────────────────────────────
-const savedTheme = localStorage.getItem('reverto-theme') || 'dark';
-document.documentElement.setAttribute('data-theme', savedTheme);
-
+const t0 = localStorage.getItem('reverto-theme') || 'dark';
+document.documentElement.setAttribute('data-theme', t0);
 function toggleTheme() {
-  const cur = document.documentElement.getAttribute('data-theme');
-  const next = cur === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('reverto-theme', next);
-}
-
-// ── Navigation ────────────────────────────────────────────────────────────────
-function showPage(name, btn) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.getElementById('page-' + name).classList.add('active');
-  btn.classList.add('active');
+  const n = document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';
+  document.documentElement.setAttribute('data-theme', n);
+  localStorage.setItem('reverto-theme', n);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
+// XSS-safe string escaping — always use for server-sourced data in innerHTML
+function safeText(str) {
+  const el = document.createElement('span');
+  el.textContent = (str == null || str === '') ? '—' : String(str);
+  return el.innerHTML;
+}
+
 function fmtPrice(n) {
   if (!n) return '—';
-  return '$' + parseFloat(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  return '$'+parseFloat(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
-
-function fmtPnl(btc, pct) {
-  if (btc === undefined || btc === null) return '—';
-  const sign = btc >= 0 ? '+' : '';
-  const cls  = btc > 0 ? 'pos' : btc < 0 ? 'neg' : 'neu';
-  return `<span class="${cls}">${sign}${btc.toFixed(8)}</span>`;
+function fmtPnl(v, decimals=8) {
+  if (v==null) return '—';
+  const s=v>=0?'+':''; const c=v>0?'pos':v<0?'neg':'neu';
+  return `<span class="${c}">${s}${v.toFixed(decimals)}</span>`;
 }
-
-function fmtPct(pct) {
-  if (pct === undefined || pct === null) return '—';
-  const sign = pct >= 0 ? '+' : '';
-  const cls  = pct > 0 ? 'pos' : pct < 0 ? 'neg' : 'neu';
-  return `<span class="${cls}">${sign}${pct.toFixed(2)}%</span>`;
+function fmtPct(v) {
+  if (v==null) return '—';
+  const s=v>=0?'+':''; const c=v>0?'pos':v<0?'neg':'neu';
+  return `<span class="${c}">${s}${v.toFixed(2)}%</span>`;
 }
-
 function timeAgo(iso) {
   if (!iso) return '—';
-  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (s < 60)   return s + 's ago';
-  if (s < 3600) return Math.floor(s / 60) + 'm ago';
-  if (s < 86400)return Math.floor(s / 3600) + 'h ago';
-  return Math.floor(s / 86400) + 'd ago';
+  const s=Math.floor((Date.now()-new Date(iso))/1000);
+  if(s<60) return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400) return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
 }
-
 function reasonBadge(r) {
-  if (!r) return '—';
-  const cls = r === 'tp' ? 'badge-tp' : r === 'sl' ? 'badge-sl' : 'badge-open';
-  return `<span class="badge ${cls}">${r.toUpperCase()}</span>`;
+  if(!r) return '—';
+  const c=r==='tp'?'badge-tp':r==='sl'?'badge-sl':'badge-open';
+  return `<span class="badge ${c}">${r.toUpperCase()}</span>`;
+}
+function logCls(l) {
+  if(l.includes('[ERROR]')) return 'err';
+  if(l.includes('[WARNING]')) return 'warn';
+  if(l.includes('[DEBUG]')) return 'dbg';
+  return 'info';
 }
 
-// ── Status polling ────────────────────────────────────────────────────────────
-async function fetchStatus() {
+// ── State ─────────────────────────────────────────────────────────────────────
+let currentSlug = null;
+let ws = null;
+let detailInterval = null;
+let overviewInterval = null;
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  $('view-'+name).classList.add('active');
+}
+
+function showDTab(name, btn) {
+  ['dashboard','deals','log'].forEach(n=>{
+    const el=$('dtab-'+n);
+    if(el){ el.style.display=n===name?'block':'none'; }
+  });
+  document.querySelectorAll('.detail-subnav .tab').forEach(t=>t.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+}
+
+// ── Overview ──────────────────────────────────────────────────────────────────
+async function fetchOverview() {
   try {
-    const d = await fetch('/api/status').then(r => r.json());
+    const d = await fetch('/api/bots').then(r=>r.json());
+    renderOverview(d);
+  } catch(e) {}
+}
 
-    // Header
-    if (d.current_price) $('hdr-price').textContent = fmtPrice(d.current_price);
-    $('hdr-pair').textContent = d.pair || 'BTC/USD';
+function renderOverview(d) {
+  const sum = d.summary || {};
 
-    // Status pill
-    const pill = $('status-pill');
-    const txt  = $('status-text');
-    if (d.engine_running) {
-      pill.className = 'pill running';
-      txt.textContent = 'Running';
-    } else {
-      pill.className = 'pill stopped';
-      txt.textContent = 'Stopped';
-    }
+  // Summary bar
+  const pnl = sum.total_pnl_btc || 0;
+  $('ov-pnl').innerHTML = fmtPnl(pnl, 8);
+  $('ov-active').textContent = sum.active_bots ?? '—';
+  $('ov-total-sub').textContent = `of ${sum.total_bots ?? 0} configured`;
+  $('ov-deals').textContent = sum.open_deals ?? '—';
 
-    // Uptime
-    $('uptime').textContent = d.uptime ? '⏱ ' + d.uptime : '';
+  // Price from running bot (independent fetch handles no-bot case)
+  const runningBot = (d.bots||[]).find(b => b.running && b.current_price);
+  if (runningBot) {
+    $('hdr-price').textContent = fmtPrice(runningBot.current_price);
+    $('hdr-pair').textContent  = runningBot.pair || 'BTC/USD';
+  }
 
-    // Stats
-    const bal = d.balance_btc;
-    $('s-balance').textContent = bal ? bal.toFixed(6) : '—';
+  // Bot cards
+  const grid = $('bot-grid');
+  const bots = d.bots || [];
+  if (!bots.length) {
+    grid.innerHTML = '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:20px">No bots configured — add a YAML file to config/bots/</div>';
+  } else {
+    grid.innerHTML = bots.map(b => renderBotCard(b)).join('');
+  }
 
-    const pnl = d.total_pnl_btc || 0;
-    const pnlEl = $('s-pnl');
-    const sign  = pnl >= 0 ? '+' : '';
-    pnlEl.textContent = sign + pnl.toFixed(8);
-    pnlEl.className = 'card-value ' + (pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '');
-
-    $('s-open').textContent   = d.open_deals_count  ?? '—';
-    $('s-closed').textContent = d.closed_deals_count ?? '—';
-
-    const wr = d.win_rate;
-    $('s-winrate').textContent = wr != null ? wr + '%' : '—';
-    $('s-winrate').className = 'card-value ' + (wr >= 50 ? 'pos' : wr > 0 ? 'neg' : '');
-
-    const schedEl = $('s-schedule');
-    if (d.schedule_open) {
-      schedEl.textContent  = 'Open';
-      schedEl.className    = 'card-value pos';
-    } else {
-      schedEl.textContent  = 'Closed';
-      schedEl.className    = 'card-value neu';
-    }
-
-    // Bot info
-    $('i-mode').textContent     = d.mode     ? d.mode.toUpperCase()     : '—';
-    $('i-exchange').textContent = d.exchange ? d.exchange.toUpperCase() : '—';
-    $('i-pair').textContent     = d.pair     || '—';
-    $('i-name').textContent     = d.bot_name || '—';
-    $('i-init').textContent     = d.initial_balance_btc ? d.initial_balance_btc.toFixed(4) + ' BTC' : '—';
-
-  } catch(e) {
-    $('status-pill').className = 'pill stopped';
-    $('status-text').textContent = 'Offline';
+  // All open deals table
+  const tbody = $('all-deals-tbody');
+  const deals = d.all_open_deals || [];
+  if (!deals.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No open deals across any bot</td></tr>';
+  } else {
+    tbody.innerHTML = deals.map(deal => `<tr>
+      <td><span style="color:var(--accent);cursor:pointer" data-action="open-bot" data-slug="${safeText(deal.bot_slug)}">${safeText(deal.bot_name)}</span></td>
+      <td style="color:var(--muted)">${safeText(deal.id)}</td>
+      <td>${safeText(deal.symbol)}</td>
+      <td>${fmtPrice(deal.entry_price)}</td>
+      <td>${fmtPrice(deal.avg_entry_price)}</td>
+      <td>${deal.order_count}</td>
+      <td>${fmtPnl(deal.pnl_btc)}</td>
+      <td style="color:var(--muted)">${timeAgo(deal.opened_at)}</td>
+    </tr>`).join('');
   }
 }
 
-// ── Deals polling ─────────────────────────────────────────────────────────────
-async function fetchDeals() {
+function renderBotCard(b) {
+  const running = b.running;
+  const pnl     = b.total_pnl_btc || 0;
+  const pnlSign = pnl>=0?'+':'';
+  const pnlCls  = pnl>0?'pos':pnl<0?'neg':'neu';
+
+  const openDealsHtml = (b.open_deals||[]).slice(0,3).map(d => `
+    <div class="bot-card-deal-row">
+      <span style="color:var(--accent)">${safeText(d.id)}</span>
+      <span style="color:var(--muted)">${fmtPrice(d.entry_price)}</span>
+      <span>${fmtPnl(d.pnl_btc)}</span>
+    </div>`).join('');
+
+  const moreDeals = (b.open_deals_count||0) > 3
+    ? `<div style="font-family:var(--mono);font-size:10px;color:var(--muted);padding:4px 0">+${b.open_deals_count-3} more deals</div>`
+    : '';
+
+  return `
+  <div class="bot-card">
+    <div class="bot-card-top">
+      <span class="bot-card-name">${safeText(b.bot_name||b.slug)}</span>
+      <div class="pill ${running?'running':'stopped'}" style="font-size:10px;height:24px;cursor:default">
+        <div class="dot"></div>${running?'Running':'Stopped'}
+      </div>
+    </div>
+    <div class="bot-card-meta">
+      ${safeText((b.exchange||'—').toUpperCase())} · ${safeText(b.pair||'BTC/USD')} · ${safeText((b.mode||'paper').toUpperCase())}
+      ${b.uptime ? '· ⏱ '+safeText(b.uptime) : ''}
+    </div>
+    <div class="bot-card-stats">
+      <div class="bot-stat">
+        <div class="bot-stat-label">Price</div>
+        <div class="bot-stat-value">${b.current_price ? fmtPrice(b.current_price) : '—'}</div>
+      </div>
+      <div class="bot-stat">
+        <div class="bot-stat-label">Balance</div>
+        <div class="bot-stat-value">${b.balance_btc ? b.balance_btc.toFixed(4) : '—'}</div>
+      </div>
+      <div class="bot-stat">
+        <div class="bot-stat-label">Win rate</div>
+        <div class="bot-stat-value">${b.win_rate||0}%</div>
+      </div>
+      <div class="bot-stat">
+        <div class="bot-stat-label">PnL</div>
+        <div class="bot-stat-value ${pnlCls}">${pnlSign}${pnl.toFixed(6)}</div>
+      </div>
+      <div class="bot-stat">
+        <div class="bot-stat-label">Open deals</div>
+        <div class="bot-stat-value">${b.open_deals_count||0}</div>
+      </div>
+      <div class="bot-stat">
+        <div class="bot-stat-label">Closed</div>
+        <div class="bot-stat-value">${b.closed_deals_count||0}</div>
+      </div>
+    </div>
+    ${openDealsHtml ? `<div class="bot-card-deals">${openDealsHtml}${moreDeals}</div>` : ''}
+    <div class="bot-card-footer">
+      ${running
+        ? `<button class="btn-sm btn-stop"    data-action="bot-action" data-slug="${safeText(b.slug)}" data-cmd="stop">■ Stop</button>
+           <button class="btn-sm btn-restart" data-action="bot-action" data-slug="${safeText(b.slug)}" data-cmd="restart">↺ Restart</button>`
+        : `<button class="btn-sm btn-start"   data-action="bot-action" data-slug="${safeText(b.slug)}" data-cmd="start">▶ Start</button>`
+      }
+      <button class="btn-sm btn-open" data-action="open-bot" data-slug="${safeText(b.slug)}">Open →</button>
+    </div>
+  </div>`;
+}
+
+// ── Bot actions ───────────────────────────────────────────────────────────────
+async function botAction(slug, action) {
+  const r = await fetch(`/api/bots/${slug}/${action}`,{method:'POST'}).then(r=>r.json());
+  if (!r.ok) alert(`${action} failed: ${r.error}`);
+  setTimeout(fetchOverview, 1200);
+  if (currentSlug === slug) setTimeout(()=>fetchDetail(slug), 1500);
+}
+
+// ── Bot detail ────────────────────────────────────────────────────────────────
+function goOverview() {
+  currentSlug = null;
+  clearInterval(detailInterval);
+  if (ws) { ws.close(); ws=null; }
+
+  // Reset header — keep price visible but hide bot-specific elements
+  $('hdr-context').textContent = 'Multi-Bot Portal';
+  $('hdr-context').style.cursor = 'default';
+  $('hdr-context').onclick = null;
+  $('hdr-pill').style.display = 'none';
+  $('hdr-uptime').textContent = '';
+  $('detail-nav-item').style.display = 'none';
+
+  // Nav
+  document.querySelectorAll('#main-nav .tab').forEach(t=>t.classList.remove('active'));
+  $('main-nav').querySelector('.tab').classList.add('active');
+
+  showPage('overview');
+  fetchOverview();
+  overviewInterval = setInterval(fetchOverview, 5000);
+}
+
+function openBot(slug) {
+  clearInterval(overviewInterval);
+  currentSlug = slug;
+
+  // Header
+  $('hdr-context').textContent = '← Overview';
+  $('hdr-context').style.cursor = 'pointer';
+  $('hdr-context').onclick = goOverview;
+  $('hdr-pair').style.display = 'inline';
+  $('hdr-price').style.display = 'inline';
+  $('hdr-pill').style.display = 'flex';
+
+  // Nav
+  document.querySelectorAll('#main-nav .tab').forEach(t=>t.classList.remove('active'));
+  $('detail-nav-item').style.display = 'inline';
+  $('detail-nav-btn').textContent = slug;
+  $('detail-nav-btn').classList.add('active');
+
+  // Reset detail tabs
+  showDTab('dashboard', document.querySelector('.detail-subnav .tab'));
+
+  showPage('detail');
+  connectWS(slug);
+  fetchDetail(slug);
+  detailInterval = setInterval(()=>fetchDetail(slug), 5000);
+}
+
+async function fetchDetail(slug) {
   try {
-    const d = await fetch('/api/deals').then(r => r.json());
+    const b = await fetch(`/api/bots/${slug}`).then(r=>r.json());
 
-    // Dashboard open deals (compact)
-    const ob = $('open-tbody');
-    if (!d.open || d.open.length === 0) {
-      ob.innerHTML = '<tr class="empty-row"><td colspan="6">No open deals</td></tr>';
+    // Header
+    if (b.current_price) $('hdr-price').textContent = fmtPrice(b.current_price);
+    $('hdr-pair').textContent = b.pair||'BTC/USD';
+    $('hdr-uptime').textContent = b.uptime ? '⏱ '+b.uptime : '';
+
+    const pill = $('status-pill');
+    $('status-text').textContent = b.running ? 'Running' : 'Stopped';
+    pill.className = 'pill '+(b.running?'running':'stopped');
+
+    // Dashboard stats
+    $('d-price').textContent   = fmtPrice(b.current_price)||'—';
+    $('d-pair-sub').textContent = b.pair||'BTC/USD';
+    $('d-balance').textContent = b.balance_btc ? b.balance_btc.toFixed(6) : '—';
+
+    const pnl = b.total_pnl_btc||0;
+    $('d-pnl').innerHTML = fmtPnl(pnl,8);
+    $('d-open-count').textContent = b.open_deals_count ?? '—';
+    $('d-winrate').textContent = (b.win_rate??0)+'%';
+    $('d-schedule').textContent = b.schedule_open ? 'Open' : 'Closed';
+    $('d-schedule').className = 'card-value '+(b.schedule_open?'pos':'neu');
+
+    // Bot info
+    $('d-config').textContent   = b.config_file||'—';
+    $('d-mode').textContent     = (b.mode||'—').toUpperCase();
+    $('d-exchange').textContent = (b.exchange||'—').toUpperCase();
+    $('d-init').textContent     = b.initial_balance_btc ? b.initial_balance_btc.toFixed(4)+' BTC' : '—';
+
+    // Indicators
+    const ind = b.indicators||{};
+    const ig = $('indicator-grid');
+    const indKeys = Object.entries(ind);
+    if (!indKeys.length) {
+      ig.innerHTML = '<div class="empty-grid">No indicator data yet — waiting for first candle fetch</div>';
     } else {
-      ob.innerHTML = d.open.map(deal => `<tr>
-        <td style="color:var(--accent)">${deal.id}</td>
-        <td>${fmtPrice(deal.entry_price)}</td>
-        <td>${fmtPrice(deal.avg_entry_price)}</td>
-        <td>${deal.order_count}</td>
-        <td>${fmtPnl(deal.pnl_btc, deal.pnl_pct)}</td>
-        <td style="color:var(--muted)">${timeAgo(deal.opened_at)}</td>
-      </tr>`).join('');
+      ig.innerHTML = indKeys.map(([k,v]) => `
+        <div class="indicator-card">
+          <div class="indicator-label">${safeText(k.replace(/_/g,' '))}</div>
+          <div class="indicator-value">${safeText(typeof v==='number'?v.toFixed(4):v)}</div>
+        </div>`).join('');
     }
 
-    // Deals page — open (full)
-    const obf = $('open-tbody-full');
-    if (!d.open || d.open.length === 0) {
-      obf.innerHTML = '<tr class="empty-row"><td colspan="7">No open deals</td></tr>';
-    } else {
-      obf.innerHTML = d.open.map(deal => `<tr>
-        <td style="color:var(--accent)">${deal.id}</td>
-        <td>${fmtPrice(deal.entry_price)}</td>
-        <td>${fmtPrice(deal.avg_entry_price)}</td>
-        <td>${deal.total_size ? deal.total_size.toFixed(4) : '—'}</td>
-        <td>${deal.order_count}</td>
-        <td>${fmtPnl(deal.pnl_btc, deal.pnl_pct)}</td>
-        <td style="color:var(--muted)">${timeAgo(deal.opened_at)}</td>
-      </tr>`).join('');
-    }
+    // Open deals
+    const ob = $('d-open-tbody');
+    const od = b.open_deals||[];
+    ob.innerHTML = od.length
+      ? od.map(d=>`<tr>
+          <td style="color:var(--accent)">${safeText(d.id)}</td>
+          <td>${fmtPrice(d.entry_price)}</td>
+          <td>${fmtPrice(d.avg_entry_price)}</td>
+          <td>${d.order_count}</td>
+          <td>${d.total_size?.toFixed(4)||'—'}</td>
+          <td>${fmtPnl(d.pnl_btc)}</td>
+          <td style="color:var(--muted)">${timeAgo(d.opened_at)}</td>
+        </tr>`).join('')
+      : '<tr class="empty-row"><td colspan="7">No open deals</td></tr>';
 
-    // Deals page — closed
-    const cb = $('closed-tbody');
-    if (!d.closed || d.closed.length === 0) {
-      cb.innerHTML = '<tr class="empty-row"><td colspan="7">No closed deals</td></tr>';
-    } else {
-      cb.innerHTML = d.closed.map(deal => `<tr>
-        <td style="color:var(--muted)">${deal.id}</td>
-        <td>${reasonBadge(deal.close_reason)}</td>
-        <td>${fmtPrice(deal.entry_price)}</td>
-        <td>${fmtPrice(deal.close_price)}</td>
-        <td>${fmtPnl(deal.pnl_btc)}</td>
-        <td>${fmtPct(deal.pnl_pct)}</td>
-        <td style="color:var(--muted)">${timeAgo(deal.closed_at)}</td>
-      </tr>`).join('');
-    }
+    // Closed deals
+    const cb = $('d-closed-tbody');
+    const cd = b.closed_deals||[];
+    cb.innerHTML = cd.length
+      ? cd.map(d=>`<tr>
+          <td style="color:var(--muted)">${safeText(d.id)}</td>
+          <td>${reasonBadge(d.close_reason)}</td>
+          <td>${fmtPrice(d.entry_price)}</td>
+          <td>${fmtPrice(d.close_price)}</td>
+          <td>${fmtPnl(d.pnl_btc)}</td>
+          <td>${fmtPct(d.pnl_pct)}</td>
+          <td style="color:var(--muted)">${timeAgo(d.closed_at)}</td>
+        </tr>`).join('')
+      : '<tr class="empty-row"><td colspan="7">No closed deals</td></tr>';
+
+    $('log-title').textContent = slug+'.log';
 
   } catch(e) {}
 }
 
-// ── WebSocket log ─────────────────────────────────────────────────────────────
-const MAX_LINES = 500;
-let logLines = [];
-
-function classForLine(line) {
-  if (line.includes('[ERROR]'))   return 'err';
-  if (line.includes('[WARNING]')) return 'warn';
-  if (line.includes('[DEBUG]'))   return 'dbg';
-  return 'info';
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connectWS(slug) {
+  if (ws) ws.close();
+  $('log-body').innerHTML = '';
+  ws = new WebSocket(`ws://${location.host}/ws/logs/${slug}`);
+  const dot = $('ws-dot');
+  const lbl = $('ws-label');
+  ws.onopen    = () => { dot.className='live-dot connected'; lbl.textContent='live'; lbl.style.color='var(--accent)'; };
+  ws.onmessage = e  => appendLog(e.data);
+  ws.onclose   = () => {
+    dot.className='live-dot error'; lbl.textContent='reconnecting'; lbl.style.color='var(--red)';
+    if (currentSlug===slug) setTimeout(()=>connectWS(slug),3000);
+  };
+  ws.onerror = () => ws.close();
 }
 
 function appendLog(text) {
-  if (text === '__ping__') return;
+  if (text==='__ping__') return;
+  const out=$('log-body');
+  const el=document.createElement('div');
+  el.className='log-line '+logCls(text);
+  el.textContent=text;
+  out.appendChild(el);
+  while(out.children.length>500) out.removeChild(out.firstChild);
+  const auto=$('autoscroll');
+  if(auto&&auto.checked) out.scrollTop=out.scrollHeight;
+}
+function clearLog() { $('log-body').innerHTML=''; }
 
-  // Append to both log panels
-  ['log-dash', 'log-full'].forEach(id => {
-    const out = $(id);
-    const el  = document.createElement('div');
-    el.className = 'log-line ' + classForLine(text);
-    el.textContent = text;
-    out.appendChild(el);
+// ── Always-on price fetch ─────────────────────────────────────────────────────
+async function fetchPrice() {
+  try {
+    const d = await fetch('/api/price').then(r => r.json());
+    if (d.price) {
+      $('hdr-price').textContent = fmtPrice(d.price);
+      $('hdr-pair').textContent  = d.pair || 'BTC/USD';
+    }
+  } catch(e) {}
+}
 
-    // Auto scroll
-    const autoEl = $('autoscroll');
-    if (id === 'log-full' && autoEl && !autoEl.checked) return;
-    out.scrollTop = out.scrollHeight;
+// ── Overview log — all bots combined, INFO+ only ──────────────────────────────
+let ovWsList = [];
+
+function connectOverviewLogs(slugs) {
+  // Close existing connections
+  ovWsList.forEach(w => w.close());
+  ovWsList = [];
+
+  const dot = $('ov-ws-dot');
+  const lbl = $('ov-ws-label');
+  let connected = 0;
+
+  slugs.forEach(slug => {
+    const w = new WebSocket(`ws://${location.host}/ws/logs/${slug}`);
+    w.onopen = () => {
+      connected++;
+      dot.className = 'live-dot connected';
+      lbl.textContent = 'live';
+      lbl.style.color = 'var(--accent)';
+    };
+    w.onmessage = e => {
+      const line = e.data;
+      if (line === '__ping__') return;
+      // Only show INFO and above on overview
+      if (line.includes('[DEBUG]')) return;
+      appendOverviewLog(line, slug);
+    };
+    w.onclose = () => {
+      connected = Math.max(0, connected - 1);
+      if (connected === 0) {
+        dot.className = 'live-dot error';
+        lbl.textContent = 'disconnected';
+        lbl.style.color = 'var(--red)';
+      }
+    };
+    ovWsList.push(w);
   });
 
-  // Trim dashboard log
-  const dash = $('log-dash');
-  while (dash.children.length > 100) dash.removeChild(dash.firstChild);
-
-  // Trim full log
-  logLines.push(text);
-  if (logLines.length > MAX_LINES) {
-    logLines.shift();
-    const full = $('log-full');
-    if (full.firstChild) full.removeChild(full.firstChild);
+  if (!slugs.length) {
+    dot.className = 'live-dot';
+    lbl.textContent = 'no bots';
+    lbl.style.color = 'var(--muted)';
   }
 }
 
-function clearLog() {
-  $('log-full').innerHTML = '';
-  logLines = [];
+function appendOverviewLog(text, slug) {
+  const out = $('ov-log-body');
+  const el  = document.createElement('div');
+  el.className = 'log-line ' + logCls(text);
+  // Prefix with bot name for clarity when multiple bots log
+  el.textContent = text;
+  out.appendChild(el);
+  while (out.children.length > 300) out.removeChild(out.firstChild);
+  out.scrollTop = out.scrollHeight;
 }
 
-function connectWS() {
-  const ws = new WebSocket(`ws://${location.host}/ws/logs`);
-  const dot1 = $('ws-dot');
-  const dot2 = $('ws-dot2');
-  const lbl  = $('ws-label');
+// ── Portal restart ────────────────────────────────────────────────────────────
+async function restartPortal() {
+  const btn = $('restart-btn');
+  btn.textContent = '↺ Restarting...';
+  btn.disabled = true;
 
-  function setConnected(ok) {
-    const cls = ok ? 'connected' : 'error';
-    if (dot1) { dot1.className = 'live-dot ' + cls; }
-    if (dot2) { dot2.className = 'live-dot ' + cls; }
-    if (lbl)  {
-      lbl.textContent = ok ? 'live' : 'reconnecting';
-      lbl.style.color = ok ? 'var(--accent)' : 'var(--red)';
+  try {
+    await fetch('/api/portal/restart', {method:'POST'});
+  } catch(e) {
+    // Expected — portal closes connection during restart
+  }
+
+  // Poll until portal is back up
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch('/api/portal/status');
+      if (r.ok) {
+        clearInterval(poll);
+        btn.textContent = 'Restart Dashboard';
+        btn.disabled = false;
+        // Reload page to reconnect websockets etc.
+        location.reload();
+      }
+    } catch(e) {
+      // Still restarting...
     }
-  }
-
-  ws.onopen    = () => setConnected(true);
-  ws.onmessage = e  => appendLog(e.data);
-  ws.onclose   = () => { setConnected(false); setTimeout(connectWS, 3000); };
-  ws.onerror   = () => ws.close();
+  }, 1000);
 }
+
+// ── Event delegation — replaces inline onclick handlers ───────────────────────
+// Using data-attributes instead of inline onclick prevents XSS via HTML-entity
+// decoding that occurs before JavaScript evaluation in event handler attributes.
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+  const slug   = el.dataset.slug;
+  const cmd    = el.dataset.cmd;
+  if (action === 'open-bot' && slug)         openBot(slug);
+  if (action === 'bot-action' && slug && cmd) botAction(slug, cmd);
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-fetchStatus();
-fetchDeals();
-connectWS();
+fetchOverview();
+fetchPrice();
+overviewInterval = setInterval(fetchOverview, 5000);
+setInterval(fetchPrice, 15000);  // Price every 15s regardless of bots
 
-setInterval(fetchStatus, 5000);
-setInterval(fetchDeals, 10000);
+// Connect overview log after first bot data loads
+setTimeout(async () => {
+  try {
+    const d = await fetch('/api/bots').then(r => r.json());
+    const slugs = (d.bots || []).map(b => b.slug);
+    slugs.push('portal');  // also stream the dashboard's own log
+    connectOverviewLogs(slugs);
+  } catch(e) {}
+}, 1000);
 </script>
 </body>
 </html>
