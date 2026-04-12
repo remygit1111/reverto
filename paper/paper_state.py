@@ -1,7 +1,9 @@
 # paper/paper_state.py
 # Tracks all open deals, orders, balance and history for paper trading.
 # Acts as an in-memory database for the paper engine.
+# Thread-safe: all access to open_deals is protected by a Lock.
 
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime, UTC
@@ -79,9 +81,14 @@ class PaperState:
     """
     In-memory state manager for paper trading.
     Tracks balance, open deals and closed deal history.
+
+    Thread-safe: open_deals and balance_btc are protected by a Lock.
+    This allows the LiquidationGuard background thread to safely read
+    positions without racing against the main engine loop.
     """
 
     def __init__(self, initial_balance_btc: float = 0.1):
+        self._lock = threading.Lock()
         self.balance_btc = initial_balance_btc
         self.initial_balance_btc = initial_balance_btc
         self.open_deals: dict[str, PaperDeal] = {}
@@ -90,30 +97,42 @@ class PaperState:
 
     def new_deal_id(self) -> str:
         """Generate a unique deal ID."""
-        self._deal_counter += 1
-        return f"PAPER-{self._deal_counter:04d}"
+        with self._lock:
+            self._deal_counter += 1
+            return f"PAPER-{self._deal_counter:04d}"
 
     def open_deal(self, deal: PaperDeal):
         """Register a new open deal."""
-        self.open_deals[deal.id] = deal
+        with self._lock:
+            self.open_deals[deal.id] = deal
 
     def close_deal(self, deal_id: str, close_price: float,
                    reason: str) -> Optional[PaperDeal]:
         """Close a deal and move it to history."""
-        deal = self.open_deals.pop(deal_id, None)
-        if not deal:
-            return None
+        with self._lock:
+            deal = self.open_deals.pop(deal_id, None)
+            if not deal:
+                return None
 
-        deal.is_open = False
-        deal.closed_at = datetime.now(UTC)
-        deal.close_price = close_price
-        deal.close_reason = reason
-        deal.pnl_btc, deal.pnl_pct = deal.calculate_pnl(close_price)
+            deal.is_open = False
+            deal.closed_at = datetime.now(UTC)
+            deal.close_price = close_price
+            deal.close_reason = reason
+            deal.pnl_btc, deal.pnl_pct = deal.calculate_pnl(close_price)
 
-        # Update balance
-        self.balance_btc += deal.pnl_btc
-        self.closed_deals.append(deal)
-        return deal
+            # Update balance
+            self.balance_btc += deal.pnl_btc
+            self.closed_deals.append(deal)
+            return deal
+
+    def get_open_deals_snapshot(self) -> dict[str, PaperDeal]:
+        """
+        Return a shallow copy of open_deals for safe iteration.
+        Use this when iterating deals in the engine to avoid
+        holding the lock during the full monitoring loop.
+        """
+        with self._lock:
+            return dict(self.open_deals)
 
     def total_pnl_btc(self) -> float:
         """Total realized PnL across all closed deals."""
@@ -121,14 +140,15 @@ class PaperState:
 
     def summary(self) -> dict:
         """Returns a summary of current paper trading performance."""
-        return {
-            "balance_btc": round(self.balance_btc, 8),
-            "initial_balance_btc": self.initial_balance_btc,
-            "total_pnl_btc": round(self.total_pnl_btc(), 8),
-            "open_deals": len(self.open_deals),
-            "closed_deals": len(self.closed_deals),
-            "win_rate": self._win_rate(),
-        }
+        with self._lock:
+            return {
+                "balance_btc": round(self.balance_btc, 8),
+                "initial_balance_btc": self.initial_balance_btc,
+                "total_pnl_btc": round(self.total_pnl_btc(), 8),
+                "open_deals": len(self.open_deals),
+                "closed_deals": len(self.closed_deals),
+                "win_rate": self._win_rate(),
+            }
 
     def _win_rate(self) -> float:
         """Calculate win rate across all closed deals."""

@@ -19,7 +19,9 @@ class IndicatorEngine:
 
     def __init__(self, config: BotConfig):
         self.config = config
-        self.entry_indicators = config.entry.indicators
+        # Copy the list at init time so mutations to config after init
+        # do not affect the engine's indicator list
+        self.entry_indicators = list(config.entry.indicators)
 
     def check_entry_signal(self, closes: list[float]) -> bool:
         """
@@ -63,29 +65,39 @@ class IndicatorEngine:
     def get_indicator_snapshot(self, closes: list[float]) -> dict:
         """
         Returns current values of all indicators for logging and dashboard.
+        Failures are logged as warnings instead of silently ignored,
+        so indicator bugs are visible in production logs.
         """
         snapshot = {}
+
         try:
             snapshot["rsi_14"] = calculate_rsi(closes, 14)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"RSI calculation failed: {e}")
+
         try:
             snapshot["ema_9"] = calculate_ema(closes, 9)
             snapshot["ema_21"] = calculate_ema(closes, 21)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"EMA calculation failed: {e}")
+
         try:
             macd = calculate_macd(closes)
             snapshot["macd"] = macd["macd"]
             snapshot["macd_signal"] = macd["signal"]
             snapshot["macd_histogram"] = macd["histogram"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"MACD calculation failed: {e}")
+
         return snapshot
 
     def _evaluate_indicator(self, indicator: IndicatorConfig,
                              closes: list[float]) -> bool:
-        """Route indicator config to the correct check function."""
+        """
+        Route indicator config to the correct check function.
+        Returns False (not True) on unknown indicator type to prevent
+        unvalidated entries from slipping through.
+        """
         itype = indicator.type.upper()
 
         if itype == "RSI":
@@ -107,5 +119,8 @@ class IndicatorEngine:
                 condition=indicator.threshold or "histogram_positive"
             )
         else:
-            logger.warning(f"Unknown indicator type: {indicator.type} — skipping")
-            return True
+            logger.warning(
+                f"Unknown indicator type: '{indicator.type}' — "
+                f"returning False to block entry. Check your YAML config."
+            )
+            return False  # Block entry on unknown indicator, do not silently allow

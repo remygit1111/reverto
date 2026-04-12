@@ -2,7 +2,7 @@
 # Defines the structure and validation rules for bot configurations
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 from enum import Enum
 
 
@@ -30,7 +30,7 @@ class LeverageConfig(BaseModel):
 
 class DCAConfig(BaseModel):
     base_order_size: float
-    max_orders: int = 5
+    max_orders: int = 5      # Total orders including base order. DCA orders = max_orders - 1.
     order_spacing_pct: float = 2.5
     multiplier: float = 1.0
 
@@ -45,7 +45,8 @@ class IndicatorConfig(BaseModel):
 
 
 class EntryConfig(BaseModel):
-    indicators: list[IndicatorConfig] = []
+    # Field(default_factory=list) prevents shared mutable default across instances
+    indicators: list[IndicatorConfig] = Field(default_factory=list)
 
 
 class TakeProfitConfig(BaseModel):
@@ -54,11 +55,16 @@ class TakeProfitConfig(BaseModel):
 
 
 class StopLossConfig(BaseModel):
-    type: str = "fixed"
+    # Literal type ensures invalid values like "traling" raise a validation error
+    # rather than silently falling through to fixed stop behaviour
+    type: Literal["fixed", "trailing"] = "fixed"
     pct: float = 5.0
 
 
 class MLConfig(BaseModel):
+    # NOTE: ML functionality is not yet implemented.
+    # Setting enabled=true has no effect on engine behaviour.
+    # A warning is logged at startup when enabled=true is detected.
     enabled: bool = False
     model: str = "lightgbm"
     retrain_interval: str = "7d"
@@ -81,8 +87,12 @@ class ScheduleConfig(BaseModel):
 
 
 class TelegramConfig(BaseModel):
+    # Controls which events trigger a Telegram notification.
+    # Valid values: entry, dca_trigger, tp_hit, sl_hit, liquidation_warn,
+    #               schedule_open, schedule_close, error, startup, shutdown
     notify_on: list[str] = [
-        "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn"
+        "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn",
+        "schedule_open", "schedule_close", "error", "startup", "shutdown"
     ]
 
 
@@ -91,7 +101,9 @@ class BotConfig(BaseModel):
     mode: Mode
     exchange: Exchange
     pair: str = "BTC/USD"
-    contract_type: str = "inverse_perpetual"
+    # contract_type determines PnL calculation formula.
+    # Only inverse_perpetual is currently supported.
+    contract_type: Literal["inverse_perpetual"] = "inverse_perpetual"
     leverage: LeverageConfig = LeverageConfig()
     dca: DCAConfig
     entry: EntryConfig = EntryConfig()

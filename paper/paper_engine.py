@@ -40,9 +40,10 @@ class PaperEngine:
         self.liq_guard = LiquidationGuard(config, notifier)
         self.poll_interval = poll_interval
 
-        # Rolling window of closing prices — cached to avoid fetching every tick
+        # Rolling window of closing prices — cached to avoid fetching every tick.
+        # Refreshed at most once per hour since we use 1h candles.
         self._closes: list[float] = []
-        self._closes_fetched_at: float = 0.0
+        self._closes_fetched_at: float = 0.0  # 0.0 = never fetched (Unix epoch sentinel)
 
         # Track schedule state to detect open/close transitions
         self._last_schedule_state: bool = None
@@ -88,7 +89,15 @@ class PaperEngine:
         """Single iteration of the main loop."""
         try:
             ticker = self.exchange.get_ticker(self.config.pair)
-            price = ticker.last
+
+            # Prefer mark price for TP/SL/DCA — matches real exchange behaviour.
+            # Inverse perpetual liquidation and TP/SL are always based on mark price,
+            # not last traded price. Fall back to last if mark price unavailable.
+            if ticker.mark_price is not None:
+                price = float(ticker.mark_price)
+            else:
+                price = ticker.last
+                logger.debug("mark_price unavailable — falling back to ticker.last")
 
             logger.debug(f"{self.config.pair} price: ${price:,.2f}")
 
@@ -97,6 +106,10 @@ class PaperEngine:
 
             # Check schedule transitions
             self._check_schedule_transition(is_open)
+
+            # Refresh candle cache if stale — runs every tick regardless of
+            # deal state so indicator data stays current for TP confirmation
+            self._fetch_closes_if_needed()
 
             # Monitor all open deals (DCA, TP, SL) — always runs
             self._monitor_open_deals(price)
@@ -117,14 +130,17 @@ class PaperEngine:
     # ------------------------------------------------------------------
 
     def _check_schedule_transition(self, is_open: bool):
-        """Detect and notify when trading window opens or closes."""
+        """
+        Detect and notify when trading window opens or closes.
+        is_open: cached result from self.guard.is_open() — avoids re-evaluation.
+        """
         if self._last_schedule_state is None:
             self._last_schedule_state = is_open
             return
 
         if is_open and not self._last_schedule_state:
             # Window just opened
-            status = self.guard.status()
+            status = self.guard.status(is_open=is_open)
             self.notifier.notify_schedule_open(
                 self.config.name,
                 status.get("next_open", "—")
@@ -132,7 +148,7 @@ class PaperEngine:
 
         elif not is_open and self._last_schedule_state:
             # Window just closed
-            status = self.guard.status()
+            status = self.guard.status(is_open=is_open)
             self.notifier.notify_schedule_close(
                 self.config.name,
                 status.get("next_open", "—"),
@@ -142,24 +158,43 @@ class PaperEngine:
         self._last_schedule_state = is_open
 
     # ------------------------------------------------------------------
-    # Entry logic
+    # Candle data — refreshed in every tick, cached for 1 hour
     # ------------------------------------------------------------------
 
     def _fetch_closes_if_needed(self):
         """
         Fetch OHLCV candles only when the cached data is stale.
         1h candles change once per hour — no need to fetch every 10 seconds.
+        Called from _tick() so candle data stays current even during open deals,
+        ensuring TP confirmation indicators always use up-to-date prices.
+
+        Note: the last candle in the response may be the current incomplete candle.
+        We exclude it to avoid computing indicators on partial data.
         """
         if time.time() - self._closes_fetched_at < 3600:
             return  # Cache still fresh
 
         try:
-            candles = self.exchange.get_ohlcv(self.config.pair, "1h", 100)
-            self._closes = [c[4] for c in candles]
+            candles = self.exchange.get_ohlcv(self.config.pair, "1h", 101)
+
+            # Exclude the last candle if it is the current incomplete candle.
+            # A completed candle's close timestamp + 3600s should be in the past.
+            now_ms = time.time() * 1000
+            completed = [c for c in candles if c[0] + 3_600_000 < now_ms]
+
+            if not completed:
+                logger.warning("No completed candles available — skipping cache update")
+                return
+
+            self._closes = [c[4] for c in completed]
             self._closes_fetched_at = time.time()
-            logger.debug(f"Candles refreshed: {len(self._closes)} closes loaded")
+            logger.debug(f"Candles refreshed: {len(self._closes)} completed closes loaded")
         except Exception as e:
             logger.error(f"Failed to fetch candles: {e}")
+
+    # ------------------------------------------------------------------
+    # Entry logic
+    # ------------------------------------------------------------------
 
     def _check_entry(self, price: float):
         """
@@ -169,9 +204,6 @@ class PaperEngine:
         # Only one open deal at a time for now
         if len(self.state.open_deals) > 0:
             return
-
-        # Refresh candle cache if needed
-        self._fetch_closes_if_needed()
 
         if not self._closes:
             logger.warning("No candle data available — skipping entry check")
@@ -270,15 +302,34 @@ class PaperEngine:
             )
 
     def _check_sl(self, deal: PaperDeal, price: float):
-        """Check if stop loss has been triggered."""
+        """
+        Check if stop loss has been triggered.
+        Supports both fixed and trailing stop loss modes as configured in YAML.
+
+        Fixed:    sl_price = avg_entry * (1 - pct/100)
+        Trailing: sl_price tracks the highest price seen since deal opened,
+                  sl fires when price drops pct% below that peak.
+        """
         sl_pct = self.config.stop_loss.pct
-        avg = deal.avg_entry_price
-        sl_price = avg * (1 - sl_pct / 100)
+
+        if self.config.stop_loss.type == "trailing":
+            # Track highest price seen since deal opened
+            if not hasattr(deal, "_peak_price"):
+                deal._peak_price = price
+            deal._peak_price = max(deal._peak_price, price)
+            sl_price = deal._peak_price * (1 - sl_pct / 100)
+        else:
+            # Fixed stop loss based on average entry price
+            sl_price = deal.avg_entry_price * (1 - sl_pct / 100)
 
         if price <= sl_price:
             pnl_btc, pnl_pct = deal.calculate_pnl(price)
             self.state.close_deal(deal.id, price, "sl")
-            logger.info(f"SL hit: {deal.id} at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC")
+            sl_type = self.config.stop_loss.type
+            logger.info(
+                f"SL hit ({sl_type}): {deal.id} at ${price:,.2f} "
+                f"PnL: {pnl_btc:+.6f} BTC"
+            )
             self.notifier.notify_stop_loss(
                 self.config.name, deal.symbol,
                 price, pnl_btc, pnl_pct
@@ -289,6 +340,9 @@ class PaperEngine:
         Check if a DCA order should be placed.
         Uses the last order price as the reference point — not avg entry price —
         to prevent multiple DCA orders firing on the same price drop.
+
+        max_orders in config means total orders including the base order.
+        DCA orders allowed = max_orders - 1.
         """
         if deal.dca_count >= self.config.dca.max_orders - 1:
             return
@@ -299,7 +353,8 @@ class PaperEngine:
         next_dca_price = last_order_price * (1 - spacing_pct / 100)
 
         if price <= next_dca_price:
-            # Calculate DCA order size with multiplier
+            # dca_count is 0-indexed before this order is appended,
+            # so multiplier uses the correct exponent for the next order
             multiplier = self.config.dca.multiplier ** deal.dca_count
             dca_size = round(self.config.dca.base_order_size * multiplier, 8)
 

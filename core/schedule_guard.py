@@ -4,6 +4,7 @@
 # Running deals (DCA, TP, SL) are always allowed regardless of schedule.
 
 from datetime import datetime, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 from config.models import ScheduleConfig
 
@@ -48,12 +49,18 @@ class ScheduleGuard:
 
         return False
 
-    def status(self) -> dict:
+    def status(self, is_open: Optional[bool] = None) -> dict:
         """
         Returns a detailed status dict for logging and Telegram notifications.
+
+        is_open: optional cached result from a prior is_open() call.
+        When provided, avoids a redundant evaluation on the same tick.
+        If None, is_open() is called internally.
         """
         now = self.now()
-        open_ = self.is_open()
+        # Use the cached value if provided — prevents a third is_open() call
+        # in the same tick when called from _check_schedule_transition()
+        open_ = is_open if is_open is not None else self.is_open()
         next_open = self._next_open(now)
 
         return {

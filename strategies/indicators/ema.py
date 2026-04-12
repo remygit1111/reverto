@@ -29,9 +29,18 @@ def check_ema_cross_signal(closes: list[float], fast: int = 9,
     signal = "bullish" → fast crossed above slow (buy)
     signal = "bearish" → fast crossed below slow (sell)
     Returns True if the crossover just occurred.
+
+    Requires at least 3 * slow candles for a reliable EMA value.
+    EWM with adjust=False produces biased values during the warm-up period
+    (approximately the first `slow` candles). Using 3x slow ensures the
+    EMA has converged sufficiently before generating crossover signals.
     """
-    if len(closes) < slow + 1:
-        raise ValueError(f"EMA cross requires at least {slow + 1} data points")
+    min_required = slow * 3
+    if len(closes) < min_required:
+        raise ValueError(
+            f"EMA cross requires at least {min_required} data points "
+            f"(3 * slow={slow}) for reliable signals, got {len(closes)}"
+        )
 
     series = pd.Series(closes)
 
