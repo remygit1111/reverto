@@ -1,13 +1,11 @@
 # notifications/telegram.py
 # Handles all Telegram notifications for Reverto.
-# Sends formatted messages for all bot events.
+# Uses httpx directly for thread-safe synchronous sending.
 
-import asyncio
+import httpx
 import logging
-from telegram import Bot
-from telegram.error import TelegramError
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -17,7 +15,7 @@ logger = logging.getLogger(__name__)
 class TelegramNotifier:
     """
     Sends Telegram notifications for all Reverto events.
-    All messages are sent asynchronously to avoid blocking the main bot loop.
+    Uses httpx directly — fully thread-safe, no asyncio required.
     """
 
     def __init__(self, token: str = None, chat_id: str = None):
@@ -27,48 +25,38 @@ class TelegramNotifier:
         if not self.token or not self.chat_id:
             raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env")
 
-        self.bot = Bot(token=self.token)
+        self.url = f"https://api.telegram.org/bot{self.token}/sendMessage"
 
     # ------------------------------------------------------------------
     # Core send method
     # ------------------------------------------------------------------
 
-    async def _send(self, message: str):
-        """Internal method to send a message via Telegram."""
+    def send(self, message: str):
+        """Send a message via Telegram — thread-safe synchronous call."""
         try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode="HTML"
+            response = httpx.post(
+                self.url,
+                json={
+                    "chat_id": self.chat_id,
+                    "text": message,
+                    "parse_mode": "HTML"
+                },
+                timeout=10
             )
-        except TelegramError as e:
+            if response.status_code != 200:
+                logger.error(f"Telegram error {response.status_code}: {response.text}")
+        except Exception as e:
             logger.error(f"Telegram send failed: {e}")
 
-    def send(self, message: str):
-        """Synchronous wrapper — can be called from non-async code."""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._send(message))
-        except RuntimeError:
-            asyncio.run(self._send(message))
-    
     def _warm_up(self):
-        """
-        Silently initializes the Telegram connection.
-        Prevents timestamp skew on the first real notification.
-        """
+        """Verify Telegram connection silently."""
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            # Just verify the connection without sending a message
-            loop.run_until_complete(self.bot.get_me())
+            httpx.get(
+                f"https://api.telegram.org/bot{self.token}/getMe",
+                timeout=5
+            )
         except Exception:
-            pass        
+            pass
 
     # ------------------------------------------------------------------
     # Bot lifecycle
@@ -83,7 +71,7 @@ class TelegramNotifier:
         )
 
     def notify_shutdown(self, bot_name: str):
-        self.send(f"🛑 <b>Reverto stopped</b>\n Bot: {bot_name}")
+        self.send(f"🛑 <b>Reverto stopped</b>\nBot: {bot_name}")
 
     # ------------------------------------------------------------------
     # Schedule events

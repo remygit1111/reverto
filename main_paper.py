@@ -27,9 +27,6 @@ if __name__ == "__main__":
     exchange = PublicExchange(config.exchange.value)
     notifier = TelegramNotifier()
 
-    # Warm up Telegram connection so first message doesn't skew timestamps
-    notifier._warm_up()
-
     engine = PaperEngine(
         config=config,
         exchange=exchange,

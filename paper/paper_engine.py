@@ -12,6 +12,7 @@ from exchanges.base_exchange import BaseExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from strategies.indicator_engine import IndicatorEngine
+from core.liquidation_guard import LiquidationGuard, calculate_liquidation_price
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class PaperEngine:
         self.state = PaperState(initial_balance_btc)
         self.guard = ScheduleGuard(config.schedule)
         self.indicator_engine = IndicatorEngine(config)
+        self.liq_guard = LiquidationGuard(config, notifier)
         self._closes: list[float] = []  # Rolling window of closing prices
         self.poll_interval = poll_interval  # seconds between price checks
         self.running = False
@@ -52,8 +54,8 @@ class PaperEngine:
         """Start the paper engine loop."""
         logger.info(f"Starting paper engine: {self.config.name}")
         self.running = True
+        self.liq_guard.start()
 
-        # Send startup notification after logging — prevents timestamp skew
         self.notifier.notify_startup(
             self.config.name,
             self.config.mode.value,
@@ -68,8 +70,9 @@ class PaperEngine:
             self.stop()
 
     def stop(self):
-        """Stop the paper engine gracefully."""
+        """Stop the paper engine and liquidation guard gracefully."""
         self.running = False
+        self.liq_guard.stop()
         summary = self.state.summary()
         logger.info(f"Paper engine stopped. Summary: {summary}")
         self.notifier.notify_shutdown(self.config.name)
@@ -91,6 +94,8 @@ class PaperEngine:
 
             # Monitor all open deals (DCA, TP, SL) — always runs
             self._monitor_open_deals(price)
+            # Update liquidation guard with current positions
+            self._update_liq_guard(price)
 
             # Only start new deals if schedule allows
             if self.guard.is_open():
@@ -272,3 +277,17 @@ class PaperEngine:
                 dca_order.order_number,
                 deal.avg_entry_price
             )
+    def _update_liq_guard(self, mark_price: float):
+        """Pass current open positions to the liquidation guard."""
+        positions = []
+        for deal in self.state.open_deals.values():
+            positions.append({
+                "deal_id": deal.id,
+                "symbol": deal.symbol,
+                "side": deal.side,
+                "entry_price": deal.avg_entry_price,
+                "mark_price": mark_price,
+                "leverage": deal.leverage,
+            })
+        logger.info(f"Updating liq guard with {len(positions)} positions")  # tijdelijk
+        self.liq_guard.update_positions(positions)
