@@ -46,6 +46,7 @@ app = FastAPI(title="Reverto Portal", docs_url=None, redoc_url=None)
 
 STATIC_DIR = Path(__file__).parent / "static"
 LOG_FILE   = Path(__file__).parent.parent / "logs" / "reverto.log"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # ── REST endpoints ────────────────────────────────────────────────────────────
