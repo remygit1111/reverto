@@ -11,10 +11,19 @@ def calculate_macd(closes: list[float], fast: int = 12,
     """
     Calculate MACD line, signal line and histogram.
     Returns dict with macd, signal and histogram values.
-    Requires at least slow + signal data points.
+
+    Requires at least 3 * slow candles for reliable output.
+    EWM with adjust=False needs approximately 3x the slow period to converge.
+    The original minimum of slow + signal (35 candles) was insufficient —
+    MACD on 35 candles is heavily biased by EWM warm-up and produces
+    unreliable signals.
     """
-    if len(closes) < slow + signal:
-        raise ValueError(f"MACD requires at least {slow + signal} data points, got {len(closes)}")
+    min_required = slow * 3
+    if len(closes) < min_required:
+        raise ValueError(
+            f"MACD requires at least {min_required} data points "
+            f"(3 * slow={slow}) for reliable signals, got {len(closes)}"
+        )
 
     series = pd.Series(closes)
 
@@ -52,6 +61,9 @@ def check_macd_signal(closes: list[float], condition: str = "histogram_positive"
     }
 
     if condition not in conditions:
-        raise ValueError(f"Unknown MACD condition: {condition}. Choose from: {list(conditions.keys())}")
+        raise ValueError(
+            f"Unknown MACD condition: {condition}. "
+            f"Choose from: {list(conditions.keys())}"
+        )
 
     return conditions[condition]

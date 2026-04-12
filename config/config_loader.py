@@ -27,6 +27,15 @@ def load_bot_config(path: str) -> BotConfig:
         logger.info(
             f"Config loaded: {config.name} ({config.mode} on {config.exchange})"
         )
+
+        # Warn about config sections that are defined but not yet implemented
+        if config.ml.enabled:
+            logger.warning(
+                f"[{config.name}] ml.enabled=true in config, but ML is not yet "
+                f"implemented. The engine will ignore ml settings entirely. "
+                f"Set ml.enabled=false to suppress this warning."
+            )
+
         return config
     except Exception as e:
         raise ValueError(f"Invalid bot configuration in {path}:\n{e}")
