@@ -3,16 +3,15 @@
 # Uses the same logic as the live engine — only order execution differs.
 
 import time
-import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, UTC
 from config.models import BotConfig
 from core.schedule_guard import ScheduleGuard
 from exchanges.base_exchange import BaseExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from strategies.indicator_engine import IndicatorEngine
-from core.liquidation_guard import LiquidationGuard, calculate_liquidation_price
+from core.liquidation_guard import LiquidationGuard
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +38,16 @@ class PaperEngine:
         self.guard = ScheduleGuard(config.schedule)
         self.indicator_engine = IndicatorEngine(config)
         self.liq_guard = LiquidationGuard(config, notifier)
-        self._closes: list[float] = []  # Rolling window of closing prices
-        self.poll_interval = poll_interval  # seconds between price checks
-        self.running = False
+        self.poll_interval = poll_interval
+
+        # Rolling window of closing prices — cached to avoid fetching every tick
+        self._closes: list[float] = []
+        self._closes_fetched_at: float = 0.0
 
         # Track schedule state to detect open/close transitions
         self._last_schedule_state: bool = None
+
+        self.running = False
 
     # ------------------------------------------------------------------
     # Main loop
@@ -89,16 +92,20 @@ class PaperEngine:
 
             logger.debug(f"{self.config.pair} price: ${price:,.2f}")
 
+            # Cache is_open result — avoids calling it twice per tick
+            is_open = self.guard.is_open()
+
             # Check schedule transitions
-            self._check_schedule_transition()
+            self._check_schedule_transition(is_open)
 
             # Monitor all open deals (DCA, TP, SL) — always runs
             self._monitor_open_deals(price)
+
             # Update liquidation guard with current positions
             self._update_liq_guard(price)
 
             # Only start new deals if schedule allows
-            if self.guard.is_open():
+            if is_open:
                 self._check_entry(price)
 
         except Exception as e:
@@ -109,15 +116,13 @@ class PaperEngine:
     # Schedule transition detection
     # ------------------------------------------------------------------
 
-    def _check_schedule_transition(self):
+    def _check_schedule_transition(self, is_open: bool):
         """Detect and notify when trading window opens or closes."""
-        current = self.guard.is_open()
-
         if self._last_schedule_state is None:
-            self._last_schedule_state = current
+            self._last_schedule_state = is_open
             return
 
-        if current and not self._last_schedule_state:
+        if is_open and not self._last_schedule_state:
             # Window just opened
             status = self.guard.status()
             self.notifier.notify_schedule_open(
@@ -125,7 +130,7 @@ class PaperEngine:
                 status.get("next_open", "—")
             )
 
-        elif not current and self._last_schedule_state:
+        elif not is_open and self._last_schedule_state:
             # Window just closed
             status = self.guard.status()
             self.notifier.notify_schedule_close(
@@ -134,27 +139,42 @@ class PaperEngine:
                 len(self.state.open_deals)
             )
 
-        self._last_schedule_state = current
+        self._last_schedule_state = is_open
 
     # ------------------------------------------------------------------
     # Entry logic
     # ------------------------------------------------------------------
 
+    def _fetch_closes_if_needed(self):
+        """
+        Fetch OHLCV candles only when the cached data is stale.
+        1h candles change once per hour — no need to fetch every 10 seconds.
+        """
+        if time.time() - self._closes_fetched_at < 3600:
+            return  # Cache still fresh
+
+        try:
+            candles = self.exchange.get_ohlcv(self.config.pair, "1h", 100)
+            self._closes = [c[4] for c in candles]
+            self._closes_fetched_at = time.time()
+            logger.debug(f"Candles refreshed: {len(self._closes)} closes loaded")
+        except Exception as e:
+            logger.error(f"Failed to fetch candles: {e}")
+
     def _check_entry(self, price: float):
         """
         Check if conditions are met to start a new deal.
-        Fetches latest candles and evaluates all configured indicators.
+        Evaluates all configured indicators against cached candle data.
         """
         # Only one open deal at a time for now
         if len(self.state.open_deals) > 0:
             return
 
-        # Fetch latest candles for indicator calculation
-        try:
-            candles = self.exchange.get_ohlcv(self.config.pair, "1h", 100)
-            self._closes = [c[4] for c in candles]
-        except Exception as e:
-            logger.error(f"Failed to fetch candles: {e}")
+        # Refresh candle cache if needed
+        self._fetch_closes_if_needed()
+
+        if not self._closes:
+            logger.warning("No candle data available — skipping entry check")
             return
 
         # Log current indicator snapshot
@@ -177,7 +197,7 @@ class PaperEngine:
             order_number=1,
             price=price,
             size=self.config.dca.base_order_size,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             order_type="base"
         )
 
@@ -206,10 +226,27 @@ class PaperEngine:
     # ------------------------------------------------------------------
 
     def _monitor_open_deals(self, price: float):
-        """Monitor all open deals for DCA, TP and SL conditions."""
+        """
+        Monitor all open deals for DCA, TP and SL conditions.
+        Checks deal_id still exists after each action to prevent
+        acting on a deal that was just closed by a previous check.
+        """
         for deal_id, deal in list(self.state.open_deals.items()):
+            # TP check — may close the deal
             self._check_tp(deal, price)
+
+            # Verify deal still open before SL check
+            if deal_id not in self.state.open_deals:
+                continue
+
+            # SL check — may close the deal
             self._check_sl(deal, price)
+
+            # Verify deal still open before DCA check
+            if deal_id not in self.state.open_deals:
+                continue
+
+            # DCA check — never closes, only adds orders
             self._check_dca(deal, price)
 
     def _check_tp(self, deal: PaperDeal, price: float):
@@ -221,7 +258,7 @@ class PaperEngine:
         if price >= target_price:
             # Check TP confirmation indicator if configured
             if self._closes and not self.indicator_engine.check_tp_confirmation(self._closes):
-                logger.info(f"TP price reached but confirmation indicator not met — holding")
+                logger.info("TP price reached but confirmation indicator not met — holding")
                 return
 
             pnl_btc, pnl_pct = deal.calculate_pnl(price)
@@ -240,7 +277,7 @@ class PaperEngine:
 
         if price <= sl_price:
             pnl_btc, pnl_pct = deal.calculate_pnl(price)
-            closed = self.state.close_deal(deal.id, price, "sl")
+            self.state.close_deal(deal.id, price, "sl")
             logger.info(f"SL hit: {deal.id} at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC")
             self.notifier.notify_stop_loss(
                 self.config.name, deal.symbol,
@@ -248,13 +285,18 @@ class PaperEngine:
             )
 
     def _check_dca(self, deal: PaperDeal, price: float):
-        """Check if a DCA order should be placed."""
+        """
+        Check if a DCA order should be placed.
+        Uses the last order price as the reference point — not avg entry price —
+        to prevent multiple DCA orders firing on the same price drop.
+        """
         if deal.dca_count >= self.config.dca.max_orders - 1:
             return
 
-        avg = deal.avg_entry_price
+        # Base DCA trigger on LAST order price, not average entry
+        last_order_price = deal.orders[-1].price
         spacing_pct = self.config.dca.order_spacing_pct
-        next_dca_price = avg * (1 - spacing_pct / 100)
+        next_dca_price = last_order_price * (1 - spacing_pct / 100)
 
         if price <= next_dca_price:
             # Calculate DCA order size with multiplier
@@ -265,7 +307,7 @@ class PaperEngine:
                 order_number=deal.dca_count + 2,
                 price=price,
                 size=dca_size,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 order_type="dca"
             )
             deal.orders.append(dca_order)
@@ -277,6 +319,11 @@ class PaperEngine:
                 dca_order.order_number,
                 deal.avg_entry_price
             )
+
+    # ------------------------------------------------------------------
+    # Liquidation guard updates
+    # ------------------------------------------------------------------
+
     def _update_liq_guard(self, mark_price: float):
         """Pass current open positions to the liquidation guard."""
         positions = []
@@ -289,5 +336,4 @@ class PaperEngine:
                 "mark_price": mark_price,
                 "leverage": deal.leverage,
             })
-        logger.info(f"Updating liq guard with {len(positions)} positions")  # tijdelijk
         self.liq_guard.update_positions(positions)

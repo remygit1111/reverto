@@ -11,21 +11,24 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+_TELEGRAM_BASE = "https://api.telegram.org/bot"
+
 
 class TelegramNotifier:
     """
     Sends Telegram notifications for all Reverto events.
     Uses httpx directly — fully thread-safe, no asyncio required.
+    Token is stored privately and never embedded in stored URLs.
     """
 
     def __init__(self, token: str = None, chat_id: str = None):
-        self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self._token = token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
 
-        if not self.token or not self.chat_id:
-            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env")
-
-        self.url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        if not self._token or not self.chat_id:
+            raise ValueError(
+                "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env"
+            )
 
     # ------------------------------------------------------------------
     # Core send method
@@ -33,9 +36,10 @@ class TelegramNotifier:
 
     def send(self, message: str):
         """Send a message via Telegram — thread-safe synchronous call."""
+        url = f"{_TELEGRAM_BASE}{self._token}/sendMessage"
         try:
             response = httpx.post(
-                self.url,
+                url,
                 json={
                     "chat_id": self.chat_id,
                     "text": message,
@@ -44,19 +48,11 @@ class TelegramNotifier:
                 timeout=10
             )
             if response.status_code != 200:
-                logger.error(f"Telegram error {response.status_code}: {response.text}")
+                logger.error(
+                    f"Telegram error {response.status_code}: {response.text}"
+                )
         except Exception as e:
             logger.error(f"Telegram send failed: {e}")
-
-    def _warm_up(self):
-        """Verify Telegram connection silently."""
-        try:
-            httpx.get(
-                f"https://api.telegram.org/bot{self.token}/getMe",
-                timeout=5
-            )
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Bot lifecycle
@@ -85,7 +81,8 @@ class TelegramNotifier:
             f"Closes at : {next_close}"
         )
 
-    def notify_schedule_close(self, bot_name: str, next_open: str, active_deals: int):
+    def notify_schedule_close(self, bot_name: str, next_open: str,
+                               active_deals: int):
         self.send(
             f"🔴 <b>Trading window closed</b>\n"
             f"Bot          : {bot_name}\n"

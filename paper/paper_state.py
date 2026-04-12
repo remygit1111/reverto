@@ -56,6 +56,7 @@ class PaperDeal:
         """
         Calculate unrealized PnL for an inverse perpetual contract.
         For inverse contracts: PnL (BTC) = size * (1/entry - 1/current)
+        Leverage is applied as a multiplier on the base PnL.
         Returns (pnl_btc, pnl_pct)
         """
         if not self.orders or current_price <= 0:
@@ -65,9 +66,9 @@ class PaperDeal:
         size = self.total_size
 
         if self.side == "long":
-            pnl_btc = size * (1 / avg - 1 / current_price)
+            pnl_btc = size * (1 / avg - 1 / current_price) * self.leverage
         else:
-            pnl_btc = size * (1 / current_price - 1 / avg)
+            pnl_btc = size * (1 / current_price - 1 / avg) * self.leverage
 
         margin_btc = size / avg
         pnl_pct = (pnl_btc / margin_btc) * 100
@@ -104,7 +105,7 @@ class PaperState:
             return None
 
         deal.is_open = False
-        deal.closed_at = datetime.utcnow()
+        deal.closed_at = datetime.now(UTC)
         deal.close_price = close_price
         deal.close_reason = reason
         deal.pnl_btc, deal.pnl_pct = deal.calculate_pnl(close_price)

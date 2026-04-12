@@ -11,25 +11,38 @@ from notifications.telegram import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
+# Typical maintenance margin rate for inverse perpetuals on Bitget and Kraken
+MAINTENANCE_MARGIN_RATE = 0.005  # 0.5%
+
 
 def calculate_liquidation_price(entry_price: float, leverage: int,
-                                 side: str = "long") -> float:
+                                 side: str = "long",
+                                 mmr: float = MAINTENANCE_MARGIN_RATE) -> float:
     """
     Estimate liquidation price for an inverse perpetual contract.
-    This is a simplified calculation — real exchanges use maintenance margin.
+    Uses maintenance margin rate (MMR) as exchanges do in practice.
 
     For a long position:
-        liq_price = entry_price * (leverage / (leverage + 1))
+        liq_price = entry_price / (1 + 1/leverage - MMR)
     For a short position:
-        liq_price = entry_price * (leverage / (leverage - 1))
+        liq_price = entry_price / (1 - 1/leverage + MMR)
+
+    Note: Real exchanges also account for funding fees and partial liquidation.
+    This formula gives a conservative (safe) approximation.
     """
     if leverage <= 1:
         return 0.0  # No liquidation risk without leverage
 
     if side == "long":
-        return round(entry_price * (leverage / (leverage + 1)), 2)
+        denominator = 1 + (1 / leverage) - mmr
+        if denominator <= 0:
+            return 0.0
+        return round(entry_price / denominator, 2)
     else:
-        return round(entry_price * (leverage / (leverage - 1)), 2)
+        denominator = 1 - (1 / leverage) + mmr
+        if denominator <= 0:
+            return 0.0
+        return round(entry_price / denominator, 2)
 
 
 class LiquidationGuard:
@@ -84,7 +97,7 @@ class LiquidationGuard:
         """Stop the liquidation guard thread."""
         self.running = False
         if self._thread:
-            self._thread.join(timeout=15)  # verhoog van 5 naar 15
+            self._thread.join(timeout=15)
         logger.info("LiquidationGuard stopped")
 
     # ------------------------------------------------------------------
@@ -120,12 +133,16 @@ class LiquidationGuard:
         with self._lock:
             positions = list(self._positions)
 
-        logger.info(f"LiquidationGuard checking {len(positions)} positions")  # tijdelijk
-
         for pos in positions:
             self._check_position(pos)
 
     def _check_position(self, pos: dict):
+        """
+        Check a single position and send warnings if needed.
+        Warning levels:
+            warn      → distance < warn_pct (default 15%)
+            emergency → distance < emergency_pct (default 5%)
+        """
         deal_id = pos["deal_id"]
         mark_price = pos["mark_price"]
         entry_price = pos["entry_price"]
@@ -133,11 +150,14 @@ class LiquidationGuard:
         side = pos["side"]
         symbol = pos["symbol"]
 
-        liq_price = calculate_liquidation_price(entry_price, leverage, side)
+        if leverage <= 1:
+            return  # No liquidation risk
 
+        liq_price = calculate_liquidation_price(entry_price, leverage, side)
         if liq_price <= 0:
             return
 
+        # Calculate distance percentage between mark price and liquidation price
         distance = abs(mark_price - liq_price) / mark_price * 100
         distance = round(distance, 2)
 
@@ -150,7 +170,9 @@ class LiquidationGuard:
 
         if distance <= self.emergency_pct:
             if last_warning != "emergency":
-                logger.warning(f"EMERGENCY liquidation risk: {deal_id} distance={distance}%")
+                logger.warning(
+                    f"EMERGENCY liquidation risk: {deal_id} distance={distance}%"
+                )
                 self.notifier.notify_liquidation_emergency(
                     self.config.name, symbol, distance
                 )
@@ -158,7 +180,9 @@ class LiquidationGuard:
 
         elif distance <= self.warn_pct:
             if last_warning not in ("warn", "emergency"):
-                logger.warning(f"Liquidation warning: {deal_id} distance={distance}%")
+                logger.warning(
+                    f"Liquidation warning: {deal_id} distance={distance}%"
+                )
                 self.notifier.notify_liquidation_warning(
                     self.config.name, symbol,
                     mark_price, liq_price, distance
@@ -166,6 +190,9 @@ class LiquidationGuard:
                 self._warned[deal_id] = "warn"
 
         else:
+            # Position is safe — reset warning state
             if deal_id in self._warned:
                 del self._warned[deal_id]
-                logger.info(f"LiquidationGuard: {deal_id} back to safe distance ({distance}%)")
+                logger.info(
+                    f"LiquidationGuard: {deal_id} back to safe distance ({distance}%)"
+                )
