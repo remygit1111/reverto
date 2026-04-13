@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 # instantiation overhead on every request.
 _bitget_client = ccxt.bitget({"options": {"defaultType": "swap"}})
 
+# ccxt clients muteren interne state (rate-limit window, request id, cookie jar)
+# en zijn niet thread-safe. Serialiseer alle /api/price calls met deze lock zodat
+# concurrent worker threads vanuit asyncio.to_thread elkaar niet corrumperen.
+_price_lock = asyncio.Lock()
+
 BASE_DIR   = Path(__file__).parent.parent
 STATIC_DIR = Path(__file__).parent / "static"
 CONFIG_DIR = BASE_DIR / "config" / "bots"
@@ -307,7 +312,9 @@ async def api_price():
     """
     try:
         # ccxt is blocking — push it to a worker thread so the event loop stays free.
-        ticker = await asyncio.to_thread(_bitget_client.fetch_ticker, "BTCUSD")
+        # _price_lock serialiseert concurrent calls op de gedeelde ccxt client.
+        async with _price_lock:
+            ticker = await asyncio.to_thread(_bitget_client.fetch_ticker, "BTCUSD")
         price = ticker.get("last") or ticker.get("close") or 0.0
         return {"price": price, "pair": "BTC/USD", "source": "bitget"}
     except Exception:
