@@ -30,6 +30,7 @@ def _config(tp_pct=3.0, sl_pct=6.0, sl_type="fixed", spacing=2.5,
     cfg.dca.order_spacing_pct = spacing
     cfg.dca.multiplier = mult
     cfg.dca.base_order_size = base_size
+    cfg.dca.taker_fee = 0.0006
     cfg.entry.indicators = []  # geen indicators → altijd entry
     return cfg
 
