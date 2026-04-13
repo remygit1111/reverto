@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=8">
+<link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body>
 
@@ -333,14 +333,11 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-detail" class="page">
 
-  <!-- Back bar -->
-  <div class="detail-back">
-    <button class="hbtn hbtn-theme" id="detail-back-btn" title="Back to bots">← Back</button>
-    <span class="detail-slug-label" id="detail-slug-label">—</span>
-  </div>
-
-  <!-- Sub-nav -->
+  <!-- Sub-nav — back button lives inside the subnav instead of a
+       separate bar above it. The detail-back-btn has no data-dtab, so
+       it's naturally excluded from the tab click-handler binding. -->
   <div class="detail-subnav">
+    <button class="subnav-back" id="detail-back-btn" title="Back to bots">←</button>
     <button class="tab active" data-dtab="dashboard">Dashboard</button>
     <button class="tab" data-dtab="deals">Deals</button>
     <button class="tab" data-dtab="config">Config</button>
@@ -470,6 +467,6 @@
 
 </div>
 
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>
