@@ -18,6 +18,7 @@ help:
 	@echo "  make status          Toon welke processen draaien"
 	@echo "  make log             Volg de portal log live (Ctrl+C om te stoppen)"
 	@echo "  make log b=naam      Volg de log van een specifieke bot"
+	@echo "  make log a=1         Volg de audit log (start/stop/restart events)"
 	@echo "  make test            Voer alle pytest tests uit"
 	@echo "  make lint            Controleer code met ruff"
 	@echo "  make backtest        Voer backtest uit met standaard config"
@@ -43,6 +44,8 @@ status:
 log:
 ifdef b
 	@tail -f logs/$(b).log
+else ifdef a
+	@tail -f logs/audit.log
 else
 	@tail -f logs/portal.log
 endif
