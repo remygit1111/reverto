@@ -780,17 +780,20 @@ function nbRenderDcaPreview() {
 
   // Walk the order ladder. For each row we track cumulative notional
   // (size * price) so we can compute the volume-weighted average entry
-  // after that order, then derive the TP price and the gap from the
-  // current market price to that TP.
+  // after that order, then derive the TP price and the required bounce
+  // from THIS ROW's fill price (not the current market) back up to TP.
   const tpPct = nbState.tp_target_pct || 0;
   const rows = [];
 
-  let curPrice = price;
+  let curPrice = price;                              // row fill price
   let totalSize = nbState.base_size;
   let totalNotional = nbState.base_size * curPrice;
   let avgEntry = curPrice;
   let tpPrice = avgEntry * (1 + tpPct / 100);
-  let gainPct = ((tpPrice - price) / price * 100);
+  // Base row is always filled at the current price, so by construction
+  // required_change = tp_pct. We keep it in the same formula so the
+  // logic is uniform across all rows.
+  let gainPct = ((tpPrice - curPrice) / curPrice * 100);
 
   rows.push({
     label: 'Base',
@@ -811,7 +814,11 @@ function nbRenderDcaPreview() {
     totalNotional += size * curPrice;
     avgEntry      = totalNotional / totalSize;
     tpPrice       = avgEntry * (1 + tpPct / 100);
-    gainPct       = ((tpPrice - price) / price * 100);
+    // Bounce required from this DCA fill price up to the new TP.
+    // Always positive: on a falling ladder the fill is the lowest
+    // print seen so far, avg >= fill, and tp = avg * (1 + tp_pct/100)
+    // > avg >= fill, so tp > curPrice by construction.
+    gainPct       = ((tpPrice - curPrice) / curPrice * 100);
 
     const dropPct = ((price - curPrice) / price * 100).toFixed(2);
     rows.push({
@@ -826,27 +833,15 @@ function nbRenderDcaPreview() {
   }
 
   const unit = nbState.base_unit === 'btc' ? 'BTC' : '%';
-  tbody.innerHTML = rows.map(r => {
-    // Required Change = how far the price must rise from the CURRENT
-    // market price to reach this row's TP price. If the avg entry has
-    // been dragged down far enough that the TP is already at/below the
-    // market, the row is "✓ In range" — no further move required.
-    let reqCell;
-    if (r.gainPct > 0) {
-      reqCell = `<span class="pos">+${r.gainPct.toFixed(2)}%</span>`;
-    } else {
-      reqCell = `<span class="pos">✓ In range</span>`;
-    }
-    return `
+  tbody.innerHTML = rows.map(r => `
     <tr>
       <td>${r.label}</td>
       <td>${r.size.toFixed(4)} ${unit}</td>
       <td>${fmtPrice(r.price)}${r.dropPct != null ? ` <span class="muted-cell">(-${r.dropPct}%)</span>` : ''}</td>
       <td>${r.total.toFixed(4)} ${unit}</td>
       <td>${fmtPrice(r.tpPrice)}</td>
-      <td>${reqCell}</td>
-    </tr>`;
-  }).join('');
+      <td><span class="pos">+${r.gainPct.toFixed(2)}%</span></td>
+    </tr>`).join('');
 }
 
 function nbCalcTotalSize() {
