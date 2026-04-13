@@ -22,9 +22,41 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
+
+# Maximum file size for state.json — voorkomt OOM bij corrupte/oversize files
+_MAX_STATE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+class BotStateModel(BaseModel):
+    """Pydantic schema voor logs/{slug}.state.json — beschermt tegen
+    corrupte of geïnjecteerde JSON met onverwachte types of waarden.
+    Extra velden worden genegeerd zodat toekomstige velden niet
+    crashen op oude portal versies."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    bot_name:            str   = ""
+    mode:                str   = ""
+    exchange:            str   = ""
+    pair:                str   = ""
+    balance_btc:         float = Field(default=0.0, ge=-1000.0, le=1000.0)
+    initial_balance_btc: float = 0.0
+    total_pnl_btc:       float = 0.0
+    win_rate:            float = 0.0
+    open_deals_count:    int   = 0
+    closed_deals_count:  int   = 0
+    open_deals:          list  = Field(default_factory=list)
+    closed_deals:        list  = Field(default_factory=list)
+    current_price:       float = 0.0
+    schedule_open:       bool  = False
+    started_at:          Optional[str] = None
+    updated_at:          Optional[str] = None
+    fees_paid_btc:       float = 0.0
+    indicators:          dict  = Field(default_factory=dict)
 
 # ── API key auth ──────────────────────────────────────────────────────────────
 # Read from REVERTO_API_KEY or auto-generate one and surface it via WARNING
@@ -104,14 +136,27 @@ class BotInfo:
     def read_state(self) -> dict:
         try:
             if self.state_file.exists():
-                data = json.loads(self.state_file.read_text(encoding="utf-8"))
-                data["running"]     = self.running
-                data["slug"]        = self.slug
-                data["config_file"] = self.config_file
-                return data
-        except Exception:
-            pass
+                size = self.state_file.stat().st_size
+                if size > _MAX_STATE_FILE_SIZE:
+                    logger.warning(
+                        "State file %s too large (%d bytes), using defaults",
+                        self.state_file, size,
+                    )
+                    return self._default_state()
+                raw = json.loads(self.state_file.read_text(encoding="utf-8"))
+                validated = BotStateModel.model_validate(raw).model_dump()
+                validated["running"]     = self.running
+                validated["slug"]        = self.slug
+                validated["config_file"] = self.config_file
+                return validated
+        except ValidationError as e:
+            logger.warning("State validation failed for %s: %s", self.slug, e)
+        except Exception as e:
+            logger.warning("State read failed for %s: %s", self.slug, type(e).__name__)
 
+        return self._default_state()
+
+    def _default_state(self) -> dict:
         return {
             "slug":                self.slug,
             "config_file":         self.config_file,
