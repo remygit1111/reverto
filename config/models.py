@@ -81,6 +81,11 @@ class TakeProfitConfig(BaseModel):
     model_config = _STRICT
     target_pct: float
     indicator_confirm: Optional[str] = None
+    # Optional minimum gain guard. If set, the indicator-confirm path
+    # only fires when the deal's current pnl_pct is at least this
+    # percentage above the average entry. Prevents an indicator from
+    # closing a deal that's barely in profit (or underwater).
+    minimum_tp_pct: Optional[float] = None
 
 
 class StopLossConfig(BaseModel):

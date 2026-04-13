@@ -450,6 +450,19 @@ class PaperEngine:
 
         if price >= target_price:
             bot_tf = self.config.timeframe
+            # Optional minimum-profit gate: if configured, the indicator
+            # confirmation path can only fire once the deal is at least
+            # X% in profit. Prevents an indicator from closing a deal
+            # that's barely above break-even.
+            min_tp = self.config.take_profit.minimum_tp_pct
+            if min_tp is not None:
+                _, pnl_pct_now = deal.calculate_pnl(price)
+                if pnl_pct_now < min_tp:
+                    logger.info(
+                        "TP price reached but pnl %.2f%% < minimum_tp_pct %.2f%% — holding",
+                        pnl_pct_now, min_tp,
+                    )
+                    return
             if self._closes_per_tf.get(bot_tf) and not self.indicator_engine.check_tp_confirmation(
                 self._closes_per_tf, bot_tf
             ):

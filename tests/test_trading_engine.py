@@ -33,6 +33,7 @@ def _engine(sl_type="fixed", sl_pct=6.0, tp_pct=3.0, max_orders=5,
     cfg.leverage.liquidation_guard.emergency_close_pct = 5.0
     cfg.take_profit.target_pct = tp_pct
     cfg.take_profit.indicator_confirm = None
+    cfg.take_profit.minimum_tp_pct = None
     cfg.stop_loss.type = sl_type; cfg.stop_loss.pct = sl_pct
     cfg.dca.max_orders = max_orders; cfg.dca.order_spacing_pct = spacing
     cfg.dca.multiplier = mult; cfg.dca.base_order_size = base_size
