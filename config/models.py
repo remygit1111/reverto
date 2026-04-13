@@ -58,10 +58,10 @@ class IndicatorConfig(BaseModel):
     fast: Optional[int] = None
     slow: Optional[int] = None
     signal: Optional[str] = None
-    # Per-indicator fields the wizard may set. The engine currently
-    # ignores these but we accept them so extra='forbid' doesn't reject
-    # wizard payloads round-tripped through edit.
-    timeframe: Optional[str] = None
+    # Per-indicator timeframe override. None = use bot-level timeframe.
+    # Must be one of the supported candle intervals so we can match it
+    # against the engine's fetched data.
+    timeframe: Optional[Literal["15m", "1h", "4h", "1d"]] = None
     condition: Optional[str] = None
 
 

@@ -30,9 +30,9 @@ def main():
     )
     parser.add_argument(
         "--timeframe",
-        default="1h",
+        default=None,
         choices=["15m", "1h", "4h", "1d"],
-        help="Candle tijdsframe (standaard: 1h)",
+        help="Override bot timeframe (standaard: config.timeframe)",
     )
     parser.add_argument(
         "--limit",
@@ -66,45 +66,61 @@ def main():
     from config.config_loader import load_bot_config
     config = load_bot_config(args.config)
 
+    # CLI override heeft voorrang op config.timeframe
+    if args.timeframe:
+        # We kunnen config.timeframe niet muteren (Pydantic frozen? Nee,
+        # maar we willen het wel overschrijven voor deze run). Pydantic
+        # models zijn standaard muteerbaar, dus direct assignen werkt.
+        config.timeframe = args.timeframe
+
+    # Alle timeframes die de indicators vragen + de bot-level timeframe
+    from strategies.indicator_engine import IndicatorEngine
+    tmp_engine = IndicatorEngine(config)
+    required_tfs = sorted(tmp_engine.required_timeframes(config.timeframe))
+
     print(f"\n🔍 Reverto Backtest — {config.name}")
     print(f"   Paar      : {config.pair}")
-    print(f"   Tijdsframe: {args.timeframe}")
-    print(f"   Candles   : {args.limit}")
+    print(f"   Bot TF    : {config.timeframe}")
+    print(f"   Alle TFs  : {', '.join(required_tfs)}")
+    print(f"   Candles   : {args.limit} per timeframe")
     print(f"   Exchange  : {config.exchange.value}")
     print(f"   Beginbal  : {args.balance} BTC")
     print(f"\n⏳ Historische data ophalen van {config.exchange.value}...")
 
-    # ── Data ophalen ──────────────────────────────────────────────────────────
-    try:
-        from exchanges.public_exchange import PublicExchange
-        exchange = PublicExchange(config.exchange.value)
-        raw_candles = exchange.get_ohlcv(config.pair, args.timeframe, args.limit)
-    except Exception as e:
-        print(f"\n❌ Fout bij ophalen data: {e}")
-        sys.exit(1)
-
-    if not raw_candles:
-        print("\n❌ Geen candles ontvangen — controleer exchange en symbol.")
-        sys.exit(1)
-
-    # Zet ruwe ccxt candles om naar BacktestCandle objecten
-    # Formaat: [timestamp_ms, open, high, low, close, volume]
+    # ── Data ophalen per timeframe ───────────────────────────────────────────
     from backtest.backtest_engine import BacktestCandle
-    candles = [
-        BacktestCandle(
-            timestamp=int(c[0]),
-            open=float(c[1]),
-            high=float(c[2]),
-            low=float(c[3]),
-            close=float(c[4]),
-            volume=float(c[5]),
-        )
-        for c in raw_candles
-        if c[1] and c[2] and c[3] and c[4]  # filter lege candles
-    ]
+    from exchanges.public_exchange import PublicExchange
 
-    print(f"✅ {len(candles)} candles geladen "
-          f"({candles[0].dt.strftime('%Y-%m-%d')} → {candles[-1].dt.strftime('%Y-%m-%d')})")
+    exchange = PublicExchange(config.exchange.value)
+    candles_per_tf: dict[str, list[BacktestCandle]] = {}
+
+    for tf in required_tfs:
+        try:
+            raw = exchange.get_ohlcv(config.pair, tf, args.limit)
+        except Exception as e:
+            print(f"\n❌ Fout bij ophalen {tf} data: {e}")
+            sys.exit(1)
+        if not raw:
+            print(f"\n❌ Geen {tf} candles ontvangen — controleer exchange en symbol.")
+            sys.exit(1)
+        tf_candles = [
+            BacktestCandle(
+                timestamp=int(c[0]),
+                open=float(c[1]),
+                high=float(c[2]),
+                low=float(c[3]),
+                close=float(c[4]),
+                volume=float(c[5]),
+            )
+            for c in raw
+            if c[1] and c[2] and c[3] and c[4]  # filter lege candles
+        ]
+        candles_per_tf[tf] = tf_candles
+        print(
+            f"✅ {len(tf_candles)} {tf} candles "
+            f"({tf_candles[0].dt.strftime('%Y-%m-%d')} → "
+            f"{tf_candles[-1].dt.strftime('%Y-%m-%d')})"
+        )
 
     # ── Backtest uitvoeren ────────────────────────────────────────────────────
     print("\n🚀 Backtest wordt uitgevoerd...\n")
@@ -112,7 +128,7 @@ def main():
     from backtest.backtest_engine import BacktestEngine
     engine = BacktestEngine(
         config=config,
-        candles=candles,
+        candles_per_tf=candles_per_tf,
         initial_balance_btc=args.balance,
     )
 

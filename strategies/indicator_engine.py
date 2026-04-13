@@ -1,6 +1,13 @@
 # strategies/indicator_engine.py
 # Combines all indicators to produce entry and TP confirmation signals.
-# Reads indicator configuration from the bot YAML config.
+#
+# Each indicator can declare its own `timeframe` override in the YAML
+# config. The engine receives `closes_per_tf: dict[str, list[float]]`
+# (close prices per timeframe bucket) and a `bot_timeframe` fallback,
+# then routes each indicator to the right bucket. Indicators whose
+# timeframe data is missing cause the engine to block entry (safer
+# default than silently skipping — an operator who configured a
+# filter expects it to be enforced).
 
 import logging
 from config.models import BotConfig, IndicatorConfig
@@ -20,26 +27,75 @@ class IndicatorEngine:
     def __init__(self, config: BotConfig):
         self.config = config
         # Copy the list at init time so mutations to config after init
-        # do not affect the engine's indicator list
+        # do not affect the engine's indicator list.
         self.entry_indicators = list(config.entry.indicators)
 
-    def check_entry_signal(self, closes: list[float]) -> bool:
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _closes_for(
+        self,
+        closes_per_tf: dict[str, list[float]],
+        timeframe: str,
+        context: str,
+    ) -> list[float] | None:
+        """Return closes for `timeframe` or None if missing. Logs a warning."""
+        closes = closes_per_tf.get(timeframe)
+        if not closes:
+            logger.warning(
+                "%s: timeframe %r not available in closes_per_tf (keys=%s) "
+                "— indicator cannot be evaluated",
+                context, timeframe, sorted(closes_per_tf.keys()),
+            )
+            return None
+        return closes
+
+    def required_timeframes(self, bot_timeframe: str) -> set[str]:
+        """Set of timeframes the engine needs closes for.
+
+        Used by the paper engine to decide which candle buckets to fetch,
+        and by the backtest loader to validate that the caller supplied
+        all required tf data.
+        """
+        tfs = {bot_timeframe}
+        for ind in self.entry_indicators:
+            tfs.add(ind.timeframe or bot_timeframe)
+        return tfs
+
+    # ------------------------------------------------------------------
+    # Entry signal
+    # ------------------------------------------------------------------
+
+    def check_entry_signal(
+        self,
+        closes_per_tf: dict[str, list[float]],
+        bot_timeframe: str,
+    ) -> bool:
         """
         Check all configured entry indicators.
         Returns True only if ALL indicators confirm an entry signal.
-        Logs each indicator result for transparency.
+        If any indicator's timeframe data is missing we return False —
+        we refuse to enter a deal while a configured filter can't be
+        evaluated (fail-closed).
         """
         if not self.entry_indicators:
             logger.debug("No entry indicators configured — signal always True")
             return True
 
         results = []
-
         for indicator in self.entry_indicators:
+            tf = indicator.timeframe or bot_timeframe
+            closes = self._closes_for(
+                closes_per_tf, tf, f"Entry indicator {indicator.type}"
+            )
+            if closes is None:
+                return False  # fail-closed
             result = self._evaluate_indicator(indicator, closes)
             results.append(result)
             logger.info(
-                f"Indicator {indicator.type} → {'✅ SIGNAL' if result else '❌ no signal'}"
+                f"Indicator {indicator.type}@{tf} → "
+                f"{'✅ SIGNAL' if result else '❌ no signal'}"
             )
 
         all_confirmed = all(results)
@@ -49,38 +105,62 @@ class IndicatorEngine:
         )
         return all_confirmed
 
-    def check_tp_confirmation(self, closes: list[float]) -> bool:
+    # ------------------------------------------------------------------
+    # TP confirmation
+    # ------------------------------------------------------------------
+
+    def check_tp_confirmation(
+        self,
+        closes_per_tf: dict[str, list[float]],
+        bot_timeframe: str,
+    ) -> bool:
         """
         Check take profit confirmation indicator if configured.
-        Returns True if confirmed or if no TP indicator is configured.
+        Returns True if no TP indicator is configured, or if confirmed.
+        Fail-closed on missing timeframe data — we prefer holding the
+        position over closing with an unvalidated signal.
         """
         tp_indicator = self.config.take_profit.indicator_confirm
         if not tp_indicator:
             return True
 
+        closes = self._closes_for(
+            closes_per_tf, bot_timeframe, "TP confirmation"
+        )
+        if closes is None:
+            return False
         confirmed = check_macd_signal(closes, tp_indicator)
         logger.info(f"TP confirmation ({tp_indicator}): {'✅' if confirmed else '❌'}")
         return confirmed
 
-    def get_indicator_snapshot(self, closes: list[float]) -> dict:
-        """
-        Returns current values of all indicators for logging and dashboard.
-        Failures are logged as warnings instead of silently ignored,
-        so indicator bugs are visible in production logs.
-        """
-        snapshot = {}
+    # ------------------------------------------------------------------
+    # Dashboard snapshot
+    # ------------------------------------------------------------------
 
+    def get_indicator_snapshot(
+        self,
+        closes_per_tf: dict[str, list[float]],
+        bot_timeframe: str,
+    ) -> dict:
+        """
+        Returns current indicator values on the bot's primary timeframe
+        for the dashboard. Indicators on overridden timeframes are NOT
+        currently shown separately — they'd need a multi-tf UI.
+        """
+        closes = closes_per_tf.get(bot_timeframe)
+        if not closes:
+            return {}
+
+        snapshot = {}
         try:
             snapshot["rsi_14"] = calculate_rsi(closes, 14)
         except Exception as e:
             logger.warning(f"RSI calculation failed: {e}")
-
         try:
             snapshot["ema_9"] = calculate_ema(closes, 9)
             snapshot["ema_21"] = calculate_ema(closes, 21)
         except Exception as e:
             logger.warning(f"EMA calculation failed: {e}")
-
         try:
             macd = calculate_macd(closes)
             snapshot["macd"] = macd["macd"]
@@ -88,15 +168,18 @@ class IndicatorEngine:
             snapshot["macd_histogram"] = macd["histogram"]
         except Exception as e:
             logger.warning(f"MACD calculation failed: {e}")
-
         return snapshot
+
+    # ------------------------------------------------------------------
+    # Per-indicator dispatch
+    # ------------------------------------------------------------------
 
     def _evaluate_indicator(self, indicator: IndicatorConfig,
                              closes: list[float]) -> bool:
         """
         Route indicator config to the correct check function.
-        Returns False (not True) on unknown indicator type to prevent
-        unvalidated entries from slipping through.
+        Returns False on unknown indicator type to prevent unvalidated
+        entries from slipping through.
         """
         itype = indicator.type.upper()
 
@@ -104,23 +187,23 @@ class IndicatorEngine:
             return check_rsi_signal(
                 closes,
                 period=indicator.period or 14,
-                threshold=indicator.threshold or "below_35"
+                threshold=indicator.threshold or "below_35",
             )
         elif itype == "EMA_CROSS":
             return check_ema_cross_signal(
                 closes,
                 fast=indicator.fast or 9,
                 slow=indicator.slow or 21,
-                signal=indicator.signal or "bullish"
+                signal=indicator.signal or "bullish",
             )
         elif itype == "MACD":
             return check_macd_signal(
                 closes,
-                condition=indicator.threshold or "histogram_positive"
+                condition=indicator.condition or indicator.threshold or "histogram_positive",
             )
         else:
             logger.warning(
                 f"Unknown indicator type: '{indicator.type}' — "
                 f"returning False to block entry. Check your YAML config."
             )
-            return False  # Block entry on unknown indicator, do not silently allow
+            return False
