@@ -189,7 +189,7 @@
     </div>
   </div>
   <span class="uptime-chip" id="hdr-uptime"></span>
-  <button class="hbtn hbtn-theme" id="restart-btn" onclick="restartPortal()" title="Restart dashboard">Restart Dashboard</button>
+  <button class="hbtn hbtn-theme" id="restart-btn" onclick="restartPortal()" title="Restart dashboard">↺ Restart Dashboard</button>
   <button class="hbtn hbtn-theme" onclick="toggleTheme()" title="Toggle light/dark">☀︎</button>
 </header>
 
@@ -248,10 +248,10 @@
     </div>
 
     <!-- Live INFO log — all bots combined -->
-    <div class="section-title">Live log</div>
+    <div class="section-title">Live log — all bots (INFO+)</div>
     <div class="log-wrap" style="height:280px">
       <div class="log-header">
-        <span class="log-title">All bots + dashboard (INFO+)</span>
+        <span class="log-title">All bots combined</span>
         <div style="display:flex;align-items:center;gap:8px">
           <button class="hbtn hbtn-theme" style="font-size:10px;height:24px" onclick="$('ov-log-body').innerHTML=''">Clear</button>
           <div class="live-dot" id="ov-ws-dot"></div>
@@ -400,14 +400,6 @@ function toggleTheme() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
-
-// XSS-safe string escaping — always use for server-sourced data in innerHTML
-function safeText(str) {
-  const el = document.createElement('span');
-  el.textContent = (str == null || str === '') ? '—' : String(str);
-  return el.innerHTML;
-}
-
 function fmtPrice(n) {
   if (!n) return '—';
   return '$'+parseFloat(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -504,9 +496,9 @@ function renderOverview(d) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No open deals across any bot</td></tr>';
   } else {
     tbody.innerHTML = deals.map(deal => `<tr>
-      <td><span style="color:var(--accent);cursor:pointer" data-action="open-bot" data-slug="${safeText(deal.bot_slug)}">${safeText(deal.bot_name)}</span></td>
-      <td style="color:var(--muted)">${safeText(deal.id)}</td>
-      <td>${safeText(deal.symbol)}</td>
+      <td><span style="color:var(--accent);cursor:pointer" onclick="openBot('${deal.bot_slug}')">${deal.bot_name}</span></td>
+      <td style="color:var(--muted)">${deal.id}</td>
+      <td>${deal.symbol||'—'}</td>
       <td>${fmtPrice(deal.entry_price)}</td>
       <td>${fmtPrice(deal.avg_entry_price)}</td>
       <td>${deal.order_count}</td>
@@ -524,7 +516,7 @@ function renderBotCard(b) {
 
   const openDealsHtml = (b.open_deals||[]).slice(0,3).map(d => `
     <div class="bot-card-deal-row">
-      <span style="color:var(--accent)">${safeText(d.id)}</span>
+      <span style="color:var(--accent)">${d.id}</span>
       <span style="color:var(--muted)">${fmtPrice(d.entry_price)}</span>
       <span>${fmtPnl(d.pnl_btc)}</span>
     </div>`).join('');
@@ -536,14 +528,14 @@ function renderBotCard(b) {
   return `
   <div class="bot-card">
     <div class="bot-card-top">
-      <span class="bot-card-name">${safeText(b.bot_name||b.slug)}</span>
+      <span class="bot-card-name">${b.bot_name||b.slug}</span>
       <div class="pill ${running?'running':'stopped'}" style="font-size:10px;height:24px;cursor:default">
         <div class="dot"></div>${running?'Running':'Stopped'}
       </div>
     </div>
     <div class="bot-card-meta">
-      ${safeText((b.exchange||'—').toUpperCase())} · ${safeText(b.pair||'BTC/USD')} · ${safeText((b.mode||'paper').toUpperCase())}
-      ${b.uptime ? '· ⏱ '+safeText(b.uptime) : ''}
+      ${(b.exchange||'—').toUpperCase()} · ${b.pair||'BTC/USD'} · ${(b.mode||'paper').toUpperCase()}
+      ${b.uptime ? '· ⏱ '+b.uptime : ''}
     </div>
     <div class="bot-card-stats">
       <div class="bot-stat">
@@ -574,11 +566,11 @@ function renderBotCard(b) {
     ${openDealsHtml ? `<div class="bot-card-deals">${openDealsHtml}${moreDeals}</div>` : ''}
     <div class="bot-card-footer">
       ${running
-        ? `<button class="btn-sm btn-stop"    data-action="bot-action" data-slug="${safeText(b.slug)}" data-cmd="stop">■ Stop</button>
-           <button class="btn-sm btn-restart" data-action="bot-action" data-slug="${safeText(b.slug)}" data-cmd="restart">↺ Restart</button>`
-        : `<button class="btn-sm btn-start"   data-action="bot-action" data-slug="${safeText(b.slug)}" data-cmd="start">▶ Start</button>`
+        ? `<button class="btn-sm btn-stop"    onclick="botAction('${b.slug}','stop')">■ Stop</button>
+           <button class="btn-sm btn-restart" onclick="botAction('${b.slug}','restart')">↺ Restart</button>`
+        : `<button class="btn-sm btn-start"   onclick="botAction('${b.slug}','start')">▶ Start</button>`
       }
-      <button class="btn-sm btn-open" data-action="open-bot" data-slug="${safeText(b.slug)}">Open →</button>
+      <button class="btn-sm btn-open" onclick="openBot('${b.slug}')">Open →</button>
     </div>
   </div>`;
 }
@@ -681,8 +673,8 @@ async function fetchDetail(slug) {
     } else {
       ig.innerHTML = indKeys.map(([k,v]) => `
         <div class="indicator-card">
-          <div class="indicator-label">${safeText(k.replace(/_/g,' '))}</div>
-          <div class="indicator-value">${safeText(typeof v==='number'?v.toFixed(4):v)}</div>
+          <div class="indicator-label">${k.replace(/_/g,' ')}</div>
+          <div class="indicator-value">${typeof v==='number'?v.toFixed(4):v}</div>
         </div>`).join('');
     }
 
@@ -691,7 +683,7 @@ async function fetchDetail(slug) {
     const od = b.open_deals||[];
     ob.innerHTML = od.length
       ? od.map(d=>`<tr>
-          <td style="color:var(--accent)">${safeText(d.id)}</td>
+          <td style="color:var(--accent)">${d.id}</td>
           <td>${fmtPrice(d.entry_price)}</td>
           <td>${fmtPrice(d.avg_entry_price)}</td>
           <td>${d.order_count}</td>
@@ -706,7 +698,7 @@ async function fetchDetail(slug) {
     const cd = b.closed_deals||[];
     cb.innerHTML = cd.length
       ? cd.map(d=>`<tr>
-          <td style="color:var(--muted)">${safeText(d.id)}</td>
+          <td style="color:var(--muted)">${d.id}</td>
           <td>${reasonBadge(d.close_reason)}</td>
           <td>${fmtPrice(d.entry_price)}</td>
           <td>${fmtPrice(d.close_price)}</td>
@@ -835,7 +827,7 @@ async function restartPortal() {
       const r = await fetch('/api/portal/status');
       if (r.ok) {
         clearInterval(poll);
-        btn.textContent = 'Restart Dashboard';
+        btn.textContent = '↺ Restart Dashboard';
         btn.disabled = false;
         // Reload page to reconnect websockets etc.
         location.reload();
@@ -845,19 +837,6 @@ async function restartPortal() {
     }
   }, 1000);
 }
-
-// ── Event delegation — replaces inline onclick handlers ───────────────────────
-// Using data-attributes instead of inline onclick prevents XSS via HTML-entity
-// decoding that occurs before JavaScript evaluation in event handler attributes.
-document.addEventListener('click', e => {
-  const el = e.target.closest('[data-action]');
-  if (!el) return;
-  const action = el.dataset.action;
-  const slug   = el.dataset.slug;
-  const cmd    = el.dataset.cmd;
-  if (action === 'open-bot' && slug)         openBot(slug);
-  if (action === 'bot-action' && slug && cmd) botAction(slug, cmd);
-});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 fetchOverview();

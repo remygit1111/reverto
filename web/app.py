@@ -16,12 +16,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import ccxt as _ccxt
 import uvicorn
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -31,35 +29,6 @@ CONFIG_DIR = BASE_DIR / "config" / "bots"
 LOG_DIR    = BASE_DIR / "logs"
 PID_DIR    = LOG_DIR / "pids"
 PYTHON_BIN = sys.executable
-
-# Cached ccxt client for /api/price — initialised at module load so there
-# is no race condition on first request. Reused for all subsequent calls.
-_price_client = _ccxt.bitget({"options": {"defaultType": "swap"}})
-
-
-def _get_price_client():
-    return _price_client
-
-
-# ── Security middleware ───────────────────────────────────────────────────────
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add security headers to every response."""
-
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src 'self' https://fonts.gstatic.com; "
-            "connect-src 'self' ws: wss:; "
-            "img-src 'self' data:;"
-        )
-        return response
 
 
 # ── Bot registry ──────────────────────────────────────────────────────────────
@@ -102,7 +71,7 @@ class BotInfo:
                 data["slug"]        = self.slug
                 data["config_file"] = self.config_file
                 return data
-        except (json.JSONDecodeError, Exception):
+        except Exception:
             pass
 
         return {
@@ -152,10 +121,6 @@ class BotRegistry:
         self.refresh()
         return self._bots.get(slug)
 
-    def valid_slugs(self) -> set[str]:
-        """Return set of all known bot slugs plus 'portal'."""
-        return {b.slug for b in self.all()} | {"portal"}
-
 
 registry = BotRegistry()
 
@@ -170,27 +135,25 @@ def start_bot(slug: str) -> dict:
         return {"ok": False, "error": f"{slug} already running (PID {bot.pid})"}
     try:
         PID_DIR.mkdir(parents=True, exist_ok=True)
+        log_out = open(bot.log_file, "a")
 
+        # Use absolute path to main_paper.py and same venv Python as portal
         env = os.environ.copy()
         env["PYTHONPATH"] = str(BASE_DIR)
 
-        # Open log file and close it after Popen to avoid FD leak
-        with open(bot.log_file, "a") as log_out:
-            proc = subprocess.Popen(
-                [PYTHON_BIN, str(BASE_DIR / "main_paper.py"),
-                 "--config", bot.config_file],
-                cwd=str(BASE_DIR),
-                stdout=log_out,
-                stderr=log_out,
-                env=env,
-                start_new_session=True
-            )
-
+        proc = subprocess.Popen(
+            [PYTHON_BIN, str(BASE_DIR / "main_paper.py"),
+             "--config", bot.config_file],
+            cwd=str(BASE_DIR),
+            stdout=log_out,
+            stderr=log_out,
+            env=env,
+            start_new_session=True
+        )
         logger.info(f"Bot {slug} started (PID {proc.pid})")
         return {"ok": True, "message": f"{slug} started (PID {proc.pid})"}
     except Exception as e:
-        logger.error(f"Failed to start bot {slug}: {e}")
-        return {"ok": False, "error": "Failed to start bot — check server logs"}
+        return {"ok": False, "error": str(e)}
 
 
 def stop_bot(slug: str) -> dict:
@@ -208,8 +171,7 @@ def stop_bot(slug: str) -> dict:
     except ProcessLookupError:
         return {"ok": False, "error": "Process not found — already stopped?"}
     except Exception as e:
-        logger.error(f"Failed to stop bot {slug}: {e}")
-        return {"ok": False, "error": "Failed to stop bot — check server logs"}
+        return {"ok": False, "error": str(e)}
 
 
 def restart_bot(slug: str) -> dict:
@@ -220,15 +182,14 @@ def restart_bot(slug: str) -> dict:
 
 def _do_portal_restart():
     """Restart the portal process using os.execv — replaces current process."""
-    time.sleep(0.8)
-    logger.info("Portal restarting via os.execv — bots continue running")
+    time.sleep(0.8)  # Give the HTTP response time to reach the browser
+    logger.info("Portal restarting via os.execv...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
-# ── FastAPI app ───────────────────────────────────────────────────────────────
+# ── FastAPI ───────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Reverto Portal", docs_url=None, redoc_url=None)
-app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -250,7 +211,7 @@ async def get_bots():
         for d in b.get("open_deals", []):
             d["bot_name"] = b.get("bot_name", b.get("slug"))
             d["bot_slug"] = b.get("slug")
-            d["exchange"] = b.get("exchange")
+            d["exchange"]  = b.get("exchange")
             all_open.append(d)
 
     return {
@@ -269,7 +230,7 @@ async def get_bots():
 async def get_bot(slug: str):
     bot = registry.get(slug)
     if not bot:
-        return JSONResponse({"error": "Unknown bot"}, status_code=404)
+        return {"error": f"Unknown bot: {slug}"}
     return bot.read_state()
 
 
@@ -290,37 +251,35 @@ async def api_restart(slug: str):
 async def api_portal_restart():
     """
     Restart the portal process.
-    Uses os.execv in a background thread so the HTTP response can
-    reach the browser before the process is replaced.
-    Bots continue running — they are independent subprocesses.
+    Uses os.execv in a background thread so the HTTP response
+    can reach the browser before the process is replaced.
     """
     logger.info("Portal restart requested via API")
     t = threading.Thread(target=_do_portal_restart, daemon=True)
     t.start()
-    return {"ok": True, "message": "Portal restarting — bots continue running"}
+    return {"ok": True, "message": "Portal restarting — reconnecting in a few seconds..."}
 
 
 @app.get("/api/portal/status")
 async def api_portal_status():
-    """Health check — browser polls this to detect when portal is back up."""
+    """Simple health check — browser polls this to detect when portal is back."""
     return {"ok": True, "pid": os.getpid()}
 
 
 @app.get("/api/price")
 async def api_price():
     """
-    Always-on BTC price endpoint.
-    Runs ccxt in a thread pool so it does NOT block the event loop.
-    Uses a cached ccxt client — no new connection per request.
+    Always-on BTC price endpoint — fetches directly from Bitget
+    regardless of whether any bot is running.
     """
     try:
-        client = _get_price_client()
-        ticker = await asyncio.to_thread(client.fetch_ticker, "BTCUSD")
-        price  = ticker.get("last") or ticker.get("close") or 0.0
+        import ccxt
+        exchange = ccxt.bitget({"options": {"defaultType": "swap"}})
+        ticker = exchange.fetch_ticker("BTCUSD")
+        price = ticker.get("last") or ticker.get("close") or 0.0
         return {"price": price, "pair": "BTC/USD", "source": "bitget"}
-    except Exception as e:
-        logger.warning(f"Price fetch failed: {type(e).__name__}")
-        # Fall back to first running bot's cached price
+    except Exception:
+        # Fall back to first running bot's price if available
         for bot in registry.all():
             state = bot.read_state()
             if state.get("current_price"):
@@ -358,18 +317,29 @@ broadcaster = LogBroadcaster()
 
 @app.websocket("/ws/logs/{slug}")
 async def ws_logs(websocket: WebSocket, slug: str):
-    # Validate slug against known bots + 'portal' — prevents path traversal
-    # and unbounded memory growth via unknown slugs
-    if slug not in registry.valid_slugs():
-        await websocket.close(code=4004)
+    # Special slug "portal" streams the portal's own log
+    if slug == "portal":
+        portal_log = LOG_DIR / "portal.log"
+        await broadcaster.connect(websocket, "portal")
+        try:
+            if portal_log.exists():
+                lines = portal_log.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in lines[-100:]:
+                    await websocket.send_text(line)
+            while True:
+                await asyncio.sleep(30)
+                await websocket.send_text("__ping__")
+        except WebSocketDisconnect:
+            broadcaster.disconnect(websocket, "portal")
+        except Exception:
+            broadcaster.disconnect(websocket, "portal")
         return
 
-    log_file = (LOG_DIR / "portal.log") if slug == "portal" else registry.get(slug).log_file
-
     await broadcaster.connect(websocket, slug)
+    bot = registry.get(slug)
     try:
-        if log_file.exists():
-            lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        if bot and bot.log_file.exists():
+            lines = bot.log_file.read_text(encoding="utf-8", errors="replace").splitlines()
             for line in lines[-150:]:
                 await websocket.send_text(line)
         while True:
@@ -382,10 +352,9 @@ async def ws_logs(websocket: WebSocket, slug: str):
 
 
 async def tail_logs():
-    """Background task: tail all bot logs + portal log and broadcast new lines."""
     last: dict[str, int] = {}
-
     while True:
+        # Tail all bot logs + portal log
         log_files: list[tuple[str, Path]] = [
             (bot.slug, bot.log_file) for bot in registry.all()
         ]
@@ -406,10 +375,9 @@ async def tail_logs():
                         if line.strip():
                             await broadcaster.broadcast(slug, line)
                 elif size < prev:
-                    last[slug] = size  # file was rotated
+                    last[slug] = size
             except Exception:
                 pass
-
         await asyncio.sleep(1)
 
 
