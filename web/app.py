@@ -20,9 +20,12 @@ from typing import Optional
 import ccxt
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
@@ -34,8 +37,8 @@ _MAX_STATE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 class BotStateModel(BaseModel):
     """Pydantic schema voor logs/{slug}.state.json — beschermt tegen
     corrupte of geïnjecteerde JSON met onverwachte types of waarden.
-    Extra velden worden genegeerd zodat toekomstige velden niet
-    crashen op oude portal versies."""
+    Extra velden worden genegeerd (niet gestript) zodat toekomstige
+    velden niet crashen op oude portal versies."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -318,7 +321,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# Rate limiter — beperkt brute force en DoS op control endpoints. Sleutel
+# per remote IP; in een setup achter een reverse proxy moet je X-Forwarded-For
+# parsing toevoegen via een eigen key_func.
+limiter = Limiter(key_func=get_remote_address)
+
+
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(status_code=429, content={"detail": "Too many requests"})
+
+
 app = FastAPI(title="Reverto Portal", docs_url=None, redoc_url=None)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -330,7 +345,8 @@ async def index():
 
 
 @app.get("/api/bots")
-async def get_bots():
+@limiter.limit("60/minute")
+async def get_bots(request: Request):
     bots      = [b.read_state() for b in await registry.all()]
     total_pnl = sum(b.get("total_pnl_btc", 0) for b in bots)
     active    = sum(1 for b in bots if b.get("running"))
@@ -365,20 +381,24 @@ async def get_bot(slug: str):
 
 
 @app.post("/api/bots/{slug}/start", dependencies=[Depends(verify_api_key)])
-async def api_start(slug: str):
+@limiter.limit("10/minute")
+async def api_start(slug: str, request: Request):
     return await start_bot(slug)
 
 @app.post("/api/bots/{slug}/stop", dependencies=[Depends(verify_api_key)])
-async def api_stop(slug: str):
+@limiter.limit("10/minute")
+async def api_stop(slug: str, request: Request):
     return await stop_bot(slug)
 
 @app.post("/api/bots/{slug}/restart", dependencies=[Depends(verify_api_key)])
-async def api_restart(slug: str):
+@limiter.limit("10/minute")
+async def api_restart(slug: str, request: Request):
     return await restart_bot(slug)
 
 
 @app.post("/api/portal/restart", dependencies=[Depends(verify_api_key)])
-async def api_portal_restart():
+@limiter.limit("10/minute")
+async def api_portal_restart(request: Request):
     """
     Restart the portal process.
     Uses os.execv in a background thread so the HTTP response
