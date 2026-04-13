@@ -1255,3 +1255,7 @@ tr:hover td { background: rgba(128,128,128,.04); }
     letter-spacing: 0;
   }
 }
+
+/* ── Leverage warning text colours ──────────────────────────────────────── */
+.form-hint.warn-amber { color: var(--amber); }
+.form-hint.warn-red   { color: var(--red); font-weight: 600; }

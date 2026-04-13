@@ -405,7 +405,7 @@ let nbEditSlug = null;
 function nbDefaultState() {
   return {
     name: '', exchange: 'bitget', pair: 'BTC/USD', mode: 'paper', direction: 'long',
-    leverage_enabled: false, leverage_size: 2, timeframe: '1h',
+    leverage_enabled: false, leverage_size: 1, timeframe: '1h',
     base_unit: 'btc', base_size: 0.001,
     indicators: [],
     tp_target_pct: 3.0, tp_indicator_confirm: '',
@@ -654,9 +654,25 @@ function nbIndicatorFieldsHtml(ind, i) {
 
 function nbUpdateLeverageUI() {
   const enabled = nbState.leverage_enabled;
+  const lev = nbState.leverage_size;
   $('nb-leverage-size').disabled = !enabled;
-  $('nb-leverage-value').textContent = nbState.leverage_size + 'x';
+  $('nb-leverage-value').textContent = lev + 'x';
   $('nb-liq-preview').textContent = enabled ? nbCalcLiqPreview() : '—';
+
+  const warnEl = $('nb-leverage-warn');
+  if (!enabled || lev <= 1) {
+    warnEl.textContent = '';
+    warnEl.className = 'form-hint';
+  } else if (lev >= 50) {
+    warnEl.textContent = '🔴 Extreme leverage — only for experienced traders';
+    warnEl.className = 'form-hint warn-red';
+  } else if (lev >= 10) {
+    warnEl.textContent = '⚠️ High leverage — liquidation risk increases significantly';
+    warnEl.className = 'form-hint warn-amber';
+  } else {
+    warnEl.textContent = '';
+    warnEl.className = 'form-hint';
+  }
 }
 
 function nbCalcLiqPreview() {
