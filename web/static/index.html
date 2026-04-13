@@ -5,173 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
 <link rel="stylesheet" href="/static/style.css">
-<style>
-/* ── Extra styles for multi-bot ─────────────────────────────────────────── */
-.summary-bar {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
-  padding: 16px 20px 0;
-}
-
-.bot-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 14px;
-  padding: 16px 20px;
-}
-
-.bot-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  transition: border-color .15s;
-}
-.bot-card:hover { border-color: var(--accent); }
-
-.bot-card-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px 10px;
-  border-bottom: 1px solid var(--border);
-}
-
-.bot-card-name {
-  font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.bot-card-meta {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--muted);
-  padding: 6px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.bot-card-stats {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 0;
-  padding: 10px 16px;
-}
-
-.bot-stat {
-  padding: 4px 0;
-}
-.bot-stat-label {
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 2px;
-}
-.bot-stat-value {
-  font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.bot-card-deals {
-  padding: 0 16px 8px;
-}
-.bot-card-deal-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-.bot-card-deal-row:last-child { border-bottom: none; }
-
-.bot-card-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--border);
-  background: var(--surface2);
-}
-
-.btn-sm {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  padding: 0 10px;
-  height: 26px;
-  border-radius: 4px;
-  border: 1px solid;
-  background: none;
-  cursor: pointer;
-  transition: background .15s;
-}
-.btn-start  { border-color: var(--accent); color: var(--accent); }
-.btn-start:hover  { background: rgba(0,212,170,.1); }
-.btn-stop   { border-color: var(--red); color: var(--red); }
-.btn-stop:hover   { background: rgba(255,77,109,.1); }
-.btn-restart{ border-color: var(--amber); color: var(--amber); }
-.btn-restart:hover{ background: rgba(255,179,71,.1); }
-.btn-open   { border-color: var(--border); color: var(--muted); }
-.btn-open:hover   { border-color: var(--text); color: var(--text); }
-
-.all-deals-section { padding: 0 20px 20px; }
-
-/* Detail page */
-.detail-subnav {
-  display: flex;
-  padding: 0 20px;
-  background: var(--surface2);
-  border-bottom: 1px solid var(--border);
-}
-
-.detail-content { padding: 20px; }
-
-.indicator-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-.indicator-card {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 12px;
-}
-.indicator-label {
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 4px;
-}
-.indicator-value {
-  font-family: var(--mono);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.empty-grid {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--muted);
-  text-align: center;
-  padding: 40px;
-  grid-column: 1/-1;
-}
-</style>
 </head>
 <body>
 
@@ -182,39 +15,39 @@
   <div class="header-spacer"></div>
   <span class="header-pair" id="hdr-pair">BTC/USD</span>
   <span class="header-price" id="hdr-price">—</span>
-  <div id="hdr-pill" style="display:none">
+  <div id="hdr-pill" class="hidden">
     <div id="status-pill" class="pill stopped">
       <div class="dot"></div>
       <span id="status-text">Stopped</span>
     </div>
   </div>
   <span class="uptime-chip" id="hdr-uptime"></span>
-  <button class="hbtn hbtn-theme" id="api-key-btn" onclick="showApiKeyModal()" title="API Key">🔑 API Key</button>
-  <button class="hbtn hbtn-theme" id="restart-btn" onclick="restartPortal()" title="Restart dashboard">↺ Restart Dashboard</button>
-  <button class="hbtn hbtn-theme" onclick="toggleTheme()" title="Toggle light/dark">☀︎</button>
+  <button class="hbtn hbtn-theme" id="api-key-btn" title="API Key">🔑 API Key</button>
+  <button class="hbtn hbtn-theme" id="restart-btn" title="Restart dashboard">↺ Restart Dashboard</button>
+  <button class="hbtn hbtn-theme" id="theme-btn" title="Toggle light/dark">☀︎</button>
 </header>
 
 <!-- ── API Key modal ───────────────────────────────────────────────────────── -->
-<div id="api-key-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:24px;min-width:420px;max-width:90vw;font-family:var(--mono)">
-    <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">🔑 Reverto API Key</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:14px;line-height:1.5">
+<div id="api-key-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title">🔑 Reverto API Key</div>
+    <div class="modal-body-text">
       De portal vereist een API key voor start/stop/restart en log streaming.
       Vraag de operator naar de waarde van <code>REVERTO_API_KEY</code> (of zoek hem op in <code>logs/portal.log</code> bij ephemerale generatie).
     </div>
-    <input type="password" id="api-key-input" placeholder="Plak hier je API key" style="width:100%;padding:8px 10px;font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
-      <button class="hbtn hbtn-theme" onclick="clearApiKey()" style="color:var(--red);border-color:var(--red)">Clear</button>
-      <button class="hbtn hbtn-theme" onclick="closeApiKeyModal()">Cancel</button>
-      <button class="hbtn hbtn-theme" onclick="saveApiKey()" style="color:var(--accent);border-color:var(--accent)">Save</button>
+    <input type="password" id="api-key-input" placeholder="Plak hier je API key" class="modal-input">
+    <div class="modal-actions">
+      <button class="hbtn hbtn-theme btn-danger" id="modal-clear-btn">Clear</button>
+      <button class="hbtn hbtn-theme" id="modal-cancel-btn">Cancel</button>
+      <button class="hbtn hbtn-theme btn-accent" id="modal-save-btn">Save</button>
     </div>
   </div>
 </div>
 
 <!-- ── Main nav ────────────────────────────────────────────────────────────── -->
 <nav id="main-nav">
-  <button class="tab active" onclick="goOverview()">Overview</button>
-  <span id="detail-nav-item" style="display:none">
+  <button class="tab active" id="nav-overview-btn">Overview</button>
+  <span id="detail-nav-item" class="hidden">
     <button class="tab active" id="detail-nav-btn">—</button>
   </span>
 </nav>
@@ -245,13 +78,13 @@
 
   <!-- Bot cards -->
   <div class="bot-grid" id="bot-grid">
-    <div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:20px">Loading bots...</div>
+    <div class="empty-config-msg">Loading bots...</div>
   </div>
 
   <!-- All open deals table -->
   <div class="all-deals-section">
     <div class="section-title">All open deals</div>
-    <div class="card" style="padding:0;margin-bottom:20px">
+    <div class="card card-no-pad mb-20">
       <table>
         <thead>
           <tr>
@@ -267,11 +100,11 @@
 
     <!-- Live INFO log — all bots combined -->
     <div class="section-title">Live log — all bots (INFO+)</div>
-    <div class="log-wrap" style="height:280px">
+    <div class="log-wrap log-wrap-overview">
       <div class="log-header">
         <span class="log-title">All bots combined</span>
-        <div style="display:flex;align-items:center;gap:8px">
-          <button class="hbtn hbtn-theme" style="font-size:10px;height:24px" onclick="$('ov-log-body').innerHTML=''">Clear</button>
+        <div class="log-controls-overview">
+          <button class="hbtn hbtn-theme log-clear-btn" id="ov-log-clear-btn">Clear</button>
           <div class="live-dot" id="ov-ws-dot"></div>
           <span class="log-status-text" id="ov-ws-label">connecting</span>
         </div>
@@ -289,14 +122,14 @@
 
   <!-- Sub-nav -->
   <div class="detail-subnav">
-    <button class="tab active" onclick="showDTab('dashboard',this)">Dashboard</button>
-    <button class="tab" onclick="showDTab('deals',this)">Deals</button>
-    <button class="tab" onclick="showDTab('log',this)">Log</button>
+    <button class="tab active" data-dtab="dashboard">Dashboard</button>
+    <button class="tab" data-dtab="deals">Deals</button>
+    <button class="tab" data-dtab="log">Log</button>
   </div>
 
   <!-- Dashboard tab -->
   <div id="dtab-dashboard" class="detail-content">
-    <div class="stat-grid" style="margin-bottom:16px">
+    <div class="stat-grid stat-grid-mb">
       <div class="card">
         <div class="card-label">Price</div>
         <div class="card-value" id="d-price">—</div>
@@ -336,12 +169,12 @@
     </div>
 
     <!-- Bot info -->
-    <div class="section-title" style="margin-top:16px">Bot info</div>
+    <div class="section-title mt-16">Bot info</div>
     <div class="card">
       <div class="info-bar">
         <div class="info-item">
           <div class="info-item-label">Config</div>
-          <div class="info-item-value" id="d-config" style="font-size:11px">—</div>
+          <div class="info-item-value text-small" id="d-config">—</div>
         </div>
         <div class="info-item">
           <div class="info-item-label">Mode</div>
@@ -360,9 +193,9 @@
   </div>
 
   <!-- Deals tab -->
-  <div id="dtab-deals" class="detail-content" style="display:none">
+  <div id="dtab-deals" class="detail-content hidden">
     <div class="section-title">Open deals</div>
-    <div class="card" style="padding:0;margin-bottom:16px">
+    <div class="card card-no-pad mb-16">
       <table>
         <thead>
           <tr><th>ID</th><th>Entry</th><th>Avg entry</th><th>Orders</th><th>Size</th><th>PnL</th><th>Opened</th></tr>
@@ -373,7 +206,7 @@
       </table>
     </div>
     <div class="section-title">Closed deals</div>
-    <div class="card" style="padding:0">
+    <div class="card card-no-pad">
       <table>
         <thead>
           <tr><th>ID</th><th>Reason</th><th>Entry</th><th>Close</th><th>PnL BTC</th><th>PnL %</th><th>Closed</th></tr>
@@ -386,16 +219,16 @@
   </div>
 
   <!-- Log tab -->
-  <div id="dtab-log" class="detail-content" style="display:none;padding:0">
-    <div class="log-wrap" style="height:calc(100vh - 145px);border-radius:0;border-left:none;border-right:none;border-bottom:none">
+  <div id="dtab-log" class="detail-content hidden dtab-content no-pad">
+    <div class="log-wrap log-wrap-detail">
       <div class="log-header">
         <span class="log-title" id="log-title">bot.log</span>
-        <div style="display:flex;align-items:center;gap:10px">
-          <label style="font-family:var(--mono);font-size:10px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="checkbox" id="autoscroll" checked style="accent-color:var(--accent)">
+        <div class="log-controls">
+          <label class="checkbox-label">
+            <input type="checkbox" id="autoscroll" checked class="checkbox-accent">
             Auto-scroll
           </label>
-          <button class="hbtn hbtn-theme" style="font-size:10px;height:24px" onclick="clearLog()">Clear</button>
+          <button class="hbtn hbtn-theme log-clear-btn" id="log-clear-btn">Clear</button>
           <div class="live-dot" id="ws-dot"></div>
           <span class="log-status-text" id="ws-label">connecting</span>
         </div>
@@ -406,534 +239,6 @@
 
 </div>
 
-<script>
-// ── Theme ─────────────────────────────────────────────────────────────────────
-const t0 = localStorage.getItem('reverto-theme') || 'dark';
-document.documentElement.setAttribute('data-theme', t0);
-function toggleTheme() {
-  const n = document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';
-  document.documentElement.setAttribute('data-theme', n);
-  localStorage.setItem('reverto-theme', n);
-}
-
-// ── API Key management ────────────────────────────────────────────────────────
-function getApiKey() {
-  return localStorage.getItem('reverto_api_key') || '';
-}
-function showApiKeyModal() {
-  const modal = document.getElementById('api-key-modal');
-  document.getElementById('api-key-input').value = getApiKey();
-  modal.style.display = 'flex';
-}
-function closeApiKeyModal() {
-  document.getElementById('api-key-modal').style.display = 'none';
-}
-function saveApiKey() {
-  const key = document.getElementById('api-key-input').value.trim();
-  if (!key) { alert('Lege key — niet opgeslagen'); return; }
-  localStorage.setItem('reverto_api_key', key);
-  closeApiKeyModal();
-  // Reconnect WebSockets met de nieuwe key
-  location.reload();
-}
-function clearApiKey() {
-  localStorage.removeItem('reverto_api_key');
-  document.getElementById('api-key-input').value = '';
-  closeApiKeyModal();
-  location.reload();
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-function safeText(s) {
-  if (s == null) return '';
-  return String(s).replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  }[c]));
-}
-function fmtPrice(n) {
-  if (!n) return '—';
-  return '$'+parseFloat(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-}
-function fmtPnl(v, decimals=8) {
-  if (v==null) return '—';
-  const s=v>=0?'+':''; const c=v>0?'pos':v<0?'neg':'neu';
-  return `<span class="${c}">${s}${v.toFixed(decimals)}</span>`;
-}
-function fmtPct(v) {
-  if (v==null) return '—';
-  const s=v>=0?'+':''; const c=v>0?'pos':v<0?'neg':'neu';
-  return `<span class="${c}">${s}${v.toFixed(2)}%</span>`;
-}
-function timeAgo(iso) {
-  if (!iso) return '—';
-  const s=Math.floor((Date.now()-new Date(iso))/1000);
-  if(s<60) return s+'s ago';
-  if(s<3600) return Math.floor(s/60)+'m ago';
-  if(s<86400) return Math.floor(s/3600)+'h ago';
-  return Math.floor(s/86400)+'d ago';
-}
-function reasonBadge(r) {
-  if(!r) return '—';
-  const c=r==='tp'?'badge-tp':r==='sl'?'badge-sl':'badge-open';
-  return `<span class="badge ${c}">${r.toUpperCase()}</span>`;
-}
-function logCls(l) {
-  if(l.includes('[ERROR]')) return 'err';
-  if(l.includes('[WARNING]')) return 'warn';
-  if(l.includes('[DEBUG]')) return 'dbg';
-  return 'info';
-}
-
-// ── State ─────────────────────────────────────────────────────────────────────
-let currentSlug = null;
-let ws = null;
-let detailInterval = null;
-let overviewInterval = null;
-
-// ── Navigation ────────────────────────────────────────────────────────────────
-function showPage(name) {
-  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  $('view-'+name).classList.add('active');
-}
-
-function showDTab(name, btn) {
-  ['dashboard','deals','log'].forEach(n=>{
-    const el=$('dtab-'+n);
-    if(el){ el.style.display=n===name?'block':'none'; }
-  });
-  document.querySelectorAll('.detail-subnav .tab').forEach(t=>t.classList.remove('active'));
-  if(btn) btn.classList.add('active');
-}
-
-// ── Overview ──────────────────────────────────────────────────────────────────
-async function fetchOverview() {
-  try {
-    const d = await fetch('/api/bots').then(r=>r.json());
-    renderOverview(d);
-  } catch(e) {}
-}
-
-function renderOverview(d) {
-  const sum = d.summary || {};
-
-  // Summary bar
-  const pnl = sum.total_pnl_btc || 0;
-  $('ov-pnl').innerHTML = fmtPnl(pnl, 8);
-  $('ov-active').textContent = sum.active_bots ?? '—';
-  $('ov-total-sub').textContent = `of ${sum.total_bots ?? 0} configured`;
-  $('ov-deals').textContent = sum.open_deals ?? '—';
-
-  // Price from running bot (independent fetch handles no-bot case)
-  const runningBot = (d.bots||[]).find(b => b.running && b.current_price);
-  if (runningBot) {
-    $('hdr-price').textContent = fmtPrice(runningBot.current_price);
-    $('hdr-pair').textContent  = runningBot.pair || 'BTC/USD';
-  }
-
-  // Bot cards
-  const grid = $('bot-grid');
-  const bots = d.bots || [];
-  if (!bots.length) {
-    grid.innerHTML = '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:20px">No bots configured — add a YAML file to config/bots/</div>';
-  } else {
-    grid.innerHTML = bots.map(b => renderBotCard(b)).join('');
-  }
-
-  // All open deals table
-  const tbody = $('all-deals-tbody');
-  const deals = d.all_open_deals || [];
-  if (!deals.length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No open deals across any bot</td></tr>';
-  } else {
-    tbody.innerHTML = deals.map(deal => `<tr>
-      <td><span class="link-like" data-action="open" data-slug="${safeText(deal.bot_slug)}">${safeText(deal.bot_name)}</span></td>
-      <td style="color:var(--muted)">${safeText(deal.id)}</td>
-      <td>${safeText(deal.symbol||'—')}</td>
-      <td>${fmtPrice(deal.entry_price)}</td>
-      <td>${fmtPrice(deal.avg_entry_price)}</td>
-      <td>${deal.order_count}</td>
-      <td>${fmtPnl(deal.pnl_btc)}</td>
-      <td style="color:var(--muted)">${timeAgo(deal.opened_at)}</td>
-    </tr>`).join('');
-  }
-}
-
-function renderBotCard(b) {
-  const running = b.running;
-  const pnl     = b.total_pnl_btc || 0;
-  const pnlSign = pnl>=0?'+':'';
-  const pnlCls  = pnl>0?'pos':pnl<0?'neg':'neu';
-
-  const openDealsHtml = (b.open_deals||[]).slice(0,3).map(d => `
-    <div class="bot-card-deal-row">
-      <span style="color:var(--accent)">${safeText(d.id)}</span>
-      <span style="color:var(--muted)">${fmtPrice(d.entry_price)}</span>
-      <span>${fmtPnl(d.pnl_btc)}</span>
-    </div>`).join('');
-
-  const moreDeals = (b.open_deals_count||0) > 3
-    ? `<div style="font-family:var(--mono);font-size:10px;color:var(--muted);padding:4px 0">+${b.open_deals_count-3} more deals</div>`
-    : '';
-
-  return `
-  <div class="bot-card">
-    <div class="bot-card-top">
-      <span class="bot-card-name">${safeText(b.bot_name||b.slug)}</span>
-      <div class="pill ${running?'running':'stopped'}" style="font-size:10px;height:24px;cursor:default">
-        <div class="dot"></div>${running?'Running':'Stopped'}
-      </div>
-    </div>
-    <div class="bot-card-meta">
-      ${safeText((b.exchange||'—').toUpperCase())} · ${safeText(b.pair||'BTC/USD')} · ${safeText((b.mode||'paper').toUpperCase())}
-      ${b.uptime ? '· ⏱ '+safeText(b.uptime) : ''}
-    </div>
-    <div class="bot-card-stats">
-      <div class="bot-stat">
-        <div class="bot-stat-label">Price</div>
-        <div class="bot-stat-value">${b.current_price ? fmtPrice(b.current_price) : '—'}</div>
-      </div>
-      <div class="bot-stat">
-        <div class="bot-stat-label">Balance</div>
-        <div class="bot-stat-value">${b.balance_btc ? b.balance_btc.toFixed(4) : '—'}</div>
-      </div>
-      <div class="bot-stat">
-        <div class="bot-stat-label">Win rate</div>
-        <div class="bot-stat-value">${b.win_rate||0}%</div>
-      </div>
-      <div class="bot-stat">
-        <div class="bot-stat-label">PnL</div>
-        <div class="bot-stat-value ${pnlCls}">${pnlSign}${pnl.toFixed(6)}</div>
-      </div>
-      <div class="bot-stat">
-        <div class="bot-stat-label">Open deals</div>
-        <div class="bot-stat-value">${b.open_deals_count||0}</div>
-      </div>
-      <div class="bot-stat">
-        <div class="bot-stat-label">Closed</div>
-        <div class="bot-stat-value">${b.closed_deals_count||0}</div>
-      </div>
-    </div>
-    ${openDealsHtml ? `<div class="bot-card-deals">${openDealsHtml}${moreDeals}</div>` : ''}
-    <div class="bot-card-footer">
-      ${running
-        ? `<button class="btn-sm btn-stop"    data-action="stop"    data-slug="${safeText(b.slug)}">■ Stop</button>
-           <button class="btn-sm btn-restart" data-action="restart" data-slug="${safeText(b.slug)}">↺ Restart</button>`
-        : `<button class="btn-sm btn-start"   data-action="start"   data-slug="${safeText(b.slug)}">▶ Start</button>`
-      }
-      <button class="btn-sm btn-open" data-action="open" data-slug="${safeText(b.slug)}">Open →</button>
-    </div>
-  </div>`;
-}
-
-// Click delegation — slug comes from data-slug (escaped via safeText), never
-// interpolated into an onclick string, so it can't break out of the attribute.
-document.addEventListener('click', e => {
-  const el = e.target.closest('[data-action]');
-  if (!el) return;
-  const action = el.dataset.action;
-  const slug   = el.dataset.slug;
-  if (!slug) return;
-  if (action === 'open') openBot(slug);
-  else if (['start','stop','restart'].includes(action)) botAction(slug, action);
-});
-
-// ── Bot actions ───────────────────────────────────────────────────────────────
-async function botAction(slug, action) {
-  const res = await fetch(`/api/bots/${slug}/${action}`, {
-    method: 'POST',
-    headers: { 'X-API-Key': getApiKey() }
-  });
-  if (res.status === 401) {
-    alert('Auth fout — controleer je API key');
-    showApiKeyModal();
-    return;
-  }
-  const r = await res.json();
-  if (!r.ok) alert(`${action} failed: ${r.error}`);
-  setTimeout(fetchOverview, 1200);
-  if (currentSlug === slug) setTimeout(()=>fetchDetail(slug), 1500);
-}
-
-// ── Bot detail ────────────────────────────────────────────────────────────────
-function goOverview() {
-  currentSlug = null;
-  clearInterval(detailInterval);
-  if (ws) { ws.close(); ws=null; }
-
-  // Reset header — keep price visible but hide bot-specific elements
-  $('hdr-context').textContent = 'Multi-Bot Portal';
-  $('hdr-context').style.cursor = 'default';
-  $('hdr-context').onclick = null;
-  $('hdr-pill').style.display = 'none';
-  $('hdr-uptime').textContent = '';
-  $('detail-nav-item').style.display = 'none';
-
-  // Nav
-  document.querySelectorAll('#main-nav .tab').forEach(t=>t.classList.remove('active'));
-  $('main-nav').querySelector('.tab').classList.add('active');
-
-  showPage('overview');
-  fetchOverview();
-  overviewInterval = setInterval(fetchOverview, 5000);
-}
-
-function openBot(slug) {
-  clearInterval(overviewInterval);
-  currentSlug = slug;
-
-  // Header
-  $('hdr-context').textContent = '← Overview';
-  $('hdr-context').style.cursor = 'pointer';
-  $('hdr-context').onclick = goOverview;
-  $('hdr-pair').style.display = 'inline';
-  $('hdr-price').style.display = 'inline';
-  $('hdr-pill').style.display = 'flex';
-
-  // Nav
-  document.querySelectorAll('#main-nav .tab').forEach(t=>t.classList.remove('active'));
-  $('detail-nav-item').style.display = 'inline';
-  $('detail-nav-btn').textContent = slug;
-  $('detail-nav-btn').classList.add('active');
-
-  // Reset detail tabs
-  showDTab('dashboard', document.querySelector('.detail-subnav .tab'));
-
-  showPage('detail');
-  connectWS(slug);
-  fetchDetail(slug);
-  detailInterval = setInterval(()=>fetchDetail(slug), 5000);
-}
-
-async function fetchDetail(slug) {
-  try {
-    const b = await fetch(`/api/bots/${slug}`).then(r=>r.json());
-
-    // Header
-    if (b.current_price) $('hdr-price').textContent = fmtPrice(b.current_price);
-    $('hdr-pair').textContent = b.pair||'BTC/USD';
-    $('hdr-uptime').textContent = b.uptime ? '⏱ '+b.uptime : '';
-
-    const pill = $('status-pill');
-    $('status-text').textContent = b.running ? 'Running' : 'Stopped';
-    pill.className = 'pill '+(b.running?'running':'stopped');
-
-    // Dashboard stats
-    $('d-price').textContent   = fmtPrice(b.current_price)||'—';
-    $('d-pair-sub').textContent = b.pair||'BTC/USD';
-    $('d-balance').textContent = b.balance_btc ? b.balance_btc.toFixed(6) : '—';
-
-    const pnl = b.total_pnl_btc||0;
-    $('d-pnl').innerHTML = fmtPnl(pnl,8);
-    $('d-open-count').textContent = b.open_deals_count ?? '—';
-    $('d-winrate').textContent = (b.win_rate??0)+'%';
-    $('d-schedule').textContent = b.schedule_open ? 'Open' : 'Closed';
-    $('d-schedule').className = 'card-value '+(b.schedule_open?'pos':'neu');
-
-    // Bot info
-    $('d-config').textContent   = b.config_file||'—';
-    $('d-mode').textContent     = (b.mode||'—').toUpperCase();
-    $('d-exchange').textContent = (b.exchange||'—').toUpperCase();
-    $('d-init').textContent     = b.initial_balance_btc ? b.initial_balance_btc.toFixed(4)+' BTC' : '—';
-
-    // Indicators
-    const ind = b.indicators||{};
-    const ig = $('indicator-grid');
-    const indKeys = Object.entries(ind);
-    if (!indKeys.length) {
-      ig.innerHTML = '<div class="empty-grid">No indicator data yet — waiting for first candle fetch</div>';
-    } else {
-      ig.innerHTML = indKeys.map(([k,v]) => `
-        <div class="indicator-card">
-          <div class="indicator-label">${k.replace(/_/g,' ')}</div>
-          <div class="indicator-value">${typeof v==='number'?v.toFixed(4):v}</div>
-        </div>`).join('');
-    }
-
-    // Open deals
-    const ob = $('d-open-tbody');
-    const od = b.open_deals||[];
-    ob.innerHTML = od.length
-      ? od.map(d=>`<tr>
-          <td style="color:var(--accent)">${d.id}</td>
-          <td>${fmtPrice(d.entry_price)}</td>
-          <td>${fmtPrice(d.avg_entry_price)}</td>
-          <td>${d.order_count}</td>
-          <td>${d.total_size?.toFixed(4)||'—'}</td>
-          <td>${fmtPnl(d.pnl_btc)}</td>
-          <td style="color:var(--muted)">${timeAgo(d.opened_at)}</td>
-        </tr>`).join('')
-      : '<tr class="empty-row"><td colspan="7">No open deals</td></tr>';
-
-    // Closed deals
-    const cb = $('d-closed-tbody');
-    const cd = b.closed_deals||[];
-    cb.innerHTML = cd.length
-      ? cd.map(d=>`<tr>
-          <td style="color:var(--muted)">${d.id}</td>
-          <td>${reasonBadge(d.close_reason)}</td>
-          <td>${fmtPrice(d.entry_price)}</td>
-          <td>${fmtPrice(d.close_price)}</td>
-          <td>${fmtPnl(d.pnl_btc)}</td>
-          <td>${fmtPct(d.pnl_pct)}</td>
-          <td style="color:var(--muted)">${timeAgo(d.closed_at)}</td>
-        </tr>`).join('')
-      : '<tr class="empty-row"><td colspan="7">No closed deals</td></tr>';
-
-    $('log-title').textContent = slug+'.log';
-
-  } catch(e) {}
-}
-
-// ── WebSocket ─────────────────────────────────────────────────────────────────
-function connectWS(slug) {
-  if (ws) ws.close();
-  $('log-body').innerHTML = '';
-  const key = encodeURIComponent(getApiKey());
-  ws = new WebSocket(`ws://${location.host}/ws/logs/${slug}?api_key=${key}`);
-  const dot = $('ws-dot');
-  const lbl = $('ws-label');
-  ws.onopen    = () => { dot.className='live-dot connected'; lbl.textContent='live'; lbl.style.color='var(--accent)'; };
-  ws.onmessage = e  => appendLog(e.data);
-  ws.onclose   = () => {
-    dot.className='live-dot error'; lbl.textContent='reconnecting'; lbl.style.color='var(--red)';
-    if (currentSlug===slug) setTimeout(()=>connectWS(slug),3000);
-  };
-  ws.onerror = () => ws.close();
-}
-
-function appendLog(text) {
-  if (text==='__ping__') return;
-  const out=$('log-body');
-  const el=document.createElement('div');
-  el.className='log-line '+logCls(text);
-  el.textContent=text;
-  out.appendChild(el);
-  while(out.children.length>500) out.removeChild(out.firstChild);
-  const auto=$('autoscroll');
-  if(auto&&auto.checked) out.scrollTop=out.scrollHeight;
-}
-function clearLog() { $('log-body').innerHTML=''; }
-
-// ── Always-on price fetch ─────────────────────────────────────────────────────
-async function fetchPrice() {
-  try {
-    const d = await fetch('/api/price').then(r => r.json());
-    if (d.price) {
-      $('hdr-price').textContent = fmtPrice(d.price);
-      $('hdr-pair').textContent  = d.pair || 'BTC/USD';
-    }
-  } catch(e) {}
-}
-
-// ── Overview log — all bots combined, INFO+ only ──────────────────────────────
-let ovWsList = [];
-
-function connectOverviewLogs(slugs) {
-  // Close existing connections
-  ovWsList.forEach(w => w.close());
-  ovWsList = [];
-
-  const dot = $('ov-ws-dot');
-  const lbl = $('ov-ws-label');
-  let connected = 0;
-
-  const key = encodeURIComponent(getApiKey());
-  slugs.forEach(slug => {
-    const w = new WebSocket(`ws://${location.host}/ws/logs/${slug}?api_key=${key}`);
-    w.onopen = () => {
-      connected++;
-      dot.className = 'live-dot connected';
-      lbl.textContent = 'live';
-      lbl.style.color = 'var(--accent)';
-    };
-    w.onmessage = e => {
-      const line = e.data;
-      if (line === '__ping__') return;
-      // Only show INFO and above on overview
-      if (line.includes('[DEBUG]')) return;
-      appendOverviewLog(line, slug);
-    };
-    w.onclose = () => {
-      connected = Math.max(0, connected - 1);
-      if (connected === 0) {
-        dot.className = 'live-dot error';
-        lbl.textContent = 'disconnected';
-        lbl.style.color = 'var(--red)';
-      }
-    };
-    ovWsList.push(w);
-  });
-
-  if (!slugs.length) {
-    dot.className = 'live-dot';
-    lbl.textContent = 'no bots';
-    lbl.style.color = 'var(--muted)';
-  }
-}
-
-function appendOverviewLog(text, slug) {
-  const out = $('ov-log-body');
-  const el  = document.createElement('div');
-  el.className = 'log-line ' + logCls(text);
-  // Prefix with bot name for clarity when multiple bots log
-  el.textContent = text;
-  out.appendChild(el);
-  while (out.children.length > 300) out.removeChild(out.firstChild);
-  out.scrollTop = out.scrollHeight;
-}
-
-// ── Portal restart ────────────────────────────────────────────────────────────
-async function restartPortal() {
-  const btn = $('restart-btn');
-  btn.textContent = '↺ Restarting...';
-  btn.disabled = true;
-
-  try {
-    await fetch('/api/portal/restart', {
-      method: 'POST',
-      headers: { 'X-API-Key': getApiKey() }
-    });
-  } catch(e) {
-    // Expected — portal closes connection during restart
-  }
-
-  // Poll until portal is back up
-  const poll = setInterval(async () => {
-    try {
-      const r = await fetch('/api/portal/status');
-      if (r.ok) {
-        clearInterval(poll);
-        btn.textContent = '↺ Restart Dashboard';
-        btn.disabled = false;
-        // Reload page to reconnect websockets etc.
-        location.reload();
-      }
-    } catch(e) {
-      // Still restarting...
-    }
-  }, 1000);
-}
-
-// ── Init ──────────────────────────────────────────────────────────────────────
-// Bij eerste bezoek (geen key opgeslagen) direct de modal tonen zodat de
-// gebruiker hem kan invoeren voordat WebSockets/POSTs worden uitgevoerd.
-if (!getApiKey()) showApiKeyModal();
-
-fetchOverview();
-fetchPrice();
-overviewInterval = setInterval(fetchOverview, 5000);
-setInterval(fetchPrice, 15000);  // Price every 15s regardless of bots
-
-// Connect overview log after first bot data loads
-setTimeout(async () => {
-  try {
-    const d = await fetch('/api/bots').then(r => r.json());
-    const slugs = (d.bots || []).map(b => b.slug);
-    slugs.push('portal');  // also stream the dashboard's own log
-    connectOverviewLogs(slugs);
-  } catch(e) {}
-}, 1000);
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>
