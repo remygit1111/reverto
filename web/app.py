@@ -193,20 +193,35 @@ class BotInfo:
 
     def read_state(self) -> dict:
         try:
-            if self.state_file.exists():
-                size = self.state_file.stat().st_size
-                if size > _MAX_STATE_FILE_SIZE:
-                    logger.warning(
-                        "State file %s too large (%d bytes), using defaults",
-                        self.state_file, size,
-                    )
-                    return self._default_state()
-                raw = json.loads(self.state_file.read_text(encoding="utf-8"))
-                validated = BotStateModel.model_validate(raw).model_dump()
-                validated["running"]     = self.running
-                validated["slug"]        = self.slug
-                validated["config_file"] = self.config_file
-                return validated
+            # Bounded read — lees maximaal _MAX_STATE_FILE_SIZE + 1 bytes in
+            # één open()+read() zodat er geen TOCTOU gat is tussen een
+            # aparte stat() en read_text(). Als er een byte extra binnenkomt
+            # is de file groter dan toegestaan en vallen we terug op default.
+            try:
+                with open(self.state_file, "rb") as fh:
+                    raw_bytes = fh.read(_MAX_STATE_FILE_SIZE + 1)
+            except FileNotFoundError:
+                return self._default_state()
+            except MemoryError:
+                logger.warning(
+                    "State file %s triggered MemoryError, using defaults",
+                    self.state_file,
+                )
+                return self._default_state()
+
+            if len(raw_bytes) > _MAX_STATE_FILE_SIZE:
+                logger.warning(
+                    "State file %s exceeds %d bytes, using defaults",
+                    self.state_file, _MAX_STATE_FILE_SIZE,
+                )
+                return self._default_state()
+
+            raw = json.loads(raw_bytes.decode("utf-8"))
+            validated = BotStateModel.model_validate(raw).model_dump()
+            validated["running"]     = self.running
+            validated["slug"]        = self.slug
+            validated["config_file"] = self.config_file
+            return validated
         except ValidationError as e:
             logger.warning("State validation failed for %s: %s", self.slug, e)
         except Exception as e:
