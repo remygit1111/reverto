@@ -1,9 +1,12 @@
 /* web/static/style.css
    Reverto Dashboard — design language matching RBotic
    IBM Plex Mono + IBM Plex Sans, dark/light theme, turquoise accent
-*/
 
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+   NB: voorheen werd hier Google Fonts via @import geladen, maar onder
+   strikte CSP (style-src 'self') wordt dat geblokkeerd. We vallen nu
+   terug op systeem mono/sans — IBM Plex blijft de gewenste voorkeur
+   en wordt automatisch gebruikt als de gebruiker hem lokaal heeft.
+*/
 
 /* ── Reset ─────────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
