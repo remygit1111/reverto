@@ -1,9 +1,13 @@
 # config/models.py
 # Defines the structure and validation rules for bot configurations
 
-from pydantic import BaseModel, Field, ConfigDict
+import re
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal, Optional
 from enum import Enum
+
+_NAME_RE = re.compile(r"^[a-zA-Z0-9 \-_]+$")
 
 
 class Mode(str, Enum):
@@ -102,6 +106,20 @@ class TelegramConfig(BaseModel):
 class BotConfig(BaseModel):
     name: str
     mode: Mode
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        # Strip eerst control chars (ANSI escapes, null bytes) zodat een
+        # YAML met "BotA\x1b[31m" niet via logs richting dashboard lekt.
+        cleaned = "".join(c for c in v if ord(c) >= 32 or c in "\t").strip()
+        if not (1 <= len(cleaned) <= 100):
+            raise ValueError("name must be 1-100 characters after stripping control chars")
+        if not _NAME_RE.match(cleaned):
+            raise ValueError(
+                "name may only contain letters, digits, spaces, '-' and '_'"
+            )
+        return cleaned
     exchange: Exchange
     pair: str = "BTC/USD"
     # contract_type determines PnL calculation formula.
