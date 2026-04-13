@@ -843,11 +843,13 @@ function openBot(slug) {
   currentSlug = slug;
   _detailConfigCache = null;
 
-  // Detail is a sub-view of Bots now — keep the Bots tab active and
-  // surface the slug inside the detail body via a Back bar.
+  // Detail is a sub-view of Bots — keep the Bots tab active and surface
+  // the slug in the header subtext as "Multi-Bot Portal › SLUG".
   _setActiveTab('nav-bots-btn');
   $('hdr-pill').classList.remove('hidden');
-  $('detail-slug-label').textContent = slug;
+  $('hdr-context').innerHTML =
+    'Multi-Bot Portal <span class="hdr-sep">›</span> ' +
+    '<span class="hdr-slug">' + safeText(slug.toUpperCase()) + '</span>';
 
   showDTab('dashboard', document.querySelector('.detail-subnav .tab'));
 

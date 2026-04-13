@@ -1138,19 +1138,31 @@ tr:hover td { background: rgba(128,128,128,.04); }
   margin-bottom: 6px;
 }
 
-/* ── Detail view back bar (sub-view of Bots tab) ────────────────────────── */
-.detail-back {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 20px 0;
-}
-.detail-slug-label {
+/* ── Detail sub-nav back button ─────────────────────────────────────────── */
+/* Renders as "← | Dashboard | Deals | Config | Log" — the ← lives inside
+   the existing .detail-subnav instead of a separate bar above it. */
+.subnav-back {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 14px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: color .15s;
+  white-space: nowrap;
+}
+.subnav-back:hover { color: var(--accent); }
+
+/* Header context subtext — "Multi-Bot Portal › SLUG" */
+.hdr-sep {
+  color: var(--muted);
+  margin: 0 4px;
+}
+.hdr-slug {
+  color: var(--accent);
   font-weight: 600;
-  color: var(--text);
-  text-transform: uppercase;
   letter-spacing: .08em;
 }
 
@@ -1212,9 +1224,9 @@ tr:hover td { background: rgba(128,128,128,.04); }
   table { font-size: 11px; }
   th, td { padding: 6px 8px; }
 
-  /* Detail back bar */
-  .detail-back { padding: 12px 10px 0; }
-  .detail-subnav { padding: 0 10px; }
+  /* Detail sub-nav — back button + tabs scroll horizontally if needed */
+  .detail-subnav { padding: 0 10px; overflow-x: auto; }
+  .subnav-back { padding: 10px 12px; }
   .detail-content { padding: 12px 10px; }
   .dtab-content { padding: 12px 10px; }
   .log-wrap-detail { height: calc(100vh - 170px); }
