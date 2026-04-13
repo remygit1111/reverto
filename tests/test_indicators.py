@@ -13,6 +13,10 @@ from strategies.indicators.parabolic_sar import (
     calculate_parabolic_sar,
     check_parabolic_sar_signal,
 )
+from strategies.indicators.supertrend import (
+    calculate_supertrend,
+    check_supertrend_signal,
+)
 from config.models import BotConfig
 from pydantic import ValidationError
 
@@ -223,6 +227,55 @@ class TestParabolicSAR:
     def test_unknown_condition_raises(self):
         with pytest.raises(ValueError, match="Unknown Parabolic SAR"):
             check_parabolic_sar_signal([float(i) for i in range(15)], condition="invalid")
+
+
+class TestSupertrend:
+    @staticmethod
+    def _ohlc(closes, spread=0.5):
+        """Build synthetic OHLC from a closes list with a fixed spread."""
+        highs = [c + spread for c in closes]
+        lows  = [c - spread for c in closes]
+        return highs, lows, closes
+
+    def test_bullish_trend_detected(self):
+        closes = [float(100 + i) for i in range(30)]
+        h, lo, c = self._ohlc(closes)
+        assert check_supertrend_signal(h, lo, c, condition="bullish") is True
+        assert check_supertrend_signal(h, lo, c, condition="bearish") is False
+
+    def test_bearish_trend_detected(self):
+        closes = [float(130 - i) for i in range(30)]
+        h, lo, c = self._ohlc(closes)
+        assert check_supertrend_signal(h, lo, c, condition="bearish") is True
+
+    def test_bullish_flip_on_reversal(self):
+        down = [float(130 - i) for i in range(20)]
+        up = down + [float(110 + i * 3) for i in range(15)]
+        h, lo, c = self._ohlc(up)
+        flips = 0
+        for end in range(12, len(up) + 1):
+            try:
+                if check_supertrend_signal(
+                    h[:end], lo[:end], c[:end], condition="bullish_flip"
+                ):
+                    flips += 1
+            except ValueError:
+                pass
+        assert flips >= 1
+
+    def test_mismatched_lengths_raise(self):
+        with pytest.raises(ValueError, match="identical length"):
+            calculate_supertrend([1.0, 2.0, 3.0], [0.5, 1.5], [1.0, 2.0, 3.0])
+
+    def test_insufficient_data_raises(self):
+        with pytest.raises(ValueError, match="at least"):
+            calculate_supertrend([1.0, 2.0], [0.5, 1.5], [1.0, 2.0], atr_period=10)
+
+    def test_unknown_condition_raises(self):
+        closes = [float(100 + i) for i in range(30)]
+        h, lo, c = self._ohlc(closes)
+        with pytest.raises(ValueError, match="Unknown Supertrend"):
+            check_supertrend_signal(h, lo, c, condition="invalid")
 
 
 class TestConfigValidation:

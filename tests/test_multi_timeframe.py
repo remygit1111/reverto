@@ -4,7 +4,7 @@
 #   - check_entry_signal(closes_per_tf, bot_timeframe)
 #   - fail-closed when a required timeframe is missing
 #   - BacktestEngine raises ValueError on missing tf data
-#   - _closes_up_to() pointer-walk yields correct slices per tf
+#   - _ohlc_up_to() pointer-walk yields correct slices per tf
 
 import os
 import sys
@@ -164,19 +164,22 @@ class TestClosesUpTo:
         )
 
         # cur_ts=1500 → 1h[0]=1000 closed, 4h[0]=1000 closed
-        out = engine._closes_up_to(1500)
-        assert out["1h"] == [100.0]
-        assert out["4h"] == [200.0]
+        closes, _, _ = engine._ohlc_up_to(1500)
+        assert closes["1h"] == [100.0]
+        assert closes["4h"] == [200.0]
 
         # cur_ts=2500 → 1h[0,1] closed (ts 1000,2000), 4h[0] closed
-        out = engine._closes_up_to(2500)
-        assert out["1h"] == [100.0, 101.0]
-        assert out["4h"] == [200.0]
+        closes, _, _ = engine._ohlc_up_to(2500)
+        assert closes["1h"] == [100.0, 101.0]
+        assert closes["4h"] == [200.0]
 
         # cur_ts=3500 → 1h[0..2] closed, 4h[0,1] closed (ts 1000,3000)
-        out = engine._closes_up_to(3500)
-        assert out["1h"] == [100.0, 101.0, 102.0]
-        assert out["4h"] == [200.0, 201.0]
+        closes, highs, lows = engine._ohlc_up_to(3500)
+        assert closes["1h"] == [100.0, 101.0, 102.0]
+        assert closes["4h"] == [200.0, 201.0]
+        # Highs/lows dicts are also populated — smoke check only
+        assert len(highs["1h"]) == len(closes["1h"])
+        assert len(lows["4h"]) == len(closes["4h"])
 
     def test_backtest_runs_with_multi_tf_no_indicators(self):
         """Full run with two timeframes and no indicators — sanity check
