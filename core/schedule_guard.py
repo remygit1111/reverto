@@ -43,11 +43,26 @@ class ScheduleGuard:
         # Check if current time falls within any trading window
         for window in self.schedule.trading_windows:
             window_days = [DAY_MAP[d.lower()] for d in window.days]
-            if current_day in window_days:
-                if window.from_time <= current_time <= window.to_time:
-                    return True
+            if current_day in window_days and self._time_in_window(
+                current_time, window.from_time, window.to_time
+            ):
+                return True
 
         return False
+
+    @staticmethod
+    def _time_in_window(current: str, ft: str, tt: str) -> bool:
+        """True als `current` (HH:MM) binnen [ft, tt] valt.
+
+        Ondersteunt overnight windows: als ft > tt (b.v. 22:00 → 06:00)
+        is het venster geldig als current >= ft OF current <= tt.
+        Voor day-spanning windows checkt is_open() alleen de start-dag —
+        een operator die Mon 22:00 → Tue 06:00 wil moet beide dagen in
+        window.days zetten.
+        """
+        if ft <= tt:
+            return ft <= current <= tt
+        return current >= ft or current <= tt
 
     def status(self, is_open: Optional[bool] = None) -> dict:
         """
