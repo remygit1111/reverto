@@ -409,6 +409,7 @@ function nbDefaultState() {
     base_unit: 'btc', base_size: 0.001,
     indicators: [],
     tp_target_pct: 3.0, tp_indicator_confirm: '',
+    tp_min_pct: null,
     tp_max_age_enabled: false, tp_max_age_hours: 24,
     sl_type: 'fixed', sl_pct: 5.0,
     dca_max_orders: 5, dca_size: 0.001, dca_spacing_pct: 2.5,
@@ -468,6 +469,8 @@ function nbReadAll() {
 
   nbState.tp_target_pct = parseFloat($('nb-tp-pct').value);
   nbState.tp_indicator_confirm = $('nb-tp-confirm').value;
+  const minRaw = $('nb-tp-min-pct').value;
+  nbState.tp_min_pct = minRaw === '' ? null : parseFloat(minRaw);
   nbState.tp_max_age_enabled = $('nb-tp-max-age-enabled').checked;
   nbState.tp_max_age_hours = parseInt($('nb-tp-max-age-hours').value, 10);
   nbState.sl_type = $('nb-sl-type').value;
@@ -512,8 +515,20 @@ function nbRecompute() {
   if (!nbState) return;
   nbReadAll();
   nbUpdateLeverageUI();
+  nbUpdateMinTpHint();
   nbRenderDcaPreview();
   nbRenderReview();
+}
+
+function nbUpdateMinTpHint() {
+  const hint = $('nb-tp-min-hint');
+  if (!hint) return;
+  if (nbState.tp_min_pct != null && nbState.tp_min_pct > 0) {
+    hint.textContent =
+      `Position will only close if price is at least ${nbState.tp_min_pct}% above average entry`;
+  } else {
+    hint.textContent = '';
+  }
 }
 
 function nbApplyStateToForm() {
@@ -534,6 +549,7 @@ function nbApplyStateToForm() {
 
   $('nb-tp-pct').value = nbState.tp_target_pct;
   $('nb-tp-confirm').value = nbState.tp_indicator_confirm;
+  $('nb-tp-min-pct').value = nbState.tp_min_pct == null ? '' : nbState.tp_min_pct;
   $('nb-tp-max-age-enabled').checked = nbState.tp_max_age_enabled;
   $('nb-tp-max-age-hours').value = nbState.tp_max_age_hours;
   $('nb-tp-max-age-hours').disabled = !nbState.tp_max_age_enabled;
@@ -856,6 +872,9 @@ function nbBuildBotConfig() {
   if (nbState.tp_indicator_confirm) {
     cfg.take_profit.indicator_confirm = nbState.tp_indicator_confirm;
   }
+  if (nbState.tp_min_pct != null && nbState.tp_min_pct > 0) {
+    cfg.take_profit.minimum_tp_pct = nbState.tp_min_pct;
+  }
   return { bot: cfg };
 }
 
@@ -1142,6 +1161,7 @@ function nbStateFromConfig(cfg) {
     })),
     tp_target_pct:        tp.target_pct != null ? tp.target_pct : d.tp_target_pct,
     tp_indicator_confirm: tp.indicator_confirm || '',
+    tp_min_pct:           tp.minimum_tp_pct != null ? tp.minimum_tp_pct : null,
     sl_type:              sl.type || d.sl_type,
     sl_pct:               sl.pct != null ? sl.pct : d.sl_pct,
     dca_max_orders:       dca.max_orders != null ? dca.max_orders : d.dca_max_orders,

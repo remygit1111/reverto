@@ -247,9 +247,20 @@
             <label>Indicator confirmation</label>
             <select id="nb-tp-confirm">
               <option value="">none</option>
-              <option value="MACD bullish">MACD bullish</option>
-              <option value="MACD bearish">MACD bearish</option>
+              <option value="rsi_above_70">RSI above 70</option>
+              <option value="rsi_above_65">RSI above 65</option>
+              <option value="rsi_above_60">RSI above 60</option>
+              <option value="ema_bullish_cross">EMA bullish cross</option>
+              <option value="histogram_positive">MACD histogram positive</option>
+              <option value="histogram_negative">MACD histogram negative</option>
+              <option value="bullish_cross">MACD bullish cross</option>
+              <option value="bearish_cross">MACD bearish cross</option>
             </select>
+          </div>
+          <div class="form-row">
+            <label>Minimum TP % (optional)</label>
+            <input id="nb-tp-min-pct" type="number" step="0.1" min="0" placeholder="leave empty to disable">
+            <div class="form-hint" id="nb-tp-min-hint"></div>
           </div>
           <div class="form-row form-row-wide">
             <label class="checkbox-label">
