@@ -397,6 +397,19 @@ function goNewBot() {
 }
 
 // ── New bot single-page form ─────────────────────────────────────────────────
+// Short inline help shown under the indicator type dropdown so a new
+// operator knows what each filter does without leaving the wizard.
+const NB_INDICATOR_DESCRIPTIONS = {
+  RSI:
+    "Measures momentum. Signals when the market is overbought or oversold " +
+    "based on recent price changes.",
+  EMA_CROSS:
+    "Compares two moving averages. A crossover signals a potential trend change.",
+  MACD:
+    "Tracks trend momentum using the difference between two moving averages " +
+    "and a signal line.",
+};
+
 let nbState = null;
 // When set, nbSubmit() PUTs to /api/bots/{slug}/config instead of POSTing a
 // new bot. editBot() sets this, nbInit() clears it. Cleared again on success.
@@ -613,13 +626,14 @@ function nbRenderIndicators() {
           <button type="button" class="nb-ind-close" data-nb-remove="${i}" title="Remove indicator">×</button>
         </div>
         <div class="nb-ind-body">
-          <div class="form-row">
+          <div class="form-row form-row-wide">
             <label>Type</label>
             <select data-nb-ind="${i}" data-nb-field="type">
               <option value="RSI" ${ind.type === 'RSI' ? 'selected' : ''}>RSI</option>
               <option value="EMA_CROSS" ${ind.type === 'EMA_CROSS' ? 'selected' : ''}>EMA Cross</option>
               <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
             </select>
+            <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
           </div>
           <div class="form-row">
             <label>Timeframe</label>
