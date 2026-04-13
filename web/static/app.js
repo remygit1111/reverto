@@ -110,12 +110,13 @@ function showPage(name) {
 }
 
 function showDTab(name, btn) {
-  ['dashboard', 'deals', 'log'].forEach(n => {
+  ['dashboard', 'deals', 'config', 'log'].forEach(n => {
     const el = $('dtab-' + n);
     if (el) { el.classList.toggle('hidden', n !== name); }
   });
   document.querySelectorAll('.detail-subnav .tab').forEach(t => t.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  if (name === 'config' && currentSlug) fetchDetailConfig(currentSlug);
 }
 
 // ── Overview ──────────────────────────────────────────────────────────────────
@@ -249,7 +250,8 @@ function renderBotCard(b) {
       ${running
         ? `<button class="btn-sm btn-stop"    data-action="stop"    data-slug="${safeText(b.slug)}">■ Stop</button>
            <button class="btn-sm btn-restart" data-action="restart" data-slug="${safeText(b.slug)}">↺ Restart</button>`
-        : `<button class="btn-sm btn-start"   data-action="start"   data-slug="${safeText(b.slug)}">▶ Start</button>`
+        : `<button class="btn-sm btn-start"   data-action="start"   data-slug="${safeText(b.slug)}">▶ Start</button>
+           <button class="btn-sm btn-delete"  data-action="delete"  data-slug="${safeText(b.slug)}" data-name="${safeText(b.bot_name || b.slug)}">✕ Delete</button>`
       }
       <button class="btn-sm btn-open" data-action="open" data-slug="${safeText(b.slug)}">Open →</button>
     </div>
@@ -265,8 +267,38 @@ document.addEventListener('click', e => {
   const slug = el.dataset.slug;
   if (!slug) return;
   if (action === 'open') openBot(slug);
+  else if (action === 'delete') deleteBot(slug, el.dataset.name || slug);
   else if (['start', 'stop', 'restart'].includes(action)) botAction(slug, action);
 });
+
+// ── Delete bot ───────────────────────────────────────────────────────────────
+async function deleteBot(slug, name) {
+  if (!confirm(`Delete bot '${name}'? This cannot be undone.`)) return;
+  if (!getApiKey()) {
+    _pendingAction = () => deleteBot(slug, name);
+    showApiKeyModal();
+    return;
+  }
+  const res = await fetch(`/api/bots/${slug}`, {
+    method: 'DELETE',
+    headers: { 'X-API-Key': getApiKey() },
+  });
+  if (res.status === 401) {
+    _pendingAction = () => deleteBot(slug, name);
+    alert('Auth error — check your API key');
+    showApiKeyModal();
+    return;
+  }
+  let detail = '';
+  try { detail = (await res.json()).detail || ''; } catch (e) {}
+  if (!res.ok) {
+    alert(`Delete failed: ${detail || res.status}`);
+    return;
+  }
+  // If we're currently inside this bot's detail view, bounce back to Bots.
+  if (currentSlug === slug) goBots();
+  else fetchOverview();
+}
 
 // ── Bot actions ───────────────────────────────────────────────────────────────
 async function botAction(slug, action) {
@@ -353,6 +385,9 @@ function goNewBot() {
 
 // ── New bot single-page form ─────────────────────────────────────────────────
 let nbState = null;
+// When set, nbSubmit() PUTs to /api/bots/{slug}/config instead of POSTing a
+// new bot. editBot() sets this, nbInit() clears it. Cleared again on success.
+let nbEditSlug = null;
 
 function nbDefaultState() {
   return {
@@ -370,6 +405,9 @@ function nbDefaultState() {
 
 function nbInit() {
   nbState = nbDefaultState();
+  nbEditSlug = null;
+  const btn = $('nb-submit-btn');
+  if (btn) btn.textContent = 'Save bot';
   nbApplyStateToForm();
   nbHideError();
   nbRecompute();
@@ -744,9 +782,6 @@ async function nbSubmit() {
     nbShowError(errors.map(e => safeText(e)).join('<br>'));
     return;
   }
-  // No key yet → stash this submit and prompt. saveApiKey() will rerun
-  // nbSubmit() after the user enters a valid key, preserving the form
-  // state because we never navigate away.
   if (!getApiKey()) {
     _pendingAction = () => nbSubmit();
     showApiKeyModal();
@@ -754,11 +789,15 @@ async function nbSubmit() {
   }
   const body = nbBuildBotConfig();
   const btn = $('nb-submit-btn');
+  const wasEdit = nbEditSlug;
+  const origLabel = wasEdit ? 'Save changes' : 'Save bot';
   btn.disabled = true;
   btn.textContent = 'Saving...';
   try {
-    const res = await fetch('/api/bots', {
-      method: 'POST',
+    const url = wasEdit ? `/api/bots/${wasEdit}/config` : '/api/bots';
+    const method = wasEdit ? 'PUT' : 'POST';
+    const res = await fetch(url, {
+      method,
       headers: { 'Content-Type': 'application/json', 'X-API-Key': getApiKey() },
       body: JSON.stringify(body),
     });
@@ -779,7 +818,7 @@ async function nbSubmit() {
     nbShowError('Network error: ' + safeText(e.message));
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Save bot';
+    btn.textContent = origLabel;
   }
 }
 
@@ -789,6 +828,7 @@ function openBot(slug) {
   clearInterval(overviewInterval);
   overviewInterval = null;
   currentSlug = slug;
+  _detailConfigCache = null;
 
   $('hdr-context').textContent = '← Overview';
   $('hdr-context').classList.add('clickable');
@@ -880,6 +920,154 @@ async function fetchDetail(slug) {
     $('log-title').textContent = slug + '.log';
 
   } catch (e) {}
+}
+
+// ── Bot detail: Config tab ───────────────────────────────────────────────────
+let _detailConfigCache = null;
+
+async function fetchDetailConfig(slug) {
+  const body = $('d-config-body');
+  if (!body) return;
+  try {
+    const res = await fetch(`/api/bots/${slug}/config`);
+    if (!res.ok) {
+      body.innerHTML = '<div class="cfg-empty">Failed to load config</div>';
+      _detailConfigCache = null;
+      return;
+    }
+    const cfg = await res.json();
+    _detailConfigCache = cfg;
+    renderDetailConfig(cfg);
+  } catch (e) {
+    body.innerHTML = `<div class="cfg-empty">Network error: ${safeText(e.message)}</div>`;
+    _detailConfigCache = null;
+  }
+}
+
+function renderDetailConfig(cfg) {
+  const b = (cfg && cfg.bot) || cfg || {};
+  const lev = b.leverage || {};
+  const dca = b.dca || {};
+  const tp  = b.take_profit || {};
+  const sl  = b.stop_loss || {};
+  const indicators = (b.entry && b.entry.indicators) || [];
+
+  const leverageStr = lev.enabled ? `${lev.size || 1}x` : 'off';
+  const indHtml = indicators.length
+    ? indicators.map(i => {
+        const rows = [];
+        rows.push(`<div class="cfg-row"><span class="cfg-key">Type</span><span>${safeText(i.type || '—')}</span></div>`);
+        if (i.timeframe) rows.push(`<div class="cfg-row"><span class="cfg-key">Timeframe</span><span>${safeText(i.timeframe)}</span></div>`);
+        if (i.type === 'RSI') {
+          if (i.period != null) rows.push(`<div class="cfg-row"><span class="cfg-key">Period</span><span>${i.period}</span></div>`);
+          if (i.threshold) rows.push(`<div class="cfg-row"><span class="cfg-key">Threshold</span><span>${safeText(i.threshold)}</span></div>`);
+        } else if (i.type === 'EMA_CROSS') {
+          if (i.fast != null) rows.push(`<div class="cfg-row"><span class="cfg-key">Fast</span><span>${i.fast}</span></div>`);
+          if (i.slow != null) rows.push(`<div class="cfg-row"><span class="cfg-key">Slow</span><span>${i.slow}</span></div>`);
+          if (i.signal) rows.push(`<div class="cfg-row"><span class="cfg-key">Signal</span><span>${safeText(i.signal)}</span></div>`);
+        } else if (i.type === 'MACD') {
+          if (i.condition) rows.push(`<div class="cfg-row"><span class="cfg-key">Condition</span><span>${safeText(i.condition)}</span></div>`);
+        }
+        return `<div class="cfg-indicator">
+          <div class="cfg-indicator-head">${safeText(i.type || 'Indicator')}</div>
+          ${rows.join('')}
+        </div>`;
+      }).join('')
+    : '<div class="cfg-empty">No indicators — always enter</div>';
+
+  $('d-config-body').innerHTML = `
+    <div class="cfg-section">
+      <div class="cfg-section-title">General</div>
+      <div class="cfg-row"><span class="cfg-key">Name</span><span>${safeText(b.name || '—')}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Exchange</span><span>${safeText((b.exchange || '—').toUpperCase())}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Pair</span><span>${safeText(b.pair || '—')}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Mode</span><span>${safeText((b.mode || '—').toUpperCase())}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Leverage</span><span>${safeText(leverageStr)}</span></div>
+    </div>
+
+    <div class="cfg-section">
+      <div class="cfg-section-title">Entry Conditions</div>
+      <div class="cfg-row"><span class="cfg-key">Base order size</span><span>${dca.base_order_size != null ? dca.base_order_size + ' BTC' : '—'}</span></div>
+      <div class="cfg-section-title" style="margin-top:14px;font-size:10px;color:var(--muted);border:none;padding:0">Indicators</div>
+      ${indHtml}
+    </div>
+
+    <div class="cfg-section">
+      <div class="cfg-section-title">Take Profit &amp; Stop Loss</div>
+      <div class="cfg-row"><span class="cfg-key">TP target</span><span>${tp.target_pct != null ? tp.target_pct + '%' : '—'}</span></div>
+      <div class="cfg-row"><span class="cfg-key">TP confirmation</span><span>${safeText(tp.indicator_confirm || 'none')}</span></div>
+      <div class="cfg-row"><span class="cfg-key">SL type</span><span>${safeText(sl.type || '—')}</span></div>
+      <div class="cfg-row"><span class="cfg-key">SL percentage</span><span>${sl.pct != null ? sl.pct + '%' : '—'}</span></div>
+    </div>
+
+    <div class="cfg-section">
+      <div class="cfg-section-title">DCA Settings</div>
+      <div class="cfg-row"><span class="cfg-key">Max orders</span><span>${dca.max_orders != null ? dca.max_orders : '—'}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Order spacing</span><span>${dca.order_spacing_pct != null ? dca.order_spacing_pct + '%' : '—'}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Multiplier</span><span>${dca.multiplier != null ? dca.multiplier : '—'}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Taker fee</span><span>${dca.taker_fee != null ? (dca.taker_fee * 100).toFixed(3) + '%' : '—'}</span></div>
+    </div>
+  `;
+}
+
+// ── Edit flow: load an existing bot into the wizard ─────────────────────────
+async function editBot(slug) {
+  try {
+    const res = await fetch(`/api/bots/${slug}/config`);
+    if (!res.ok) { alert('Failed to load config'); return; }
+    const cfg = await res.json();
+    nbState = nbStateFromConfig(cfg);
+    nbEditSlug = slug;
+    _resetHeaderForTopLevel();
+    _setActiveTab('nav-bots-btn');
+    showPage('new-bot');
+    nbApplyStateToForm();
+    nbHideError();
+    nbRecompute();
+    // Update submit button label to reflect edit mode
+    const btn = $('nb-submit-btn');
+    if (btn) btn.textContent = 'Save changes';
+  } catch (e) {
+    alert('Network error: ' + e.message);
+  }
+}
+
+function nbStateFromConfig(cfg) {
+  const b = (cfg && cfg.bot) || cfg || {};
+  const lev = b.leverage || {};
+  const dca = b.dca || {};
+  const tp  = b.take_profit || {};
+  const sl  = b.stop_loss || {};
+  const d = nbDefaultState();
+  return {
+    ...d,
+    name:             b.name || '',
+    exchange:         b.exchange || d.exchange,
+    pair:             b.pair || d.pair,
+    mode:             b.mode || d.mode,
+    leverage_enabled: !!lev.enabled,
+    leverage_size:    lev.size || d.leverage_size,
+    base_size:        dca.base_order_size != null ? dca.base_order_size : d.base_size,
+    indicators:       ((b.entry && b.entry.indicators) || []).map(i => ({
+      type:      i.type || 'RSI',
+      timeframe: i.timeframe || '1h',
+      period:    i.period != null ? i.period : 14,
+      threshold: i.threshold || 'below_35',
+      fast:      i.fast != null ? i.fast : 9,
+      slow:      i.slow != null ? i.slow : 21,
+      signal:    i.signal || 'bullish_cross',
+      condition: i.condition || 'histogram_positive',
+    })),
+    tp_target_pct:        tp.target_pct != null ? tp.target_pct : d.tp_target_pct,
+    tp_indicator_confirm: tp.indicator_confirm || '',
+    sl_type:              sl.type || d.sl_type,
+    sl_pct:               sl.pct != null ? sl.pct : d.sl_pct,
+    dca_max_orders:       dca.max_orders != null ? dca.max_orders : d.dca_max_orders,
+    // YAML only stores base_order_size; mirror it as the initial DCA size.
+    dca_size:             dca.base_order_size != null ? dca.base_order_size : d.dca_size,
+    dca_spacing_pct:      dca.order_spacing_pct != null ? dca.order_spacing_pct : d.dca_spacing_pct,
+    dca_volume_scale:     dca.multiplier != null ? dca.multiplier : d.dca_volume_scale,
+  };
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
@@ -1027,6 +1215,16 @@ function setupEventListeners() {
 
   $('log-clear-btn').addEventListener('click', clearLog);
   $('ov-log-clear-btn').addEventListener('click', () => { $('ov-log-body').innerHTML = ''; });
+
+  // ── Bot detail: Config tab actions ────────────────────────────────────────
+  $('d-edit-btn').addEventListener('click', () => {
+    if (currentSlug) editBot(currentSlug);
+  });
+  $('d-delete-btn').addEventListener('click', () => {
+    if (!currentSlug) return;
+    const name = (_detailConfigCache && _detailConfigCache.bot && _detailConfigCache.bot.name) || currentSlug;
+    deleteBot(currentSlug, name);
+  });
 
   // ── New bot form ─────────────────────────────────────────────────────────
   $('nb-submit-btn').addEventListener('click', nbSubmit);
