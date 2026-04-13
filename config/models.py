@@ -21,18 +21,28 @@ class Exchange(str, Enum):
     BITGET = "bitget"
 
 
+# Strict config: unknown keys anywhere in a bot YAML become a hard
+# ValidationError instead of silently getting stripped. The wizard's
+# nbBuildBotConfig() already filters its payload to known fields, so
+# this only bites on legitimately malformed configs or stale YAML.
+_STRICT = ConfigDict(extra="forbid")
+
+
 class LiquidationGuard(BaseModel):
+    model_config = _STRICT
     warn_pct: float = 15.0
     emergency_close_pct: float = 5.0
 
 
 class LeverageConfig(BaseModel):
+    model_config = _STRICT
     enabled: bool = False
     size: int = 1
     liquidation_guard: LiquidationGuard = LiquidationGuard()
 
 
 class DCAConfig(BaseModel):
+    model_config = _STRICT
     base_order_size: float
     max_orders: int = 5      # Total orders including base order. DCA orders = max_orders - 1.
     order_spacing_pct: float = 2.5
@@ -41,25 +51,34 @@ class DCAConfig(BaseModel):
 
 
 class IndicatorConfig(BaseModel):
+    model_config = _STRICT
     type: str
     period: Optional[int] = None
     threshold: Optional[str] = None
     fast: Optional[int] = None
     slow: Optional[int] = None
     signal: Optional[str] = None
+    # Per-indicator fields the wizard may set. The engine currently
+    # ignores these but we accept them so extra='forbid' doesn't reject
+    # wizard payloads round-tripped through edit.
+    timeframe: Optional[str] = None
+    condition: Optional[str] = None
 
 
 class EntryConfig(BaseModel):
+    model_config = _STRICT
     # Field(default_factory=list) prevents shared mutable default across instances
     indicators: list[IndicatorConfig] = Field(default_factory=list)
 
 
 class TakeProfitConfig(BaseModel):
+    model_config = _STRICT
     target_pct: float
     indicator_confirm: Optional[str] = None
 
 
 class StopLossConfig(BaseModel):
+    model_config = _STRICT
     # Literal type ensures invalid values like "traling" raise a validation error
     # rather than silently falling through to fixed stop behaviour
     type: Literal["fixed", "trailing"] = "fixed"
@@ -67,6 +86,7 @@ class StopLossConfig(BaseModel):
 
 
 class MLConfig(BaseModel):
+    model_config = _STRICT
     # NOTE: ML functionality is not yet implemented.
     # Setting enabled=true has no effect on engine behaviour.
     # A warning is logged at startup when enabled=true is detected.
@@ -81,16 +101,21 @@ class ScheduleWindow(BaseModel):
     from_time: str = Field(alias="from")
     to_time: str = Field(alias="to")
 
-    model_config = ConfigDict(populate_by_name=True)
+    # populate_by_name lets callers use either `from`/`to` (YAML) or
+    # `from_time`/`to_time` (Python); extra='forbid' still rejects
+    # anything outside that whitelist.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 class ScheduleConfig(BaseModel):
+    model_config = _STRICT
     timezone: str = "Europe/Amsterdam"
     trading_windows: list[ScheduleWindow] = []
     blackout_dates: list[str] = []
 
 
 class TelegramConfig(BaseModel):
+    model_config = _STRICT
     # Controls which events trigger a Telegram notification.
     # Valid values: entry, dca_trigger, tp_hit, sl_hit, liquidation_warn,
     #               schedule_open, schedule_close, error, startup, shutdown
@@ -104,8 +129,31 @@ class TelegramConfig(BaseModel):
 
 
 class BotConfig(BaseModel):
+    # Top-level strict validation — every unknown key at bot.* level is
+    # now a hard ValidationError instead of silently being dropped.
+    model_config = _STRICT
+
     name: str
     mode: Mode
+    exchange: Exchange
+    pair: str = "BTC/USD"
+    # contract_type determines PnL calculation formula.
+    # Only inverse_perpetual is currently supported.
+    contract_type: Literal["inverse_perpetual"] = "inverse_perpetual"
+    # Direction and timeframe are wizard-level metadata — the engine
+    # currently assumes long + 1h candles internally, but we accept
+    # them on the model so the wizard can round-trip them without
+    # being rejected by extra='forbid'.
+    direction: Literal["long", "short"] = "long"
+    timeframe: Literal["15m", "1h", "4h", "1d"] = "1h"
+    leverage: LeverageConfig = LeverageConfig()
+    dca: DCAConfig
+    entry: EntryConfig = EntryConfig()
+    take_profit: TakeProfitConfig
+    stop_loss: StopLossConfig = StopLossConfig()
+    ml: MLConfig = MLConfig()
+    schedule: ScheduleConfig = ScheduleConfig()
+    telegram: TelegramConfig = TelegramConfig()
 
     @field_validator("name")
     @classmethod
@@ -120,16 +168,3 @@ class BotConfig(BaseModel):
                 "name may only contain letters, digits, spaces, '-' and '_'"
             )
         return cleaned
-    exchange: Exchange
-    pair: str = "BTC/USD"
-    # contract_type determines PnL calculation formula.
-    # Only inverse_perpetual is currently supported.
-    contract_type: Literal["inverse_perpetual"] = "inverse_perpetual"
-    leverage: LeverageConfig = LeverageConfig()
-    dca: DCAConfig
-    entry: EntryConfig = EntryConfig()
-    take_profit: TakeProfitConfig
-    stop_loss: StopLossConfig = StopLossConfig()
-    ml: MLConfig = MLConfig()
-    schedule: ScheduleConfig = ScheduleConfig()
-    telegram: TelegramConfig = TelegramConfig()
