@@ -406,8 +406,7 @@ async def index():
 
 
 @app.get("/api/bots")
-@limiter.limit("60/minute")
-async def get_bots(request: Request):
+async def get_bots():
     bots      = [b.read_state() for b in await registry.all()]
     total_pnl = sum(b.get("total_pnl_btc", 0) for b in bots)
     active    = sum(1 for b in bots if b.get("running"))
@@ -442,26 +441,26 @@ async def get_bot(slug: str):
 
 
 @app.post("/api/bots/{slug}/start")
-@limiter.limit("10/minute")
+@limiter.limit("20/minute")
 async def api_start(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
     _audit("bot_start", slug, key_hint)
     return await start_bot(slug)
 
 @app.post("/api/bots/{slug}/stop")
-@limiter.limit("10/minute")
+@limiter.limit("20/minute")
 async def api_stop(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
     _audit("bot_stop", slug, key_hint)
     return await stop_bot(slug)
 
 @app.post("/api/bots/{slug}/restart")
-@limiter.limit("10/minute")
+@limiter.limit("20/minute")
 async def api_restart(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
     _audit("bot_restart", slug, key_hint)
     return await restart_bot(slug)
 
 
 @app.post("/api/portal/restart")
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 async def api_portal_restart(request: Request, key_hint: str = Depends(verify_api_key)):
     """Restart the portal process.
 
@@ -509,8 +508,7 @@ _KNOWN_EXCHANGES = ("bitget", "kraken")
 
 
 @app.get("/api/exchanges")
-@limiter.limit("60/minute")
-async def list_exchanges(request: Request):
+async def list_exchanges():
     """Welke exchanges Reverto kent en of er credentials voor opgeslagen zijn."""
     return {
         "exchanges": [
@@ -575,7 +573,7 @@ def _validate_bot_payload(payload: dict) -> BotConfig:
 
 
 @app.post("/api/bots")
-@limiter.limit("10/minute")
+@limiter.limit("20/minute")
 async def create_bot(
     body: dict,
     request: Request,
@@ -608,8 +606,7 @@ async def create_bot(
 
 
 @app.get("/api/bots/{slug}/config")
-@limiter.limit("60/minute")
-async def get_bot_config(slug: str, request: Request):
+async def get_bot_config(slug: str):
     path = _bot_yaml_path(slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
