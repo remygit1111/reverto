@@ -68,6 +68,7 @@ class PaperEngine:
         self.poll_interval    = poll_interval
         self._current_price: float = 0.0
         self._last_snapshot: dict  = {}
+        self._fees_paid_btc: float = 0.0
 
         # State file for portal communication
         self._state_file = Path(state_file) if state_file else None
@@ -111,6 +112,7 @@ class PaperEngine:
             "win_rate":            summary["win_rate"],
             "open_deals_count":    len(open_deals_snap),
             "closed_deals_count":  summary["closed_deals"],
+            "fees_paid_btc":       round(self._fees_paid_btc, 10),
             "started_at":          self._started_at.isoformat() if self._started_at else None,
             "updated_at":          datetime.now(UTC).isoformat(),
             "open_deals": [
@@ -312,6 +314,10 @@ class PaperEngine:
         if self.indicator_engine.check_entry_signal(self._closes):
             self._open_deal(price)
 
+    def _calc_fee(self, size: float) -> float:
+        """Bereken de taker fee voor één order (in BTC, inverse contract)."""
+        return size * self.config.dca.taker_fee
+
     def _open_deal(self, price: float):
         """Open a new paper deal at the current price."""
         deal_id    = self.state.new_deal_id()
@@ -333,7 +339,10 @@ class PaperEngine:
         )
 
         self.state.open_deal(deal)
-        logger.info(f"Deal opened: {deal_id} at ${price:,.2f}")
+        fee = self._calc_fee(base_order.size)
+        self.state.balance_btc -= fee
+        self._fees_paid_btc    += fee
+        logger.info(f"Deal opened: {deal_id} at ${price:,.2f} (fee {fee:.8f} BTC)")
 
         self.notifier.notify_entry(
             self.config.name,
@@ -372,8 +381,15 @@ class PaperEngine:
                 return
 
             pnl_btc, pnl_pct = deal.calculate_pnl(price)
+            exit_size = deal.total_size
             self.state.close_deal(deal.id, price, "tp")
-            logger.info(f"TP hit: {deal.id} at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC")
+            fee = self._calc_fee(exit_size)
+            self.state.balance_btc -= fee
+            self._fees_paid_btc    += fee
+            logger.info(
+                f"TP hit: {deal.id} at ${price:,.2f} "
+                f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
+            )
             self.notifier.notify_take_profit(
                 self.config.name, deal.symbol, price, pnl_btc, pnl_pct
             )
@@ -397,10 +413,14 @@ class PaperEngine:
 
         if price <= sl_price:
             pnl_btc, pnl_pct = deal.calculate_pnl(price)
+            exit_size = deal.total_size
             self.state.close_deal(deal.id, price, "sl")
+            fee = self._calc_fee(exit_size)
+            self.state.balance_btc -= fee
+            self._fees_paid_btc    += fee
             logger.info(
                 f"SL hit ({self.config.stop_loss.type}): {deal.id} "
-                f"at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC"
+                f"at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
             )
             self.notifier.notify_stop_loss(
                 self.config.name, deal.symbol, price, pnl_btc, pnl_pct
@@ -426,8 +446,14 @@ class PaperEngine:
                 order_type="dca"
             )
             deal.orders.append(dca_order)
+            fee = self._calc_fee(dca_size)
+            self.state.balance_btc -= fee
+            self._fees_paid_btc    += fee
 
-            logger.info(f"DCA #{dca_order.order_number} placed: {deal.id} at ${price:,.2f}")
+            logger.info(
+                f"DCA #{dca_order.order_number} placed: {deal.id} "
+                f"at ${price:,.2f} (fee {fee:.8f})"
+            )
             self.notifier.notify_dca(
                 self.config.name, deal.symbol,
                 price, dca_size,
