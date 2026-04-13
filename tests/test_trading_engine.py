@@ -69,6 +69,7 @@ class TestTakeProfit:
         e = _engine(tp_pct=3.0); d = _deal(80000.0)
         e.state.open_deal(d)
         e._check_tp(d, 80000.0 * 1.03)
+        e._notify_queue.join()
         e.notifier.notify_take_profit.assert_called_once()
 
     def test_tp_uses_avg_entry(self):
@@ -106,6 +107,7 @@ class TestFixedStopLoss:
         e = _engine(sl_type="fixed", sl_pct=6.0); d = _deal(80000.0)
         e.state.open_deal(d)
         e._check_sl(d, 80000.0 * 0.94)
+        e._notify_queue.join()
         e.notifier.notify_stop_loss.assert_called_once()
 
 
@@ -189,6 +191,7 @@ class TestDCA:
         e = _engine(spacing=2.5); d = _deal(80000.0)
         e.state.open_deal(d)
         e._check_dca(d, 80000.0 * 0.975)
+        e._notify_queue.join()
         e.notifier.notify_dca.assert_called_once()
 
 

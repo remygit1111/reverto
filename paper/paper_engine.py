@@ -4,6 +4,8 @@
 # web portal can read it without shared memory.
 
 import json
+import queue
+import threading
 import time
 import logging
 from datetime import datetime, UTC
@@ -82,6 +84,34 @@ class PaperEngine:
 
         self.running = False
         self._started_at: datetime = None
+
+        # Notification queue + worker — verhindert dat een trage Telegram
+        # call de tick-loop blokkeert (TP/SL/DCA detectie kritisch op timing).
+        # De worker is een daemon thread; bij stop() krijgt hij een sentinel.
+        self._notify_queue: queue.Queue = queue.Queue()
+        self._notify_thread = threading.Thread(
+            target=self._notify_worker, daemon=True, name="reverto-notify"
+        )
+        self._notify_thread.start()
+
+    def _notify(self, fn, *args, **kwargs):
+        """Plaats een notificatie-call op de queue zonder te blokkeren."""
+        self._notify_queue.put((fn, args, kwargs))
+
+    def _notify_worker(self):
+        """Achtergrondthread die notificaties uit de queue dispatcht."""
+        while True:
+            item = self._notify_queue.get()
+            if item is None:  # sentinel
+                self._notify_queue.task_done()
+                return
+            fn, args, kwargs = item
+            try:
+                fn(*args, **kwargs)
+            except Exception as e:
+                logger.error(f"Notification failed: {type(e).__name__}: {e}")
+            finally:
+                self._notify_queue.task_done()
 
     # ------------------------------------------------------------------
     # State file — written after every tick for portal to read
@@ -164,10 +194,11 @@ class PaperEngine:
         self.running = True
         self.liq_guard.start()
 
-        self.notifier.notify_startup(
+        self._notify(
+            self.notifier.notify_startup,
             self.config.name,
             self.config.mode.value,
-            self.config.exchange.value
+            self.config.exchange.value,
         )
 
         try:
@@ -184,7 +215,11 @@ class PaperEngine:
         self._clear_state()
         summary = self.state.summary()
         logger.info(f"Paper engine stopped. Summary: {summary}")
-        self.notifier.notify_shutdown(self.config.name)
+        # Stuur shutdown notificatie en wacht tot de queue leeg is, anders
+        # mist de laatste boodschap omdat de daemon thread direct mee sterft.
+        self._notify(self.notifier.notify_shutdown, self.config.name)
+        self._notify_queue.put(None)  # sentinel
+        self._notify_thread.join(timeout=15)
 
     # ------------------------------------------------------------------
     # Main tick
@@ -228,7 +263,7 @@ class PaperEngine:
 
         except Exception as e:
             logger.error(f"Tick error: {e}")
-            self.notifier.notify_error(self.config.name, str(e))
+            self._notify(self.notifier.notify_error, self.config.name, str(e))
 
     # ------------------------------------------------------------------
     # Schedule transition detection
@@ -242,16 +277,18 @@ class PaperEngine:
 
         if is_open and not self._last_schedule_state:
             status = self.guard.status(is_open=is_open)
-            self.notifier.notify_schedule_open(
+            self._notify(
+                self.notifier.notify_schedule_open,
                 self.config.name,
-                status.get("next_open", "—")
+                status.get("next_open", "—"),
             )
         elif not is_open and self._last_schedule_state:
             status = self.guard.status(is_open=is_open)
-            self.notifier.notify_schedule_close(
+            self._notify(
+                self.notifier.notify_schedule_close,
                 self.config.name,
                 status.get("next_open", "—"),
-                len(self.state.get_open_deals_snapshot())
+                len(self.state.get_open_deals_snapshot()),
             )
 
         self._last_schedule_state = is_open
@@ -344,12 +381,13 @@ class PaperEngine:
         self._fees_paid_btc    += fee
         logger.info(f"Deal opened: {deal_id} at ${price:,.2f} (fee {fee:.8f} BTC)")
 
-        self.notifier.notify_entry(
+        self._notify(
+            self.notifier.notify_entry,
             self.config.name,
             self.config.pair,
             price,
             base_order.size,
-            self.config.leverage.size
+            self.config.leverage.size,
         )
 
     # ------------------------------------------------------------------
@@ -390,8 +428,9 @@ class PaperEngine:
                 f"TP hit: {deal.id} at ${price:,.2f} "
                 f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
             )
-            self.notifier.notify_take_profit(
-                self.config.name, deal.symbol, price, pnl_btc, pnl_pct
+            self._notify(
+                self.notifier.notify_take_profit,
+                self.config.name, deal.symbol, price, pnl_btc, pnl_pct,
             )
 
     def _check_sl(self, deal: PaperDeal, price: float):
@@ -422,8 +461,9 @@ class PaperEngine:
                 f"SL hit ({self.config.stop_loss.type}): {deal.id} "
                 f"at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
             )
-            self.notifier.notify_stop_loss(
-                self.config.name, deal.symbol, price, pnl_btc, pnl_pct
+            self._notify(
+                self.notifier.notify_stop_loss,
+                self.config.name, deal.symbol, price, pnl_btc, pnl_pct,
             )
 
     def _check_dca(self, deal: PaperDeal, price: float):
@@ -454,11 +494,12 @@ class PaperEngine:
                 f"DCA #{dca_order.order_number} placed: {deal.id} "
                 f"at ${price:,.2f} (fee {fee:.8f})"
             )
-            self.notifier.notify_dca(
+            self._notify(
+                self.notifier.notify_dca,
                 self.config.name, deal.symbol,
                 price, dca_size,
                 dca_order.order_number,
-                deal.avg_entry_price
+                deal.avg_entry_price,
             )
 
     # ------------------------------------------------------------------
