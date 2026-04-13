@@ -1125,3 +1125,15 @@ tr:hover td { background: rgba(128,128,128,.04); }
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
+
+/* ── Config tab sub-header (kleiner dan .cfg-section-title) ──────────────── */
+.cfg-subtitle {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--muted);
+  margin-top: 14px;
+  margin-bottom: 6px;
+}
