@@ -71,6 +71,9 @@ class IndicatorConfig(BaseModel):
     macd_signal: Optional[int] = None
     # Bollinger Bands — std dev multiplier (default 2.0)
     multiplier: Optional[float] = None
+    # Parabolic SAR — acceleration factor floor and ceiling
+    initial_af: Optional[float] = None
+    max_af: Optional[float] = None
 
 
 class EntryConfig(BaseModel):
