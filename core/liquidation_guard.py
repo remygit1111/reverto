@@ -166,6 +166,12 @@ class LiquidationGuard:
         if leverage <= 1:
             return  # No liquidation risk
 
+        # Defensive: skip the check if mark price is missing or zero.
+        # Can happen when the exchange ticker briefly returns a stale
+        # frame; we'd rather miss one tick than ZeroDivision the thread.
+        if mark_price <= 0:
+            return
+
         liq_price = calculate_liquidation_price(entry_price, leverage, side)
         if liq_price <= 0:
             return
