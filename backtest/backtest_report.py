@@ -107,7 +107,7 @@ class BacktestResult:
         """Print een overzichtelijk rapport naar de console."""
         sep = "═" * 52
 
-        def fmt(v: float, decimals: int = 6) -> str:
+        def fmt(v: float, decimals: int = 8) -> str:
             """Formatteer een getal met correct teken — voorkomt +-0.000000."""
             # Normaliseer -0.0 naar 0.0
             v = v if v != 0.0 else 0.0
@@ -121,13 +121,13 @@ class BacktestResult:
         print(f"  Candles   : {self.candles_processed:,} verwerkt / {self.candles_total:,} totaal")
         print(sep)
 
-        print(f"  Beginbalans     : {self.initial_balance_btc:.6f} BTC")
-        print(f"  Eindbalans      : {self.final_balance_btc:.6f} BTC")
+        print(f"  Beginbalans     : {self.initial_balance_btc:.8f} BTC")
+        print(f"  Eindbalans      : {self.final_balance_btc:.8f} BTC")
         print(
             f"  Totale PnL      : {fmt(self.total_pnl_btc)} BTC"
             f"  ({fmt(self.total_pnl_pct, 2)}%)"
         )
-        print(f"  Fees betaald    : -{abs(self.fees_paid_btc):.6f} BTC")
+        print(f"  Fees betaald    : -{abs(self.fees_paid_btc):.8f} BTC")
         print(sep)
 
         print(f"  Deals totaal    : {self.total_deals}")
