@@ -386,3 +386,277 @@ tr:hover td { background: rgba(128,128,128,.04); }
   font-size: 11px;
   color: var(--muted);
 }
+
+/* ── Multi-bot grid & cards (verplaatst uit inline <style>) ─────────────── */
+.summary-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 16px 20px 0;
+}
+
+.bot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+.bot-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color .15s;
+}
+.bot-card:hover { border-color: var(--accent); }
+
+.bot-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bot-card-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bot-card-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bot-card-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0;
+  padding: 10px 16px;
+}
+
+.bot-stat { padding: 4px 0; }
+.bot-stat-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.bot-stat-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bot-card-deals { padding: 0 16px 8px; }
+.bot-card-deal-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.bot-card-deal-row:last-child { border-bottom: none; }
+
+.bot-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface2);
+}
+
+.btn-sm {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 0 10px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid;
+  background: none;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-start  { border-color: var(--accent); color: var(--accent); }
+.btn-start:hover  { background: rgba(0,212,170,.1); }
+.btn-stop   { border-color: var(--red); color: var(--red); }
+.btn-stop:hover   { background: rgba(255,77,109,.1); }
+.btn-restart{ border-color: var(--amber); color: var(--amber); }
+.btn-restart:hover{ background: rgba(255,179,71,.1); }
+.btn-open   { border-color: var(--border); color: var(--muted); }
+.btn-open:hover   { border-color: var(--text); color: var(--text); }
+
+.all-deals-section { padding: 0 20px 20px; }
+
+.detail-subnav {
+  display: flex;
+  padding: 0 20px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-content { padding: 20px; }
+
+.indicator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.indicator-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.indicator-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.indicator-value {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-grid {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  padding: 40px;
+  grid-column: 1/-1;
+}
+
+/* ── Utility classes vervangen voorheen inline style="..." ─────────────── */
+.hidden { display: none !important; }
+
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.6);
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 420px;
+  max-width: 90vw;
+  font-family: var(--mono);
+}
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.modal-body-text {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+.modal-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  box-sizing: border-box;
+}
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+.btn-danger { color: var(--red); border-color: var(--red); }
+.btn-accent { color: var(--accent); border-color: var(--accent); }
+
+.empty-config-msg {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  padding: 20px;
+}
+
+.deal-id-cell { color: var(--accent); }
+.muted-cell { color: var(--muted); }
+.link-like { color: var(--accent); cursor: pointer; }
+
+.log-wrap-overview { height: 280px; }
+.log-wrap-detail {
+  height: calc(100vh - 145px);
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+}
+
+.text-small { font-size: 11px; }
+.tab-pill-static { font-size: 10px; height: 24px; cursor: default; }
+.more-deals-row {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+.log-clear-btn { font-size: 10px; height: 24px; }
+.log-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.log-controls-overview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.checkbox-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.checkbox-accent { accent-color: var(--accent); }
+
+.dtab-content { padding: 20px; }
+.dtab-content.no-pad { padding: 0; }
+
+.card-no-pad { padding: 0; }
+.mb-16 { margin-bottom: 16px; }
+.mb-20 { margin-bottom: 20px; }
+.mt-16 { margin-top: 16px; }
+.stat-grid-mb { margin-bottom: 16px; }
