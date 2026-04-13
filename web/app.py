@@ -250,6 +250,10 @@ class BotRegistry:
         self._bots: dict[str, BotInfo] = {}
         self._lock = asyncio.Lock()
         self._last_refresh: float = 0.0
+        # In-progress starts per slug. Beschermt tegen dubbel-klik races
+        # waarbij main_paper.py nog geen PID file heeft geschreven en
+        # bot.running dus False retourneert voor beide kliks.
+        self._starting: set[str] = set()
         # Initiële populatie: gebeurt vóór de event loop bestaat, dus
         # geen lock-contention mogelijk — direct synchroon vullen.
         self._refresh_locked()
@@ -293,6 +297,20 @@ class BotRegistry:
         async with self._lock:
             self._last_refresh = 0.0
 
+    async def begin_start(self, slug: str) -> bool:
+        """Claim de start-slot voor `slug`. Retourneert True als we
+        de slot kregen, False als er al een start in progress is."""
+        async with self._lock:
+            if slug in self._starting:
+                return False
+            self._starting.add(slug)
+            return True
+
+    async def end_start(self, slug: str) -> None:
+        """Release de start-slot voor `slug`. Idempotent."""
+        async with self._lock:
+            self._starting.discard(slug)
+
 
 registry = BotRegistry()
 
@@ -305,6 +323,13 @@ async def start_bot(slug: str) -> dict:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
     if bot.running:
         return {"ok": False, "error": f"{slug} already running (PID {bot.pid})"}
+
+    # Claim de start-slot. Voorkomt dat een dubbel-klik (beide calls zien
+    # bot.running=False omdat main_paper.py nog niet is opgestart) twee
+    # subprocessen spawnt.
+    if not await registry.begin_start(slug):
+        return {"ok": False, "error": "Bot is already starting"}
+
     try:
         PID_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -325,9 +350,22 @@ async def start_bot(slug: str) -> dict:
                 start_new_session=True
             )
         logger.info(f"Bot {slug} started (PID {proc.pid})")
+
+        # Wacht maximaal 3s tot main_paper.py zijn eigen PID file heeft
+        # geschreven. Zolang we die niet zien houdt de starting-slot stand
+        # zodat een volgende klik netjes een "already starting" krijgt in
+        # plaats van een tweede subprocess.
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if bot.pid_file.exists():
+                break
+            await asyncio.sleep(0.1)
+
         return {"ok": True, "message": f"{slug} started (PID {proc.pid})"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    finally:
+        await registry.end_start(slug)
 
 
 async def stop_bot(slug: str) -> dict:

@@ -301,7 +301,21 @@ async function deleteBot(slug, name) {
 }
 
 // ── Bot actions ───────────────────────────────────────────────────────────────
+function _debounceBotButtons(slug, action, ms = 3000) {
+  // Disable every visible button that matches this (slug, action) pair
+  // immediately after a click. Cheap client-side guard against double
+  // clicks; the backend start_bot() still holds a starting-slot so
+  // belt-and-suspenders — even if the re-render after fetchOverview()
+  // replaces the button with a fresh one, a second backend call will
+  // get "Bot is already starting".
+  const sel = `[data-action="${CSS.escape(action)}"][data-slug="${CSS.escape(slug)}"]`;
+  const btns = Array.from(document.querySelectorAll(sel));
+  btns.forEach(b => { b.disabled = true; });
+  setTimeout(() => btns.forEach(b => { b.disabled = false; }), ms);
+}
+
 async function botAction(slug, action) {
+  _debounceBotButtons(slug, action);
   // No key yet → queue the action and prompt for one. Once the user
   // enters a valid key in the modal, saveApiKey() re-invokes this.
   if (!getApiKey()) {
