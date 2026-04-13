@@ -414,6 +414,9 @@ const NB_INDICATOR_DESCRIPTIONS = {
   PARABOLIC_SAR:
     "Trailing stop-and-reverse indicator. Signals when price crosses the " +
     "SAR dots, flipping the trend direction.",
+  SUPERTREND:
+    "Volatility-based trailing stop using ATR. Signals when price crosses " +
+    "the supertrend line, flipping the trend direction.",
 };
 
 let nbState = null;
@@ -625,10 +628,12 @@ function nbRenderIndicators() {
                     : ind.type === 'MACD' ? 'type-macd'
                     : ind.type === 'BOLLINGER' ? 'type-bollinger'
                     : ind.type === 'PARABOLIC_SAR' ? 'type-psar'
+                    : ind.type === 'SUPERTREND' ? 'type-supertrend'
                     : '';
     const title = ind.type === 'EMA_CROSS' ? 'EMA Cross'
                 : ind.type === 'BOLLINGER' ? 'Bollinger Bands'
                 : ind.type === 'PARABOLIC_SAR' ? 'Parabolic SAR'
+                : ind.type === 'SUPERTREND' ? 'Supertrend'
                 : ind.type;
     return `
       <div class="nb-ind-card ${typeClass}">
@@ -645,6 +650,7 @@ function nbRenderIndicators() {
               <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
               <option value="BOLLINGER" ${ind.type === 'BOLLINGER' ? 'selected' : ''}>Bollinger Bands</option>
               <option value="PARABOLIC_SAR" ${ind.type === 'PARABOLIC_SAR' ? 'selected' : ''}>Parabolic SAR</option>
+              <option value="SUPERTREND" ${ind.type === 'SUPERTREND' ? 'selected' : ''}>Supertrend</option>
             </select>
             <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
           </div>
@@ -709,6 +715,33 @@ function nbIndicatorFieldsHtml(ind, i) {
         <select data-nb-ind="${i}" data-nb-field="signal">
           <option value="bullish_cross" ${ind.signal === 'bullish_cross' ? 'selected' : ''}>Bullish</option>
           <option value="bearish_cross" ${ind.signal === 'bearish_cross' ? 'selected' : ''}>Bearish</option>
+        </select>
+      </div>`;
+  }
+  if (ind.type === 'SUPERTREND') {
+    const ap = ind.atr_period != null ? ind.atr_period : 10;
+    const mult = ind.multiplier != null ? ind.multiplier : 3.0;
+    const ST_CONDS = [
+      ['bullish', 'Bullish'],
+      ['bearish', 'Bearish'],
+      ['bullish_flip', 'Bullish flip'],
+      ['bearish_flip', 'Bearish flip'],
+    ];
+    return `
+      <div class="form-row">
+        <label>ATR Period</label>
+        <input type="number" min="2" value="${ap}" data-nb-ind="${i}" data-nb-field="atr_period">
+      </div>
+      <div class="form-row">
+        <label>Multiplier</label>
+        <input type="number" min="0.1" step="0.1" value="${mult}" data-nb-ind="${i}" data-nb-field="multiplier">
+      </div>
+      <div class="form-row">
+        <label>Condition</label>
+        <select data-nb-ind="${i}" data-nb-field="condition">
+          ${ST_CONDS.map(([v, l]) =>
+            `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
+          ).join('')}
         </select>
       </div>`;
   }
@@ -1012,6 +1045,10 @@ function nbBuildBotConfig() {
         } else if (i.type === 'PARABOLIC_SAR') {
           out.initial_af = i.initial_af != null ? i.initial_af : 0.02;
           out.max_af = i.max_af != null ? i.max_af : 0.20;
+          out.condition = i.condition || 'bullish';
+        } else if (i.type === 'SUPERTREND') {
+          out.atr_period = i.atr_period != null ? i.atr_period : 10;
+          out.multiplier = i.multiplier != null ? i.multiplier : 3.0;
           out.condition = i.condition || 'bullish';
         }
         return out;
@@ -1524,6 +1561,7 @@ function setupEventListeners() {
       const intFields = [
         'period', 'fast', 'slow',
         'rsi_value', 'macd_fast', 'macd_slow', 'macd_signal',
+        'atr_period',
       ];
       const floatFields = ['multiplier', 'initial_af', 'max_af'];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;

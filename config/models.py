@@ -74,6 +74,8 @@ class IndicatorConfig(BaseModel):
     # Parabolic SAR — acceleration factor floor and ceiling
     initial_af: Optional[float] = None
     max_af: Optional[float] = None
+    # Supertrend — ATR period (multiplier shared with Bollinger field)
+    atr_period: Optional[int] = None
 
 
 class EntryConfig(BaseModel):

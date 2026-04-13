@@ -109,8 +109,8 @@ class BacktestEngine:
             if i < warmup:
                 continue  # wacht tot indicators betrouwbaar zijn
 
-            closes_per_tf = self._closes_up_to(candle.timestamp)
-            self._process_candle(candle, closes_per_tf)
+            closes_per_tf, highs_per_tf, lows_per_tf = self._ohlc_up_to(candle.timestamp)
+            self._process_candle(candle, closes_per_tf, highs_per_tf, lows_per_tf)
             self._candles_processed += 1
 
         # Sluit alle nog openstaande deals op de slotprijs van de laatste candle
@@ -121,18 +121,29 @@ class BacktestEngine:
 
         return self._build_result()
 
-    def _closes_up_to(self, cur_ts: int) -> dict[str, list[float]]:
-        """Return close prices per tf for candles that closed strictly
-        before `cur_ts`. Uses a persistent pointer per tf so the total
-        walk is O(N) across the whole backtest."""
-        result: dict[str, list[float]] = {}
+    def _ohlc_up_to(
+        self, cur_ts: int
+    ) -> tuple[dict[str, list[float]], dict[str, list[float]], dict[str, list[float]]]:
+        """Return (closes, highs, lows) per tf for candles that closed
+        strictly before `cur_ts`. Uses a persistent pointer per tf so
+        the total walk is O(N) across the whole backtest.
+
+        Three dicts are returned so OHLC-native indicators (Supertrend,
+        Market Structure, etc.) can access high/low alongside close.
+        """
+        closes: dict[str, list[float]] = {}
+        highs:  dict[str, list[float]] = {}
+        lows:   dict[str, list[float]] = {}
         for tf, candles in self.candles_per_tf.items():
             ptr = self._tf_pointers[tf]
             while ptr < len(candles) and candles[ptr].timestamp < cur_ts:
                 ptr += 1
             self._tf_pointers[tf] = ptr
-            result[tf] = [c.close for c in candles[:ptr]]
-        return result
+            window = candles[:ptr]
+            closes[tf] = [c.close for c in window]
+            highs[tf]  = [c.high  for c in window]
+            lows[tf]   = [c.low   for c in window]
+        return closes, highs, lows
 
     # ------------------------------------------------------------------
     # Candle verwerking
@@ -142,6 +153,8 @@ class BacktestEngine:
         self,
         candle: BacktestCandle,
         closes_per_tf: dict[str, list[float]],
+        highs_per_tf: dict[str, list[float]],
+        lows_per_tf:  dict[str, list[float]],
     ):
         """Verwerk één driving candle: check entry en monitor open deals."""
         close = candle.close
@@ -158,7 +171,9 @@ class BacktestEngine:
         if not self.state.open_deals and closes_per_tf.get(self.bot_timeframe):
             try:
                 if self.indicator_engine.check_entry_signal(
-                    closes_per_tf, self.bot_timeframe
+                    closes_per_tf, self.bot_timeframe,
+                    highs_per_tf=highs_per_tf,
+                    lows_per_tf=lows_per_tf,
                 ):
                     self._open_deal(close, candle.dt)
             except Exception as e:

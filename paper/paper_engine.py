@@ -85,12 +85,15 @@ class PaperEngine:
         # State file for portal communication
         self._state_file = Path(state_file) if state_file else None
 
-        # Rolling window of closing prices per timeframe. The indicator
-        # engine needs separate buckets so each indicator can evaluate
-        # on its configured TF (bot-level default or per-indicator
-        # override). Each TF has its own last-fetched timestamp so we
-        # re-fetch each bucket at most once per candle interval.
+        # Rolling window of OHLC close/high/low per timeframe. The
+        # indicator engine needs separate buckets so each indicator can
+        # evaluate on its configured TF. Each TF has its own
+        # last-fetched timestamp so we re-fetch each bucket at most
+        # once per candle interval. Highs/lows are populated alongside
+        # closes for indicators that need OHLC data (Supertrend etc.).
         self._closes_per_tf: dict[str, list[float]] = {}
+        self._highs_per_tf:  dict[str, list[float]] = {}
+        self._lows_per_tf:   dict[str, list[float]] = {}
         self._closes_fetched_at: dict[str, float] = {}
 
         # Track schedule state for transition detection
@@ -352,6 +355,8 @@ class PaperEngine:
                     continue
 
                 self._closes_per_tf[tf] = [c[4] for c in completed]
+                self._highs_per_tf[tf]  = [c[2] for c in completed]
+                self._lows_per_tf[tf]   = [c[3] for c in completed]
                 self._closes_fetched_at[tf] = now
                 logger.debug(
                     "Candles refreshed: tf=%s count=%d", tf, len(completed)
@@ -383,7 +388,11 @@ class PaperEngine:
             f"MACD hist: {self._last_snapshot.get('macd_histogram','?')}"
         )
 
-        if self.indicator_engine.check_entry_signal(self._closes_per_tf, bot_tf):
+        if self.indicator_engine.check_entry_signal(
+            self._closes_per_tf, bot_tf,
+            highs_per_tf=self._highs_per_tf,
+            lows_per_tf=self._lows_per_tf,
+        ):
             self._open_deal(price)
 
     def _calc_fee(self, size: float) -> float:

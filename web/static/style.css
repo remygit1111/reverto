@@ -1351,3 +1351,8 @@ tr:hover td { background: rgba(128,128,128,.04); }
   background: var(--surface2);
   border-left-color: var(--red);  /* Parabolic SAR accent */
 }
+
+.nb-ind-card.type-supertrend {
+  background: var(--surface2);
+  border-left-color: #f0d050;  /* yellow */
+}

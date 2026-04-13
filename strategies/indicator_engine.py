@@ -16,6 +16,7 @@ from strategies.indicators.ema import calculate_ema, check_ema_cross_signal
 from strategies.indicators.macd import calculate_macd, check_macd_signal
 from strategies.indicators.bollinger import check_bollinger_signal
 from strategies.indicators.parabolic_sar import check_parabolic_sar_signal
+from strategies.indicators.supertrend import check_supertrend_signal
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,8 @@ class IndicatorEngine:
         self,
         closes_per_tf: dict[str, list[float]],
         bot_timeframe: str,
+        highs_per_tf: dict[str, list[float]] | None = None,
+        lows_per_tf: dict[str, list[float]] | None = None,
     ) -> bool:
         """
         Check all configured entry indicators.
@@ -80,6 +83,10 @@ class IndicatorEngine:
         If any indicator's timeframe data is missing we return False —
         we refuse to enter a deal while a configured filter can't be
         evaluated (fail-closed).
+
+        highs_per_tf / lows_per_tf are optional OHLC plumbing used by
+        indicators that need high/low data (e.g. Supertrend). When
+        omitted, those indicators fail-closed.
         """
         if not self.entry_indicators:
             logger.debug("No entry indicators configured — signal always True")
@@ -93,7 +100,9 @@ class IndicatorEngine:
             )
             if closes is None:
                 return False  # fail-closed
-            result = self._evaluate_indicator(indicator, closes)
+            highs = (highs_per_tf or {}).get(tf)
+            lows  = (lows_per_tf  or {}).get(tf)
+            result = self._evaluate_indicator(indicator, closes, highs, lows)
             results.append(result)
             logger.info(
                 f"Indicator {indicator.type}@{tf} → "
@@ -176,12 +185,21 @@ class IndicatorEngine:
     # Per-indicator dispatch
     # ------------------------------------------------------------------
 
-    def _evaluate_indicator(self, indicator: IndicatorConfig,
-                             closes: list[float]) -> bool:
+    def _evaluate_indicator(
+        self,
+        indicator: IndicatorConfig,
+        closes: list[float],
+        highs: list[float] | None = None,
+        lows: list[float] | None = None,
+    ) -> bool:
         """
         Route indicator config to the correct check function.
         Returns False on unknown indicator type to prevent unvalidated
         entries from slipping through.
+
+        highs/lows are only consumed by OHLC-native indicators like
+        Supertrend; when such an indicator is configured without h/l
+        data we log a warning and fail-closed (return False).
         """
         itype = indicator.type.upper()
 
@@ -215,6 +233,18 @@ class IndicatorEngine:
                 closes,
                 initial_af=indicator.initial_af or 0.02,
                 max_af=indicator.max_af or 0.20,
+                condition=indicator.condition or "bullish",
+            )
+        elif itype == "SUPERTREND":
+            if highs is None or lows is None:
+                logger.warning(
+                    "Supertrend needs high/low data but none provided — blocking entry"
+                )
+                return False
+            return check_supertrend_signal(
+                highs, lows, closes,
+                atr_period=indicator.atr_period or 10,
+                multiplier=indicator.multiplier or 3.0,
                 condition=indicator.condition or "bullish",
             )
         else:
