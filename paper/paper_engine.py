@@ -95,7 +95,7 @@ class PaperEngine:
 
         # Use snapshot to avoid holding the state lock while building JSON
         open_deals_snap  = self.state.get_open_deals_snapshot()
-        closed_deals_snap = list(self.state.closed_deals)
+        closed_deals_snap = self.state.get_closed_deals_snapshot()
 
         snapshot = {
             "bot_name":            self.config.name,
