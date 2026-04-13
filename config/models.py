@@ -63,6 +63,12 @@ class IndicatorConfig(BaseModel):
     # against the engine's fetched data.
     timeframe: Optional[Literal["15m", "1h", "4h", "1d"]] = None
     condition: Optional[str] = None
+    # MACD period knobs — optional, default to the classic 12/26/9.
+    # Kept as separate fields (rather than reusing fast/slow) because
+    # EMA Cross already uses those for its own pair.
+    macd_fast: Optional[int] = None
+    macd_slow: Optional[int] = None
+    macd_signal: Optional[int] = None
 
 
 class EntryConfig(BaseModel):
