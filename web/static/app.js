@@ -408,6 +408,9 @@ const NB_INDICATOR_DESCRIPTIONS = {
   MACD:
     "Tracks trend momentum using the difference between two moving averages " +
     "and a signal line.",
+  BOLLINGER:
+    "Volatility envelope around a moving average. Signals when price touches " +
+    "an extreme band or when the bands squeeze tight.",
 };
 
 let nbState = null;
@@ -617,8 +620,11 @@ function nbRenderIndicators() {
     const typeClass = ind.type === 'RSI' ? 'type-rsi'
                     : ind.type === 'EMA_CROSS' ? 'type-ema'
                     : ind.type === 'MACD' ? 'type-macd'
+                    : ind.type === 'BOLLINGER' ? 'type-bollinger'
                     : '';
-    const title = ind.type === 'EMA_CROSS' ? 'EMA Cross' : ind.type;
+    const title = ind.type === 'EMA_CROSS' ? 'EMA Cross'
+                : ind.type === 'BOLLINGER' ? 'Bollinger Bands'
+                : ind.type;
     return `
       <div class="nb-ind-card ${typeClass}">
         <div class="nb-ind-head">
@@ -632,6 +638,7 @@ function nbRenderIndicators() {
               <option value="RSI" ${ind.type === 'RSI' ? 'selected' : ''}>RSI</option>
               <option value="EMA_CROSS" ${ind.type === 'EMA_CROSS' ? 'selected' : ''}>EMA Cross</option>
               <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
+              <option value="BOLLINGER" ${ind.type === 'BOLLINGER' ? 'selected' : ''}>Bollinger Bands</option>
             </select>
             <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
           </div>
@@ -696,6 +703,33 @@ function nbIndicatorFieldsHtml(ind, i) {
         <select data-nb-ind="${i}" data-nb-field="signal">
           <option value="bullish_cross" ${ind.signal === 'bullish_cross' ? 'selected' : ''}>Bullish</option>
           <option value="bearish_cross" ${ind.signal === 'bearish_cross' ? 'selected' : ''}>Bearish</option>
+        </select>
+      </div>`;
+  }
+  if (ind.type === 'BOLLINGER') {
+    const mult = ind.multiplier != null ? ind.multiplier : 2.0;
+    const BB_CONDS = [
+      ['price_below_lower', 'Price below lower band'],
+      ['price_above_upper', 'Price above upper band'],
+      ['price_below_middle', 'Price below middle'],
+      ['price_above_middle', 'Price above middle'],
+      ['squeeze', 'Squeeze'],
+    ];
+    return `
+      <div class="form-row">
+        <label>Period</label>
+        <input type="number" min="5" value="${ind.period || 20}" data-nb-ind="${i}" data-nb-field="period">
+      </div>
+      <div class="form-row">
+        <label>Multiplier</label>
+        <input type="number" min="0.1" step="0.1" value="${mult}" data-nb-ind="${i}" data-nb-field="multiplier">
+      </div>
+      <div class="form-row">
+        <label>Condition</label>
+        <select data-nb-ind="${i}" data-nb-field="condition">
+          ${BB_CONDS.map(([v, l]) =>
+            `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
+          ).join('')}
         </select>
       </div>`;
   }
@@ -938,6 +972,10 @@ function nbBuildBotConfig() {
           if (i.macd_fast   != null) out.macd_fast   = i.macd_fast;
           if (i.macd_slow   != null) out.macd_slow   = i.macd_slow;
           if (i.macd_signal != null) out.macd_signal = i.macd_signal;
+        } else if (i.type === 'BOLLINGER') {
+          out.period = i.period || 20;
+          out.multiplier = i.multiplier != null ? i.multiplier : 2.0;
+          out.condition = i.condition || 'price_below_lower';
         }
         return out;
       }),
@@ -1450,7 +1488,9 @@ function setupEventListeners() {
         'period', 'fast', 'slow',
         'rsi_value', 'macd_fast', 'macd_slow', 'macd_signal',
       ];
+      const floatFields = ['multiplier'];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;
+      else if (floatFields.includes(f)) v = parseFloat(v) || 0;
       nbState.indicators[i][f] = v;
       // RSI condition/value are derived back into the threshold field
       // so the serialised payload still matches the "below_35" /
