@@ -230,8 +230,7 @@ class BacktestEngine:
 
     def _calc_fee(self, price: float, size: float) -> float:
         """Bereken de taker fee voor één order (in BTC, inverse contract)."""
-        # Voor inverse perpetual: fee = size / price * fee_rate
-        return round((size / price) * self.taker_fee, 10)
+        return round(size * self.taker_fee, 10)
 
     # ------------------------------------------------------------------
     # Resultaat
