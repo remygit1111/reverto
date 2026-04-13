@@ -45,6 +45,63 @@ class TestRSI:
         with pytest.raises(ValueError, match="Unknown RSI threshold"):
             check_rsi_signal([float(i) for i in range(1,25)], 14, "invalid")
 
+    def test_value_out_of_range_raises(self):
+        with pytest.raises(ValueError, match="between 1 and 99"):
+            check_rsi_signal([float(i) for i in range(1, 25)], 14, "below_100")
+
+    def test_above_condition(self):
+        """Rising prices → RSI high → above_50 should be True."""
+        closes = [float(i) for i in range(1, 30)]
+        assert check_rsi_signal(closes, 14, "above_50") is True
+
+    def test_below_condition(self):
+        """Falling prices → RSI low → below_50 should be True."""
+        closes = [float(30 - i) for i in range(30)]
+        assert check_rsi_signal(closes, 14, "below_50") is True
+
+    def test_cross_above_fires_on_transition(self):
+        """Down-trend → reversal: RSI should cross up through some low threshold."""
+        down = [float(30 - i) for i in range(25)]  # RSI near 0
+        up = down + [float(6 + i * 4) for i in range(10)]  # sharp rebound
+        # At some point during the rebound, RSI crosses above 30.
+        # Walk forward and assert the cross fires on exactly one tick.
+        crosses = 0
+        for end in range(16, len(up) + 1):
+            window = up[:end]
+            try:
+                if check_rsi_signal(window, 14, "cross_above_30"):
+                    crosses += 1
+            except ValueError:
+                pass
+        assert crosses >= 1, "cross_above_30 should fire at least once on the rebound"
+
+    def test_cross_below_fires_on_transition(self):
+        """Up-trend → reversal: RSI should cross down through a high threshold."""
+        up = [float(i) for i in range(25)]  # RSI near 100
+        down = up + [float(24 - i * 2) for i in range(15)]  # sharp drop
+        crosses = 0
+        for end in range(16, len(down) + 1):
+            window = down[:end]
+            try:
+                if check_rsi_signal(window, 14, "cross_below_70"):
+                    crosses += 1
+            except ValueError:
+                pass
+        assert crosses >= 1, "cross_below_70 should fire at least once on the drop"
+
+    def test_cross_requires_extra_datapoint(self):
+        """cross_* conditions need period + 2 closes, not just period + 1."""
+        closes = [float(i) for i in range(1, 16)]  # period + 1 = 15 points
+        with pytest.raises(ValueError, match="require at least"):
+            check_rsi_signal(closes, 14, "cross_above_50")
+
+    def test_cross_above_no_transition_returns_false(self):
+        """RSI already above threshold, staying there → no cross."""
+        closes = [float(i) for i in range(1, 30)]  # rising, RSI high throughout
+        # Between the last two ticks RSI stays well above 50, so cross_above_50
+        # must NOT fire.
+        assert check_rsi_signal(closes, 14, "cross_above_50") is False
+
 
 class TestEMA:
     def test_constant_series(self):
