@@ -64,9 +64,15 @@ class TestCalculatePnl:
         pnl, _ = _deal(80000.0).calculate_pnl(0.0)
         assert pnl == 0.0
 
-    def test_inverse_formula(self):
+    def test_correct_formula(self):
+        """
+        Verifieer de Bitget BTCUSD formule:
+        PnL (BTC) = size * (exit - entry) / entry * leverage
+        Bij size=1.0 BTC, entry=80000, exit=82000, lev=1:
+        PnL = 1.0 * (82000 - 80000) / 80000 = 0.025 BTC
+        """
         d = _deal(80000.0, 1.0)
-        expected = 1.0 * (1/80000.0 - 1/82000.0)
+        expected = 1.0 * (82000.0 - 80000.0) / 80000.0
         pnl, _ = d.calculate_pnl(82000.0)
         assert abs(pnl - expected) < 1e-10
 
