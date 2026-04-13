@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -18,12 +19,36 @@ from typing import Optional
 
 import ccxt
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
+
+# ── API key auth ──────────────────────────────────────────────────────────────
+# Read from REVERTO_API_KEY or auto-generate one and surface it via WARNING
+# log so the operator can copy it. Auto-generated keys are ephemeral —
+# restart of the portal yields a fresh key.
+_API_KEY = os.environ.get("REVERTO_API_KEY")
+if not _API_KEY:
+    _API_KEY = secrets.token_hex(32)
+    logger.warning(
+        "REVERTO_API_KEY not set — generated ephemeral key for this session: %s "
+        "(set REVERTO_API_KEY=... in your environment to make it persistent)",
+        _API_KEY,
+    )
+
+
+def verify_api_key(request: Request) -> None:
+    """FastAPI dependency: require X-API-Key header or ?api_key= query param.
+
+    Used on all mutating endpoints (start/stop/restart). GET endpoints stay
+    public so dashboards and read-only clients still work without a key.
+    """
+    provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if not provided or not secrets.compare_digest(provided, _API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 # Module-level ccxt client — reused across /api/price calls so we don't pay
 # instantiation overhead on every request.
@@ -272,20 +297,20 @@ async def get_bot(slug: str):
     return bot.read_state()
 
 
-@app.post("/api/bots/{slug}/start")
+@app.post("/api/bots/{slug}/start", dependencies=[Depends(verify_api_key)])
 async def api_start(slug: str):
     return start_bot(slug)
 
-@app.post("/api/bots/{slug}/stop")
+@app.post("/api/bots/{slug}/stop", dependencies=[Depends(verify_api_key)])
 async def api_stop(slug: str):
     return stop_bot(slug)
 
-@app.post("/api/bots/{slug}/restart")
+@app.post("/api/bots/{slug}/restart", dependencies=[Depends(verify_api_key)])
 async def api_restart(slug: str):
     return restart_bot(slug)
 
 
-@app.post("/api/portal/restart")
+@app.post("/api/portal/restart", dependencies=[Depends(verify_api_key)])
 async def api_portal_restart():
     """
     Restart the portal process.
@@ -356,6 +381,14 @@ broadcaster = LogBroadcaster()
 
 @app.websocket("/ws/logs/{slug}")
 async def ws_logs(websocket: WebSocket, slug: str):
+    # WebSocket auth — browsers can't set custom headers on ws, so the key
+    # must arrive via query param. Reject before accept() so we never leak
+    # logs to unauthenticated clients.
+    provided = websocket.query_params.get("api_key")
+    if not provided or not secrets.compare_digest(provided, _API_KEY):
+        await websocket.close(code=4401)
+        return
+
     # Special slug "portal" streams the portal's own log
     if slug == "portal":
         portal_log = LOG_DIR / "portal.log"

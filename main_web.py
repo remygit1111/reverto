@@ -57,5 +57,14 @@ logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
     logger.info("Reverto dashboard starting on http://localhost:8080")
+    if not os.environ.get("REVERTO_API_KEY"):
+        logger.warning(
+            "REVERTO_API_KEY is not set — an ephemeral key will be generated "
+            "and printed below. For persistent auth, set it before starting:"
+        )
+        logger.warning(
+            "    export REVERTO_API_KEY=$(python3 -c "
+            "'import secrets; print(secrets.token_hex(32))')"
+        )
     from web.app import run_portal
     run_portal(host="0.0.0.0", port=8080)

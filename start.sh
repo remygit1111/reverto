@@ -5,6 +5,12 @@
 
 cd "$(dirname "$0")"
 
+# IMPORTANT: voor live/productie gebruik MOET REVERTO_API_KEY gezet zijn,
+# anders genereert de portal bij elke restart een nieuwe ephemerale key
+# en kan geen enkele client (browser/script) bij de control endpoints.
+# Voorbeeld:
+#   export REVERTO_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+
 PORTAL_PID_FILE="logs/pids/portal.pid"
 mkdir -p logs/pids
 
