@@ -1,7 +1,7 @@
 // web/static/app.js — Reverto portal frontend
-// Verplaatst uit inline <script> in index.html zodat CSP geen 'unsafe-inline'
-// nodig heeft op script-src. Alle event handlers worden via addEventListener
-// gebonden in setupEventListeners() — geen onclick="..." attributes meer.
+// Moved out of an inline <script> in index.html so CSP doesn't need
+// 'unsafe-inline' on script-src. All event handlers are wired via
+// addEventListener in setupEventListeners() — no onclick="..." attributes.
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 const t0 = localStorage.getItem('reverto-theme') || 'dark';
@@ -26,7 +26,7 @@ function closeApiKeyModal() {
 }
 function saveApiKey() {
   const key = document.getElementById('api-key-input').value.trim();
-  if (!key) { alert('Lege key — niet opgeslagen'); return; }
+  if (!key) { alert('Empty key — not saved'); return; }
   localStorage.setItem('reverto_api_key', key);
   closeApiKeyModal();
   location.reload();
@@ -147,7 +147,7 @@ function renderBotGrid(bots) {
   const grid = $('bot-grid');
   if (!grid) return;
   if (!bots.length) {
-    grid.innerHTML = '<div class="empty-config-msg">No bots configured — gebruik ＋ Nieuwe bot om er een toe te voegen.</div>';
+    grid.innerHTML = '<div class="empty-config-msg">No bots configured — use ＋ New Bot to add one.</div>';
   } else {
     grid.innerHTML = bots.map(b => renderBotCard(b)).join('');
   }
@@ -258,7 +258,7 @@ async function botAction(slug, action) {
     headers: { 'X-API-Key': getApiKey() }
   });
   if (res.status === 401) {
-    alert('Auth fout — controleer je API key');
+    alert('Auth error — check your API key');
     showApiKeyModal();
     return;
   }
@@ -276,8 +276,8 @@ function _setActiveTab(btnId) {
 }
 
 function _resetHeaderForTopLevel() {
-  // Bij het verlaten van de detail view: detail-bot specifieke header
-  // resetten en eventuele detail polling/WS opruimen.
+  // When leaving the detail view: reset detail-specific header bits
+  // and clean up any detail polling / websocket.
   currentSlug = null;
   clearInterval(detailInterval);
   if (ws) { ws.close(); ws = null; }
@@ -321,14 +321,13 @@ function goDeals() {
 
 function goNewBot() {
   _resetHeaderForTopLevel();
-  _setActiveTab('nav-bots-btn');  // nieuwe bot blijft logisch onder Bots
+  _setActiveTab('nav-bots-btn');  // new bot lives logically under Bots
   showPage('new-bot');
   nbInit();
 }
 
-// ── New bot wizard ───────────────────────────────────────────────────────────
+// ── New bot single-page form ─────────────────────────────────────────────────
 let nbState = null;
-let nbCurrentStep = 1;
 
 function nbDefaultState() {
   return {
@@ -346,97 +345,83 @@ function nbDefaultState() {
 
 function nbInit() {
   nbState = nbDefaultState();
-  nbCurrentStep = 1;
   nbApplyStateToForm();
-  nbShowStep(1);
   nbHideError();
-}
-
-function nbShowStep(n) {
-  nbCurrentStep = n;
-  document.querySelectorAll('.wizard-step').forEach(el => {
-    el.classList.toggle('hidden', parseInt(el.dataset.step, 10) !== n);
-  });
-  document.querySelectorAll('.wizard-step-marker').forEach(el => {
-    const stepN = parseInt(el.dataset.step, 10);
-    el.classList.toggle('active', stepN === n);
-    el.classList.toggle('visited', stepN < n);
-  });
-  $('nb-prev-btn').classList.toggle('hidden', n === 1);
-  $('nb-next-btn').classList.toggle('hidden', n === 5);
-  $('nb-submit-btn').classList.toggle('hidden', n !== 5);
-  if (n === 4) nbRenderDcaPreview();
-  if (n === 5) nbRenderReview();
-  nbHideError();
+  nbRecompute();
 }
 
 function nbShowError(msg) {
   const el = $('nb-error');
-  el.textContent = msg;
+  el.innerHTML = msg;
   el.classList.remove('hidden');
 }
 function nbHideError() {
   $('nb-error').classList.add('hidden');
 }
 
-function nbReadStep(n) {
-  if (n === 1) {
-    nbState.name = $('nb-name').value.trim();
-    nbState.exchange = $('nb-exchange').value;
-    nbState.pair = $('nb-pair').value.trim();
-    nbState.mode = $('nb-mode').value;
-    nbState.direction = $('nb-direction').value;
-    nbState.leverage_enabled = $('nb-leverage-enabled').checked;
-    nbState.leverage_size = parseInt($('nb-leverage-size').value, 10);
-    nbState.timeframe = $('nb-timeframe').value;
-  } else if (n === 2) {
-    nbState.base_size = parseFloat($('nb-base-size').value);
-  } else if (n === 3) {
-    nbState.tp_target_pct = parseFloat($('nb-tp-pct').value);
-    nbState.tp_indicator_confirm = $('nb-tp-confirm').value;
-    nbState.tp_max_age_enabled = $('nb-tp-max-age-enabled').checked;
-    nbState.tp_max_age_hours = parseInt($('nb-tp-max-age-hours').value, 10);
-    nbState.sl_type = $('nb-sl-type').value;
-    nbState.sl_pct = parseFloat($('nb-sl-pct').value);
-  } else if (n === 4) {
-    nbState.dca_max_orders = parseInt($('nb-dca-max').value, 10);
-    nbState.dca_size = parseFloat($('nb-dca-size').value);
-    nbState.dca_spacing_pct = parseFloat($('nb-dca-spacing').value);
-    nbState.dca_volume_scale = parseFloat($('nb-dca-volume').value);
-    nbState.dca_step_scale = parseFloat($('nb-dca-step').value);
-  }
+function nbReadAll() {
+  // Pull all form fields into nbState. Called on every input change and
+  // before submit/validation, so the rest of the wizard can read from
+  // a single source of truth.
+  nbState.name = $('nb-name').value.trim();
+  nbState.exchange = $('nb-exchange').value;
+  nbState.pair = $('nb-pair').value.trim();
+  nbState.mode = $('nb-mode').value;
+  nbState.direction = $('nb-direction').value;
+  nbState.leverage_enabled = $('nb-leverage-enabled').checked;
+  nbState.leverage_size = parseInt($('nb-leverage-size').value, 10);
+  nbState.timeframe = $('nb-timeframe').value;
+
+  nbState.base_size = parseFloat($('nb-base-size').value);
+
+  nbState.tp_target_pct = parseFloat($('nb-tp-pct').value);
+  nbState.tp_indicator_confirm = $('nb-tp-confirm').value;
+  nbState.tp_max_age_enabled = $('nb-tp-max-age-enabled').checked;
+  nbState.tp_max_age_hours = parseInt($('nb-tp-max-age-hours').value, 10);
+  nbState.sl_type = $('nb-sl-type').value;
+  nbState.sl_pct = parseFloat($('nb-sl-pct').value);
+
+  nbState.dca_max_orders = parseInt($('nb-dca-max').value, 10);
+  nbState.dca_size = parseFloat($('nb-dca-size').value);
+  nbState.dca_spacing_pct = parseFloat($('nb-dca-spacing').value);
+  nbState.dca_volume_scale = parseFloat($('nb-dca-volume').value);
+  nbState.dca_step_scale = parseFloat($('nb-dca-step').value);
 }
 
-function nbValidateStep(n) {
-  if (n === 1) {
-    if (!nbState.name) return 'Naam is verplicht';
-    if (!/^[a-zA-Z0-9 \-_]+$/.test(nbState.name)) return 'Naam mag alleen letters, cijfers, spaties, - en _ bevatten';
-    if (nbState.name.length > 100) return 'Naam max 100 tekens';
-    if (!nbState.pair) return 'Pair is verplicht';
-  }
-  if (n === 2) {
-    if (!nbState.base_size || nbState.base_size <= 0) return 'Base order grootte moet > 0 zijn';
-  }
-  if (n === 3) {
-    if (!nbState.tp_target_pct || nbState.tp_target_pct <= 0) return 'TP target % moet > 0 zijn';
-    if (!nbState.sl_pct || nbState.sl_pct <= 0) return 'SL % moet > 0 zijn';
-  }
-  if (n === 4) {
-    if (!nbState.dca_max_orders || nbState.dca_max_orders < 1 || nbState.dca_max_orders > 10) return 'Max orders moet 1-10 zijn';
-    if (!nbState.dca_spacing_pct || nbState.dca_spacing_pct <= 0) return 'Order spacing moet > 0 zijn';
-  }
-  return null;
+function nbValidateAll() {
+  const errors = [];
+  if (!nbState.name) errors.push('General: name is required');
+  else if (!/^[a-zA-Z0-9 \-_]+$/.test(nbState.name))
+    errors.push('General: name may only contain letters, digits, spaces, "-" and "_"');
+  else if (nbState.name.length > 100)
+    errors.push('General: name max 100 characters');
+  if (!nbState.pair) errors.push('General: trading pair is required');
+
+  if (!nbState.base_size || nbState.base_size <= 0)
+    errors.push('Entry: base order size must be > 0');
+
+  if (!nbState.tp_target_pct || nbState.tp_target_pct <= 0)
+    errors.push('Take Profit: target % must be > 0');
+  if (!nbState.sl_pct || nbState.sl_pct <= 0)
+    errors.push('Stop Loss: percentage must be > 0');
+
+  if (!nbState.dca_max_orders || nbState.dca_max_orders < 1 || nbState.dca_max_orders > 10)
+    errors.push('DCA: max orders must be between 1 and 10');
+  if (!nbState.dca_spacing_pct || nbState.dca_spacing_pct <= 0)
+    errors.push('DCA: order spacing must be > 0');
+
+  return errors;
 }
 
-function nbNext() {
-  nbReadStep(nbCurrentStep);
-  const err = nbValidateStep(nbCurrentStep);
-  if (err) { nbShowError(err); return; }
-  if (nbCurrentStep < 5) nbShowStep(nbCurrentStep + 1);
-}
-function nbPrev() {
-  nbReadStep(nbCurrentStep);
-  if (nbCurrentStep > 1) nbShowStep(nbCurrentStep - 1);
+function nbRecompute() {
+  // Re-read form, refresh DCA preview + review section. Called on every
+  // input change so the user sees live updates without having to click
+  // through wizard steps.
+  if (!nbState) return;
+  nbReadAll();
+  nbUpdateLeverageUI();
+  nbRenderDcaPreview();
+  nbRenderReview();
 }
 
 function nbApplyStateToForm() {
@@ -500,7 +485,7 @@ function nbRenderIndicators() {
   const list = $('nb-indicators-list');
   if (!list) return;
   if (!nbState.indicators.length) {
-    list.innerHTML = '<div class="empty-config-msg">Altijd instappen (geen filter)</div>';
+    list.innerHTML = '<div class="empty-config-msg">Always enter (no filter)</div>';
     return;
   }
   list.innerHTML = nbState.indicators.map((ind, i) => `
@@ -583,8 +568,8 @@ function nbUpdateLeverageUI() {
 }
 
 function nbCalcLiqPreview() {
-  // Eenvoudige benadering: liq ≈ entry × (1 ∓ 0.95/leverage)
-  // Gebruikt header price uit /api/price als referentie; valt terug op 80k.
+  // Rough approximation: liq ≈ entry × (1 ∓ 0.95/leverage).
+  // Uses header price from /api/price as a reference; falls back to 80k.
   let price = parseFloat(($('hdr-price').textContent || '').replace(/[$,]/g, ''));
   if (!price || isNaN(price)) price = 80000;
   const lev = nbState.leverage_size;
@@ -595,7 +580,6 @@ function nbCalcLiqPreview() {
 }
 
 function nbRenderDcaPreview() {
-  nbReadStep(4);
   const tbody = $('nb-dca-preview-tbody');
   if (!tbody) return;
   let price = parseFloat(($('hdr-price').textContent || '').replace(/[$,]/g, ''));
@@ -635,32 +619,31 @@ function nbCalcTotalSize() {
 }
 
 function nbRenderReview() {
-  nbReadStep(4);
   const totalSize = nbCalcTotalSize();
   let warnings = '';
   if (nbState.base_unit === 'btc' && totalSize > 0.1) {
-    warnings += `<div class="wizard-warning">⚠️ Totaal geïnvesteerd ${totalSize.toFixed(4)} BTC overschrijdt 0.1 BTC limit</div>`;
+    warnings += `<div class="wizard-warning">⚠️ Total committed ${totalSize.toFixed(4)} BTC exceeds 0.1 BTC limit</div>`;
   }
   if (nbState.base_unit === 'pct' && totalSize > 100) {
-    warnings += `<div class="wizard-warning">⚠️ Totaal geïnvesteerd ${totalSize.toFixed(0)}% overschrijdt 100%</div>`;
+    warnings += `<div class="wizard-warning">⚠️ Total committed ${totalSize.toFixed(0)}% exceeds 100%</div>`;
   }
 
   const indSummary = nbState.indicators.length
     ? nbState.indicators.map(i => `${i.type} (${i.timeframe})`).join(', ')
-    : 'geen — altijd instappen';
+    : 'none — always enter';
   const unit = nbState.base_unit === 'btc' ? 'BTC' : '%';
 
   $('nb-review').innerHTML = `
     ${warnings}
     <div class="review-section">
-      <div class="review-section-title">Algemeen</div>
-      <div class="review-row"><span class="review-key">Naam</span><span>${safeText(nbState.name) || '—'}</span></div>
+      <div class="review-section-title">General</div>
+      <div class="review-row"><span class="review-key">Name</span><span>${safeText(nbState.name) || '—'}</span></div>
       <div class="review-row"><span class="review-key">Exchange</span><span>${safeText(nbState.exchange.toUpperCase())}</span></div>
       <div class="review-row"><span class="review-key">Pair</span><span>${safeText(nbState.pair)}</span></div>
       <div class="review-row"><span class="review-key">Mode</span><span>${safeText(nbState.mode.toUpperCase())}</span></div>
       <div class="review-row"><span class="review-key">Direction</span><span>${safeText(nbState.direction.toUpperCase())}</span></div>
       <div class="review-row"><span class="review-key">Timeframe</span><span>${safeText(nbState.timeframe)}</span></div>
-      <div class="review-row"><span class="review-key">Leverage</span><span>${nbState.leverage_enabled ? nbState.leverage_size + 'x' : 'uit'}</span></div>
+      <div class="review-row"><span class="review-key">Leverage</span><span>${nbState.leverage_enabled ? nbState.leverage_size + 'x' : 'off'}</span></div>
     </div>
     <div class="review-section">
       <div class="review-section-title">Entry</div>
@@ -670,26 +653,26 @@ function nbRenderReview() {
     <div class="review-section">
       <div class="review-section-title">TP / SL</div>
       <div class="review-row"><span class="review-key">Take Profit</span><span>${nbState.tp_target_pct}%</span></div>
-      <div class="review-row"><span class="review-key">TP confirmatie</span><span>${safeText(nbState.tp_indicator_confirm) || 'geen'}</span></div>
-      <div class="review-row"><span class="review-key">Max age</span><span>${nbState.tp_max_age_enabled ? nbState.tp_max_age_hours + ' uur' : 'geen'}</span></div>
+      <div class="review-row"><span class="review-key">TP confirmation</span><span>${safeText(nbState.tp_indicator_confirm) || 'none'}</span></div>
+      <div class="review-row"><span class="review-key">Max age</span><span>${nbState.tp_max_age_enabled ? nbState.tp_max_age_hours + 'h' : 'none'}</span></div>
       <div class="review-row"><span class="review-key">Stop Loss</span><span>${safeText(nbState.sl_type)} ${nbState.sl_pct}%</span></div>
     </div>
     <div class="review-section">
       <div class="review-section-title">DCA</div>
       <div class="review-row"><span class="review-key">Max orders</span><span>${nbState.dca_max_orders}</span></div>
-      <div class="review-row"><span class="review-key">DCA grootte</span><span>${nbState.dca_size} ${unit}</span></div>
+      <div class="review-row"><span class="review-key">DCA size</span><span>${nbState.dca_size} ${unit}</span></div>
       <div class="review-row"><span class="review-key">Spacing</span><span>${nbState.dca_spacing_pct}%</span></div>
       <div class="review-row"><span class="review-key">Volume scale</span><span>${nbState.dca_volume_scale}</span></div>
       <div class="review-row"><span class="review-key">Step scale</span><span>${nbState.dca_step_scale}</span></div>
-      <div class="review-row"><span class="review-key">Totaal positie</span><span>${totalSize.toFixed(4)} ${unit}</span></div>
+      <div class="review-row"><span class="review-key">Total position</span><span>${totalSize.toFixed(4)} ${unit}</span></div>
     </div>
   `;
 }
 
 function nbBuildBotConfig() {
-  // Bouw een BotConfig-compatible payload. Pydantic negeert onbekende
-  // velden (extra='ignore'), dus timeframe/direction/etc. gaan niet
-  // mee de YAML in maar blijven wel zichtbaar in het wizard formulier.
+  // Build a BotConfig-compatible payload. Pydantic ignores unknown fields
+  // (extra='ignore'), so timeframe/direction/etc. are dropped server-side
+  // but kept in the wizard form for cosmetic purposes.
   const cfg = {
     name: nbState.name,
     mode: nbState.mode,
@@ -730,16 +713,16 @@ function nbBuildBotConfig() {
 }
 
 async function nbSubmit() {
-  nbReadStep(nbCurrentStep);
-  // Final validatie van alle voorgaande stappen
-  for (let s = 1; s <= 4; s++) {
-    const err = nbValidateStep(s);
-    if (err) { nbShowError(`Stap ${s}: ${err}`); nbShowStep(s); return; }
+  nbReadAll();
+  const errors = nbValidateAll();
+  if (errors.length) {
+    nbShowError(errors.map(e => safeText(e)).join('<br>'));
+    return;
   }
   const body = nbBuildBotConfig();
   const btn = $('nb-submit-btn');
   btn.disabled = true;
-  btn.textContent = 'Opslaan...';
+  btn.textContent = 'Saving...';
   try {
     const res = await fetch('/api/bots', {
       method: 'POST',
@@ -747,22 +730,22 @@ async function nbSubmit() {
       body: JSON.stringify(body),
     });
     if (res.status === 401) {
-      nbShowError('Auth fout — controleer je API key');
+      nbShowError('Auth error — check your API key');
       showApiKeyModal();
       return;
     }
     const r = await res.json();
     if (!res.ok) {
-      nbShowError(r.detail || `Opslaan mislukt (${res.status})`);
+      nbShowError(safeText(r.detail || `Save failed (${res.status})`));
       return;
     }
     nbInit();
     goBots();
   } catch (e) {
-    nbShowError('Netwerk fout: ' + e.message);
+    nbShowError('Network error: ' + safeText(e.message));
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Opslaan';
+    btn.textContent = 'Save bot';
   }
 }
 
@@ -1011,46 +994,36 @@ function setupEventListeners() {
   $('log-clear-btn').addEventListener('click', clearLog);
   $('ov-log-clear-btn').addEventListener('click', () => { $('ov-log-body').innerHTML = ''; });
 
-  // ── Wizard ────────────────────────────────────────────────────────────────
-  $('nb-prev-btn').addEventListener('click', nbPrev);
-  $('nb-next-btn').addEventListener('click', nbNext);
+  // ── New bot form ─────────────────────────────────────────────────────────
   $('nb-submit-btn').addEventListener('click', nbSubmit);
   $('nb-add-indicator-btn').addEventListener('click', nbAddIndicator);
 
-  // Step markers — alleen achteruit navigeren toegestaan
-  document.querySelectorAll('.wizard-step-marker').forEach(el => {
-    el.addEventListener('click', () => {
-      const target = parseInt(el.dataset.step, 10);
-      if (target < nbCurrentStep) {
-        nbReadStep(nbCurrentStep);
-        nbShowStep(target);
-      }
-    });
-  });
-
   // Base unit toggle
   document.querySelectorAll('[data-base-unit]').forEach(b => {
-    b.addEventListener('click', () => nbToggleBaseUnit(b.dataset.baseUnit));
+    b.addEventListener('click', () => { nbToggleBaseUnit(b.dataset.baseUnit); nbRecompute(); });
   });
 
-  // Leverage toggle + slider live updates
-  $('nb-leverage-enabled').addEventListener('change', e => {
-    nbState.leverage_enabled = e.target.checked;
-    nbUpdateLeverageUI();
-  });
-  $('nb-leverage-size').addEventListener('input', e => {
-    nbState.leverage_size = parseInt(e.target.value, 10);
-    nbUpdateLeverageUI();
-  });
-  $('nb-direction').addEventListener('change', e => {
-    nbState.direction = e.target.value;
-    nbUpdateLeverageUI();
-  });
-
-  // TP max-age toggle
+  // TP max-age toggle disables the hours input
   $('nb-tp-max-age-enabled').addEventListener('change', e => {
     $('nb-tp-max-age-hours').disabled = !e.target.checked;
+    nbRecompute();
   });
+
+  // Live recompute: any input/change inside the wizard refreshes state,
+  // DCA preview and review section. Indicator row controls are handled
+  // separately below because they need to re-render the row list on type
+  // change before we recompute.
+  const wizard = document.querySelector('#view-new-bot .wizard');
+  if (wizard) {
+    wizard.addEventListener('input', e => {
+      if (e.target.dataset && e.target.dataset.nbInd != null) return;
+      nbRecompute();
+    });
+    wizard.addEventListener('change', e => {
+      if (e.target.dataset && e.target.dataset.nbInd != null) return;
+      nbRecompute();
+    });
+  }
 
   // Indicator row event delegation (input changes, type switch, remove)
   document.addEventListener('input', e => {
@@ -1063,6 +1036,7 @@ function setupEventListeners() {
       if (['period', 'fast', 'slow'].includes(f)) v = parseInt(v, 10) || 0;
       nbState.indicators[i][f] = v;
       if (f === 'type') nbRenderIndicators();
+      nbRecompute();
     }
   });
   document.addEventListener('change', e => {
@@ -1072,12 +1046,13 @@ function setupEventListeners() {
       if (nbState && nbState.indicators[i]) {
         nbState.indicators[i].type = t.value;
         nbRenderIndicators();
+        nbRecompute();
       }
     }
   });
   document.addEventListener('click', e => {
     const t = e.target.closest('[data-nb-remove]');
-    if (t) nbRemoveIndicator(parseInt(t.dataset.nbRemove, 10));
+    if (t) { nbRemoveIndicator(parseInt(t.dataset.nbRemove, 10)); nbRecompute(); }
   });
 }
 

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
 
@@ -32,10 +32,10 @@
   <div class="modal-card">
     <div class="modal-title">🔑 Reverto API Key</div>
     <div class="modal-body-text">
-      De portal vereist een API key voor start/stop/restart en log streaming.
-      Vraag de operator naar de waarde van <code>REVERTO_API_KEY</code> (of zoek hem op in <code>logs/portal.log</code> bij ephemerale generatie).
+      The portal requires an API key for start/stop/restart and log streaming.
+      Ask the operator for the value of <code>REVERTO_API_KEY</code> (or look it up in <code>logs/portal.log</code> if an ephemeral key was generated).
     </div>
-    <input type="password" id="api-key-input" placeholder="Plak hier je API key" class="modal-input">
+    <input type="password" id="api-key-input" placeholder="Paste your API key here" class="modal-input">
     <div class="modal-actions">
       <button class="hbtn hbtn-theme btn-danger" id="modal-clear-btn">Clear</button>
       <button class="hbtn hbtn-theme" id="modal-cancel-btn">Cancel</button>
@@ -118,7 +118,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-bots" class="page">
   <div class="bots-toolbar">
-    <button class="btn-primary" id="new-bot-btn">＋ Nieuwe bot</button>
+    <button class="btn-primary" id="new-bot-btn">＋ New Bot</button>
   </div>
   <div class="bot-grid" id="bot-grid">
     <div class="empty-config-msg">Loading bots...</div>
@@ -148,197 +148,185 @@
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- VIEW: New bot wizard                                                      -->
+<!-- VIEW: New bot — single page form                                          -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-new-bot" class="page">
   <div class="wizard">
 
-    <!-- Progress -->
-    <div class="wizard-progress">
-      <div class="wizard-step-marker active" data-step="1">
-        <div class="step-num">1</div><div class="step-label">Algemeen</div>
-      </div>
-      <div class="step-divider"></div>
-      <div class="wizard-step-marker" data-step="2">
-        <div class="step-num">2</div><div class="step-label">Entry</div>
-      </div>
-      <div class="step-divider"></div>
-      <div class="wizard-step-marker" data-step="3">
-        <div class="step-num">3</div><div class="step-label">TP / SL</div>
-      </div>
-      <div class="step-divider"></div>
-      <div class="wizard-step-marker" data-step="4">
-        <div class="step-num">4</div><div class="step-label">DCA</div>
-      </div>
-      <div class="step-divider"></div>
-      <div class="wizard-step-marker" data-step="5">
-        <div class="step-num">5</div><div class="step-label">Review</div>
-      </div>
-    </div>
-
     <div class="wizard-error hidden" id="nb-error"></div>
 
-    <!-- Step 1: Algemeen -->
-    <div class="wizard-step" data-step="1">
-      <div class="form-grid">
-        <div class="form-row form-row-wide">
-          <label>Bot naam</label>
-          <input id="nb-name" type="text" maxlength="100" placeholder="bv. BTC-DCA-Slow">
-        </div>
-        <div class="form-row">
-          <label>Exchange</label>
-          <select id="nb-exchange">
-            <option value="bitget">Bitget</option>
-            <option value="kraken">Kraken</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label>Trading pair</label>
-          <input id="nb-pair" type="text" value="BTC/USD">
-        </div>
-        <div class="form-row">
-          <label>Mode</label>
-          <select id="nb-mode">
-            <option value="paper">Paper</option>
-            <option value="live" disabled title="Vereist API keys">Live (vereist API keys)</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label>Direction</label>
-          <select id="nb-direction">
-            <option value="long">Long</option>
-            <option value="short" disabled title="Nog niet ondersteund">Short (nog niet ondersteund)</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label>Timeframe (indicator candles)</label>
-          <select id="nb-timeframe">
-            <option value="15m">15m</option>
-            <option value="1h" selected>1h</option>
-            <option value="4h">4h</option>
-            <option value="1d">1d</option>
-          </select>
-        </div>
-        <div class="form-row form-row-wide">
-          <label class="checkbox-label">
-            <input type="checkbox" id="nb-leverage-enabled" class="checkbox-accent">
-            Leverage gebruiken
-          </label>
-          <div class="slider-row">
-            <input id="nb-leverage-size" type="range" min="2" max="20" step="1" value="2" disabled>
-            <span class="slider-value" id="nb-leverage-value">2x</span>
+    <!-- General -->
+    <details class="wizard-section" open>
+      <summary class="wizard-section-header">General</summary>
+      <div class="wizard-section-body">
+        <div class="form-grid">
+          <div class="form-row form-row-wide">
+            <label>Bot name</label>
+            <input id="nb-name" type="text" maxlength="100" placeholder="e.g. BTC-DCA-Slow">
           </div>
-          <div class="form-hint">Liquidation prijs: <span id="nb-liq-preview">—</span></div>
+          <div class="form-row">
+            <label>Exchange</label>
+            <select id="nb-exchange">
+              <option value="bitget">Bitget</option>
+              <option value="kraken">Kraken</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Trading pair</label>
+            <input id="nb-pair" type="text" value="BTC/USD">
+          </div>
+          <div class="form-row">
+            <label>Mode</label>
+            <select id="nb-mode">
+              <option value="paper">Paper</option>
+              <option value="live" disabled title="Requires API keys">Live (requires API keys)</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Direction</label>
+            <select id="nb-direction">
+              <option value="long">Long</option>
+              <option value="short" disabled title="Not yet supported">Short (not yet supported)</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Timeframe (indicator candles)</label>
+            <select id="nb-timeframe">
+              <option value="15m">15m</option>
+              <option value="1h" selected>1h</option>
+              <option value="4h">4h</option>
+              <option value="1d">1d</option>
+            </select>
+          </div>
+          <div class="form-row form-row-wide">
+            <label class="checkbox-label">
+              <input type="checkbox" id="nb-leverage-enabled" class="checkbox-accent">
+              Use leverage
+            </label>
+            <div class="slider-row">
+              <input id="nb-leverage-size" type="range" min="2" max="20" step="1" value="2" disabled>
+              <span class="slider-value" id="nb-leverage-value">2x</span>
+            </div>
+            <div class="form-hint">Liquidation price: <span id="nb-liq-preview">—</span></div>
+          </div>
         </div>
       </div>
-    </div>
+    </details>
 
-    <!-- Step 2: Entry -->
-    <div class="wizard-step hidden" data-step="2">
-      <div class="form-row">
-        <label>Base order grootte — eenheid</label>
-        <div class="toggle-group">
-          <button type="button" class="toggle-btn active" data-base-unit="btc">BTC (vast)</button>
-          <button type="button" class="toggle-btn" data-base-unit="pct">% van balance</button>
+    <!-- Entry Conditions -->
+    <details class="wizard-section" open>
+      <summary class="wizard-section-header">Entry Conditions</summary>
+      <div class="wizard-section-body">
+        <div class="form-row">
+          <label>Base order size — unit</label>
+          <div class="toggle-group">
+            <button type="button" class="toggle-btn active" data-base-unit="btc">BTC (fixed)</button>
+            <button type="button" class="toggle-btn" data-base-unit="pct">% of balance</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>Base order size (<span id="nb-base-unit-label">BTC</span>)</label>
+          <input id="nb-base-size" type="number" step="0.0001" min="0" value="0.001">
+        </div>
+
+        <div class="section-title mt-16">Indicators</div>
+        <div id="nb-indicators-list"></div>
+        <button type="button" class="hbtn hbtn-theme btn-accent" id="nb-add-indicator-btn">＋ Add indicator</button>
+      </div>
+    </details>
+
+    <!-- Take Profit & Stop Loss -->
+    <details class="wizard-section" open>
+      <summary class="wizard-section-header">Take Profit &amp; Stop Loss</summary>
+      <div class="wizard-section-body">
+        <div class="section-title">Take Profit</div>
+        <div class="form-grid">
+          <div class="form-row">
+            <label>Target %</label>
+            <input id="nb-tp-pct" type="number" step="0.1" min="0" value="3.0">
+          </div>
+          <div class="form-row">
+            <label>Indicator confirmation</label>
+            <select id="nb-tp-confirm">
+              <option value="">none</option>
+              <option value="MACD bullish">MACD bullish</option>
+              <option value="MACD bearish">MACD bearish</option>
+            </select>
+          </div>
+          <div class="form-row form-row-wide">
+            <label class="checkbox-label">
+              <input type="checkbox" id="nb-tp-max-age-enabled" class="checkbox-accent">
+              Close after X hours if TP not hit
+            </label>
+            <input id="nb-tp-max-age-hours" type="number" min="1" max="720" value="24" disabled>
+          </div>
+        </div>
+
+        <div class="section-title mt-16">Stop Loss</div>
+        <div class="form-grid">
+          <div class="form-row">
+            <label>Type</label>
+            <select id="nb-sl-type">
+              <option value="fixed">Fixed</option>
+              <option value="trailing">Trailing</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Percentage %</label>
+            <input id="nb-sl-pct" type="number" step="0.1" min="0" value="5.0">
+          </div>
         </div>
       </div>
-      <div class="form-row">
-        <label>Base order grootte (<span id="nb-base-unit-label">BTC</span>)</label>
-        <input id="nb-base-size" type="number" step="0.0001" min="0" value="0.001">
+    </details>
+
+    <!-- DCA Settings -->
+    <details class="wizard-section" open>
+      <summary class="wizard-section-header">DCA Settings</summary>
+      <div class="wizard-section-body">
+        <div class="form-grid">
+          <div class="form-row">
+            <label>Max orders (incl. base)</label>
+            <input id="nb-dca-max" type="number" min="1" max="10" value="5">
+          </div>
+          <div class="form-row">
+            <label>DCA order size (<span id="nb-dca-unit-label">BTC</span>)</label>
+            <input id="nb-dca-size" type="number" step="0.0001" min="0" value="0.001">
+          </div>
+          <div class="form-row">
+            <label>Order spacing %</label>
+            <input id="nb-dca-spacing" type="number" step="0.1" min="0" value="2.5">
+          </div>
+          <div class="form-row">
+            <label>Volume scale (multiplier)</label>
+            <input id="nb-dca-volume" type="number" step="0.1" min="0.1" value="1.0">
+          </div>
+          <div class="form-row">
+            <label>Step scale</label>
+            <input id="nb-dca-step" type="number" step="0.1" min="0.1" value="1.0">
+          </div>
+        </div>
+
+        <div class="section-title mt-16">Live preview</div>
+        <table class="preview-table">
+          <thead>
+            <tr><th>Order</th><th>Size</th><th>Price</th><th>Total</th></tr>
+          </thead>
+          <tbody id="nb-dca-preview-tbody"></tbody>
+        </table>
       </div>
+    </details>
 
-      <div class="section-title mt-16">Indicators</div>
-      <div id="nb-indicators-list"></div>
-      <button type="button" class="hbtn hbtn-theme btn-accent" id="nb-add-indicator-btn">＋ Indicator toevoegen</button>
-    </div>
-
-    <!-- Step 3: TP / SL -->
-    <div class="wizard-step hidden" data-step="3">
-      <div class="section-title">Take Profit</div>
-      <div class="form-grid">
-        <div class="form-row">
-          <label>Target %</label>
-          <input id="nb-tp-pct" type="number" step="0.1" min="0" value="3.0">
-        </div>
-        <div class="form-row">
-          <label>Indicator confirmatie</label>
-          <select id="nb-tp-confirm">
-            <option value="">geen</option>
-            <option value="MACD bullish">MACD bullish</option>
-            <option value="MACD bearish">MACD bearish</option>
-          </select>
-        </div>
-        <div class="form-row form-row-wide">
-          <label class="checkbox-label">
-            <input type="checkbox" id="nb-tp-max-age-enabled" class="checkbox-accent">
-            Sluiten na X uur indien geen TP
-          </label>
-          <input id="nb-tp-max-age-hours" type="number" min="1" max="720" value="24" disabled>
-        </div>
-      </div>
-
-      <div class="section-title mt-16">Stop Loss</div>
-      <div class="form-grid">
-        <div class="form-row">
-          <label>Type</label>
-          <select id="nb-sl-type">
-            <option value="fixed">Fixed</option>
-            <option value="trailing">Trailing</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label>Percentage %</label>
-          <input id="nb-sl-pct" type="number" step="0.1" min="0" value="5.0">
-        </div>
-      </div>
-    </div>
-
-    <!-- Step 4: DCA -->
-    <div class="wizard-step hidden" data-step="4">
-      <div class="form-grid">
-        <div class="form-row">
-          <label>Max orders (incl. base)</label>
-          <input id="nb-dca-max" type="number" min="1" max="10" value="5">
-        </div>
-        <div class="form-row">
-          <label>DCA order grootte (<span id="nb-dca-unit-label">BTC</span>)</label>
-          <input id="nb-dca-size" type="number" step="0.0001" min="0" value="0.001">
-        </div>
-        <div class="form-row">
-          <label>Order spacing %</label>
-          <input id="nb-dca-spacing" type="number" step="0.1" min="0" value="2.5">
-        </div>
-        <div class="form-row">
-          <label>Volume scale (multiplier)</label>
-          <input id="nb-dca-volume" type="number" step="0.1" min="0.1" value="1.0">
-        </div>
-        <div class="form-row">
-          <label>Step scale</label>
-          <input id="nb-dca-step" type="number" step="0.1" min="0.1" value="1.0">
+    <!-- Review & Save -->
+    <details class="wizard-section" open>
+      <summary class="wizard-section-header">Review &amp; Save</summary>
+      <div class="wizard-section-body">
+        <div id="nb-review"></div>
+        <div class="wizard-footer">
+          <div class="wizard-footer-spacer"></div>
+          <button type="button" class="hbtn hbtn-theme btn-accent" id="nb-submit-btn">Save bot</button>
         </div>
       </div>
-
-      <div class="section-title mt-16">Live preview</div>
-      <table class="preview-table">
-        <thead>
-          <tr><th>Order</th><th>Grootte</th><th>Prijs</th><th>Totaal</th></tr>
-        </thead>
-        <tbody id="nb-dca-preview-tbody"></tbody>
-      </table>
-    </div>
-
-    <!-- Step 5: Review -->
-    <div class="wizard-step hidden" data-step="5">
-      <div id="nb-review"></div>
-    </div>
-
-    <!-- Footer -->
-    <div class="wizard-footer">
-      <button type="button" class="hbtn hbtn-theme hidden" id="nb-prev-btn">← Vorige</button>
-      <div class="wizard-footer-spacer"></div>
-      <button type="button" class="hbtn hbtn-theme btn-accent" id="nb-next-btn">Volgende →</button>
-      <button type="button" class="hbtn hbtn-theme btn-accent hidden" id="nb-submit-btn">Opslaan</button>
-    </div>
+    </details>
 
   </div>
 </div>
@@ -467,6 +455,6 @@
 
 </div>
 
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>
