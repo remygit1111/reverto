@@ -13,13 +13,12 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import ccxt as _ccxt
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware import Middleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -35,7 +34,6 @@ PYTHON_BIN = sys.executable
 
 # Cached ccxt client for /api/price — initialised at module load so there
 # is no race condition on first request. Reused for all subsequent calls.
-import ccxt as _ccxt
 _price_client = _ccxt.bitget({"options": {"defaultType": "swap"}})
 
 
@@ -137,23 +135,14 @@ class BotRegistry:
         self.refresh()
 
     def refresh(self):
-        if not CONFIG_DIR.exists():
-            return
-        current_slugs = {f.stem for f in CONFIG_DIR.glob("*.yaml")}
-
-        # Add new bots
-        for f in sorted(CONFIG_DIR.glob("*.yaml")):
-            slug = f.stem
-            if slug not in self._bots:
-                self._bots[slug] = BotInfo(
-                    slug=slug,
-                    config_file=str(f.relative_to(BASE_DIR))
-                )
-
-        # Remove bots whose YAML has been deleted
-        stale = [slug for slug in self._bots if slug not in current_slugs]
-        for slug in stale:
-            del self._bots[slug]
+        if CONFIG_DIR.exists():
+            for f in sorted(CONFIG_DIR.glob("*.yaml")):
+                slug = f.stem
+                if slug not in self._bots:
+                    self._bots[slug] = BotInfo(
+                        slug=slug,
+                        config_file=str(f.relative_to(BASE_DIR))
+                    )
 
     def all(self) -> list[BotInfo]:
         self.refresh()

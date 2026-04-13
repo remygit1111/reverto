@@ -68,7 +68,7 @@ class ScheduleGuard:
             "current_time": now.strftime("%Y-%m-%d %H:%M %Z"),
             "next_open": next_open,
             "message": (
-                f"🟢 Reverto active — new deals allowed"
+                "🟢 Reverto active — new deals allowed"
                 if open_ else
                 f"🔴 Reverto resting — next window: {next_open}"
             )
