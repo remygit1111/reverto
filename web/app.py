@@ -16,12 +16,18 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import ccxt
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
+
+# Module-level ccxt client — reused across /api/price calls so we don't pay
+# instantiation overhead on every request.
+_bitget_client = ccxt.bitget({"options": {"defaultType": "swap"}})
 
 BASE_DIR   = Path(__file__).parent.parent
 STATIC_DIR = Path(__file__).parent / "static"
@@ -104,14 +110,19 @@ class BotRegistry:
         self.refresh()
 
     def refresh(self):
+        current: set[str] = set()
         if CONFIG_DIR.exists():
             for f in sorted(CONFIG_DIR.glob("*.yaml")):
                 slug = f.stem
+                current.add(slug)
                 if slug not in self._bots:
                     self._bots[slug] = BotInfo(
                         slug=slug,
                         config_file=str(f.relative_to(BASE_DIR))
                     )
+        # Drop bots whose YAML was removed so the registry stays in sync.
+        for stale in [s for s in self._bots if s not in current]:
+            del self._bots[stale]
 
     def all(self) -> list[BotInfo]:
         self.refresh()
@@ -135,21 +146,23 @@ def start_bot(slug: str) -> dict:
         return {"ok": False, "error": f"{slug} already running (PID {bot.pid})"}
     try:
         PID_DIR.mkdir(parents=True, exist_ok=True)
-        log_out = open(bot.log_file, "a")
 
         # Use absolute path to main_paper.py and same venv Python as portal
         env = os.environ.copy()
         env["PYTHONPATH"] = str(BASE_DIR)
 
-        proc = subprocess.Popen(
-            [PYTHON_BIN, str(BASE_DIR / "main_paper.py"),
-             "--config", bot.config_file],
-            cwd=str(BASE_DIR),
-            stdout=log_out,
-            stderr=log_out,
-            env=env,
-            start_new_session=True
-        )
+        # Context manager closes the parent's FD after Popen duplicates it —
+        # the child process keeps its own handle, no FD leak in the portal.
+        with open(bot.log_file, "a") as log_out:
+            proc = subprocess.Popen(
+                [PYTHON_BIN, str(BASE_DIR / "main_paper.py"),
+                 "--config", bot.config_file],
+                cwd=str(BASE_DIR),
+                stdout=log_out,
+                stderr=log_out,
+                env=env,
+                start_new_session=True
+            )
         logger.info(f"Bot {slug} started (PID {proc.pid})")
         return {"ok": True, "message": f"{slug} started (PID {proc.pid})"}
     except Exception as e:
@@ -189,7 +202,27 @@ def _do_portal_restart():
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach standard hardening headers to every HTTP response."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self' ws: wss:; "
+            "frame-ancestors 'none'"
+        )
+        response.headers["X-Frame-Options"]        = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"]        = "no-referrer"
+        return response
+
+
 app = FastAPI(title="Reverto Portal", docs_url=None, redoc_url=None)
+app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -273,9 +306,8 @@ async def api_price():
     regardless of whether any bot is running.
     """
     try:
-        import ccxt
-        exchange = ccxt.bitget({"options": {"defaultType": "swap"}})
-        ticker = exchange.fetch_ticker("BTCUSD")
+        # ccxt is blocking — push it to a worker thread so the event loop stays free.
+        ticker = await asyncio.to_thread(_bitget_client.fetch_ticker, "BTCUSD")
         price = ticker.get("last") or ticker.get("close") or 0.0
         return {"price": price, "pair": "BTC/USD", "source": "bitget"}
     except Exception:
@@ -333,6 +365,12 @@ async def ws_logs(websocket: WebSocket, slug: str):
             broadcaster.disconnect(websocket, "portal")
         except Exception:
             broadcaster.disconnect(websocket, "portal")
+        return
+
+    # Reject unknown slugs before accepting the socket — prevents tailing
+    # arbitrary file paths and keeps broadcaster keys bounded.
+    if registry.get(slug) is None:
+        await websocket.close(code=4004)
         return
 
     await broadcaster.connect(websocket, slug)

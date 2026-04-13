@@ -400,6 +400,12 @@ function toggleTheme() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
+function safeText(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
 function fmtPrice(n) {
   if (!n) return '—';
   return '$'+parseFloat(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -496,9 +502,9 @@ function renderOverview(d) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No open deals across any bot</td></tr>';
   } else {
     tbody.innerHTML = deals.map(deal => `<tr>
-      <td><span style="color:var(--accent);cursor:pointer" onclick="openBot('${deal.bot_slug}')">${deal.bot_name}</span></td>
-      <td style="color:var(--muted)">${deal.id}</td>
-      <td>${deal.symbol||'—'}</td>
+      <td><span class="link-like" data-action="open" data-slug="${safeText(deal.bot_slug)}">${safeText(deal.bot_name)}</span></td>
+      <td style="color:var(--muted)">${safeText(deal.id)}</td>
+      <td>${safeText(deal.symbol||'—')}</td>
       <td>${fmtPrice(deal.entry_price)}</td>
       <td>${fmtPrice(deal.avg_entry_price)}</td>
       <td>${deal.order_count}</td>
@@ -516,7 +522,7 @@ function renderBotCard(b) {
 
   const openDealsHtml = (b.open_deals||[]).slice(0,3).map(d => `
     <div class="bot-card-deal-row">
-      <span style="color:var(--accent)">${d.id}</span>
+      <span style="color:var(--accent)">${safeText(d.id)}</span>
       <span style="color:var(--muted)">${fmtPrice(d.entry_price)}</span>
       <span>${fmtPnl(d.pnl_btc)}</span>
     </div>`).join('');
@@ -528,14 +534,14 @@ function renderBotCard(b) {
   return `
   <div class="bot-card">
     <div class="bot-card-top">
-      <span class="bot-card-name">${b.bot_name||b.slug}</span>
+      <span class="bot-card-name">${safeText(b.bot_name||b.slug)}</span>
       <div class="pill ${running?'running':'stopped'}" style="font-size:10px;height:24px;cursor:default">
         <div class="dot"></div>${running?'Running':'Stopped'}
       </div>
     </div>
     <div class="bot-card-meta">
-      ${(b.exchange||'—').toUpperCase()} · ${b.pair||'BTC/USD'} · ${(b.mode||'paper').toUpperCase()}
-      ${b.uptime ? '· ⏱ '+b.uptime : ''}
+      ${safeText((b.exchange||'—').toUpperCase())} · ${safeText(b.pair||'BTC/USD')} · ${safeText((b.mode||'paper').toUpperCase())}
+      ${b.uptime ? '· ⏱ '+safeText(b.uptime) : ''}
     </div>
     <div class="bot-card-stats">
       <div class="bot-stat">
@@ -566,14 +572,26 @@ function renderBotCard(b) {
     ${openDealsHtml ? `<div class="bot-card-deals">${openDealsHtml}${moreDeals}</div>` : ''}
     <div class="bot-card-footer">
       ${running
-        ? `<button class="btn-sm btn-stop"    onclick="botAction('${b.slug}','stop')">■ Stop</button>
-           <button class="btn-sm btn-restart" onclick="botAction('${b.slug}','restart')">↺ Restart</button>`
-        : `<button class="btn-sm btn-start"   onclick="botAction('${b.slug}','start')">▶ Start</button>`
+        ? `<button class="btn-sm btn-stop"    data-action="stop"    data-slug="${safeText(b.slug)}">■ Stop</button>
+           <button class="btn-sm btn-restart" data-action="restart" data-slug="${safeText(b.slug)}">↺ Restart</button>`
+        : `<button class="btn-sm btn-start"   data-action="start"   data-slug="${safeText(b.slug)}">▶ Start</button>`
       }
-      <button class="btn-sm btn-open" onclick="openBot('${b.slug}')">Open →</button>
+      <button class="btn-sm btn-open" data-action="open" data-slug="${safeText(b.slug)}">Open →</button>
     </div>
   </div>`;
 }
+
+// Click delegation — slug comes from data-slug (escaped via safeText), never
+// interpolated into an onclick string, so it can't break out of the attribute.
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+  const slug   = el.dataset.slug;
+  if (!slug) return;
+  if (action === 'open') openBot(slug);
+  else if (['start','stop','restart'].includes(action)) botAction(slug, action);
+});
 
 // ── Bot actions ───────────────────────────────────────────────────────────────
 async function botAction(slug, action) {
