@@ -357,7 +357,6 @@ function _resetHeaderForTopLevel() {
   $('hdr-context').onclick = null;
   $('hdr-pill').classList.add('hidden');
   $('hdr-uptime').textContent = '';
-  $('detail-nav-item').classList.add('hidden');
 }
 
 function _ensureOverviewPolling() {
@@ -844,15 +843,11 @@ function openBot(slug) {
   currentSlug = slug;
   _detailConfigCache = null;
 
-  $('hdr-context').textContent = '← Overview';
-  $('hdr-context').classList.add('clickable');
-  $('hdr-context').onclick = goOverview;
+  // Detail is a sub-view of Bots now — keep the Bots tab active and
+  // surface the slug inside the detail body via a Back bar.
+  _setActiveTab('nav-bots-btn');
   $('hdr-pill').classList.remove('hidden');
-
-  document.querySelectorAll('#main-nav .tab').forEach(t => t.classList.remove('active'));
-  $('detail-nav-item').classList.remove('hidden');
-  $('detail-nav-btn').textContent = slug;
-  $('detail-nav-btn').classList.add('active');
+  $('detail-slug-label').textContent = slug;
 
   showDTab('dashboard', document.querySelector('.detail-subnav .tab'));
 
@@ -1184,7 +1179,7 @@ function appendOverviewLog(text, slug) {
 // ── Portal restart ────────────────────────────────────────────────────────────
 async function restartPortal() {
   const btn = $('restart-btn');
-  btn.textContent = '↺ Restarting...';
+  btn.textContent = 'Restarting...';
   btn.disabled = true;
 
   try {
@@ -1199,7 +1194,7 @@ async function restartPortal() {
       const r = await fetch('/api/portal/status');
       if (r.ok) {
         clearInterval(poll);
-        btn.textContent = '↺ Restart Dashboard';
+        btn.textContent = 'Restart Dashboard';
         btn.disabled = false;
         location.reload();
       }
@@ -1216,6 +1211,9 @@ function setupEventListeners() {
   $('nav-overview-btn').addEventListener('click', goOverview);
   $('nav-bots-btn').addEventListener('click', goBots);
   $('nav-deals-btn').addEventListener('click', goDeals);
+
+  // Back button inside the bot detail sub-view
+  $('detail-back-btn').addEventListener('click', goBots);
 
   $('new-bot-btn').addEventListener('click', goNewBot);
 

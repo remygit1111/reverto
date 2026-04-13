@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=7">
+<link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
 
@@ -22,8 +22,8 @@
     </div>
   </div>
   <span class="uptime-chip" id="hdr-uptime"></span>
-  <button class="hbtn hbtn-theme" id="api-key-btn" title="API Key">🔑 API Key</button>
-  <button class="hbtn hbtn-theme" id="restart-btn" title="Restart dashboard">↺ Restart Dashboard</button>
+  <button class="hbtn hbtn-theme" id="api-key-btn" title="API Key">🔑<span class="btn-label"> API Key</span></button>
+  <button class="hbtn hbtn-theme hbtn-hide-mobile" id="restart-btn" title="Restart dashboard">Restart Dashboard</button>
   <button class="hbtn hbtn-theme" id="theme-btn" title="Toggle light/dark">☀︎</button>
 </header>
 
@@ -49,9 +49,6 @@
   <button class="tab active" id="nav-overview-btn">Overview</button>
   <button class="tab" id="nav-bots-btn">Bots</button>
   <button class="tab" id="nav-deals-btn">Active Deals</button>
-  <span id="detail-nav-item" class="hidden">
-    <button class="tab active" id="detail-nav-btn">—</button>
-  </span>
 </nav>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
@@ -332,9 +329,15 @@
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- VIEW: Bot detail                                                          -->
+<!-- VIEW: Bot detail (sub-view of Bots tab)                                   -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-detail" class="page">
+
+  <!-- Back bar -->
+  <div class="detail-back">
+    <button class="hbtn hbtn-theme" id="detail-back-btn" title="Back to bots">← Back</button>
+    <span class="detail-slug-label" id="detail-slug-label">—</span>
+  </div>
 
   <!-- Sub-nav -->
   <div class="detail-subnav">
@@ -467,6 +470,6 @@
 
 </div>
 
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js?v=8"></script>
 </body>
 </html>

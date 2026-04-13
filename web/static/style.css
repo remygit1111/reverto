@@ -1137,3 +1137,88 @@ tr:hover td { background: rgba(128,128,128,.04); }
   margin-top: 14px;
   margin-bottom: 6px;
 }
+
+/* ── Detail view back bar (sub-view of Bots tab) ────────────────────────── */
+.detail-back {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 20px 0;
+}
+.detail-slug-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+/* Responsive helpers */
+.btn-label { display: inline; }
+
+/* ── Responsive layout (mobile) ─────────────────────────────────────────── */
+@media (max-width: 600px) {
+  /* Header — compact icon-only buttons, drop non-essential chrome */
+  header {
+    gap: 8px;
+    padding: 0 10px;
+  }
+  .logo-sub { display: none; }
+  .header-pair { display: none; }
+  .btn-label { display: none; }
+  .hbtn-hide-mobile { display: none; }
+  .hbtn { padding: 0 8px; }
+
+  /* Nav — tighter horizontal padding so all 3 tabs fit */
+  nav { padding: 0 10px; }
+  .tab { padding: 12px 10px; }
+
+  /* Page padding — less breathing room on mobile */
+  .page { padding: 12px; }
+
+  /* Bot cards — single column */
+  .bot-grid {
+    grid-template-columns: 1fr;
+    padding: 12px 10px;
+  }
+  .summary-bar {
+    grid-template-columns: 1fr;
+    padding: 12px 10px 0;
+  }
+  .all-deals-section { padding: 0 10px 12px; }
+  .bots-toolbar { padding: 12px 10px 0; }
+
+  /* Dashboard stats — 2 columns instead of 3+ */
+  .stat-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  /* Indicator grid — 2 columns */
+  .indicator-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  /* Wizard sections and tables */
+  .wizard { padding: 12px 10px 40px; }
+  .wizard-section-body { padding: 14px 12px; }
+  .form-grid { grid-template-columns: 1fr; gap: 10px; }
+  .indicator-row { grid-template-columns: 1fr; }
+
+  /* Tables — allow horizontal scroll inside their card container */
+  .card-no-pad { overflow-x: auto; }
+  table { font-size: 11px; }
+  th, td { padding: 6px 8px; }
+
+  /* Detail back bar */
+  .detail-back { padding: 12px 10px 0; }
+  .detail-subnav { padding: 0 10px; }
+  .detail-content { padding: 12px 10px; }
+  .dtab-content { padding: 12px 10px; }
+  .log-wrap-detail { height: calc(100vh - 170px); }
+
+  /* API-key modal fits narrow viewports */
+  .modal-card { min-width: 0; width: 95vw; padding: 18px; }
+}

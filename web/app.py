@@ -787,9 +787,9 @@ async def ws_logs(websocket: WebSocket, slug: str):
             await asyncio.sleep(30)
             await websocket.send_text("__ping__")
     except WebSocketDisconnect:
-        broadcaster.disconnect(websocket, slug)
+        await broadcaster.disconnect(websocket, slug)
     except Exception:
-        broadcaster.disconnect(websocket, slug)
+        await broadcaster.disconnect(websocket, slug)
 
 
 async def tail_logs():
