@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
 
@@ -201,10 +201,11 @@
               Use leverage
             </label>
             <div class="slider-row">
-              <input id="nb-leverage-size" type="range" min="2" max="20" step="1" value="2" disabled>
-              <span class="slider-value" id="nb-leverage-value">2x</span>
+              <input id="nb-leverage-size" type="range" min="1" max="125" step="1" value="1" disabled>
+              <span class="slider-value" id="nb-leverage-value">1x</span>
             </div>
             <div class="form-hint">Liquidation price: <span id="nb-liq-preview">—</span></div>
+            <div class="form-hint" id="nb-leverage-warn"></div>
           </div>
         </div>
       </div>
@@ -467,6 +468,6 @@
 
 </div>
 
-<script src="/static/app.js?v=10"></script>
+<script src="/static/app.js?v=11"></script>
 </body>
 </html>
