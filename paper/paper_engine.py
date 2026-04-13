@@ -20,6 +20,16 @@ from core.liquidation_guard import LiquidationGuard
 
 logger = logging.getLogger(__name__)
 
+# Candle interval in seconds per timeframe. Drives the TTL for the
+# per-timeframe close-price cache — we only need to re-fetch a
+# timeframe once a new completed candle of that interval has landed.
+_TF_SECONDS = {
+    "15m": 15 * 60,
+    "1h":  60 * 60,
+    "4h":  4 * 60 * 60,
+    "1d":  24 * 60 * 60,
+}
+
 
 def _deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
     """Convert a PaperDeal to a JSON-serialisable dict."""
@@ -75,9 +85,13 @@ class PaperEngine:
         # State file for portal communication
         self._state_file = Path(state_file) if state_file else None
 
-        # Rolling window of closing prices
-        self._closes: list[float] = []
-        self._closes_fetched_at: float = 0.0
+        # Rolling window of closing prices per timeframe. The indicator
+        # engine needs separate buckets so each indicator can evaluate
+        # on its configured TF (bot-level default or per-indicator
+        # override). Each TF has its own last-fetched timestamp so we
+        # re-fetch each bucket at most once per candle interval.
+        self._closes_per_tf: dict[str, list[float]] = {}
+        self._closes_fetched_at: dict[str, float] = {}
 
         # Track schedule state for transition detection
         self._last_schedule_state: bool = None
@@ -247,9 +261,10 @@ class PaperEngine:
 
             # Always update indicator snapshot (regardless of schedule)
             # so the dashboard shows current values during off-hours.
-            if self._closes:
+            bot_tf = self.config.timeframe
+            if self._closes_per_tf.get(bot_tf):
                 self._last_snapshot = self.indicator_engine.get_indicator_snapshot(
-                    self._closes
+                    self._closes_per_tf, bot_tf,
                 )
 
             self._monitor_open_deals(price)
@@ -299,33 +314,52 @@ class PaperEngine:
 
     def _fetch_closes_if_needed(self):
         """
-        Fetch OHLCV candles only when stale.
-        Excludes the current incomplete candle.
-        On failure, schedules a retry in ~100s instead of waiting the
-        full 3600s cache window.
+        Fetch OHLCV candles per required timeframe, only when stale.
+
+        Required timeframes come from the IndicatorEngine: the bot-level
+        default plus every per-indicator override. Each timeframe has
+        its own TTL (matching the candle interval) so e.g. a 1d bucket
+        is only re-fetched once per day while a 15m bucket is refreshed
+        every 15 minutes. The current incomplete candle is excluded so
+        indicator inputs match what the exchange would have shown at
+        the previous closed candle.
         """
-        if time.time() - self._closes_fetched_at < 3600:
-            return
+        required = self.indicator_engine.required_timeframes(self.config.timeframe)
+        now = time.time()
 
-        try:
-            candles   = self.exchange.get_ohlcv(self.config.pair, "1h", 101)
-            now_ms    = time.time() * 1000
-            completed = [c for c in candles if c[0] + 3_600_000 < now_ms]
+        for tf in required:
+            interval = _TF_SECONDS.get(tf)
+            if interval is None:
+                logger.warning("Unknown timeframe %r — skipping fetch", tf)
+                continue
 
-            if not completed:
-                logger.warning("No completed candles — skipping cache update")
-                # Retry in 100s, not 3600s
-                self._closes_fetched_at = time.time() - 3500
-                return
+            last = self._closes_fetched_at.get(tf, 0.0)
+            if now - last < interval:
+                continue
 
-            self._closes            = [c[4] for c in completed]
-            self._closes_fetched_at = time.time()
-            logger.debug(f"Candles refreshed: {len(self._closes)} closes loaded")
+            try:
+                candles = self.exchange.get_ohlcv(self.config.pair, tf, 101)
+                now_ms = time.time() * 1000
+                cutoff_ms = interval * 1000
+                completed = [c for c in candles if c[0] + cutoff_ms < now_ms]
 
-        except Exception as e:
-            logger.error(f"Failed to fetch candles: {e}")
-            # Retry in 100s on failure
-            self._closes_fetched_at = time.time() - 3500
+                if not completed:
+                    logger.warning(
+                        "No completed %s candles — retry in 100s", tf
+                    )
+                    # Retry in 100s instead of waiting a full interval
+                    self._closes_fetched_at[tf] = now - max(interval - 100, 0)
+                    continue
+
+                self._closes_per_tf[tf] = [c[4] for c in completed]
+                self._closes_fetched_at[tf] = now
+                logger.debug(
+                    "Candles refreshed: tf=%s count=%d", tf, len(completed)
+                )
+
+            except Exception as e:
+                logger.error("Failed to fetch %s candles: %s", tf, e)
+                self._closes_fetched_at[tf] = now - max(interval - 100, 0)
 
     # ------------------------------------------------------------------
     # Entry logic
@@ -337,8 +371,9 @@ class PaperEngine:
         if len(self.state.get_open_deals_snapshot()) > 0:
             return
 
-        if not self._closes:
-            logger.warning("No candle data — skipping entry check")
+        bot_tf = self.config.timeframe
+        if not self._closes_per_tf.get(bot_tf):
+            logger.warning("No candle data for bot timeframe %s — skipping entry", bot_tf)
             return
 
         logger.info(
@@ -348,7 +383,7 @@ class PaperEngine:
             f"MACD hist: {self._last_snapshot.get('macd_histogram','?')}"
         )
 
-        if self.indicator_engine.check_entry_signal(self._closes):
+        if self.indicator_engine.check_entry_signal(self._closes_per_tf, bot_tf):
             self._open_deal(price)
 
     def _calc_fee(self, size: float) -> float:
@@ -414,7 +449,10 @@ class PaperEngine:
         target_price = avg * (1 + self.config.take_profit.target_pct / 100)
 
         if price >= target_price:
-            if self._closes and not self.indicator_engine.check_tp_confirmation(self._closes):
+            bot_tf = self.config.timeframe
+            if self._closes_per_tf.get(bot_tf) and not self.indicator_engine.check_tp_confirmation(
+                self._closes_per_tf, bot_tf
+            ):
                 logger.info("TP price reached but confirmation not met — holding")
                 return
 

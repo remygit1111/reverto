@@ -16,10 +16,11 @@ def _candle(ts, o, h, lo, c, v=100.0):
 
 
 def _config(tp_pct=3.0, sl_pct=6.0, sl_type="fixed", spacing=2.5,
-            max_orders=5, mult=1.5, base_size=0.001):
+            max_orders=5, mult=1.5, base_size=0.001, timeframe="1h"):
     cfg = MagicMock()
     cfg.name = "bt-test"
     cfg.pair = "BTC/USD"
+    cfg.timeframe = timeframe
     cfg.leverage.size = 1
     cfg.leverage.enabled = False
     cfg.take_profit.target_pct = tp_pct
@@ -36,9 +37,18 @@ def _config(tp_pct=3.0, sl_pct=6.0, sl_type="fixed", spacing=2.5,
 
 
 def _engine_with_candles(candles, **kwargs):
-    """Maak een engine met gegeven candles en geen indicators (altijd entry)."""
+    """Maak een engine met gegeven candles en geen indicators (altijd entry).
+
+    Wraps the candle list in a per-timeframe dict since the backtest
+    engine now expects candles_per_tf. The default bot timeframe in
+    _config() is '1h'.
+    """
     cfg = _config(**kwargs)
-    return BacktestEngine(config=cfg, candles=candles, initial_balance_btc=0.1)
+    return BacktestEngine(
+        config=cfg,
+        candles_per_tf={cfg.timeframe: candles},
+        initial_balance_btc=0.1,
+    )
 
 
 def _make_candles(prices: list[float], base_ts: int = 1_700_000_000_000) -> list[BacktestCandle]:

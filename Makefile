@@ -40,6 +40,7 @@ bot:
   exchange: bitget
   pair: BTC/USD
   contract_type: inverse_perpetual
+  timeframe: 1h
 
   leverage:
     enabled: false
@@ -90,6 +91,7 @@ bot:
   exchange: bitget
   pair: BTC/USD
   contract_type: inverse_perpetual
+  timeframe: 1h
 
   leverage:
     enabled: false

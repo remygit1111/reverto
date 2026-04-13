@@ -38,8 +38,13 @@ class BacktestEngine:
     Backtester voor Reverto.
 
     Werkt candle-voor-candle door historische data:
-    - Gebruikt de close prijs als simulatieprijs (conservatief)
-    - Checkt intra-candle high/low voor TP en SL (realistischer dan alleen close)
+    - Driving timeframe = config.timeframe (bot-level)
+    - Per tick wordt closes_per_tf gereconstrueerd: voor elke timeframe
+      die de indicator engine nodig heeft bouwen we de lijst met
+      afgesloten closes tot aan de timestamp van de huidige driving
+      candle. Pointer-based walk, O(N) totaal per timeframe.
+    - Checkt intra-candle high/low voor TP en SL (realistischer dan
+      alleen close)
     - Past taker fees toe op elke entry en exit
     - Hergebruikt exact dezelfde DCA/TP/SL logica als de paper engine
     """
@@ -47,15 +52,35 @@ class BacktestEngine:
     def __init__(
         self,
         config: BotConfig,
-        candles: list[BacktestCandle],
+        candles_per_tf: dict[str, list[BacktestCandle]],
         initial_balance_btc: float = 0.1,
     ):
         self.config           = config
-        self.candles          = candles
+        self.candles_per_tf   = candles_per_tf
         self.initial_balance  = initial_balance_btc
         self.taker_fee        = config.dca.taker_fee
         self.state            = PaperState(initial_balance_btc)
         self.indicator_engine = IndicatorEngine(config)
+
+        self.bot_timeframe = config.timeframe
+        required = self.indicator_engine.required_timeframes(self.bot_timeframe)
+        missing = [tf for tf in required if tf not in candles_per_tf]
+        if missing:
+            raise ValueError(
+                f"BacktestEngine: missing candles for timeframes {missing}. "
+                f"Required: {sorted(required)}, provided: {sorted(candles_per_tf.keys())}"
+            )
+        if self.bot_timeframe not in candles_per_tf:
+            raise ValueError(
+                f"BacktestEngine: driving timeframe {self.bot_timeframe!r} "
+                f"not in candles_per_tf"
+            )
+
+        self.driving_candles = candles_per_tf[self.bot_timeframe]
+
+        # Pointer per tf tracking how many candles closed BEFORE the
+        # current driving-candle timestamp. Advanced in _process_candle.
+        self._tf_pointers: dict[str, int] = {tf: 0 for tf in candles_per_tf}
 
         # Statistieken
         self._candles_processed = 0
@@ -67,42 +92,58 @@ class BacktestEngine:
 
     def run(self) -> "BacktestResult":
         """
-        Voer de backtest uit over alle candles.
+        Voer de backtest uit over alle driving-timeframe candles.
         Retourneert een BacktestResult met alle statistieken.
         """
         logger.info(
             f"Backtest gestart: {self.config.name} | "
-            f"{len(self.candles)} candles | "
+            f"{len(self.driving_candles)} driving candles ({self.bot_timeframe}) | "
+            f"timeframes: {sorted(self.candles_per_tf.keys())} | "
             f"balance: {self.initial_balance} BTC"
         )
 
         # Minimale warm-up voor indicators (MACD vereist 3*26=78 candles)
         warmup = 78
 
-        for i, candle in enumerate(self.candles):
+        for i, candle in enumerate(self.driving_candles):
             if i < warmup:
                 continue  # wacht tot indicators betrouwbaar zijn
 
-            # Sluitprijzen tot en met huidige candle (exclusief huidige = completed)
-            closes = [c.close for c in self.candles[:i]]
-
-            self._process_candle(candle, closes)
+            closes_per_tf = self._closes_up_to(candle.timestamp)
+            self._process_candle(candle, closes_per_tf)
             self._candles_processed += 1
 
         # Sluit alle nog openstaande deals op de slotprijs van de laatste candle
-        if self.candles:
-            last_price = self.candles[-1].close
+        if self.driving_candles:
+            last_price = self.driving_candles[-1].close
             for deal_id in list(self.state.open_deals.keys()):
                 self._close_deal(deal_id, last_price, "end_of_data")
 
         return self._build_result()
 
+    def _closes_up_to(self, cur_ts: int) -> dict[str, list[float]]:
+        """Return close prices per tf for candles that closed strictly
+        before `cur_ts`. Uses a persistent pointer per tf so the total
+        walk is O(N) across the whole backtest."""
+        result: dict[str, list[float]] = {}
+        for tf, candles in self.candles_per_tf.items():
+            ptr = self._tf_pointers[tf]
+            while ptr < len(candles) and candles[ptr].timestamp < cur_ts:
+                ptr += 1
+            self._tf_pointers[tf] = ptr
+            result[tf] = [c.close for c in candles[:ptr]]
+        return result
+
     # ------------------------------------------------------------------
     # Candle verwerking
     # ------------------------------------------------------------------
 
-    def _process_candle(self, candle: BacktestCandle, closes: list[float]):
-        """Verwerk één candle: check entry en monitor open deals."""
+    def _process_candle(
+        self,
+        candle: BacktestCandle,
+        closes_per_tf: dict[str, list[float]],
+    ):
+        """Verwerk één driving candle: check entry en monitor open deals."""
         close = candle.close
 
         # Monitor open deals — check TP/SL met intra-candle high/low
@@ -114,9 +155,11 @@ class BacktestEngine:
                 self._check_dca(deal, close)
 
         # Entry check — alleen als geen open deals
-        if not self.state.open_deals and closes:
+        if not self.state.open_deals and closes_per_tf.get(self.bot_timeframe):
             try:
-                if self.indicator_engine.check_entry_signal(closes):
+                if self.indicator_engine.check_entry_signal(
+                    closes_per_tf, self.bot_timeframe
+                ):
                     self._open_deal(close, candle.dt)
             except Exception as e:
                 logger.debug(f"Entry check fout op candle {candle.dt}: {e}")
@@ -236,7 +279,7 @@ class BacktestEngine:
         from backtest.backtest_report import BacktestResult
         return BacktestResult(
             config=self.config,
-            candles_total=len(self.candles),
+            candles_total=len(self.driving_candles),
             candles_processed=self._candles_processed,
             initial_balance_btc=self.initial_balance,
             final_balance_btc=self.state.balance_btc,
