@@ -137,9 +137,16 @@ class BotInfo:
 class BotRegistry:
     def __init__(self):
         self._bots: dict[str, BotInfo] = {}
-        self.refresh()
+        # asyncio.Lock — essentieel zodra uvicorn meerdere workers krijgt
+        # of tail_logs en endpoint handlers concurrent op dezelfde dict
+        # itereren. Beschermt mutaties in refresh() en lezers in all/get.
+        self._lock = asyncio.Lock()
+        # Initiële populatie: gebeurt vóór de event loop bestaat, dus
+        # geen lock-contention mogelijk — direct synchroon vullen.
+        self._refresh_locked()
 
-    def refresh(self):
+    def _refresh_locked(self) -> None:
+        """Voer de glob uit; caller moet de lock vasthouden (of init zijn)."""
         current: set[str] = set()
         if CONFIG_DIR.exists():
             for f in sorted(CONFIG_DIR.glob("*.yaml")):
@@ -150,17 +157,22 @@ class BotRegistry:
                         slug=slug,
                         config_file=str(f.relative_to(BASE_DIR))
                     )
-        # Drop bots whose YAML was removed so the registry stays in sync.
         for stale in [s for s in self._bots if s not in current]:
             del self._bots[stale]
 
-    def all(self) -> list[BotInfo]:
-        self.refresh()
-        return list(self._bots.values())
+    async def refresh(self) -> None:
+        async with self._lock:
+            self._refresh_locked()
 
-    def get(self, slug: str) -> Optional[BotInfo]:
-        self.refresh()
-        return self._bots.get(slug)
+    async def all(self) -> list[BotInfo]:
+        await self.refresh()
+        async with self._lock:
+            return list(self._bots.values())
+
+    async def get(self, slug: str) -> Optional[BotInfo]:
+        await self.refresh()
+        async with self._lock:
+            return self._bots.get(slug)
 
 
 registry = BotRegistry()
@@ -168,8 +180,8 @@ registry = BotRegistry()
 
 # ── Process control ───────────────────────────────────────────────────────────
 
-def start_bot(slug: str) -> dict:
-    bot = registry.get(slug)
+async def start_bot(slug: str) -> dict:
+    bot = await registry.get(slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
     if bot.running:
@@ -199,8 +211,8 @@ def start_bot(slug: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def stop_bot(slug: str) -> dict:
-    bot = registry.get(slug)
+async def stop_bot(slug: str) -> dict:
+    bot = await registry.get(slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
     if not bot.running:
@@ -217,10 +229,10 @@ def stop_bot(slug: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def restart_bot(slug: str) -> dict:
-    stop_bot(slug)
+async def restart_bot(slug: str) -> dict:
+    await stop_bot(slug)
     time.sleep(1)
-    return start_bot(slug)
+    return await start_bot(slug)
 
 
 def _do_portal_restart():
@@ -264,7 +276,7 @@ async def index():
 
 @app.get("/api/bots")
 async def get_bots():
-    bots      = [b.read_state() for b in registry.all()]
+    bots      = [b.read_state() for b in await registry.all()]
     total_pnl = sum(b.get("total_pnl_btc", 0) for b in bots)
     active    = sum(1 for b in bots if b.get("running"))
     open_cnt  = sum(b.get("open_deals_count", 0) for b in bots)
@@ -291,7 +303,7 @@ async def get_bots():
 
 @app.get("/api/bots/{slug}")
 async def get_bot(slug: str):
-    bot = registry.get(slug)
+    bot = await registry.get(slug)
     if not bot:
         return {"error": f"Unknown bot: {slug}"}
     return bot.read_state()
@@ -299,15 +311,15 @@ async def get_bot(slug: str):
 
 @app.post("/api/bots/{slug}/start", dependencies=[Depends(verify_api_key)])
 async def api_start(slug: str):
-    return start_bot(slug)
+    return await start_bot(slug)
 
 @app.post("/api/bots/{slug}/stop", dependencies=[Depends(verify_api_key)])
 async def api_stop(slug: str):
-    return stop_bot(slug)
+    return await stop_bot(slug)
 
 @app.post("/api/bots/{slug}/restart", dependencies=[Depends(verify_api_key)])
 async def api_restart(slug: str):
-    return restart_bot(slug)
+    return await restart_bot(slug)
 
 
 @app.post("/api/portal/restart", dependencies=[Depends(verify_api_key)])
@@ -344,7 +356,7 @@ async def api_price():
         return {"price": price, "pair": "BTC/USD", "source": "bitget"}
     except Exception:
         # Fall back to first running bot's price if available
-        for bot in registry.all():
+        for bot in await registry.all():
             state = bot.read_state()
             if state.get("current_price"):
                 return {"price": state["current_price"], "pair": "BTC/USD", "source": "bot"}
@@ -356,24 +368,35 @@ async def api_price():
 class LogBroadcaster:
     def __init__(self):
         self._clients: dict[str, set[WebSocket]] = {}
+        # asyncio.Lock — essentieel zodra uvicorn meerdere workers krijgt
+        # of meer dan één coroutine concurrent connect/disconnect/broadcast
+        # uitvoert. Onder de huidige single-worker setup is het pad veilig
+        # door de event loop, maar de lock maakt het future-proof.
+        self._lock = asyncio.Lock()
 
     async def connect(self, ws: WebSocket, slug: str):
         await ws.accept()
-        self._clients.setdefault(slug, set()).add(ws)
+        async with self._lock:
+            self._clients.setdefault(slug, set()).add(ws)
 
-    def disconnect(self, ws: WebSocket, slug: str):
-        if slug in self._clients:
-            self._clients[slug].discard(ws)
+    async def disconnect(self, ws: WebSocket, slug: str):
+        async with self._lock:
+            if slug in self._clients:
+                self._clients[slug].discard(ws)
 
     async def broadcast(self, slug: str, line: str):
+        async with self._lock:
+            targets = list(self._clients.get(slug, set()))
         dead = set()
-        for ws in self._clients.get(slug, set()):
+        for ws in targets:
             try:
                 await ws.send_text(line)
             except Exception:
                 dead.add(ws)
-        if slug in self._clients:
-            self._clients[slug] -= dead
+        if dead:
+            async with self._lock:
+                if slug in self._clients:
+                    self._clients[slug] -= dead
 
 
 broadcaster = LogBroadcaster()
@@ -402,19 +425,19 @@ async def ws_logs(websocket: WebSocket, slug: str):
                 await asyncio.sleep(30)
                 await websocket.send_text("__ping__")
         except WebSocketDisconnect:
-            broadcaster.disconnect(websocket, "portal")
+            await broadcaster.disconnect(websocket, "portal")
         except Exception:
-            broadcaster.disconnect(websocket, "portal")
+            await broadcaster.disconnect(websocket, "portal")
         return
 
     # Reject unknown slugs before accepting the socket — prevents tailing
     # arbitrary file paths and keeps broadcaster keys bounded.
-    if registry.get(slug) is None:
+    bot = await registry.get(slug)
+    if bot is None:
         await websocket.close(code=4004)
         return
 
     await broadcaster.connect(websocket, slug)
-    bot = registry.get(slug)
     try:
         if bot and bot.log_file.exists():
             lines = bot.log_file.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -434,7 +457,7 @@ async def tail_logs():
     while True:
         # Tail all bot logs + portal log
         log_files: list[tuple[str, Path]] = [
-            (bot.slug, bot.log_file) for bot in registry.all()
+            (bot.slug, bot.log_file) for bot in await registry.all()
         ]
         log_files.append(("portal", LOG_DIR / "portal.log"))
 
