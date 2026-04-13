@@ -5,6 +5,7 @@
 # Portal can restart itself via /api/portal/restart.
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -75,17 +77,21 @@ if not _API_KEY:
     )
 
 
-def verify_api_key(request: Request) -> None:
+def verify_api_key(request: Request) -> str:
     """FastAPI dependency: require X-API-Key header or ?api_key= query param.
 
     Used on all mutating endpoints (start/stop/restart). GET endpoints stay
     public so dashboards and read-only clients still work without a key.
+
+    Returns een 8-char sha256 hint van de aangeleverde key, bruikbaar als
+    actor-identifier in de audit log zonder de key zelf vast te leggen.
     """
     provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
     if not provided or not secrets.compare_digest(provided, _API_KEY):
         # Generieke message — onthul niet of de key ontbrak of fout was,
         # zodat een attacker geen extra info krijgt over geldige requests.
         raise HTTPException(status_code=401, detail="Unauthorized")
+    return hashlib.sha256(provided.encode("utf-8")).hexdigest()[:8]
 
 # Module-level ccxt client — reused across /api/price calls so we don't pay
 # instantiation overhead on every request.
@@ -102,6 +108,31 @@ CONFIG_DIR = BASE_DIR / "config" / "bots"
 LOG_DIR    = BASE_DIR / "logs"
 PID_DIR    = LOG_DIR / "pids"
 PYTHON_BIN = sys.executable
+
+# ── Audit logging ─────────────────────────────────────────────────────────────
+# Aparte logger "reverto.audit" → logs/audit.log met rotation. Propagate=False
+# zodat audit events niet ook nog in portal.log belanden. Format:
+#     2026-04-15T12:34:56+0000 | bot_start | btc_paper | a1b2c3d4
+_audit_logger = logging.getLogger("reverto.audit")
+_audit_logger.setLevel(logging.INFO)
+_audit_logger.propagate = False
+if not _audit_logger.handlers:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _audit_handler = RotatingFileHandler(
+        LOG_DIR / "audit.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    _audit_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(message)s", datefmt="%Y-%m-%dT%H:%M:%S%z")
+    )
+    _audit_logger.addHandler(_audit_handler)
+
+
+def _audit(action: str, slug: str = "-", key_hint: str = "-") -> None:
+    """Schrijf één regel naar de audit log."""
+    _audit_logger.info("%s | %s | %s", action, slug, key_hint)
 
 
 # ── Bot registry ──────────────────────────────────────────────────────────────
@@ -380,25 +411,29 @@ async def get_bot(slug: str):
     return bot.read_state()
 
 
-@app.post("/api/bots/{slug}/start", dependencies=[Depends(verify_api_key)])
+@app.post("/api/bots/{slug}/start")
 @limiter.limit("10/minute")
-async def api_start(slug: str, request: Request):
+async def api_start(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
+    _audit("bot_start", slug, key_hint)
     return await start_bot(slug)
 
-@app.post("/api/bots/{slug}/stop", dependencies=[Depends(verify_api_key)])
+@app.post("/api/bots/{slug}/stop")
 @limiter.limit("10/minute")
-async def api_stop(slug: str, request: Request):
+async def api_stop(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
+    _audit("bot_stop", slug, key_hint)
     return await stop_bot(slug)
 
-@app.post("/api/bots/{slug}/restart", dependencies=[Depends(verify_api_key)])
+@app.post("/api/bots/{slug}/restart")
 @limiter.limit("10/minute")
-async def api_restart(slug: str, request: Request):
+async def api_restart(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
+    _audit("bot_restart", slug, key_hint)
     return await restart_bot(slug)
 
 
-@app.post("/api/portal/restart", dependencies=[Depends(verify_api_key)])
+@app.post("/api/portal/restart")
 @limiter.limit("10/minute")
-async def api_portal_restart(request: Request):
+async def api_portal_restart(request: Request, key_hint: str = Depends(verify_api_key)):
+    _audit("portal_restart", "-", key_hint)
     """
     Restart the portal process.
     Uses os.execv in a background thread so the HTTP response
