@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -18,6 +19,11 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+
+import yaml
+
+from config.models import BotConfig
+from core import credentials
 
 import ccxt
 import uvicorn
@@ -133,6 +139,24 @@ if not _audit_logger.handlers:
 def _audit(action: str, slug: str = "-", key_hint: str = "-") -> None:
     """Schrijf één regel naar de audit log."""
     _audit_logger.info("%s | %s | %s", action, slug, key_hint)
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9_]+")
+
+
+def slugify(name: str) -> str:
+    """Zet een vrije bot-naam om naar een veilig filename stem.
+
+    Lowercase, spaties → underscore, alles buiten [a-z0-9_] gestript,
+    meervoudige underscores worden samengetrokken. Lege resultaten
+    raise ValueError zodat de caller een 400 kan returnen.
+    """
+    cleaned = name.strip().lower().replace(" ", "_")
+    cleaned = _SLUG_RE.sub("", cleaned)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    if not cleaned:
+        raise ValueError(f"name {name!r} produces empty slug")
+    return cleaned
 
 
 # ── Bot registry ──────────────────────────────────────────────────────────────
@@ -262,6 +286,12 @@ class BotRegistry:
         await self.refresh()
         async with self._lock:
             return self._bots.get(slug)
+
+    async def invalidate(self) -> None:
+        """Forceer een refresh bij de volgende all()/get() call.
+        Aanroepen na YAML create/delete in de bot management endpoints."""
+        async with self._lock:
+            self._last_refresh = 0.0
 
 
 registry = BotRegistry()
@@ -471,6 +501,171 @@ async def api_price():
             if state.get("current_price"):
                 return {"price": state["current_price"], "pair": "BTC/USD", "source": "bot"}
         return {"price": 0.0, "pair": "BTC/USD", "source": "unavailable"}
+
+
+# ── Exchange credentials API ──────────────────────────────────────────────────
+
+_KNOWN_EXCHANGES = ("bitget", "kraken")
+
+
+@app.get("/api/exchanges")
+@limiter.limit("60/minute")
+async def list_exchanges(request: Request):
+    """Welke exchanges Reverto kent en of er credentials voor opgeslagen zijn."""
+    return {
+        "exchanges": [
+            {"name": name, "has_keys": credentials.has_keys(name)}
+            for name in _KNOWN_EXCHANGES
+        ]
+    }
+
+
+class ExchangeKeysBody(BaseModel):
+    api_key: str = Field(min_length=1, max_length=512)
+    api_secret: str = Field(min_length=1, max_length=512)
+
+
+@app.post("/api/exchanges/{name}/keys")
+@limiter.limit("10/minute")
+async def save_exchange_keys(
+    name: str,
+    body: ExchangeKeysBody,
+    request: Request,
+    key_hint: str = Depends(verify_api_key),
+):
+    if name not in _KNOWN_EXCHANGES:
+        raise HTTPException(status_code=404, detail="Unknown exchange")
+    credentials.save_keys(name, body.api_key, body.api_secret)
+    _audit("exchange_keys_set", name, key_hint)
+    return {"ok": True, "exchange": name}
+
+
+@app.delete("/api/exchanges/{name}/keys")
+@limiter.limit("10/minute")
+async def delete_exchange_keys(
+    name: str,
+    request: Request,
+    key_hint: str = Depends(verify_api_key),
+):
+    if name not in _KNOWN_EXCHANGES:
+        raise HTTPException(status_code=404, detail="Unknown exchange")
+    removed = credentials.delete_keys(name)
+    if not removed:
+        raise HTTPException(status_code=404, detail="No keys stored for exchange")
+    _audit("exchange_keys_delete", name, key_hint)
+    return {"ok": True, "exchange": name}
+
+
+# ── Bot YAML beheer ───────────────────────────────────────────────────────────
+
+
+def _bot_yaml_path(slug: str) -> Path:
+    return CONFIG_DIR / f"{slug}.yaml"
+
+
+def _validate_bot_payload(payload: dict) -> BotConfig:
+    """Valideer een rauwe dict via BotConfig. Accepteert zowel
+    {"bot": {...}} als {...} aan top-level zodat de portal flexibel
+    blijft. Raised ValueError bij invalide config."""
+    inner = payload.get("bot", payload)
+    try:
+        return BotConfig(**inner)
+    except Exception as e:
+        raise ValueError(str(e)) from e
+
+
+@app.post("/api/bots")
+@limiter.limit("10/minute")
+async def create_bot(
+    body: dict,
+    request: Request,
+    key_hint: str = Depends(verify_api_key),
+):
+    """Maak een nieuwe bot YAML aan. Slug komt uit de bot naam."""
+    try:
+        cfg = _validate_bot_payload(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config: {e}")
+
+    try:
+        slug = slugify(cfg.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    path = _bot_yaml_path(slug)
+    if path.exists():
+        raise HTTPException(status_code=409, detail=f"Bot {slug} already exists")
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    inner = body.get("bot", body)
+    path.write_text(
+        yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    await registry.invalidate()
+    _audit("bot_create", slug, key_hint)
+    return {"ok": True, "slug": slug}
+
+
+@app.get("/api/bots/{slug}/config")
+@limiter.limit("60/minute")
+async def get_bot_config(slug: str, request: Request):
+    path = _bot_yaml_path(slug)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Bot not found")
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=500, detail=f"YAML parse error: {e}")
+    return raw
+
+
+@app.put("/api/bots/{slug}/config")
+@limiter.limit("10/minute")
+async def update_bot_config(
+    slug: str,
+    body: dict,
+    request: Request,
+    key_hint: str = Depends(verify_api_key),
+):
+    path = _bot_yaml_path(slug)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Bot not found")
+    try:
+        _validate_bot_payload(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config: {e}")
+
+    inner = body.get("bot", body)
+    path.write_text(
+        yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    _audit("bot_update", slug, key_hint)
+    return {"ok": True, "slug": slug}
+
+
+@app.delete("/api/bots/{slug}")
+@limiter.limit("10/minute")
+async def delete_bot(
+    slug: str,
+    request: Request,
+    key_hint: str = Depends(verify_api_key),
+):
+    bot = await registry.get(slug)
+    if bot is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    if bot.running:
+        raise HTTPException(
+            status_code=409, detail="Bot is running — stop it before deleting"
+        )
+    path = _bot_yaml_path(slug)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="YAML not found")
+    path.unlink()
+    await registry.invalidate()
+    _audit("bot_delete", slug, key_hint)
+    return {"ok": True, "slug": slug}
 
 
 # ── WebSocket log streaming ───────────────────────────────────────────────────
