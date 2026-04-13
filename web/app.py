@@ -48,7 +48,9 @@ def verify_api_key(request: Request) -> None:
     """
     provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
     if not provided or not secrets.compare_digest(provided, _API_KEY):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        # Generieke message — onthul niet of de key ontbrak of fout was,
+        # zodat een attacker geen extra info krijgt over geldige requests.
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 # Module-level ccxt client — reused across /api/price calls so we don't pay
 # instantiation overhead on every request.
