@@ -83,6 +83,11 @@ class PaperDeal:
         avg  = self.avg_entry_price
         size = self.total_size
 
+        # Guard tegen division-by-zero als orders allemaal price=0 hebben
+        # (kan voorkomen bij corrupte state of bij niet-geïnitialiseerde deals).
+        if avg <= 0:
+            return 0.0, 0.0
+
         if self.side == "long":
             pnl_btc = size * (current_price - avg) / avg * self.leverage
         else:
