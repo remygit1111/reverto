@@ -61,24 +61,37 @@ class PaperDeal:
 
     def calculate_pnl(self, current_price: float) -> tuple[float, float]:
         """
-        Calculate unrealized PnL for an inverse perpetual contract.
-        For inverse contracts: PnL (BTC) = size * (1/entry - 1/current)
-        Leverage is applied as a multiplier on the base PnL.
+        Calculate unrealized PnL for Bitget BTCUSD inverse perpetual.
+
+        On Bitget, position size is expressed in BTC (not USD contracts).
+        The correct PnL formula for a BTC-denominated size is:
+
+            PnL (BTC) = size * (exit - entry) / entry * leverage   [long]
+            PnL (BTC) = size * (entry - exit) / entry * leverage   [short]
+
+        This is equivalent to: PnL = size * pct_change * leverage
+
+        pnl_pct is the return as a percentage of the margin (initial BTC committed).
+        With no leverage: margin = size (full BTC value at entry).
+        With leverage N:  margin = size / N.
+
         Returns (pnl_btc, pnl_pct)
         """
         if not self.orders or current_price <= 0:
             return 0.0, 0.0
 
-        avg = self.avg_entry_price
+        avg  = self.avg_entry_price
         size = self.total_size
 
         if self.side == "long":
-            pnl_btc = size * (1 / avg - 1 / current_price) * self.leverage
+            pnl_btc = size * (current_price - avg) / avg * self.leverage
         else:
-            pnl_btc = size * (1 / current_price - 1 / avg) * self.leverage
+            pnl_btc = size * (avg - current_price) / avg * self.leverage
 
-        margin_btc = size / avg
+        # Margin = BTC committed = size / leverage
+        margin_btc = size / self.leverage
         pnl_pct = (pnl_btc / margin_btc) * 100
+
         return pnl_btc, pnl_pct
 
 
