@@ -424,6 +424,22 @@ function nbInit() {
   nbApplyStateToForm();
   nbHideError();
   nbRecompute();
+  nbApplyMobileCollapse();
+}
+
+// On narrow viewports, collapse every wizard section except the first
+// so users don't have to scroll past five fully-open sections before
+// reaching the Save button. Desktop keeps all sections open.
+function nbApplyMobileCollapse() {
+  const isNarrow = window.matchMedia('(max-width: 600px)').matches;
+  const sections = document.querySelectorAll('#view-new-bot .wizard-section');
+  sections.forEach((el, i) => {
+    if (isNarrow && i > 0) {
+      el.removeAttribute('open');
+    } else {
+      el.setAttribute('open', '');
+    }
+  });
 }
 
 function nbShowError(msg) {
