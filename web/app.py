@@ -463,12 +463,12 @@ async def api_restart(slug: str, request: Request, key_hint: str = Depends(verif
 @app.post("/api/portal/restart")
 @limiter.limit("10/minute")
 async def api_portal_restart(request: Request, key_hint: str = Depends(verify_api_key)):
+    """Restart the portal process.
+
+    Uses os.execv in a background thread so the HTTP response can reach
+    the browser before the process is replaced.
+    """
     _audit("portal_restart", "-", key_hint)
-    """
-    Restart the portal process.
-    Uses os.execv in a background thread so the HTTP response
-    can reach the browser before the process is replaced.
-    """
     logger.info("Portal restart requested via API")
     t = threading.Thread(target=_do_portal_restart, daemon=True)
     t.start()
