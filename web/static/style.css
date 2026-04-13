@@ -506,6 +506,12 @@ tr:hover td { background: rgba(128,128,128,.04); }
 
 .all-deals-section { padding: 0 20px 20px; }
 
+/* Detail view is the only .page that must let its sub-nav butt directly
+   against the main nav — the 20px .page padding would otherwise leave a
+   visible gap above the subnav. Individual tab bodies (.detail-content)
+   keep their own 20px padding so actual content still breathes. */
+#view-detail { padding: 0; }
+
 .detail-subnav {
   display: flex;
   padding: 0 20px;
