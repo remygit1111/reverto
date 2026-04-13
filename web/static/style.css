@@ -1050,3 +1050,78 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .wizard-section-body {
   padding: 20px 18px;
 }
+
+/* ── Delete button on bot cards ─────────────────────────────────────────── */
+.btn-delete {
+  border-color: var(--red);
+  color: var(--red);
+}
+.btn-delete:hover {
+  background: rgba(255, 77, 109, .1);
+}
+
+/* ── Config tab in detail view ──────────────────────────────────────────── */
+.cfg-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+.cfg-section-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--accent);
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.cfg-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.cfg-row .cfg-key {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: .06em;
+}
+.cfg-indicator {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface2);
+  margin-bottom: 8px;
+}
+.cfg-indicator:last-child { margin-bottom: 0; }
+.cfg-indicator-head {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+.cfg-empty {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  padding: 14px 0;
+  text-align: center;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}

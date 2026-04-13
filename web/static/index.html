@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=5">
+<link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
 
@@ -340,6 +340,7 @@
   <div class="detail-subnav">
     <button class="tab active" data-dtab="dashboard">Dashboard</button>
     <button class="tab" data-dtab="deals">Deals</button>
+    <button class="tab" data-dtab="config">Config</button>
     <button class="tab" data-dtab="log">Log</button>
   </div>
 
@@ -434,6 +435,17 @@
     </div>
   </div>
 
+  <!-- Config tab -->
+  <div id="dtab-config" class="detail-content hidden">
+    <div id="d-config-body">
+      <div class="empty-grid">Loading config…</div>
+    </div>
+    <div class="detail-actions">
+      <button class="hbtn hbtn-theme btn-accent" id="d-edit-btn">✎ Edit</button>
+      <button class="hbtn hbtn-theme btn-danger" id="d-delete-btn">✕ Delete Bot</button>
+    </div>
+  </div>
+
   <!-- Log tab -->
   <div id="dtab-log" class="detail-content hidden dtab-content no-pad">
     <div class="log-wrap log-wrap-detail">
@@ -455,6 +467,6 @@
 
 </div>
 
-<script src="/static/app.js?v=5"></script>
+<script src="/static/app.js?v=6"></script>
 </body>
 </html>
