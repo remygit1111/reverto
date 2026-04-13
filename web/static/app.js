@@ -13,6 +13,13 @@ function toggleTheme() {
 }
 
 // ── API Key management ────────────────────────────────────────────────────────
+// _pendingAction holds a zero-arg callback that should run after the user
+// enters a valid API key. Used when an action (bot start/stop, wizard save)
+// hits a 401 or discovers there is no key — we stash the action, show the
+// modal, and rerun it from saveApiKey() so in-progress wizard state is not
+// lost to a page reload.
+let _pendingAction = null;
+
 function getApiKey() {
   return localStorage.getItem('reverto_api_key') || '';
 }
@@ -29,12 +36,22 @@ function saveApiKey() {
   if (!key) { alert('Empty key — not saved'); return; }
   localStorage.setItem('reverto_api_key', key);
   closeApiKeyModal();
-  location.reload();
+  // Resume whatever action was waiting for a valid key. If nothing was
+  // pending (first-time visit), we deliberately do NOT reload the page
+  // so the user stays where they are.
+  if (_pendingAction) {
+    const fn = _pendingAction;
+    _pendingAction = null;
+    fn();
+  }
 }
 function clearApiKey() {
   localStorage.removeItem('reverto_api_key');
   document.getElementById('api-key-input').value = '';
   closeApiKeyModal();
+  // Full reset: reload so WebSockets re-connect without a key (and get
+  // rejected cleanly) and the UI shows the modal again on next load.
+  _pendingAction = null;
   location.reload();
 }
 
@@ -253,11 +270,19 @@ document.addEventListener('click', e => {
 
 // ── Bot actions ───────────────────────────────────────────────────────────────
 async function botAction(slug, action) {
+  // No key yet → queue the action and prompt for one. Once the user
+  // enters a valid key in the modal, saveApiKey() re-invokes this.
+  if (!getApiKey()) {
+    _pendingAction = () => botAction(slug, action);
+    showApiKeyModal();
+    return;
+  }
   const res = await fetch(`/api/bots/${slug}/${action}`, {
     method: 'POST',
     headers: { 'X-API-Key': getApiKey() }
   });
   if (res.status === 401) {
+    _pendingAction = () => botAction(slug, action);
     alert('Auth error — check your API key');
     showApiKeyModal();
     return;
@@ -719,6 +744,14 @@ async function nbSubmit() {
     nbShowError(errors.map(e => safeText(e)).join('<br>'));
     return;
   }
+  // No key yet → stash this submit and prompt. saveApiKey() will rerun
+  // nbSubmit() after the user enters a valid key, preserving the form
+  // state because we never navigate away.
+  if (!getApiKey()) {
+    _pendingAction = () => nbSubmit();
+    showApiKeyModal();
+    return;
+  }
   const body = nbBuildBotConfig();
   const btn = $('nb-submit-btn');
   btn.disabled = true;
@@ -730,6 +763,7 @@ async function nbSubmit() {
       body: JSON.stringify(body),
     });
     if (res.status === 401) {
+      _pendingAction = () => nbSubmit();
       nbShowError('Auth error — check your API key');
       showApiKeyModal();
       return;
