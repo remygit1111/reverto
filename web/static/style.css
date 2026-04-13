@@ -1259,3 +1259,59 @@ tr:hover td { background: rgba(128,128,128,.04); }
 /* ── Leverage warning text colours ──────────────────────────────────────── */
 .form-hint.warn-amber { color: var(--amber); }
 .form-hint.warn-red   { color: var(--red); font-weight: 600; }
+
+/* ── Wizard indicator cards ────────────────────────────────────────────── */
+/* Each indicator row becomes a self-contained card with a left accent
+   strip coloured per indicator type. Uses existing design tokens so
+   the look stays coherent with the rest of the portal. */
+.nb-ind-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  transition: border-color .15s;
+}
+.nb-ind-card.type-rsi  { border-left-color: var(--blue); }
+.nb-ind-card.type-ema  { border-left-color: var(--accent); }
+.nb-ind-card.type-macd { border-left-color: #b472f0; }  /* purple accent */
+
+.nb-ind-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.nb-ind-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--text);
+}
+.nb-ind-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 6px;
+  cursor: pointer;
+  transition: color .15s;
+}
+.nb-ind-close:hover { color: var(--red); }
+
+.nb-ind-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+.nb-ind-body .form-row { margin-bottom: 0; }
+
+@media (max-width: 600px) {
+  .nb-ind-body { grid-template-columns: 1fr; }
+}

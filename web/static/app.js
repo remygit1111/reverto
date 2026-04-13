@@ -600,28 +600,40 @@ function nbRenderIndicators() {
     list.innerHTML = '<div class="empty-config-msg">Always enter (no filter)</div>';
     return;
   }
-  list.innerHTML = nbState.indicators.map((ind, i) => `
-    <div class="indicator-row">
-      <div class="form-row">
-        <label>Type</label>
-        <select data-nb-ind="${i}" data-nb-field="type">
-          <option value="RSI" ${ind.type === 'RSI' ? 'selected' : ''}>RSI</option>
-          <option value="EMA_CROSS" ${ind.type === 'EMA_CROSS' ? 'selected' : ''}>EMA Cross</option>
-          <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
-        </select>
+  list.innerHTML = nbState.indicators.map((ind, i) => {
+    const typeClass = ind.type === 'RSI' ? 'type-rsi'
+                    : ind.type === 'EMA_CROSS' ? 'type-ema'
+                    : ind.type === 'MACD' ? 'type-macd'
+                    : '';
+    const title = ind.type === 'EMA_CROSS' ? 'EMA Cross' : ind.type;
+    return `
+      <div class="nb-ind-card ${typeClass}">
+        <div class="nb-ind-head">
+          <span class="nb-ind-title">${safeText(title)}</span>
+          <button type="button" class="nb-ind-close" data-nb-remove="${i}" title="Remove indicator">×</button>
+        </div>
+        <div class="nb-ind-body">
+          <div class="form-row">
+            <label>Type</label>
+            <select data-nb-ind="${i}" data-nb-field="type">
+              <option value="RSI" ${ind.type === 'RSI' ? 'selected' : ''}>RSI</option>
+              <option value="EMA_CROSS" ${ind.type === 'EMA_CROSS' ? 'selected' : ''}>EMA Cross</option>
+              <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Timeframe</label>
+            <select data-nb-ind="${i}" data-nb-field="timeframe">
+              ${['15m', '1h', '4h', '1d'].map(t =>
+                `<option value="${t}" ${ind.timeframe === t ? 'selected' : ''}>${t}</option>`
+              ).join('')}
+            </select>
+          </div>
+          ${nbIndicatorFieldsHtml(ind, i)}
+        </div>
       </div>
-      <div class="form-row">
-        <label>Timeframe</label>
-        <select data-nb-ind="${i}" data-nb-field="timeframe">
-          ${['15m', '1h', '4h', '1d'].map(t =>
-            `<option value="${t}" ${ind.timeframe === t ? 'selected' : ''}>${t}</option>`
-          ).join('')}
-        </select>
-      </div>
-      ${nbIndicatorFieldsHtml(ind, i)}
-      <button type="button" class="btn-icon-danger" data-nb-remove="${i}">✕</button>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
 function nbIndicatorFieldsHtml(ind, i) {
