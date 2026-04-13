@@ -579,9 +579,9 @@ function nbAddIndicator() {
   nbState.indicators.push({
     type: 'RSI', timeframe: '1h',
     period: 14, threshold: 'below_35',
-    // RSI direction/value are derived from threshold ("below_35" → below, 35)
+    // RSI condition/value are derived from threshold ("below_35" → below, 35)
     // but we also keep them on the row for easy editing.
-    rsi_direction: 'below', rsi_value: 35,
+    rsi_condition: 'below', rsi_value: 35,
     fast: 9, slow: 21, signal: 'bullish_cross',
     condition: 'histogram_positive',
     macd_fast: 12, macd_slow: 26, macd_signal: 9,
@@ -626,25 +626,32 @@ function nbRenderIndicators() {
 
 function nbIndicatorFieldsHtml(ind, i) {
   if (ind.type === 'RSI') {
-    // Parse threshold back into direction + value so the row always
+    // Parse threshold back into condition + value so the row always
     // stays in sync even after an edit-load from YAML.
     const parsed = _parseRsiThreshold(ind.threshold);
-    const dir = ind.rsi_direction || parsed.direction;
+    const cond = ind.rsi_condition || parsed.condition;
     const val = ind.rsi_value != null ? ind.rsi_value : parsed.value;
+    const CONDS = [
+      ['cross_above', 'Crosses above X'],
+      ['cross_below', 'Crosses below X'],
+      ['above', 'Greater than X'],
+      ['below', 'Lower than X'],
+    ];
     return `
       <div class="form-row">
         <label>Period</label>
         <input type="number" min="5" max="50" value="${ind.period}" data-nb-ind="${i}" data-nb-field="period">
       </div>
       <div class="form-row">
-        <label>Direction</label>
-        <select data-nb-ind="${i}" data-nb-field="rsi_direction">
-          <option value="below" ${dir === 'below' ? 'selected' : ''}>Below</option>
-          <option value="above" ${dir === 'above' ? 'selected' : ''}>Above</option>
+        <label>Condition</label>
+        <select data-nb-ind="${i}" data-nb-field="rsi_condition">
+          ${CONDS.map(([v, label]) =>
+            `<option value="${v}" ${cond === v ? 'selected' : ''}>${label}</option>`
+          ).join('')}
         </select>
       </div>
       <div class="form-row">
-        <label>Value</label>
+        <label>Value (X)</label>
         <input type="number" min="1" max="99" step="1" value="${val}" data-nb-ind="${i}" data-nb-field="rsi_value">
       </div>`;
   }
@@ -696,10 +703,12 @@ function nbIndicatorFieldsHtml(ind, i) {
 }
 
 function _parseRsiThreshold(threshold) {
-  // "below_35" → {direction: "below", value: 35}; default below/35
-  const m = /^(below|above)_(\d+)$/.exec(threshold || '');
-  if (m) return { direction: m[1], value: parseInt(m[2], 10) };
-  return { direction: 'below', value: 35 };
+  // Grammar: below_N, above_N, cross_above_N, cross_below_N.
+  // Try the longer prefixes first so "cross_above_30" doesn't get
+  // matched by the shorter "above" alternative.
+  const m = /^(cross_above|cross_below|above|below)_(\d+)$/.exec(threshold || '');
+  if (m) return { condition: m[1], value: parseInt(m[2], 10) };
+  return { condition: 'below', value: 35 };
 }
 
 function nbUpdateLeverageUI() {
@@ -1414,14 +1423,14 @@ function setupEventListeners() {
       ];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;
       nbState.indicators[i][f] = v;
-      // RSI direction/value are derived back into the threshold field
-      // so the serialised payload still matches the existing "below_35"
-      // schema the strategy engine expects.
-      if (f === 'rsi_direction' || f === 'rsi_value') {
+      // RSI condition/value are derived back into the threshold field
+      // so the serialised payload still matches the "below_35" /
+      // "cross_above_30" schema the strategy engine expects.
+      if (f === 'rsi_condition' || f === 'rsi_value') {
         const ind = nbState.indicators[i];
-        const dir = ind.rsi_direction || 'below';
+        const cond = ind.rsi_condition || 'below';
         const val = Math.min(99, Math.max(1, ind.rsi_value || 35));
-        ind.threshold = `${dir}_${val}`;
+        ind.threshold = `${cond}_${val}`;
       }
       if (f === 'type') nbRenderIndicators();
       nbRecompute();

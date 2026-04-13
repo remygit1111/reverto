@@ -3,7 +3,18 @@
 # Measures momentum — below 30 = oversold (buy signal),
 # above 70 = overbought (sell signal).
 
+import re
+
 import pandas as pd
+
+
+# Threshold grammar understood by check_rsi_signal:
+#   below_<N>         → rsi < N           (current RSI below value)
+#   above_<N>         → rsi > N           (current RSI above value)
+#   cross_below_<N>   → prev > N and curr <= N   (RSI crossed down through value)
+#   cross_above_<N>   → prev < N and curr >= N   (RSI crossed up through value)
+# where N is an integer in [1, 99].
+_THRESHOLD_RE = re.compile(r"^(cross_above|cross_below|above|below)_(\d+)$")
 
 
 def calculate_rsi(closes: list[float], period: int = 14) -> float:
@@ -47,26 +58,48 @@ def check_rsi_signal(closes: list[float], period: int = 14,
                      threshold: str = "below_35") -> bool:
     """
     Check if RSI meets the configured threshold condition.
-    Supported thresholds:
-        below_30, below_35, below_40  → oversold buy signals
-        above_60, above_65, above_70  → overbought sell signals
-    Returns True if the condition is met.
+
+    Supported threshold grammar:
+        below_<N>        : RSI is strictly below N
+        above_<N>        : RSI is strictly above N
+        cross_below_<N>  : RSI just crossed down through N
+                           (previous RSI > N AND current RSI <= N)
+        cross_above_<N>  : RSI just crossed up through N
+                           (previous RSI < N AND current RSI >= N)
+
+    The crossing conditions need two consecutive RSI values, so the
+    closes list must contain at least `period + 2` points.
     """
-    rsi = calculate_rsi(closes, period)
-
-    conditions = {
-        "below_30": rsi < 30,
-        "below_35": rsi < 35,
-        "below_40": rsi < 40,
-        "above_60": rsi > 60,
-        "above_65": rsi > 65,
-        "above_70": rsi > 70,
-    }
-
-    if threshold not in conditions:
+    match = _THRESHOLD_RE.match(threshold)
+    if not match:
         raise ValueError(
-            f"Unknown RSI threshold: {threshold}. "
-            f"Choose from: {list(conditions.keys())}"
+            f"Unknown RSI threshold: {threshold!r}. Expected one of "
+            "below_<N>, above_<N>, cross_below_<N>, cross_above_<N> "
+            "with 1 <= N <= 99."
         )
 
-    return conditions[threshold]
+    op = match.group(1)
+    value = int(match.group(2))
+    if not (1 <= value <= 99):
+        raise ValueError(
+            f"RSI threshold value must be between 1 and 99, got {value}"
+        )
+
+    if op == "below":
+        return calculate_rsi(closes, period) < value
+    if op == "above":
+        return calculate_rsi(closes, period) > value
+
+    # Crossing conditions — need the previous RSI value too.
+    if len(closes) < period + 2:
+        raise ValueError(
+            f"RSI crossing conditions require at least {period + 2} "
+            f"data points, got {len(closes)}"
+        )
+    prev = calculate_rsi(closes[:-1], period)
+    curr = calculate_rsi(closes, period)
+
+    if op == "cross_above":
+        return prev < value and curr >= value
+    # cross_below
+    return prev > value and curr <= value
