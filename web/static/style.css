@@ -1273,9 +1273,22 @@ tr:hover td { background: rgba(128,128,128,.04); }
   margin-bottom: 12px;
   transition: border-color .15s;
 }
-.nb-ind-card.type-rsi  { border-left-color: var(--blue); }
-.nb-ind-card.type-ema  { border-left-color: var(--accent); }
-.nb-ind-card.type-macd { border-left-color: #b472f0; }  /* purple accent */
+/* Per-type variants ONLY override the left accent strip. Background
+   stays var(--surface2) so every card looks identical apart from the
+   coloured edge. Explicit re-declaration guards against any stale
+   browser cache that might carry an older tinted version. */
+.nb-ind-card.type-rsi {
+  background: var(--surface2);
+  border-left-color: var(--blue);
+}
+.nb-ind-card.type-ema {
+  background: var(--surface2);
+  border-left-color: var(--accent);
+}
+.nb-ind-card.type-macd {
+  background: var(--surface2);
+  border-left-color: #b472f0;  /* purple accent */
+}
 
 .nb-ind-head {
   display: flex;
@@ -1284,6 +1297,7 @@ tr:hover td { background: rgba(128,128,128,.04); }
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 12px;
+  background: transparent;  /* inherit the card's --surface2 */
 }
 .nb-ind-title {
   font-family: var(--mono);

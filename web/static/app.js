@@ -827,8 +827,16 @@ function nbRenderDcaPreview() {
 
   const unit = nbState.base_unit === 'btc' ? 'BTC' : '%';
   tbody.innerHTML = rows.map(r => {
-    const sign = r.gainPct >= 0 ? '+' : '';
-    const cls = r.gainPct >= 0 ? 'pos' : 'neg';
+    // Required Change = how far the price must rise from the CURRENT
+    // market price to reach this row's TP price. If the avg entry has
+    // been dragged down far enough that the TP is already at/below the
+    // market, the row is "✓ In range" — no further move required.
+    let reqCell;
+    if (r.gainPct > 0) {
+      reqCell = `<span class="pos">+${r.gainPct.toFixed(2)}%</span>`;
+    } else {
+      reqCell = `<span class="pos">✓ In range</span>`;
+    }
     return `
     <tr>
       <td>${r.label}</td>
@@ -836,7 +844,7 @@ function nbRenderDcaPreview() {
       <td>${fmtPrice(r.price)}${r.dropPct != null ? ` <span class="muted-cell">(-${r.dropPct}%)</span>` : ''}</td>
       <td>${r.total.toFixed(4)} ${unit}</td>
       <td>${fmtPrice(r.tpPrice)}</td>
-      <td><span class="${cls}">${sign}${r.gainPct.toFixed(2)}%</span></td>
+      <td>${reqCell}</td>
     </tr>`;
   }).join('');
 }
