@@ -1002,7 +1002,7 @@ function renderDetailConfig(cfg) {
     <div class="cfg-section">
       <div class="cfg-section-title">Entry Conditions</div>
       <div class="cfg-row"><span class="cfg-key">Base order size</span><span>${dca.base_order_size != null ? dca.base_order_size + ' BTC' : '—'}</span></div>
-      <div class="cfg-section-title" style="margin-top:14px;font-size:10px;color:var(--muted);border:none;padding:0">Indicators</div>
+      <div class="cfg-subtitle">Indicators</div>
       ${indHtml}
     </div>
 
