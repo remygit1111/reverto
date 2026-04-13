@@ -17,9 +17,6 @@ from strategies.indicator_engine import IndicatorEngine
 
 logger = logging.getLogger(__name__)
 
-# Taker fee voor Bitget inverse perpetual (0.06%)
-DEFAULT_TAKER_FEE = 0.0006
-
 
 @dataclass
 class BacktestCandle:
@@ -52,12 +49,11 @@ class BacktestEngine:
         config: BotConfig,
         candles: list[BacktestCandle],
         initial_balance_btc: float = 0.1,
-        taker_fee: float = DEFAULT_TAKER_FEE,
     ):
         self.config           = config
         self.candles          = candles
         self.initial_balance  = initial_balance_btc
-        self.taker_fee        = taker_fee
+        self.taker_fee        = config.dca.taker_fee
         self.state            = PaperState(initial_balance_btc)
         self.indicator_engine = IndicatorEngine(config)
 
@@ -168,7 +164,7 @@ class BacktestEngine:
         if price <= next_dca:
             multiplier = self.config.dca.multiplier ** deal.dca_count
             dca_size   = round(self.config.dca.base_order_size * multiplier, 8)
-            fee        = self._calc_fee(price, dca_size)
+            fee        = self._calc_fee(dca_size)
 
             dca_order = PaperOrder(
                 order_number=deal.dca_count + 2,
@@ -187,7 +183,7 @@ class BacktestEngine:
         """Open een nieuw deal op de gegeven prijs."""
         deal_id    = self.state.new_deal_id()
         size       = self.config.dca.base_order_size
-        fee        = self._calc_fee(price, size)
+        fee        = self._calc_fee(size)
 
         order = PaperOrder(
             order_number=1,
@@ -217,7 +213,7 @@ class BacktestEngine:
         if not deal:
             return
 
-        fee = self._calc_fee(price, deal.total_size)
+        fee = self._calc_fee(deal.total_size)
         self.state.close_deal(deal_id, price, reason)
         self.state.balance_btc  -= fee
         self._fees_paid_btc     += fee
@@ -228,7 +224,7 @@ class BacktestEngine:
             f"PnL: {closed.pnl_btc:+.6f} BTC | fee: {fee:.8f} BTC"
         )
 
-    def _calc_fee(self, price: float, size: float) -> float:
+    def _calc_fee(self, size: float) -> float:
         """Bereken de taker fee voor één order (in BTC, inverse contract)."""
         return round(size * self.taker_fee, 10)
 
