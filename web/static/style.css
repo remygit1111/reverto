@@ -1240,3 +1240,18 @@ tr:hover td { background: rgba(128,128,128,.04); }
   /* API-key modal fits narrow viewports */
   .modal-card { min-width: 0; width: 95vw; padding: 18px; }
 }
+
+/* ── Wizard mobile tap-hint ─────────────────────────────────────────────── */
+/* Show "Tap to expand" on collapsed sections only on narrow viewports so
+   users discover the affordance without cluttering desktop. */
+@media (max-width: 600px) {
+  .wizard-section:not([open]) > .wizard-section-header::after {
+    content: "Tap to expand";
+    margin-left: auto;
+    font-size: 9px;
+    font-weight: 400;
+    color: var(--muted);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+}
