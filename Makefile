@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop restart status log test lint clean backtest
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -14,8 +14,9 @@ help:
 	@echo ""
 	@echo "  make setup           Maak standaard bot YAML bestanden aan (idempotent)"
 	@echo "  make start           Start het portal op de achtergrond"
-	@echo "  make stop            Stop portal en alle bots"
-	@echo "  make restart         Stop en herstart het portal"
+	@echo "  make stop            Stop alleen het portal (bots blijven draaien)"
+	@echo "  make stop-all        Stop portal EN alle bots (machine shutdown)"
+	@echo "  make restart         Herstart het portal, bots blijven draaien"
 	@echo "  make status          Toon welke processen draaien"
 	@echo "  make log             Volg de portal log live (Ctrl+C om te stoppen)"
 	@echo "  make log b=naam      Volg de log van een specifieke bot"
@@ -149,6 +150,9 @@ start:
 
 stop:
 	@bash stop.sh
+
+stop-all:
+	@bash stop.sh --all
 
 restart: stop
 	@sleep 1
