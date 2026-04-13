@@ -411,6 +411,9 @@ const NB_INDICATOR_DESCRIPTIONS = {
   BOLLINGER:
     "Volatility envelope around a moving average. Signals when price touches " +
     "an extreme band or when the bands squeeze tight.",
+  PARABOLIC_SAR:
+    "Trailing stop-and-reverse indicator. Signals when price crosses the " +
+    "SAR dots, flipping the trend direction.",
 };
 
 let nbState = null;
@@ -621,9 +624,11 @@ function nbRenderIndicators() {
                     : ind.type === 'EMA_CROSS' ? 'type-ema'
                     : ind.type === 'MACD' ? 'type-macd'
                     : ind.type === 'BOLLINGER' ? 'type-bollinger'
+                    : ind.type === 'PARABOLIC_SAR' ? 'type-psar'
                     : '';
     const title = ind.type === 'EMA_CROSS' ? 'EMA Cross'
                 : ind.type === 'BOLLINGER' ? 'Bollinger Bands'
+                : ind.type === 'PARABOLIC_SAR' ? 'Parabolic SAR'
                 : ind.type;
     return `
       <div class="nb-ind-card ${typeClass}">
@@ -639,6 +644,7 @@ function nbRenderIndicators() {
               <option value="EMA_CROSS" ${ind.type === 'EMA_CROSS' ? 'selected' : ''}>EMA Cross</option>
               <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
               <option value="BOLLINGER" ${ind.type === 'BOLLINGER' ? 'selected' : ''}>Bollinger Bands</option>
+              <option value="PARABOLIC_SAR" ${ind.type === 'PARABOLIC_SAR' ? 'selected' : ''}>Parabolic SAR</option>
             </select>
             <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
           </div>
@@ -703,6 +709,33 @@ function nbIndicatorFieldsHtml(ind, i) {
         <select data-nb-ind="${i}" data-nb-field="signal">
           <option value="bullish_cross" ${ind.signal === 'bullish_cross' ? 'selected' : ''}>Bullish</option>
           <option value="bearish_cross" ${ind.signal === 'bearish_cross' ? 'selected' : ''}>Bearish</option>
+        </select>
+      </div>`;
+  }
+  if (ind.type === 'PARABOLIC_SAR') {
+    const iaf = ind.initial_af != null ? ind.initial_af : 0.02;
+    const maf = ind.max_af     != null ? ind.max_af     : 0.20;
+    const PSAR_CONDS = [
+      ['bullish', 'Bullish'],
+      ['bearish', 'Bearish'],
+      ['bullish_flip', 'Bullish flip'],
+      ['bearish_flip', 'Bearish flip'],
+    ];
+    return `
+      <div class="form-row">
+        <label>Initial AF</label>
+        <input type="number" min="0.001" step="0.01" value="${iaf}" data-nb-ind="${i}" data-nb-field="initial_af">
+      </div>
+      <div class="form-row">
+        <label>Max AF</label>
+        <input type="number" min="0.01" step="0.01" value="${maf}" data-nb-ind="${i}" data-nb-field="max_af">
+      </div>
+      <div class="form-row">
+        <label>Condition</label>
+        <select data-nb-ind="${i}" data-nb-field="condition">
+          ${PSAR_CONDS.map(([v, l]) =>
+            `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
+          ).join('')}
         </select>
       </div>`;
   }
@@ -976,6 +1009,10 @@ function nbBuildBotConfig() {
           out.period = i.period || 20;
           out.multiplier = i.multiplier != null ? i.multiplier : 2.0;
           out.condition = i.condition || 'price_below_lower';
+        } else if (i.type === 'PARABOLIC_SAR') {
+          out.initial_af = i.initial_af != null ? i.initial_af : 0.02;
+          out.max_af = i.max_af != null ? i.max_af : 0.20;
+          out.condition = i.condition || 'bullish';
         }
         return out;
       }),
@@ -1488,7 +1525,7 @@ function setupEventListeners() {
         'period', 'fast', 'slow',
         'rsi_value', 'macd_fast', 'macd_slow', 'macd_signal',
       ];
-      const floatFields = ['multiplier'];
+      const floatFields = ['multiplier', 'initial_af', 'max_af'];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;
       else if (floatFields.includes(f)) v = parseFloat(v) || 0;
       nbState.indicators[i][f] = v;

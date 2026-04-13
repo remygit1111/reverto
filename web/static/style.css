@@ -1346,3 +1346,8 @@ tr:hover td { background: rgba(128,128,128,.04); }
   background: var(--surface2);
   border-left-color: #f0a050;  /* orange */
 }
+
+.nb-ind-card.type-psar {
+  background: var(--surface2);
+  border-left-color: var(--red);  /* Parabolic SAR accent */
+}

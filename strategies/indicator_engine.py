@@ -15,6 +15,7 @@ from strategies.indicators.rsi import calculate_rsi, check_rsi_signal
 from strategies.indicators.ema import calculate_ema, check_ema_cross_signal
 from strategies.indicators.macd import calculate_macd, check_macd_signal
 from strategies.indicators.bollinger import check_bollinger_signal
+from strategies.indicators.parabolic_sar import check_parabolic_sar_signal
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +209,13 @@ class IndicatorEngine:
                 period=indicator.period or 20,
                 multiplier=indicator.multiplier or 2.0,
                 condition=indicator.condition or "price_below_lower",
+            )
+        elif itype == "PARABOLIC_SAR":
+            return check_parabolic_sar_signal(
+                closes,
+                initial_af=indicator.initial_af or 0.02,
+                max_af=indicator.max_af or 0.20,
+                condition=indicator.condition or "bullish",
             )
         else:
             logger.warning(

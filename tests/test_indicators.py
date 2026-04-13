@@ -9,6 +9,10 @@ from strategies.indicators.bollinger import (
     calculate_bollinger_bands,
     check_bollinger_signal,
 )
+from strategies.indicators.parabolic_sar import (
+    calculate_parabolic_sar,
+    check_parabolic_sar_signal,
+)
 from config.models import BotConfig
 from pydantic import ValidationError
 
@@ -185,6 +189,40 @@ class TestBollinger:
     def test_unknown_condition_raises(self):
         with pytest.raises(ValueError, match="Unknown Bollinger"):
             check_bollinger_signal([100.0] * 22, condition="invalid")
+
+
+class TestParabolicSAR:
+    def test_bullish_trend_detected(self):
+        """Steadily rising prices → SAR stays below price → bullish."""
+        closes = [float(100 + i) for i in range(30)]
+        assert check_parabolic_sar_signal(closes, condition="bullish") is True
+        assert check_parabolic_sar_signal(closes, condition="bearish") is False
+
+    def test_bearish_trend_detected(self):
+        closes = [float(130 - i) for i in range(30)]
+        assert check_parabolic_sar_signal(closes, condition="bearish") is True
+        assert check_parabolic_sar_signal(closes, condition="bullish") is False
+
+    def test_bullish_flip_on_reversal(self):
+        """Down-trend then sharp reversal should eventually produce a flip."""
+        down = [float(130 - i) for i in range(20)]
+        up = down + [float(110 + i * 3) for i in range(15)]
+        flips = 0
+        for end in range(11, len(up) + 1):
+            try:
+                if check_parabolic_sar_signal(up[:end], condition="bullish_flip"):
+                    flips += 1
+            except ValueError:
+                pass
+        assert flips >= 1
+
+    def test_insufficient_data_raises(self):
+        with pytest.raises(ValueError, match="at least 10"):
+            calculate_parabolic_sar([100.0, 101.0, 102.0])
+
+    def test_unknown_condition_raises(self):
+        with pytest.raises(ValueError, match="Unknown Parabolic SAR"):
+            check_parabolic_sar_signal([float(i) for i in range(15)], condition="invalid")
 
 
 class TestConfigValidation:
