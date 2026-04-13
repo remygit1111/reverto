@@ -79,7 +79,7 @@ class PaperDeal:
 
         margin_btc = size / avg
         pnl_pct = (pnl_btc / margin_btc) * 100
-        return round(pnl_btc, 10), round(pnl_pct, 4)
+        return pnl_btc, pnl_pct
 
 
 class PaperState:
@@ -148,19 +148,19 @@ class PaperState:
     def total_pnl_btc(self) -> float:
         """Total realized PnL across all closed deals. Uses a snapshot for safety."""
         snap = self.get_closed_deals_snapshot()
-        return round(sum(d.pnl_btc for d in snap), 10)
+        return sum(d.pnl_btc for d in snap)
 
     def summary(self) -> dict:
         """Returns a summary of current paper trading performance."""
         # Take a single consistent snapshot for all derived values
         closed_snap = self.get_closed_deals_snapshot()
-        total_pnl   = round(sum(d.pnl_btc for d in closed_snap), 10)
+        total_pnl   = sum(d.pnl_btc for d in closed_snap)
         win_rate    = self._win_rate(closed_snap)
         with self._lock:
             return {
                 "balance_btc":         round(self.balance_btc, 8),
                 "initial_balance_btc": self.initial_balance_btc,
-                "total_pnl_btc":       round(total_pnl, 8),
+                "total_pnl_btc":       total_pnl,
                 "open_deals":          len(self.open_deals),
                 "closed_deals":        len(closed_snap),
                 "win_rate":            win_rate,
