@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=2">
+<link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
 
@@ -47,6 +47,8 @@
 <!-- ── Main nav ────────────────────────────────────────────────────────────── -->
 <nav id="main-nav">
   <button class="tab active" id="nav-overview-btn">Overview</button>
+  <button class="tab" id="nav-bots-btn">Bots</button>
+  <button class="tab" id="nav-deals-btn">Active Deals</button>
   <span id="detail-nav-item" class="hidden">
     <button class="tab active" id="detail-nav-btn">—</button>
   </span>
@@ -76,26 +78,22 @@
     </div>
   </div>
 
-  <!-- Bot cards -->
-  <div class="bot-grid" id="bot-grid">
-    <div class="empty-config-msg">Loading bots...</div>
-  </div>
-
-  <!-- All open deals table -->
+  <!-- Compact bot status list -->
   <div class="all-deals-section">
-    <div class="section-title">All open deals</div>
-    <div class="card card-no-pad mb-20">
-      <table>
-        <thead>
-          <tr>
-            <th>Bot</th><th>Deal ID</th><th>Pair</th><th>Entry</th>
-            <th>Avg entry</th><th>Orders</th><th>PnL</th><th>Opened</th>
-          </tr>
-        </thead>
-        <tbody id="all-deals-tbody">
-          <tr class="empty-row"><td colspan="8">No open deals</td></tr>
-        </tbody>
-      </table>
+    <div class="section-title">Bot status</div>
+    <div class="card mb-20">
+      <div class="status-row">
+        <div class="status-item">
+          <div class="status-dot status-running"></div>
+          <div class="status-label">Running</div>
+          <div class="status-count" id="ov-running-count">—</div>
+        </div>
+        <div class="status-item">
+          <div class="status-dot status-stopped"></div>
+          <div class="status-label">Stopped</div>
+          <div class="status-count" id="ov-stopped-count">—</div>
+        </div>
+      </div>
     </div>
 
     <!-- Live INFO log — all bots combined -->
@@ -113,6 +111,56 @@
     </div>
   </div>
 
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Bots                                                                -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="view-bots" class="page">
+  <div class="bots-toolbar">
+    <button class="btn-primary" id="new-bot-btn">＋ Nieuwe bot</button>
+  </div>
+  <div class="bot-grid" id="bot-grid">
+    <div class="empty-config-msg">Loading bots...</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Active Deals                                                        -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="view-deals" class="page">
+  <div class="all-deals-section">
+    <div class="section-title">All open deals</div>
+    <div class="card card-no-pad mb-20">
+      <table>
+        <thead>
+          <tr>
+            <th>Bot</th><th>Deal ID</th><th>Pair</th><th>Entry</th>
+            <th>Avg entry</th><th>Orders</th><th>PnL</th><th>Opened</th>
+          </tr>
+        </thead>
+        <tbody id="all-deals-tbody">
+          <tr class="empty-row"><td colspan="8">No open deals</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: New bot (placeholder voor Fase 3)                                   -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="view-new-bot" class="page">
+  <div class="all-deals-section">
+    <div class="section-title">Nieuwe bot</div>
+    <div class="card placeholder-card">
+      <div class="placeholder-title">Bot configuratie — coming soon</div>
+      <div class="placeholder-sub">
+        Het formulier voor het toevoegen van nieuwe bots wordt in Fase 3 gebouwd.
+        De API endpoints (POST /api/bots, exchange credentials) zijn al beschikbaar.
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
@@ -239,6 +287,6 @@
 
 </div>
 
-<script src="/static/app.js?v=2"></script>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>

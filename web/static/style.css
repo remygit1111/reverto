@@ -663,3 +663,84 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .mb-20 { margin-bottom: 20px; }
 .mt-16 { margin-top: 16px; }
 .stat-grid-mb { margin-bottom: 16px; }
+
+/* ── Multi-tab navigation extras ────────────────────────────────────────── */
+.bots-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 16px 20px 0;
+}
+
+.btn-primary {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 0 18px;
+  height: 36px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: rgba(0, 212, 170, .08);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.btn-primary:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Compact bot status list op Overview */
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.status-dot.status-running { background: var(--accent); }
+.status-dot.status-stopped { background: var(--red); }
+.status-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.status-count {
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* New-bot placeholder card */
+.placeholder-card {
+  text-align: center;
+  padding: 60px 24px;
+}
+.placeholder-title {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+.placeholder-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 480px;
+  margin: 0 auto;
+}

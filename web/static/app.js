@@ -110,30 +110,52 @@ async function fetchOverview() {
 }
 
 function renderOverview(d) {
-  const sum = d.summary || {};
+  // Een /api/bots fetch voedt drie views: Overview (summary + status),
+  // Bots (grid) en Active Deals (tabel). Splits de render zodat elk
+  // view zijn eigen DOM-tak update zonder afhankelijk te zijn van welk
+  // view actief is.
+  const sum  = d.summary || {};
+  const bots = d.bots || [];
+  const deals = d.all_open_deals || [];
 
+  // Header price uit eerste running bot
+  const runningBot = bots.find(b => b.running && b.current_price);
+  if (runningBot) {
+    $('hdr-price').textContent = fmtPrice(runningBot.current_price);
+    $('hdr-pair').textContent = runningBot.pair || 'BTC/USD';
+  }
+
+  renderOverviewSummary(sum, bots);
+  renderBotGrid(bots);
+  renderActiveDeals(deals);
+}
+
+function renderOverviewSummary(sum, bots) {
   const pnl = sum.total_pnl_btc || 0;
   $('ov-pnl').innerHTML = fmtPnl(pnl, 8);
   $('ov-active').textContent = sum.active_bots ?? '—';
   $('ov-total-sub').textContent = `of ${sum.total_bots ?? 0} configured`;
   $('ov-deals').textContent = sum.open_deals ?? '—';
 
-  const runningBot = (d.bots || []).find(b => b.running && b.current_price);
-  if (runningBot) {
-    $('hdr-price').textContent = fmtPrice(runningBot.current_price);
-    $('hdr-pair').textContent = runningBot.pair || 'BTC/USD';
-  }
+  const running = bots.filter(b => b.running).length;
+  const stopped = bots.length - running;
+  $('ov-running-count').textContent = running;
+  $('ov-stopped-count').textContent = stopped;
+}
 
+function renderBotGrid(bots) {
   const grid = $('bot-grid');
-  const bots = d.bots || [];
+  if (!grid) return;
   if (!bots.length) {
-    grid.innerHTML = '<div class="empty-config-msg">No bots configured — add a YAML file to config/bots/</div>';
+    grid.innerHTML = '<div class="empty-config-msg">No bots configured — gebruik ＋ Nieuwe bot om er een toe te voegen.</div>';
   } else {
     grid.innerHTML = bots.map(b => renderBotCard(b)).join('');
   }
+}
 
+function renderActiveDeals(deals) {
   const tbody = $('all-deals-tbody');
-  const deals = d.all_open_deals || [];
+  if (!tbody) return;
   if (!deals.length) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No open deals across any bot</td></tr>';
   } else {
@@ -246,29 +268,69 @@ async function botAction(slug, action) {
   if (currentSlug === slug) setTimeout(() => fetchDetail(slug), 1500);
 }
 
-// ── Bot detail ────────────────────────────────────────────────────────────────
-function goOverview() {
+// ── Top-level tab navigation ─────────────────────────────────────────────────
+function _setActiveTab(btnId) {
+  document.querySelectorAll('#main-nav .tab').forEach(t => t.classList.remove('active'));
+  const btn = $(btnId);
+  if (btn) btn.classList.add('active');
+}
+
+function _resetHeaderForTopLevel() {
+  // Bij het verlaten van de detail view: detail-bot specifieke header
+  // resetten en eventuele detail polling/WS opruimen.
   currentSlug = null;
   clearInterval(detailInterval);
   if (ws) { ws.close(); ws = null; }
-
   $('hdr-context').textContent = 'Multi-Bot Portal';
   $('hdr-context').classList.remove('clickable');
   $('hdr-context').onclick = null;
   $('hdr-pill').classList.add('hidden');
   $('hdr-uptime').textContent = '';
   $('detail-nav-item').classList.add('hidden');
+}
 
-  document.querySelectorAll('#main-nav .tab').forEach(t => t.classList.remove('active'));
-  $('main-nav').querySelector('.tab').classList.add('active');
+function _ensureOverviewPolling() {
+  if (!overviewInterval) {
+    overviewInterval = setInterval(fetchOverview, 5000);
+  }
+}
 
+function goOverview() {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-overview-btn');
   showPage('overview');
   fetchOverview();
-  overviewInterval = setInterval(fetchOverview, 5000);
+  _ensureOverviewPolling();
 }
+
+function goBots() {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-bots-btn');
+  showPage('bots');
+  fetchOverview();
+  _ensureOverviewPolling();
+}
+
+function goDeals() {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-deals-btn');
+  showPage('deals');
+  fetchOverview();
+  _ensureOverviewPolling();
+}
+
+function goNewBot() {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-bots-btn');  // nieuwe bot blijft logisch onder Bots
+  showPage('new-bot');
+  // Geen polling nodig op deze pagina — placeholder.
+}
+
+// ── Bot detail ────────────────────────────────────────────────────────────────
 
 function openBot(slug) {
   clearInterval(overviewInterval);
+  overviewInterval = null;
   currentSlug = slug;
 
   $('hdr-context').textContent = '← Overview';
@@ -493,6 +555,10 @@ function setupEventListeners() {
   $('theme-btn').addEventListener('click', toggleTheme);
 
   $('nav-overview-btn').addEventListener('click', goOverview);
+  $('nav-bots-btn').addEventListener('click', goBots);
+  $('nav-deals-btn').addEventListener('click', goDeals);
+
+  $('new-bot-btn').addEventListener('click', goNewBot);
 
   document.querySelectorAll('.detail-subnav .tab').forEach(btn => {
     btn.addEventListener('click', () => showDTab(btn.dataset.dtab, btn));
