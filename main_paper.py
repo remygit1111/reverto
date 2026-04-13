@@ -67,8 +67,10 @@ with open(pid_file, "w") as f:
     f.write(str(os.getpid()))
 
 def cleanup():
-    try: os.remove(pid_file)
-    except FileNotFoundError: pass
+    try:
+        os.remove(pid_file)
+    except FileNotFoundError:
+        pass
 
 atexit.register(cleanup)
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
