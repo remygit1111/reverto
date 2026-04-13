@@ -743,29 +743,67 @@ function nbRenderDcaPreview() {
   let price = parseFloat(($('hdr-price').textContent || '').replace(/[$,]/g, ''));
   if (!price || isNaN(price)) price = 80000;
 
+  // Walk the order ladder. For each row we track cumulative notional
+  // (size * price) so we can compute the volume-weighted average entry
+  // after that order, then derive the TP price and the gap from the
+  // current market price to that TP.
+  const tpPct = nbState.tp_target_pct || 0;
   const rows = [];
-  let total = nbState.base_size;
+
   let curPrice = price;
-  rows.push({ label: 'Base', size: nbState.base_size, price: curPrice, total, dropPct: null });
+  let totalSize = nbState.base_size;
+  let totalNotional = nbState.base_size * curPrice;
+  let avgEntry = curPrice;
+  let tpPrice = avgEntry * (1 + tpPct / 100);
+  let gainPct = ((tpPrice - price) / price * 100);
+
+  rows.push({
+    label: 'Base',
+    size: nbState.base_size,
+    price: curPrice,
+    total: totalSize,
+    dropPct: null,
+    tpPrice,
+    gainPct,
+  });
 
   for (let i = 1; i < nbState.dca_max_orders; i++) {
     const spacing = nbState.dca_spacing_pct * Math.pow(nbState.dca_step_scale, i - 1);
     curPrice = curPrice * (1 - spacing / 100);
     const size = nbState.dca_size * Math.pow(nbState.dca_volume_scale, i - 1);
-    total += size;
+
+    totalSize     += size;
+    totalNotional += size * curPrice;
+    avgEntry      = totalNotional / totalSize;
+    tpPrice       = avgEntry * (1 + tpPct / 100);
+    gainPct       = ((tpPrice - price) / price * 100);
+
     const dropPct = ((price - curPrice) / price * 100).toFixed(2);
-    rows.push({ label: `DCA ${i}`, size, price: curPrice, total, dropPct });
+    rows.push({
+      label: `DCA ${i}`,
+      size,
+      price: curPrice,
+      total: totalSize,
+      dropPct,
+      tpPrice,
+      gainPct,
+    });
   }
 
   const unit = nbState.base_unit === 'btc' ? 'BTC' : '%';
-  tbody.innerHTML = rows.map(r => `
+  tbody.innerHTML = rows.map(r => {
+    const sign = r.gainPct >= 0 ? '+' : '';
+    const cls = r.gainPct >= 0 ? 'pos' : 'neg';
+    return `
     <tr>
       <td>${r.label}</td>
       <td>${r.size.toFixed(4)} ${unit}</td>
       <td>${fmtPrice(r.price)}${r.dropPct != null ? ` <span class="muted-cell">(-${r.dropPct}%)</span>` : ''}</td>
       <td>${r.total.toFixed(4)} ${unit}</td>
-    </tr>
-  `).join('');
+      <td>${fmtPrice(r.tpPrice)}</td>
+      <td><span class="${cls}">${sign}${r.gainPct.toFixed(2)}%</span></td>
+    </tr>`;
+  }).join('');
 }
 
 function nbCalcTotalSize() {
