@@ -107,6 +107,13 @@ class BacktestResult:
         """Print een overzichtelijk rapport naar de console."""
         sep = "═" * 52
 
+        def fmt(v: float, decimals: int = 6) -> str:
+            """Formatteer een getal met correct teken — voorkomt +-0.000000."""
+            # Normaliseer -0.0 naar 0.0
+            v = v if v != 0.0 else 0.0
+            sign = "+" if v >= 0 else ""
+            return f"{sign}{v:.{decimals}f}"
+
         print(f"\n{sep}")
         print("  REVERTO BACKTEST RAPPORT")
         print(f"  Bot       : {self.config.name}")
@@ -114,27 +121,22 @@ class BacktestResult:
         print(f"  Candles   : {self.candles_processed:,} verwerkt / {self.candles_total:,} totaal")
         print(sep)
 
-        pnl_sign = "+" if self.total_pnl_btc >= 0 else ""
-        pnl_pct_sign = "+" if self.total_pnl_pct >= 0 else ""
         print(f"  Beginbalans     : {self.initial_balance_btc:.6f} BTC")
         print(f"  Eindbalans      : {self.final_balance_btc:.6f} BTC")
         print(
-            f"  Totale PnL      : {pnl_sign}{self.total_pnl_btc:.6f} BTC"
-            f"  ({pnl_pct_sign}{self.total_pnl_pct:.2f}%)"
+            f"  Totale PnL      : {fmt(self.total_pnl_btc)} BTC"
+            f"  ({fmt(self.total_pnl_pct, 2)}%)"
         )
-        print(f"  Fees betaald    : -{self.fees_paid_btc:.6f} BTC")
+        print(f"  Fees betaald    : -{abs(self.fees_paid_btc):.6f} BTC")
         print(sep)
 
         print(f"  Deals totaal    : {self.total_deals}")
         print(f"  Winnend         : {self.winning_deals}  ({self.win_rate:.1f}%)")
         print(f"  Verliezend      : {self.losing_deals}")
         print(f"  TP / SL         : {self.tp_count} / {self.sl_count}")
-        avg_sign  = "+" if self.avg_pnl_per_deal >= 0 else ""
-        best_sign = "+" if self.best_deal_btc >= 0 else ""
-        wrst_sign = "+" if self.worst_deal_btc >= 0 else ""
-        print(f"  Gem. PnL/deal   : {avg_sign}{self.avg_pnl_per_deal:.6f} BTC")
-        print(f"  Beste deal      : {best_sign}{self.best_deal_btc:.6f} BTC")
-        print(f"  Slechtste deal  : {wrst_sign}{self.worst_deal_btc:.6f} BTC")
+        print(f"  Gem. PnL/deal   : {fmt(self.avg_pnl_per_deal)} BTC")
+        print(f"  Beste deal      : {fmt(self.best_deal_btc)} BTC")
+        print(f"  Slechtste deal  : {fmt(self.worst_deal_btc)} BTC")
         print(f"  Max drawdown    : {self.max_drawdown_pct:.2f}%")
         print(f"  Gem. DCA orders : {self.avg_dca_orders:.1f}")
         print(sep)
