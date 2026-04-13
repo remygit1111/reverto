@@ -1315,3 +1315,15 @@ tr:hover td { background: rgba(128,128,128,.04); }
 @media (max-width: 600px) {
   .nb-ind-body { grid-template-columns: 1fr; }
 }
+
+.nb-ind-desc {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+/* The description row should span the full width of the card grid so
+   it sits directly under the type dropdown and wraps cleanly. */
+.nb-ind-body .form-row-wide { grid-column: 1 / -1; }
