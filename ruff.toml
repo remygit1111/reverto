@@ -1,0 +1,16 @@
+# ruff.toml — Reverto linter configuratie
+line-length = 100
+
+[lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E402",  # module imports not at top — intentioneel in main_paper.py (logging eerst)
+]
+
+[lint.per-file-ignores]
+"tests/*" = [
+    "E401",  # multiple imports on one line
+    "E701",  # multiple statements on one line (colon)
+    "E702",  # multiple statements on one line (semicolon)
+    "F401",  # unused imports (pytest, fixtures)
+]
