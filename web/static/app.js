@@ -563,8 +563,12 @@ function nbAddIndicator() {
   nbState.indicators.push({
     type: 'RSI', timeframe: '1h',
     period: 14, threshold: 'below_35',
+    // RSI direction/value are derived from threshold ("below_35" → below, 35)
+    // but we also keep them on the row for easy editing.
+    rsi_direction: 'below', rsi_value: 35,
     fast: 9, slow: 21, signal: 'bullish_cross',
     condition: 'histogram_positive',
+    macd_fast: 12, macd_slow: 26, macd_signal: 9,
   });
   nbRenderIndicators();
 }
@@ -606,28 +610,37 @@ function nbRenderIndicators() {
 
 function nbIndicatorFieldsHtml(ind, i) {
   if (ind.type === 'RSI') {
+    // Parse threshold back into direction + value so the row always
+    // stays in sync even after an edit-load from YAML.
+    const parsed = _parseRsiThreshold(ind.threshold);
+    const dir = ind.rsi_direction || parsed.direction;
+    const val = ind.rsi_value != null ? ind.rsi_value : parsed.value;
     return `
       <div class="form-row">
         <label>Period</label>
-        <input type="number" min="2" max="100" value="${ind.period}" data-nb-ind="${i}" data-nb-field="period">
+        <input type="number" min="5" max="50" value="${ind.period}" data-nb-ind="${i}" data-nb-field="period">
       </div>
       <div class="form-row">
-        <label>Threshold</label>
-        <select data-nb-ind="${i}" data-nb-field="threshold">
-          ${['below_30', 'below_35', 'below_40', 'above_60', 'above_65', 'above_70'].map(t =>
-            `<option value="${t}" ${ind.threshold === t ? 'selected' : ''}>${t}</option>`
-          ).join('')}
+        <label>Direction</label>
+        <select data-nb-ind="${i}" data-nb-field="rsi_direction">
+          <option value="below" ${dir === 'below' ? 'selected' : ''}>Below</option>
+          <option value="above" ${dir === 'above' ? 'selected' : ''}>Above</option>
         </select>
+      </div>
+      <div class="form-row">
+        <label>Value</label>
+        <input type="number" min="1" max="99" step="1" value="${val}" data-nb-ind="${i}" data-nb-field="rsi_value">
       </div>`;
   }
   if (ind.type === 'EMA_CROSS') {
     return `
       <div class="form-row">
-        <label>Fast / Slow</label>
-        <div class="slider-row">
-          <input type="number" min="2" max="200" value="${ind.fast}" data-nb-ind="${i}" data-nb-field="fast">
-          <input type="number" min="2" max="200" value="${ind.slow}" data-nb-ind="${i}" data-nb-field="slow">
-        </div>
+        <label>Fast period</label>
+        <input type="number" min="2" value="${ind.fast}" data-nb-ind="${i}" data-nb-field="fast">
+      </div>
+      <div class="form-row">
+        <label>Slow period</label>
+        <input type="number" min="2" value="${ind.slow}" data-nb-ind="${i}" data-nb-field="slow">
       </div>
       <div class="form-row">
         <label>Signal</label>
@@ -638,6 +651,9 @@ function nbIndicatorFieldsHtml(ind, i) {
       </div>`;
   }
   if (ind.type === 'MACD') {
+    const mf = ind.macd_fast   != null ? ind.macd_fast   : 12;
+    const ms = ind.macd_slow   != null ? ind.macd_slow   : 26;
+    const mg = ind.macd_signal != null ? ind.macd_signal : 9;
     return `
       <div class="form-row">
         <label>Condition</label>
@@ -647,9 +663,27 @@ function nbIndicatorFieldsHtml(ind, i) {
           ).join('')}
         </select>
       </div>
-      <div class="form-row"><label>&nbsp;</label><div></div></div>`;
+      <div class="form-row">
+        <label>Fast</label>
+        <input type="number" min="2" value="${mf}" data-nb-ind="${i}" data-nb-field="macd_fast">
+      </div>
+      <div class="form-row">
+        <label>Slow</label>
+        <input type="number" min="2" value="${ms}" data-nb-ind="${i}" data-nb-field="macd_slow">
+      </div>
+      <div class="form-row">
+        <label>Signal</label>
+        <input type="number" min="2" value="${mg}" data-nb-ind="${i}" data-nb-field="macd_signal">
+      </div>`;
   }
   return '';
+}
+
+function _parseRsiThreshold(threshold) {
+  // "below_35" → {direction: "below", value: 35}; default below/35
+  const m = /^(below|above)_(\d+)$/.exec(threshold || '');
+  if (m) return { direction: m[1], value: parseInt(m[2], 10) };
+  return { direction: 'below', value: 35 };
 }
 
 function nbUpdateLeverageUI() {
@@ -807,6 +841,11 @@ function nbBuildBotConfig() {
           out.fast = i.fast;
           out.slow = i.slow;
           out.signal = i.signal;
+        } else if (i.type === 'MACD') {
+          out.condition = i.condition;
+          if (i.macd_fast   != null) out.macd_fast   = i.macd_fast;
+          if (i.macd_slow   != null) out.macd_slow   = i.macd_slow;
+          if (i.macd_signal != null) out.macd_signal = i.macd_signal;
         }
         return out;
       }),
@@ -1311,8 +1350,21 @@ function setupEventListeners() {
       const f = t.dataset.nbField;
       if (!nbState || !nbState.indicators[i]) return;
       let v = t.value;
-      if (['period', 'fast', 'slow'].includes(f)) v = parseInt(v, 10) || 0;
+      const intFields = [
+        'period', 'fast', 'slow',
+        'rsi_value', 'macd_fast', 'macd_slow', 'macd_signal',
+      ];
+      if (intFields.includes(f)) v = parseInt(v, 10) || 0;
       nbState.indicators[i][f] = v;
+      // RSI direction/value are derived back into the threshold field
+      // so the serialised payload still matches the existing "below_35"
+      // schema the strategy engine expects.
+      if (f === 'rsi_direction' || f === 'rsi_value') {
+        const ind = nbState.indicators[i];
+        const dir = ind.rsi_direction || 'below';
+        const val = Math.min(99, Math.max(1, ind.rsi_value || 35));
+        ind.threshold = `${dir}_${val}`;
+      }
       if (f === 'type') nbRenderIndicators();
       nbRecompute();
     }
