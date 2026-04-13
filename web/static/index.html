@@ -189,9 +189,27 @@
     </div>
   </div>
   <span class="uptime-chip" id="hdr-uptime"></span>
+  <button class="hbtn hbtn-theme" id="api-key-btn" onclick="showApiKeyModal()" title="API Key">🔑 API Key</button>
   <button class="hbtn hbtn-theme" id="restart-btn" onclick="restartPortal()" title="Restart dashboard">↺ Restart Dashboard</button>
   <button class="hbtn hbtn-theme" onclick="toggleTheme()" title="Toggle light/dark">☀︎</button>
 </header>
+
+<!-- ── API Key modal ───────────────────────────────────────────────────────── -->
+<div id="api-key-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:24px;min-width:420px;max-width:90vw;font-family:var(--mono)">
+    <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">🔑 Reverto API Key</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px;line-height:1.5">
+      De portal vereist een API key voor start/stop/restart en log streaming.
+      Vraag de operator naar de waarde van <code>REVERTO_API_KEY</code> (of zoek hem op in <code>logs/portal.log</code> bij ephemerale generatie).
+    </div>
+    <input type="password" id="api-key-input" placeholder="Plak hier je API key" style="width:100%;padding:8px 10px;font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="hbtn hbtn-theme" onclick="clearApiKey()" style="color:var(--red);border-color:var(--red)">Clear</button>
+      <button class="hbtn hbtn-theme" onclick="closeApiKeyModal()">Cancel</button>
+      <button class="hbtn hbtn-theme" onclick="saveApiKey()" style="color:var(--accent);border-color:var(--accent)">Save</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Main nav ────────────────────────────────────────────────────────────── -->
 <nav id="main-nav">
@@ -398,6 +416,33 @@ function toggleTheme() {
   localStorage.setItem('reverto-theme', n);
 }
 
+// ── API Key management ────────────────────────────────────────────────────────
+function getApiKey() {
+  return localStorage.getItem('reverto_api_key') || '';
+}
+function showApiKeyModal() {
+  const modal = document.getElementById('api-key-modal');
+  document.getElementById('api-key-input').value = getApiKey();
+  modal.style.display = 'flex';
+}
+function closeApiKeyModal() {
+  document.getElementById('api-key-modal').style.display = 'none';
+}
+function saveApiKey() {
+  const key = document.getElementById('api-key-input').value.trim();
+  if (!key) { alert('Lege key — niet opgeslagen'); return; }
+  localStorage.setItem('reverto_api_key', key);
+  closeApiKeyModal();
+  // Reconnect WebSockets met de nieuwe key
+  location.reload();
+}
+function clearApiKey() {
+  localStorage.removeItem('reverto_api_key');
+  document.getElementById('api-key-input').value = '';
+  closeApiKeyModal();
+  location.reload();
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 function safeText(s) {
@@ -595,7 +640,16 @@ document.addEventListener('click', e => {
 
 // ── Bot actions ───────────────────────────────────────────────────────────────
 async function botAction(slug, action) {
-  const r = await fetch(`/api/bots/${slug}/${action}`,{method:'POST'}).then(r=>r.json());
+  const res = await fetch(`/api/bots/${slug}/${action}`, {
+    method: 'POST',
+    headers: { 'X-API-Key': getApiKey() }
+  });
+  if (res.status === 401) {
+    alert('Auth fout — controleer je API key');
+    showApiKeyModal();
+    return;
+  }
+  const r = await res.json();
   if (!r.ok) alert(`${action} failed: ${r.error}`);
   setTimeout(fetchOverview, 1200);
   if (currentSlug === slug) setTimeout(()=>fetchDetail(slug), 1500);
@@ -735,7 +789,8 @@ async function fetchDetail(slug) {
 function connectWS(slug) {
   if (ws) ws.close();
   $('log-body').innerHTML = '';
-  ws = new WebSocket(`ws://${location.host}/ws/logs/${slug}`);
+  const key = encodeURIComponent(getApiKey());
+  ws = new WebSocket(`ws://${location.host}/ws/logs/${slug}?api_key=${key}`);
   const dot = $('ws-dot');
   const lbl = $('ws-label');
   ws.onopen    = () => { dot.className='live-dot connected'; lbl.textContent='live'; lbl.style.color='var(--accent)'; };
@@ -783,8 +838,9 @@ function connectOverviewLogs(slugs) {
   const lbl = $('ov-ws-label');
   let connected = 0;
 
+  const key = encodeURIComponent(getApiKey());
   slugs.forEach(slug => {
-    const w = new WebSocket(`ws://${location.host}/ws/logs/${slug}`);
+    const w = new WebSocket(`ws://${location.host}/ws/logs/${slug}?api_key=${key}`);
     w.onopen = () => {
       connected++;
       dot.className = 'live-dot connected';
@@ -834,7 +890,10 @@ async function restartPortal() {
   btn.disabled = true;
 
   try {
-    await fetch('/api/portal/restart', {method:'POST'});
+    await fetch('/api/portal/restart', {
+      method: 'POST',
+      headers: { 'X-API-Key': getApiKey() }
+    });
   } catch(e) {
     // Expected — portal closes connection during restart
   }
@@ -857,6 +916,10 @@ async function restartPortal() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+// Bij eerste bezoek (geen key opgeslagen) direct de modal tonen zodat de
+// gebruiker hem kan invoeren voordat WebSockets/POSTs worden uitgevoerd.
+if (!getApiKey()) showApiKeyModal();
+
 fetchOverview();
 fetchPrice();
 overviewInterval = setInterval(fetchOverview, 5000);
