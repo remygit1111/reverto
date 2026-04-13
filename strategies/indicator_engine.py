@@ -14,6 +14,7 @@ from config.models import BotConfig, IndicatorConfig
 from strategies.indicators.rsi import calculate_rsi, check_rsi_signal
 from strategies.indicators.ema import calculate_ema, check_ema_cross_signal
 from strategies.indicators.macd import calculate_macd, check_macd_signal
+from strategies.indicators.bollinger import check_bollinger_signal
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,13 @@ class IndicatorEngine:
             return check_macd_signal(
                 closes,
                 condition=indicator.condition or indicator.threshold or "histogram_positive",
+            )
+        elif itype == "BOLLINGER":
+            return check_bollinger_signal(
+                closes,
+                period=indicator.period or 20,
+                multiplier=indicator.multiplier or 2.0,
+                condition=indicator.condition or "price_below_lower",
             )
         else:
             logger.warning(

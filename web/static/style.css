@@ -1341,3 +1341,8 @@ tr:hover td { background: rgba(128,128,128,.04); }
 /* The description row should span the full width of the card grid so
    it sits directly under the type dropdown and wraps cleanly. */
 .nb-ind-body .form-row-wide { grid-column: 1 / -1; }
+
+.nb-ind-card.type-bollinger {
+  background: var(--surface2);
+  border-left-color: #f0a050;  /* orange */
+}

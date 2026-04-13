@@ -5,6 +5,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from strategies.indicators.rsi import calculate_rsi, check_rsi_signal
 from strategies.indicators.ema import calculate_ema, check_ema_cross_signal
 from strategies.indicators.macd import calculate_macd, check_macd_signal
+from strategies.indicators.bollinger import (
+    calculate_bollinger_bands,
+    check_bollinger_signal,
+)
 from config.models import BotConfig
 from pydantic import ValidationError
 
@@ -140,6 +144,47 @@ class TestMACD:
     def test_constant_histogram_near_zero(self):
         result = calculate_macd([100.0]*80)
         assert abs(result["histogram"]) < 0.0001
+
+
+class TestBollinger:
+    def test_happy_path_below_lower(self):
+        """20 flat candles then a sharp drop → price below the lower band."""
+        closes = [100.0] * 20 + [80.0]
+        assert check_bollinger_signal(
+            closes, period=20, multiplier=2.0, condition="price_below_lower"
+        ) is True
+
+    def test_happy_path_above_upper(self):
+        """20 flat candles then a sharp spike → price above the upper band."""
+        closes = [100.0] * 20 + [120.0]
+        assert check_bollinger_signal(
+            closes, period=20, multiplier=2.0, condition="price_above_upper"
+        ) is True
+
+    def test_no_signal_flat_market(self):
+        """All closes identical → std=0 → upper=lower=middle. Price equal to
+        the band is not strictly below/above so no signal fires."""
+        closes = [100.0] * 22
+        assert check_bollinger_signal(
+            closes, period=20, condition="price_below_lower"
+        ) is False
+        assert check_bollinger_signal(
+            closes, period=20, condition="price_above_upper"
+        ) is False
+
+    def test_squeeze_detects_low_volatility(self):
+        closes = [100.0] * 20 + [100.1]  # tiny movement = very tight bands
+        assert check_bollinger_signal(
+            closes, period=20, condition="squeeze", squeeze_threshold=0.05
+        ) is True
+
+    def test_insufficient_data_raises(self):
+        with pytest.raises(ValueError, match="at least"):
+            calculate_bollinger_bands([100.0] * 5, period=20)
+
+    def test_unknown_condition_raises(self):
+        with pytest.raises(ValueError, match="Unknown Bollinger"):
+            check_bollinger_signal([100.0] * 22, condition="invalid")
 
 
 class TestConfigValidation:

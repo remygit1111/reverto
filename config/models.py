@@ -69,6 +69,8 @@ class IndicatorConfig(BaseModel):
     macd_fast: Optional[int] = None
     macd_slow: Optional[int] = None
     macd_signal: Optional[int] = None
+    # Bollinger Bands — std dev multiplier (default 2.0)
+    multiplier: Optional[float] = None
 
 
 class EntryConfig(BaseModel):
