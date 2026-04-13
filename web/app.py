@@ -135,15 +135,20 @@ class BotInfo:
 
 
 class BotRegistry:
+    # TTL voor de filesystem-glob in refresh(). Bij hoge API frequentie
+    # (dashboard polls elke 5s, plus /api/price, plus tail_logs) voerde
+    # iedere call een eigen glob uit — overbodig en duur op trage
+    # filesystems (NFS/SMB). 5s is ruim binnen de UI-refresh cadans.
+    _REFRESH_TTL = 5.0
+
     def __init__(self):
         self._bots: dict[str, BotInfo] = {}
-        # asyncio.Lock — essentieel zodra uvicorn meerdere workers krijgt
-        # of tail_logs en endpoint handlers concurrent op dezelfde dict
-        # itereren. Beschermt mutaties in refresh() en lezers in all/get.
         self._lock = asyncio.Lock()
+        self._last_refresh: float = 0.0
         # Initiële populatie: gebeurt vóór de event loop bestaat, dus
         # geen lock-contention mogelijk — direct synchroon vullen.
         self._refresh_locked()
+        self._last_refresh = time.time()
 
     def _refresh_locked(self) -> None:
         """Voer de glob uit; caller moet de lock vasthouden (of init zijn)."""
@@ -162,7 +167,10 @@ class BotRegistry:
 
     async def refresh(self) -> None:
         async with self._lock:
+            if time.time() - self._last_refresh <= self._REFRESH_TTL:
+                return
             self._refresh_locked()
+            self._last_refresh = time.time()
 
     async def all(self) -> list[BotInfo]:
         await self.refresh()
