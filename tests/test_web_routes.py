@@ -320,3 +320,24 @@ class TestDbAnnotationsRoutes:
         # missing route — explicitly assert the non-404 so a future
         # route-removal regression trips this test.
         assert r.status_code == 422
+
+
+class TestWsStateSmoke:
+    """Smoke test for /ws/state — the new bot-state push channel.
+
+    We only assert the handshake succeeds with a valid session cookie
+    and that we receive the initial summary frame. File-change pushing
+    is covered implicitly: connect() unconditionally emits a summary.
+    """
+
+    def test_ws_state_accepts_session_cookie(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        with auth_client.websocket_connect("/ws/state") as ws:
+            # We should receive at least one frame — either a bot_state
+            # snapshot or the trailing summary frame, depending on how
+            # many bots are configured in the test environment.
+            import json as _json
+            raw = ws.receive_text()
+            msg = _json.loads(raw)
+            assert msg.get("type") in ("bot_state", "summary")

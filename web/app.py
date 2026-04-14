@@ -928,12 +928,30 @@ async def index():
     return HTMLResponse(f.read_text(encoding="utf-8") if f.exists() else "<h1>Not found</h1>")
 
 
+def _compute_summary(bots: list[dict]) -> dict:
+    """Single source of truth voor de dashboard summary-blok.
+
+    Wordt gebruikt door zowel GET /api/bots als de /ws/state watcher,
+    zodat het HTTP fallback-pad en de WS push exact dezelfde vorm
+    hebben. closed_deals is geaggregeerd over alle bots zodat toekomstige
+    WS-consumers het kunnen tonen zonder extra round-trip.
+    """
+    total_pnl  = sum(b.get("total_pnl_btc", 0) for b in bots)
+    active     = sum(1 for b in bots if b.get("running"))
+    open_cnt   = sum(b.get("open_deals_count", 0) for b in bots)
+    closed_cnt = sum(b.get("closed_deals_count", 0) for b in bots)
+    return {
+        "total_pnl_btc": round(total_pnl, 8),
+        "active_bots":   active,
+        "total_bots":    len(bots),
+        "open_deals":    open_cnt,
+        "closed_deals":  closed_cnt,
+    }
+
+
 @app.get("/api/bots")
 async def get_bots():
-    bots      = [b.read_state() for b in await registry.all()]
-    total_pnl = sum(b.get("total_pnl_btc", 0) for b in bots)
-    active    = sum(1 for b in bots if b.get("running"))
-    open_cnt  = sum(b.get("open_deals_count", 0) for b in bots)
+    bots = [b.read_state() for b in await registry.all()]
 
     all_open = []
     for b in bots:
@@ -943,13 +961,17 @@ async def get_bots():
             d["exchange"]  = b.get("exchange")
             all_open.append(d)
 
+    summary = _compute_summary(bots)
+    # Backwards-compat: existing /api/bots callers expected exactly
+    # the 4 keys below. closed_deals is extra in the new helper but
+    # additive keys are safe (SPA reads by name).
     return {
         "bots": bots,
         "summary": {
-            "total_pnl_btc": round(total_pnl, 8),
-            "active_bots":   active,
-            "total_bots":    len(bots),
-            "open_deals":    open_cnt,
+            "total_pnl_btc": summary["total_pnl_btc"],
+            "active_bots":   summary["active_bots"],
+            "total_bots":    summary["total_bots"],
+            "open_deals":    summary["open_deals"],
         },
         "all_open_deals": all_open,
     }
@@ -1402,6 +1424,145 @@ async def ws_logs(websocket: WebSocket, slug: str):
         await broadcaster.disconnect(websocket, slug)
 
 
+class StateBroadcaster:
+    """Push bot-state updates to every connected /ws/state client.
+
+    Mirrors LogBroadcaster, but shares one flat client set (state
+    updates are bot-agnostic — every client wants every update).
+    """
+
+    def __init__(self):
+        self._clients: set[WebSocket] = set()
+        self._lock = asyncio.Lock()
+
+    async def connect(self, ws: WebSocket) -> None:
+        await ws.accept()
+        async with self._lock:
+            self._clients.add(ws)
+
+    async def disconnect(self, ws: WebSocket) -> None:
+        async with self._lock:
+            self._clients.discard(ws)
+
+    async def broadcast(self, payload: str) -> None:
+        async with self._lock:
+            targets = list(self._clients)
+        stale: list[WebSocket] = []
+        for ws in targets:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                stale.append(ws)
+        if stale:
+            async with self._lock:
+                for ws in stale:
+                    self._clients.discard(ws)
+
+
+state_broadcaster = StateBroadcaster()
+
+# Module-level cache van laatst-geziene mtimes, per slug. Wordt door
+# watch_state_files() gelezen/geüpdatet. Gereset op portal restart,
+# wat prima is: de watcher stuurt in dat geval gewoon één extra
+# broadcast bij de eerste iteratie.
+_state_mtimes: dict[str, float] = {}
+
+
+async def watch_state_files():
+    """Poll logs/*.state.json mtimes every 2s and push changes to
+    /ws/state clients. Also broadcasts the computed summary every cycle
+    so the SPA's overview cards stay in sync with bot life-cycle events
+    (a bot starting/stopping doesn't touch state.json, but the PID
+    liveness flag flips).
+    """
+    while True:
+        try:
+            bots = await registry.all()
+            for bot in bots:
+                try:
+                    sf = bot.state_file
+                    if not sf.exists():
+                        continue
+                    mtime = sf.stat().st_mtime
+                    if _state_mtimes.get(bot.slug) == mtime:
+                        continue
+                    _state_mtimes[bot.slug] = mtime
+                    state = bot.read_state()
+                    payload = json.dumps({
+                        "type": "bot_state",
+                        "slug": bot.slug,
+                        "data": state,
+                    })
+                    await state_broadcaster.broadcast(payload)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("watch_state_files: bot %s failed: %s", bot.slug, e)
+                    continue
+
+            # Always broadcast summary — cheap and keeps the overview
+            # cards honest even when no state.json file changed (PID
+            # liveness flips as bots start/stop without touching JSON).
+            try:
+                snapshot = [b.read_state() for b in bots]
+                summary_payload = json.dumps({
+                    "type": "summary",
+                    "data": _compute_summary(snapshot),
+                })
+                await state_broadcaster.broadcast(summary_payload)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("watch_state_files: summary failed: %s", e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("watch_state_files iteration error: %s", e)
+
+        await asyncio.sleep(2.0)
+
+
+@app.websocket("/ws/state")
+async def ws_state(websocket: WebSocket):
+    # Session cookie gate — mirrors ws_logs. The legacy ?api_key=
+    # query-string fallback was intentionally dropped portal-wide.
+    if not _verify_session_cookie(websocket.cookies.get(_SESSION_COOKIE)):
+        await websocket.close(code=4401)
+        return
+    await state_broadcaster.connect(websocket)
+    try:
+        # Initial snapshot so the SPA can render without waiting for a
+        # file-change event.
+        bots = await registry.all()
+        snapshot: list[dict] = []
+        for bot in bots:
+            try:
+                state = bot.read_state()
+            except Exception:
+                continue
+            snapshot.append(state)
+            try:
+                await websocket.send_text(json.dumps({
+                    "type": "bot_state",
+                    "slug": bot.slug,
+                    "data": state,
+                }))
+            except Exception:
+                pass
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "summary",
+                "data": _compute_summary(snapshot),
+            }))
+        except Exception:
+            pass
+
+        # Keep the socket alive — broadcasts come from watch_state_files.
+        while True:
+            await asyncio.sleep(30)
+            await websocket.send_text("__ping__")
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        await state_broadcaster.disconnect(websocket)
+
+
 async def tail_logs():
     last: dict[str, int] = {}
     while True:
@@ -1554,6 +1715,7 @@ async def api_db_annotations_delete(
 async def on_startup():
     logger.info("=== Portal started ===")
     asyncio.create_task(tail_logs())
+    asyncio.create_task(watch_state_files())
 
 
 def run_portal(host="0.0.0.0", port=8080):
