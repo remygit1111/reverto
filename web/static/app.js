@@ -1496,10 +1496,15 @@ function nbAddIndicator() {
     macd_fast: 12, macd_slow: 26, macd_signal: 9,
   });
   nbRenderIndicators();
+  // Must trigger a full recompute so the wizard chart picks up the new
+  // indicator overlay (e.g. the RSI sub-pane). Without this, the sub-
+  // pane only showed up after a later field edit re-triggered recompute.
+  nbRecompute();
 }
 function nbRemoveIndicator(idx) {
   nbState.indicators.splice(idx, 1);
   nbRenderIndicators();
+  nbRecompute();
 }
 
 function nbRenderIndicators() {
@@ -2485,6 +2490,12 @@ async function editBot(slug) {
     showPage('new-bot');
     nbApplyStateToForm();
     nbHideError();
+    // Boot the wizard chart before the first recompute so the initial
+    // render paints overlays + sub-panes for any indicators already in
+    // the loaded config. Without this the chart was silently empty in
+    // edit mode and RSI/MACD sub-panes never appeared.
+    initWizardChart();
+    fetchWizardChartData();
     nbRecompute();
     // Update submit button label to reflect edit mode
     const btn = $('nb-submit-btn');
