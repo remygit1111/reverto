@@ -595,8 +595,7 @@ function renderBotCard(b) {
       ${running
         ? `<button class="btn-sm btn-stop"    data-action="stop"    data-slug="${safeText(b.slug)}">■ Stop</button>
            <button class="btn-sm btn-restart" data-action="restart" data-slug="${safeText(b.slug)}">↺ Restart</button>`
-        : `<button class="btn-sm btn-start"   data-action="start"   data-slug="${safeText(b.slug)}">▶ Start</button>
-           <button class="btn-sm btn-delete"  data-action="delete"  data-slug="${safeText(b.slug)}" data-name="${safeText(b.bot_name || b.slug)}">✕ Delete</button>`
+        : `<button class="btn-sm btn-start"   data-action="start"   data-slug="${safeText(b.slug)}">▶ Start</button>`
       }
       <button class="btn-sm btn-open" data-action="open" data-slug="${safeText(b.slug)}">Open →</button>
     </div>
