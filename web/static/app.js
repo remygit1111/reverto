@@ -1865,7 +1865,10 @@ function openBot(slug, fromPop = false) {
     'Multi-Bot Portal <span class="hdr-sep">›</span> ' +
     '<span class="hdr-slug">' + safeText(slug.toUpperCase()) + '</span>';
 
-  showDTab('dashboard', document.querySelector('.detail-subnav .tab'));
+  // Explicit Dashboard tab selection — previously used the first
+   // .detail-subnav .tab which, after Chart became the first tab, started
+   // returning the Chart button, so the nav highlighted the wrong tab.
+  showDTab('dashboard', document.querySelector('.detail-subnav .tab[data-dtab="dashboard"]'));
 
   showPage('detail');
   connectWS(slug);
@@ -1910,10 +1913,18 @@ async function fetchDetail(slug) {
     const rb = $('d-btn-restart'); if (rb) rb.disabled = !b.running;
     // Manual deal button — only visible when bot is running AND has
     // no open deals. Mirrors the engine's refusal to open a second deal.
+    // The previous `b.open_deals_count || ...` fallback silently flipped
+    // to b.open_deals.length when the count was 0, which is fine — but
+    // if open_deals_count was missing AND open_deals was undefined the
+    // expression yielded 0 regardless, hiding the button when the bot
+    // actually was eligible. Compute each input explicitly.
     const mb = $('d-btn-manual-deal');
     if (mb) {
-      const openCnt = b.open_deals_count || (b.open_deals || []).length || 0;
-      const show = !!b.running && openCnt === 0;
+      const running = Boolean(b.running);
+      const countField = Number.isFinite(b.open_deals_count) ? b.open_deals_count : null;
+      const listLen = Array.isArray(b.open_deals) ? b.open_deals.length : 0;
+      const openCnt = countField !== null ? countField : listLen;
+      const show = running && openCnt === 0;
       mb.classList.toggle('hidden', !show);
     }
 
@@ -2427,6 +2438,14 @@ function _normalizePair(p) {
         : (p.endsWith('USD') ? p.slice(0, -3) + '/USD' : p));
 }
 
+// FastAPI path parameters cannot contain a URL-encoded '/' (%2F) — the
+// router still splits on it and a pair like "BTC/USD" breaks the route.
+// We send the slash-less form ("BTCUSD") and let the backend's
+// _normalize_chart_pair() re-insert the slash server-side.
+function _pairForUrl(p) {
+  return (p || 'BTCUSD').replace('/', '');
+}
+
 async function loadChartTab(slug) {
   teardownChartTab();
   const fb = $('chart-fallback');
@@ -2558,7 +2577,7 @@ async function fetchChartData() {
   if (!_chartCandles) return;
   let candles;
   try {
-    const r = await fetch(`/api/chart/${encodeURIComponent(_chartPair)}/${_chartTimeframe}?limit=200`);
+    const r = await fetch(`/api/chart/${_pairForUrl(_chartPair)}/${_chartTimeframe}?limit=200`);
     if (!r.ok) return;
     candles = await r.json();
   } catch (e) { return; }
@@ -2774,7 +2793,7 @@ async function fetchWizardChartData() {
   const tf   = _wizardTimeframe || '1h';
   let candles;
   try {
-    const r = await fetch(`/api/chart/${encodeURIComponent(pair)}/${tf}?limit=200`);
+    const r = await fetch(`/api/chart/${_pairForUrl(pair)}/${tf}?limit=200`);
     if (!r.ok) return;
     candles = await r.json();
   } catch (e) { return; }
