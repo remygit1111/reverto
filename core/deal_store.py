@@ -72,6 +72,82 @@ def save_deal(deal: "PaperDeal", bot_slug: str, bot_name: str) -> None:
             )
 
 
+def replay_deals_in_transaction(
+    deals: list,
+    bot_slug: str,
+    bot_name: str,
+) -> int:
+    """Bulk-INSERT-OR-REPLACE a list of PaperDeal objects + their orders
+    inside a single SQLite transaction.
+
+    Used by the JSON → SQLite migration in PaperEngine._load_state. If
+    any row fails the entire migration rolls back, which prevents a
+    half-migrated ledger when a corrupt deal lurks in the middle of
+    the JSON. Returns the number of deals successfully replayed.
+    """
+    if not deals:
+        return 0
+    with _write_lock:
+        conn = get_db()
+        with conn:  # one transaction for the whole batch
+            for deal in deals:
+                status = "open" if deal.is_open else "closed"
+                opened_at = deal.opened_at.isoformat() if deal.opened_at else _now_iso()
+                closed_at = deal.closed_at.isoformat() if deal.closed_at else None
+                initial_price = deal.orders[0].price if deal.orders else 0.0
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO deals (
+                        id, bot_slug, bot_name, side, status, close_reason,
+                        opened_at, closed_at, initial_price, avg_entry,
+                        close_price, total_size, leverage, pnl_btc, pnl_pct,
+                        peak_price
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        deal.id,
+                        bot_slug,
+                        bot_name,
+                        deal.side,
+                        status,
+                        deal.close_reason,
+                        opened_at,
+                        closed_at,
+                        initial_price,
+                        deal.avg_entry_price,
+                        deal.close_price,
+                        deal.total_size,
+                        deal.leverage,
+                        deal.pnl_btc,
+                        deal.pnl_pct,
+                        deal._peak_price,
+                    ),
+                )
+                for order in deal.orders:
+                    order_id = f"{deal.id}:{order.order_number}"
+                    placed_at = order.timestamp.isoformat() if order.timestamp else _now_iso()
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO orders (
+                            id, deal_id, bot_slug, order_number, order_type,
+                            price, size, fee_btc, placed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            order_id,
+                            deal.id,
+                            bot_slug,
+                            order.order_number,
+                            order.order_type,
+                            order.price,
+                            order.size,
+                            0.0,  # fee unknown for historical replay
+                            placed_at,
+                        ),
+                    )
+    return len(deals)
+
+
 def save_order(
     order: "PaperOrder",
     deal_id: str,
