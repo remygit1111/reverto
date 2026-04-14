@@ -3259,9 +3259,6 @@ function clearDealFromChart() {
 // the label as its title. Not pixel-perfect, but CSP-safe and zero-deps.
 
 function _setActiveTool(name) {
-  // DEBUG — temporary logging for annotation flow. Strip with a
-  // follow-up `grep -n '\[ANNOT\]'` pass once the bug is confirmed fixed.
-  console.log('[ANNOT] tool activated:', name);
   _chartActiveTool = name || 'select';
   _toolFirstPoint = null;
   document.querySelectorAll('.chart-tool').forEach(b => {
@@ -3270,39 +3267,30 @@ function _setActiveTool(name) {
   if (_chartActiveTool !== 'measure') _clearMeasureLines();
 }
 
+// Transient measure-tool render lives entirely on the SVG overlay.
+// Cleared whenever the user switches tools or fires a new measure.
+let _measureSession = null;
+
 function _clearMeasureLines() {
+  // Drop any legacy createPriceLine handles still hanging around from
+  // earlier builds, then null the new SVG-based session and trigger a
+  // re-render so the overlay refreshes without the measure shapes.
   if (_chartCandles && _measureLines.length) {
     for (const pl of _measureLines) {
       try { _chartCandles.removePriceLine(pl); } catch (e) {}
     }
   }
   _measureLines = [];
+  _measureSession = null;
+  _renderAnnotations();
 }
 
 function _finishTwoPointTool(tool, p1, p2) {
   if (tool === 'measure') {
-    _clearMeasureLines();
-    const accent = _cssVar('--accent', '#26a69a');
-    const muted  = _cssVar('--muted',  '#888');
     const priceDiff = p2.price - p1.price;
     const pct = p1.price ? (priceDiff / p1.price) * 100 : 0;
-    const mid = (p1.price + p2.price) / 2;
-    try {
-      _measureLines.push(_chartCandles.createPriceLine({
-        price: p1.price, color: muted, lineStyle: 2, lineWidth: 1,
-        axisLabelVisible: true, title: `A ${p1.price.toFixed(2)}`,
-      }));
-      _measureLines.push(_chartCandles.createPriceLine({
-        price: p2.price, color: muted, lineStyle: 2, lineWidth: 1,
-        axisLabelVisible: true, title: `B ${p2.price.toFixed(2)}`,
-      }));
-      const sign = pct >= 0 ? '+' : '';
-      _measureLines.push(_chartCandles.createPriceLine({
-        price: mid, color: accent, lineStyle: 0, lineWidth: 1,
-        axisLabelVisible: true,
-        title: `${sign}${pct.toFixed(2)}% / ${sign}${priceDiff.toFixed(2)}`,
-      }));
-    } catch (e) {}
+    _measureSession = { p1, p2, priceDiff, pct };
+    _renderAnnotations();
     return;
   }
   if (tool === 'arrow') {
@@ -3316,13 +3304,8 @@ function _finishTwoPointTool(tool, p1, p2) {
 }
 
 function _promptAnnotationText(point) {
-  console.log('[ANNOT] showing prompt for text annotation at', point);
   const label = window.prompt('Label?');
-  console.log('[ANNOT] prompt result:', label);
-  if (!label) {
-    console.log('[ANNOT] empty label — aborting');
-    return;
-  }
+  if (!label) return;
   _persistAnnotation({
     type: 'text',
     x1: point.time, y1: point.price,
@@ -3340,14 +3323,9 @@ function _requireApiKeyOr(action) {
 }
 
 async function _persistAnnotation(fields) {
-  console.log('[ANNOT] _persistAnnotation called', fields, 'currentSlug:', currentSlug);
-  if (!currentSlug) {
-    console.log('[ANNOT] no currentSlug — aborting persist');
-    return;
-  }
+  if (!currentSlug) return;
   const doPost = async () => {
     const key = _requireApiKeyOr(doPost);
-    console.log('[ANNOT] api key present:', Boolean(key));
     if (!key) return;
     // timeframe is a required field on AnnotationBody — the SPA always
     // has _chartTimeframe set by the time the tool fires, but fall
@@ -3356,7 +3334,6 @@ async function _persistAnnotation(fields) {
       bot_slug: currentSlug,
       timeframe: _chartTimeframe || '1h',
     }, fields);
-    console.log('[ANNOT] persisting payload:', JSON.stringify(body));
     let r;
     try {
       r = await fetch('/api/db/annotations', {
@@ -3365,36 +3342,21 @@ async function _persistAnnotation(fields) {
         body: JSON.stringify(body),
         credentials: 'same-origin',
       });
-    } catch (e) {
-      console.log('[ANNOT] POST threw', e);
-      return;
-    }
-    console.log('[ANNOT] POST response status:', r.status);
-    if (r.status === 401) {
-      console.log('[ANNOT] 401 from POST — re-prompting api key');
-      _pendingAction = doPost; showApiKeyModal(); return;
-    }
-    if (!r.ok) {
-      console.log('[ANNOT] non-OK POST — bailing without rerender');
-      return;
-    }
+    } catch (e) { return; }
+    if (r.status === 401) { _pendingAction = doPost; showApiKeyModal(); return; }
+    if (!r.ok) return;
     // Optimistic update: splice the new annotation into the local
     // cache so the SVG overlay updates immediately without waiting
     // for a round-trip to the GET list endpoint.
     try {
       const j = await r.json();
-      console.log('[ANNOT] POST response body:', j);
       if (j && Number.isFinite(j.id)) {
         _chartAnnotations.push(Object.assign({}, body, { id: j.id }));
-        console.log('[ANNOT] cache spliced, count now', _chartAnnotations.length);
         _renderAnnotations();
         return;
       }
-    } catch (e) {
-      console.log('[ANNOT] POST json parse threw', e);
-    }
+    } catch (e) {}
     // Fallback: full reload if the POST response was malformed.
-    console.log('[ANNOT] falling back to full reload');
     await _loadAnnotations();
   };
   await doPost();
@@ -3437,21 +3399,24 @@ function _ensureAnnotationSvg() {
   const host = document.getElementById('chart-main');
   if (!host || !_chartMain) return null;
   if (_chartAnnotSvg && _chartAnnotSvg.parentNode === host) return _chartAnnotSvg;
-  // Lightweight Charts owns #chart-main's children (canvases). Appending
-  // an extra <svg> as a sibling of those canvases works because LC only
-  // paints on its own canvas elements and leaves unknown children alone.
-  // pointer-events: none lets clicks fall through to the chart below.
+  // Lightweight Charts paints onto canvases inside #chart-main as
+  // position:absolute siblings. Two siblings with position:absolute and
+  // z-index:auto draw in DOM order, but LC may re-mount canvases on
+  // resize and end up above a previously-appended SVG. Force z-index:10
+  // and inset:0 so the overlay is unambiguously on top of every LC
+  // canvas. pointer-events:none keeps the chart click-through working.
   if (!host.style.position) host.style.position = 'relative';
   const svg = _svgEl('svg', {
     class: 'chart-annot-svg',
     xmlns: _ANNOT_SVG_NS,
   });
   svg.style.position = 'absolute';
-  svg.style.left = '0';
-  svg.style.top = '0';
+  svg.style.inset = '0';
   svg.style.width = '100%';
   svg.style.height = '100%';
   svg.style.pointerEvents = 'none';
+  svg.style.zIndex = '10';
+  svg.style.display = 'block';
   host.appendChild(svg);
   _chartAnnotSvg = svg;
   return svg;
@@ -3473,12 +3438,8 @@ function _chartYOfPrice(p) {
 }
 
 function _renderAnnotations() {
-  console.log('[ANNOT] _renderAnnotations called, count:', (_chartAnnotations || []).length);
   const svg = _ensureAnnotationSvg();
-  if (!svg) {
-    console.log('[ANNOT] no SVG host available — chart not initialised yet');
-    return;
-  }
+  if (!svg) return;
   // Size the SVG viewBox to match the chart container so pixel
   // coordinates from timeToCoordinate/priceToCoordinate land correctly.
   const host = document.getElementById('chart-main');
@@ -3490,18 +3451,27 @@ function _renderAnnotations() {
   }
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-  const blue  = _cssVar('--blue',  '#5b8dee');
-  const amber = _cssVar('--amber', '#ffb347');
+  const blue   = _cssVar('--blue',   '#5b8dee');
+  const amber  = _cssVar('--amber',  '#ffb347');
+  const accent = _cssVar('--accent', '#26a69a');
+  const muted  = _cssVar('--muted',  '#888');
+  const red    = _cssVar('--red',    '#ef5350');
+
+  // Visibility canary: a small red circle at (100, 100) on every render.
+  // Lets the user verify in 2 seconds that the SVG overlay layer is
+  // mounted and z-stacked above the LC canvases. Once a real annotation
+  // is visible at its mapped coordinates, this canary can be removed in
+  // a follow-up commit. Marked with data-canary="1" for easy grep.
+  svg.appendChild(_svgEl('circle', {
+    cx: 100, cy: 100, r: 5, fill: red, stroke: '#ffffff', 'stroke-width': 1,
+    'data-canary': '1',
+  }));
 
   for (const a of (_chartAnnotations || [])) {
     const color = a.color || (a.type === 'text' ? amber : blue);
     const x1 = _chartXOfTime(a.x1);
     const y1 = _chartYOfPrice(a.y1);
-    console.log('[ANNOT] mapping annotation', a.id, a.type, 'x1=', a.x1, '→', x1, 'y1=', a.y1, '→', y1);
-    if (x1 == null || y1 == null) {
-      console.log('[ANNOT] coords out of view — skipping');
-      continue;
-    }
+    if (x1 == null || y1 == null) continue;
 
     if (a.type === 'text') {
       const g = _svgEl('g', { 'data-ann-id': a.id });
@@ -3523,7 +3493,6 @@ function _renderAnnotations() {
       g.appendChild(_svgEl('line', {
         x1, y1, x2, y2, stroke: color, 'stroke-width': 2,
       }));
-      // Arrowhead: 10px-long triangle pointed at (x2, y2), base 5px wide.
       const dx = x2 - x1, dy = y2 - y1;
       const len = Math.sqrt(dx * dx + dy * dy);
       if (len > 0.01) {
@@ -3533,6 +3502,42 @@ function _renderAnnotations() {
         const points = `${x2},${y2} ${bx + px},${by + py} ${bx - px},${by - py}`;
         g.appendChild(_svgEl('polygon', { points, fill: color }));
       }
+      svg.appendChild(g);
+    }
+  }
+
+  // Transient measure session: solid line from A to B with the percent
+  // change as a midpoint label. Persists until the user picks a new
+  // tool or measures again (then _clearMeasureLines() drops it).
+  if (_measureSession) {
+    const { p1, p2, priceDiff, pct } = _measureSession;
+    const ax = _chartXOfTime(p1.time);
+    const ay = _chartYOfPrice(p1.price);
+    const bx = _chartXOfTime(p2.time);
+    const by = _chartYOfPrice(p2.price);
+    if (ax != null && ay != null && bx != null && by != null) {
+      const g = _svgEl('g', { 'data-measure': '1' });
+      g.appendChild(_svgEl('line', {
+        x1: ax, y1: ay, x2: bx, y2: by,
+        stroke: accent, 'stroke-width': 2, 'stroke-dasharray': '4 3',
+      }));
+      g.appendChild(_svgEl('circle', { cx: ax, cy: ay, r: 4, fill: muted }));
+      g.appendChild(_svgEl('circle', { cx: bx, cy: by, r: 4, fill: muted }));
+      const mx = (ax + bx) / 2, my = (ay + by) / 2;
+      const sign = pct >= 0 ? '+' : '';
+      const labelText = `${sign}${pct.toFixed(2)}% / ${sign}${priceDiff.toFixed(2)}`;
+      // Label background for legibility against candle wicks.
+      const tw = labelText.length * 6.5 + 8;
+      g.appendChild(_svgEl('rect', {
+        x: mx - tw / 2, y: my - 16, width: tw, height: 14,
+        fill: 'rgba(0,0,0,0.7)', rx: 2,
+      }));
+      const text = _svgEl('text', {
+        x: mx, y: my - 5, fill: accent,
+        'font-family': 'monospace', 'font-size': 11, 'text-anchor': 'middle',
+      });
+      text.textContent = labelText;
+      g.appendChild(text);
       svg.appendChild(g);
     }
   }
@@ -3590,37 +3595,18 @@ function _installChartToolHandlers() {
   // listeners) — we just stop trusting param.time.
   const ts = _chartMain.timeScale();
   const handle = (param) => {
-    // DEBUG — annotation flow tracing.
-    console.log('[ANNOT] chart click', param, 'active tool:', _chartActiveTool);
-    if (_chartActiveTool === 'select') {
-      console.log('[ANNOT] tool is select — ignoring click');
-      return;
-    }
-    if (!param || !param.point) {
-      console.log('[ANNOT] click missing param.point — bailing', param);
-      return;
-    }
+    if (_chartActiveTool === 'select') return;
+    if (!param || !param.point) return;
     const { x, y } = param.point;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      console.log('[ANNOT] non-finite coords', x, y);
-      return;
-    }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     let t = param.time;
     if (t == null) {
       try { t = ts.coordinateToTime(x); } catch (e) { t = null; }
-      console.log('[ANNOT] time fallback via coordinateToTime →', t);
     }
-    if (t == null) {
-      console.log('[ANNOT] no time resolvable — bailing');
-      return;
-    }
+    if (t == null) return;
     const price = _chartCandles.coordinateToPrice(y);
-    if (!Number.isFinite(price)) {
-      console.log('[ANNOT] non-finite price from coordinateToPrice', price);
-      return;
-    }
+    if (!Number.isFinite(price)) return;
     const point = { time: Number(t), price: Number(price) };
-    console.log('[ANNOT] resolved point', point);
     if (_chartActiveTool === 'text') {
       _promptAnnotationText(point);
       return;
@@ -3628,22 +3614,17 @@ function _installChartToolHandlers() {
     if (_chartActiveTool === 'measure' || _chartActiveTool === 'arrow') {
       if (!_toolFirstPoint) {
         _toolFirstPoint = point;
-        console.log('[ANNOT] first point armed for', _chartActiveTool);
       } else {
-        console.log('[ANNOT] second point — finishing two-point tool');
         _finishTwoPointTool(_chartActiveTool, _toolFirstPoint, point);
         _toolFirstPoint = null;
       }
       return;
     }
     if (_chartActiveTool === 'delete') {
-      console.log('[ANNOT] delete near point', point);
       _deleteAnnotationNear(point);
     }
   };
-  try { _chartMain.subscribeClick(handle); } catch (e) {
-    console.log('[ANNOT] subscribeClick threw', e);
-  }
+  try { _chartMain.subscribeClick(handle); } catch (e) {}
 }
 
 async function _renderDealOverlays() {
