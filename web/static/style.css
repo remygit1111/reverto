@@ -1627,6 +1627,12 @@ table thead th.drop-after {
 .chart-main { height:500px; margin-bottom:8px; }
 .chart-sub { height:100px; margin-bottom:8px; }
 
+/* Deal timeline: rows in the bot detail Deals tab are clickable and jump
+   to the chart with markers for the picked deal. Use a selector specific
+   enough to beat any generic tbody cursor rule. */
+table tbody tr.clickable-row { cursor:pointer; }
+table tbody tr.clickable-row:hover td { background:var(--surface2); }
+
 .wizard-chart-wrap { margin-bottom:20px; }
 .wizard-chart-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
 .wizard-chart-label { color:var(--muted); font-size:0.9em; }
