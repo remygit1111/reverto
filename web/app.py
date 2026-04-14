@@ -514,7 +514,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self'; "
+            "script-src 'self' https://unpkg.com; "
             "style-src 'self'; "
             "img-src 'self' data:; "
             "connect-src 'self' ws: wss:; "
@@ -661,6 +661,80 @@ async def api_price():
             if state.get("current_price"):
                 return {"price": state["current_price"], "pair": "BTC/USD", "source": "bot"}
         return {"price": 0.0, "pair": "BTC/USD", "source": "unavailable"}
+
+
+# ── Chart OHLCV endpoint ──────────────────────────────────────────────────────
+# In-memory cache for chart fetches. Keyed on (pair_normalized, timeframe,
+# limit) → (expires_at, payload). 60s TTL keeps Bitget's REST endpoint
+# reasonably idle even when several tabs poll the same chart simultaneously.
+_chart_cache: dict[tuple, tuple[float, list]] = {}
+_CHART_CACHE_TTL = 60.0
+_CHART_TIMEFRAMES = ("15m", "1h", "4h", "1d")
+_chart_lock = asyncio.Lock()
+
+
+def _normalize_chart_pair(raw: str) -> str:
+    """Accept BTCUSD or BTC/USD and return BTC/USD form expected by
+    PublicExchange.SYMBOL_MAPS."""
+    s = raw.strip().upper()
+    if "/" in s:
+        return s
+    if s.endswith("USDT"):
+        return f"{s[:-4]}/USDT"
+    if s.endswith("USD"):
+        return f"{s[:-3]}/USD"
+    return s
+
+
+@app.get("/api/chart/{pair}/{timeframe}")
+async def api_chart(pair: str, timeframe: str, limit: int = 200):
+    """Public OHLCV endpoint backing the dashboard's live candlestick chart.
+
+    Wraps PublicExchange("bitget").get_ohlcv() with input validation, a
+    60-second per-key in-memory cache, and a stable JSON shape that
+    Lightweight Charts can consume directly (UTCTimestamp seconds).
+    """
+    if timeframe not in _CHART_TIMEFRAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"timeframe must be one of {', '.join(_CHART_TIMEFRAMES)}",
+        )
+    if limit < 10 or limit > 500:
+        raise HTTPException(
+            status_code=400, detail="limit must be between 10 and 500"
+        )
+
+    normalized = _normalize_chart_pair(pair)
+    key = (normalized, timeframe, limit)
+    now = time.time()
+
+    cached = _chart_cache.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    try:
+        from exchanges.public_exchange import PublicExchange
+        async with _chart_lock:
+            client = PublicExchange("bitget")
+            raw = await asyncio.to_thread(
+                client.get_ohlcv, normalized, timeframe, limit
+            )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Exchange error: {e}")
+
+    payload = [
+        {
+            "time":   int(c[0] // 1000),
+            "open":   float(c[1]),
+            "high":   float(c[2]),
+            "low":    float(c[3]),
+            "close":  float(c[4]),
+            "volume": float(c[5]) if len(c) > 5 and c[5] is not None else 0.0,
+        }
+        for c in raw
+    ]
+    _chart_cache[key] = (now + _CHART_CACHE_TTL, payload)
+    return payload
 
 
 # ── Exchange credentials API ──────────────────────────────────────────────────

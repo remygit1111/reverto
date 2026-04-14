@@ -144,13 +144,18 @@ function showPage(name) {
 }
 
 function showDTab(name, btn) {
-  ['dashboard', 'deals', 'config', 'log'].forEach(n => {
+  ['chart', 'dashboard', 'deals', 'config', 'log'].forEach(n => {
     const el = $('dtab-' + n);
     if (el) { el.classList.toggle('hidden', n !== name); }
   });
   document.querySelectorAll('.detail-subnav .tab').forEach(t => t.classList.remove('active'));
   if (btn) btn.classList.add('active');
   if (name === 'config' && currentSlug) fetchDetailConfig(currentSlug);
+  if (name === 'chart' && currentSlug) {
+    loadChartTab(currentSlug);
+  } else {
+    teardownChartTab();
+  }
 }
 
 // ── Overview ──────────────────────────────────────────────────────────────────
@@ -820,6 +825,8 @@ function _resetHeaderForTopLevel() {
   // and clean up any detail polling / websocket.
   currentSlug = null;
   clearInterval(detailInterval);
+  teardownChartTab();
+  teardownWizardChart();
   if (ws) { ws.close(); ws = null; }
   $('hdr-context').textContent = 'Multi-Bot Portal';
   $('hdr-context').classList.remove('clickable');
@@ -872,6 +879,8 @@ function goNewBot() {
   _setActiveTab('nav-bots-btn');  // new bot lives logically under Bots
   showPage('new-bot');
   nbInit();
+  initWizardChart();
+  fetchWizardChartData();
 }
 
 // ── New bot single-page form ─────────────────────────────────────────────────
@@ -2358,6 +2367,672 @@ async function restartPortal() {
   }, 1000);
 }
 
+// ── Live candlestick chart ───────────────────────────────────────────────────
+// Lightweight Charts v4 wrapper. The chart tab in the bot detail view shows
+// live candles, indicator overlays derived from the bot's configured
+// indicators, and (when running) deal entry/TP/SL/DCA price lines. The
+// wizard preview is a simpler standalone candlestick chart. Both gracefully
+// degrade if window.LightweightCharts is undefined (CDN blocked).
+
+let _chartMain = null, _chartRsi = null, _chartMacd = null;
+let _chartCandles = null;
+let _chartSeries = {};
+let _chartTimeframe = '1h';
+let _chartPair = 'BTC/USD';
+let _chartRefreshTimer = null;
+let _chartBotConfig = null;
+let _chartLastDetail = null;
+let _chartResizeObs = null;
+let _wizardChart = null;
+let _wizardCandles = null;
+let _wizardRefreshTimer = null;
+let _wizardResizeObs = null;
+let _wizardTimeframe = '1h';
+let _wizardTfHandler = null;
+
+function _cssVar(name, fallback) {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  } catch (e) { return fallback; }
+}
+
+function _chartLayoutOpts() {
+  return {
+    layout: {
+      background: { color: _cssVar('--surface', '#0f1115') },
+      textColor:  _cssVar('--text', '#c8d3e0'),
+    },
+    grid: {
+      vertLines: { color: _cssVar('--border', '#1e2736') },
+      horzLines: { color: _cssVar('--border', '#1e2736') },
+    },
+    timeScale: { timeVisible: true, secondsVisible: false },
+    rightPriceScale: { borderColor: _cssVar('--border', '#1e2736') },
+    crosshair: { mode: 0 },
+  };
+}
+
+function _chartLibAvailable() { return typeof window.LightweightCharts !== 'undefined'; }
+
+function updateChartTfButtons() {
+  document.querySelectorAll('.chart-tf-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tf === _chartTimeframe);
+  });
+}
+
+function _normalizePair(p) {
+  if (!p) return 'BTC/USD';
+  return p.indexOf('/') >= 0 ? p : (p.endsWith('USDT') ? p.slice(0, -4) + '/USDT'
+        : (p.endsWith('USD') ? p.slice(0, -3) + '/USD' : p));
+}
+
+async function loadChartTab(slug) {
+  teardownChartTab();
+  const fb = $('chart-fallback');
+  if (!_chartLibAvailable()) {
+    if (fb) fb.classList.remove('hidden');
+    return;
+  }
+  if (fb) fb.classList.add('hidden');
+
+  try {
+    const r = await fetch(`/api/bots/${slug}/config`);
+    if (r.ok) _chartBotConfig = await r.json();
+  } catch (e) { _chartBotConfig = null; }
+
+  const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
+  _chartTimeframe = inner.timeframe || '1h';
+  _chartPair = _normalizePair(inner.pair || 'BTC/USD');
+  updateChartTfButtons();
+  initCharts();
+  await fetchChartData();
+  _chartRefreshTimer = setInterval(fetchChartData, 30000);
+}
+
+function teardownChartTab() {
+  if (_chartRefreshTimer) { clearInterval(_chartRefreshTimer); _chartRefreshTimer = null; }
+  if (_chartResizeObs) { try { _chartResizeObs.disconnect(); } catch (e) {} _chartResizeObs = null; }
+  try { if (_chartMain) _chartMain.remove(); } catch (e) {}
+  try { if (_chartRsi)  _chartRsi.remove();  } catch (e) {}
+  try { if (_chartMacd) _chartMacd.remove(); } catch (e) {}
+  _chartMain = _chartRsi = _chartMacd = null;
+  _chartCandles = null;
+  _chartSeries = {};
+  const r = $('chart-rsi'); if (r) r.classList.add('hidden');
+  const m = $('chart-macd'); if (m) m.classList.add('hidden');
+}
+
+function _indicatorsConfigured() {
+  const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
+  const entry = inner.entry || {};
+  const inds = entry.indicators || [];
+  return Array.isArray(inds) ? inds : [];
+}
+
+function _hasIndicator(type) {
+  return _indicatorsConfigured().some(i => (i.type || '').toUpperCase() === type);
+}
+
+function _findIndicator(type) {
+  return _indicatorsConfigured().find(i => (i.type || '').toUpperCase() === type) || null;
+}
+
+function initCharts() {
+  if (!_chartLibAvailable()) return;
+  const mainEl = $('chart-main');
+  if (!mainEl) return;
+  const opts = _chartLayoutOpts();
+  _chartMain = LightweightCharts.createChart(mainEl, {
+    ...opts,
+    width:  mainEl.clientWidth,
+    height: mainEl.clientHeight || 500,
+  });
+  _chartCandles = _chartMain.addCandlestickSeries({
+    upColor:        _cssVar('--accent', '#26a69a'),
+    downColor:      _cssVar('--red',    '#ef5350'),
+    borderUpColor:  _cssVar('--accent', '#26a69a'),
+    borderDownColor:_cssVar('--red',    '#ef5350'),
+    wickUpColor:    _cssVar('--accent', '#26a69a'),
+    wickDownColor:  _cssVar('--red',    '#ef5350'),
+  });
+
+  // EMA_CROSS overlay
+  if (_hasIndicator('EMA_CROSS')) {
+    _chartSeries.emaFast = _chartMain.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
+    _chartSeries.emaSlow = _chartMain.addLineSeries({ color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
+  }
+  if (_hasIndicator('BOLLINGER')) {
+    _chartSeries.bbUpper  = _chartMain.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
+    _chartSeries.bbMiddle = _chartMain.addLineSeries({ color: _cssVar('--muted', '#888'),   lineWidth: 1 });
+    _chartSeries.bbLower  = _chartMain.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
+  }
+  if (_hasIndicator('SUPERTREND')) {
+    _chartSeries.stBull = _chartMain.addLineSeries({ color: _cssVar('--accent', '#26a69a'), lineWidth: 2 });
+    _chartSeries.stBear = _chartMain.addLineSeries({ color: _cssVar('--red',    '#ef5350'), lineWidth: 2 });
+  }
+
+  // RSI sub-chart
+  if (_hasIndicator('RSI')) {
+    const rsiEl = $('chart-rsi');
+    rsiEl.classList.remove('hidden');
+    _chartRsi = LightweightCharts.createChart(rsiEl, {
+      ..._chartLayoutOpts(),
+      width:  rsiEl.clientWidth,
+      height: rsiEl.clientHeight || 100,
+    });
+    _chartSeries.rsi = _chartRsi.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
+    _chartSeries.rsi.createPriceLine({ price: 70, color: _cssVar('--red',  '#ef5350'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '70' });
+    _chartSeries.rsi.createPriceLine({ price: 30, color: _cssVar('--accent','#26a69a'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30' });
+  }
+  if (_hasIndicator('MACD')) {
+    const macdEl = $('chart-macd');
+    macdEl.classList.remove('hidden');
+    _chartMacd = LightweightCharts.createChart(macdEl, {
+      ..._chartLayoutOpts(),
+      width:  macdEl.clientWidth,
+      height: macdEl.clientHeight || 100,
+    });
+    _chartSeries.macdHist   = _chartMacd.addHistogramSeries({ color: _cssVar('--muted', '#888') });
+    _chartSeries.macdLine   = _chartMacd.addLineSeries({ color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
+    _chartSeries.macdSignal = _chartMacd.addLineSeries({ color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
+  }
+
+  // Resize handling
+  if (typeof ResizeObserver !== 'undefined') {
+    _chartResizeObs = new ResizeObserver(entries => {
+      for (const e of entries) {
+        const w = e.contentRect.width;
+        if (e.target === mainEl && _chartMain) _chartMain.applyOptions({ width: w });
+        if (_chartRsi  && e.target === $('chart-rsi'))  _chartRsi.applyOptions({ width: w });
+        if (_chartMacd && e.target === $('chart-macd')) _chartMacd.applyOptions({ width: w });
+      }
+    });
+    _chartResizeObs.observe(mainEl);
+    if (_chartRsi)  _chartResizeObs.observe($('chart-rsi'));
+    if (_chartMacd) _chartResizeObs.observe($('chart-macd'));
+  }
+}
+
+async function fetchChartData() {
+  if (!_chartCandles) return;
+  let candles;
+  try {
+    const r = await fetch(`/api/chart/${encodeURIComponent(_chartPair)}/${_chartTimeframe}?limit=200`);
+    if (!r.ok) return;
+    candles = await r.json();
+  } catch (e) { return; }
+  if (!Array.isArray(candles) || !candles.length) return;
+
+  _chartCandles.setData(candles);
+
+  // Price + change
+  const first = candles[0].close;
+  const last  = candles[candles.length - 1].close;
+  const pct   = first ? ((last - first) / first) * 100 : 0;
+  const pe = $('chart-price'); if (pe) pe.textContent = fmtPrice(last);
+  const ce = $('chart-change');
+  if (ce) {
+    const sign = pct >= 0 ? '+' : '';
+    ce.textContent = `${sign}${pct.toFixed(2)}%`;
+    ce.classList.remove('pos', 'neg');
+    ce.classList.add(pct >= 0 ? 'pos' : 'neg');
+  }
+
+  _renderIndicatorOverlays(candles);
+  await _renderDealOverlays();
+}
+
+function _renderIndicatorOverlays(candles) {
+  // EMA_CROSS
+  const emaCfg = _findIndicator('EMA_CROSS');
+  if (emaCfg && _chartSeries.emaFast) {
+    const fast = emaCfg.fast || 9;
+    const slow = emaCfg.slow || 21;
+    _chartSeries.emaFast.setData(calcEMALine(candles, fast));
+    _chartSeries.emaSlow.setData(calcEMALine(candles, slow));
+  }
+  // BOLLINGER
+  const bbCfg = _findIndicator('BOLLINGER');
+  if (bbCfg && _chartSeries.bbUpper) {
+    const period = bbCfg.period || 20;
+    const mult   = bbCfg.multiplier || 2.0;
+    const bb = calcBollingerLines(candles, period, mult);
+    _chartSeries.bbUpper.setData(bb.upper);
+    _chartSeries.bbMiddle.setData(bb.middle);
+    _chartSeries.bbLower.setData(bb.lower);
+  }
+  // SUPERTREND
+  const stCfg = _findIndicator('SUPERTREND');
+  if (stCfg && _chartSeries.stBull) {
+    const atr = stCfg.atr_period || 10;
+    const mult = stCfg.multiplier || 3.0;
+    const st = calcSupertrendLines(candles, atr, mult);
+    _chartSeries.stBull.setData(st.bull);
+    _chartSeries.stBear.setData(st.bear);
+  }
+  // RSI
+  const rsiCfg = _findIndicator('RSI');
+  if (rsiCfg && _chartSeries.rsi) {
+    const period = rsiCfg.period || 14;
+    _chartSeries.rsi.setData(calcRSILine(candles, period));
+  }
+  // MACD
+  const macdCfg = _findIndicator('MACD');
+  if (macdCfg && _chartSeries.macdHist) {
+    const fast   = macdCfg.fast   || 12;
+    const slow   = macdCfg.slow   || 26;
+    const signal = macdCfg.signal || 9;
+    const m = calcMACDLines(candles, fast, slow, signal);
+    _chartSeries.macdLine.setData(m.macd);
+    _chartSeries.macdSignal.setData(m.signal);
+    _chartSeries.macdHist.setData(m.histogram);
+  }
+  // SUPPORT_RESISTANCE — static price lines
+  const srCfg = _findIndicator('SUPPORT_RESISTANCE');
+  if (srCfg) {
+    const lookback = srCfg.lookback || 3;
+    const tol = srCfg.tolerance_pct || 0.5;
+    const closes = candles.map(c => c.close);
+    const sr = calcSR(closes, lookback, tol);
+    sr.support.slice(-3).forEach(lvl => {
+      _chartCandles.createPriceLine({ price: lvl, color: _cssVar('--accent', '#26a69a'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'S' });
+    });
+    sr.resistance.slice(-3).forEach(lvl => {
+      _chartCandles.createPriceLine({ price: lvl, color: _cssVar('--red', '#ef5350'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'R' });
+    });
+  }
+  // QFL — base price lines
+  const qflCfg = _findIndicator('QFL');
+  if (qflCfg) {
+    const lookback = qflCfg.lookback || 3;
+    const crack    = qflCfg.crack_pct || 3.0;
+    const baseN    = qflCfg.base_candles || 5;
+    const maxBases = qflCfg.max_bases || 5;
+    const closes = candles.map(c => c.close);
+    const bases  = calcQFL(closes, lookback, crack, baseN, maxBases);
+    bases.forEach(b => {
+      _chartCandles.createPriceLine({ price: b, color: _cssVar('--blue', '#5b8dee'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'QFL' });
+    });
+  }
+  // Markers — Parabolic SAR + Market Structure
+  const markers = [];
+  const psCfg = _findIndicator('PARABOLIC_SAR');
+  if (psCfg) {
+    const ps = calcParabolicSARMarkers(candles, psCfg.initial_af || 0.02, psCfg.max_af || 0.20);
+    for (const p of ps) markers.push(p);
+  }
+  const msCfg = _findIndicator('MARKET_STRUCTURE');
+  if (msCfg) {
+    const ms = calcMarketStructureMarkers(candles, msCfg.lookback || 3);
+    for (const p of ms) markers.push(p);
+  }
+  if (markers.length && _chartCandles) {
+    markers.sort((a, b) => a.time - b.time);
+    _chartCandles.setMarkers(markers);
+  }
+}
+
+async function _renderDealOverlays() {
+  if (!currentSlug || !_chartCandles) return;
+  let bot;
+  try {
+    bot = await fetch(`/api/bots/${currentSlug}`).then(r => r.json());
+  } catch (e) { return; }
+  if (!bot || !bot.running) return;
+  const open = bot.open_deals || [];
+  const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
+  const tpPct = ((inner.tp || {}).target_pct) || 0;
+  const slPct = ((inner.sl || {}).pct) || 0;
+  const dcaCfg = inner.dca || {};
+  const dcaSpacing = dcaCfg.spacing_pct || 0;
+  const dcaMax = dcaCfg.max_orders || 0;
+
+  const blue = _cssVar('--blue', '#5b8dee');
+  const accent = _cssVar('--accent', '#26a69a');
+  const red = _cssVar('--red', '#ef5350');
+  const amber = _cssVar('--amber', '#ffb347');
+
+  for (const d of open) {
+    const avg = d.avg_entry_price || d.entry_price;
+    if (!avg) continue;
+    _chartCandles.createPriceLine({ price: avg, color: blue, lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: 'Entry' });
+    if (tpPct) {
+      _chartCandles.createPriceLine({ price: avg * (1 + tpPct / 100), color: accent, lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'TP' });
+    }
+    if (slPct) {
+      _chartCandles.createPriceLine({ price: avg * (1 - slPct / 100), color: red, lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'SL' });
+    }
+    if (dcaSpacing && dcaMax) {
+      const cur = d.order_count || 1;
+      let last = d.entry_price || avg;
+      const remaining = Math.max(0, dcaMax - (cur - 1));
+      for (let i = 0; i < remaining; i++) {
+        last = last * (1 - dcaSpacing / 100);
+        _chartCandles.createPriceLine({ price: last, color: amber, lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: `DCA${cur + i}` });
+      }
+    }
+  }
+}
+
+// ── Wizard preview chart ─────────────────────────────────────────────────────
+
+function initWizardChart() {
+  teardownWizardChart();
+  if (!_chartLibAvailable()) return;
+  const el = $('wizard-chart');
+  if (!el) return;
+  _wizardChart = LightweightCharts.createChart(el, {
+    ..._chartLayoutOpts(),
+    width:  el.clientWidth,
+    height: el.clientHeight || 250,
+  });
+  _wizardCandles = _wizardChart.addCandlestickSeries({
+    upColor:        _cssVar('--accent', '#26a69a'),
+    downColor:      _cssVar('--red',    '#ef5350'),
+    borderUpColor:  _cssVar('--accent', '#26a69a'),
+    borderDownColor:_cssVar('--red',    '#ef5350'),
+    wickUpColor:    _cssVar('--accent', '#26a69a'),
+    wickDownColor:  _cssVar('--red',    '#ef5350'),
+  });
+  if (typeof ResizeObserver !== 'undefined') {
+    _wizardResizeObs = new ResizeObserver(entries => {
+      for (const e of entries) _wizardChart.applyOptions({ width: e.contentRect.width });
+    });
+    _wizardResizeObs.observe(el);
+  }
+
+  // Track timeframe field changes
+  const tfSel = $('nb-timeframe');
+  if (tfSel) {
+    _wizardTimeframe = tfSel.value || '1h';
+    _wizardTfHandler = () => {
+      _wizardTimeframe = tfSel.value || '1h';
+      fetchWizardChartData();
+    };
+    tfSel.addEventListener('change', _wizardTfHandler);
+  }
+  if (_wizardRefreshTimer) clearInterval(_wizardRefreshTimer);
+  _wizardRefreshTimer = setInterval(fetchWizardChartData, 30000);
+}
+
+function teardownWizardChart() {
+  if (_wizardRefreshTimer) { clearInterval(_wizardRefreshTimer); _wizardRefreshTimer = null; }
+  if (_wizardResizeObs) { try { _wizardResizeObs.disconnect(); } catch (e) {} _wizardResizeObs = null; }
+  const tfSel = $('nb-timeframe');
+  if (tfSel && _wizardTfHandler) tfSel.removeEventListener('change', _wizardTfHandler);
+  _wizardTfHandler = null;
+  try { if (_wizardChart) _wizardChart.remove(); } catch (e) {}
+  _wizardChart = null;
+  _wizardCandles = null;
+}
+
+async function fetchWizardChartData() {
+  if (!_wizardCandles) return;
+  const pairInput = $('nb-pair');
+  const pair = _normalizePair((pairInput && pairInput.value.trim()) || 'BTC/USD');
+  const tf   = _wizardTimeframe || '1h';
+  let candles;
+  try {
+    const r = await fetch(`/api/chart/${encodeURIComponent(pair)}/${tf}?limit=200`);
+    if (!r.ok) return;
+    candles = await r.json();
+  } catch (e) { return; }
+  if (!Array.isArray(candles) || !candles.length) return;
+  _wizardCandles.setData(candles);
+  const lbl = $('wizard-chart-label'); if (lbl) lbl.textContent = pair;
+  const pe  = $('wizard-chart-price'); if (pe)  pe.textContent  = fmtPrice(candles[candles.length - 1].close);
+}
+
+// ── Indicator helpers (JS ports of strategies/indicators/*.py) ───────────────
+// All helpers accept the candles array from /api/chart and return data
+// shaped for Lightweight Charts series consumption: {time, value} (or
+// {time, value, color} for histograms). The Python implementations use
+// pandas-style EWM with adjust=False, which matches the textbook
+// recurrence: ema[i] = k*x[i] + (1-k)*ema[i-1], k = 2/(period+1).
+
+function _emaArray(values, period) {
+  const out = new Array(values.length).fill(NaN);
+  if (!values.length) return out;
+  const k = 2 / (period + 1);
+  out[0] = values[0];
+  for (let i = 1; i < values.length; i++) {
+    out[i] = k * values[i] + (1 - k) * out[i - 1];
+  }
+  return out;
+}
+
+function calcEMALine(candles, period) {
+  const closes = candles.map(c => c.close);
+  const ema = _emaArray(closes, period);
+  // Skip warmup — first `period` points are still biased.
+  return candles
+    .map((c, i) => ({ time: c.time, value: i < period ? NaN : ema[i] }))
+    .filter(p => Number.isFinite(p.value));
+}
+
+function calcRSILine(candles, period) {
+  // Wilder smoothing via ewm(com=period-1) ⇒ alpha = 1/period.
+  const closes = candles.map(c => c.close);
+  if (closes.length < period + 1) return [];
+  const alpha = 1 / period;
+  let avgGain = 0, avgLoss = 0;
+  // Seed with simple average over the first `period` deltas.
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d >= 0) avgGain += d; else avgLoss += -d;
+  }
+  avgGain /= period; avgLoss /= period;
+  const out = [];
+  const rsiAt = (g, l) => {
+    if (l === 0) return 100;
+    const rs = g / l;
+    return 100 - 100 / (1 + rs);
+  };
+  out.push({ time: candles[period].time, value: rsiAt(avgGain, avgLoss) });
+  for (let i = period + 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    const gain = d > 0 ? d : 0;
+    const loss = d < 0 ? -d : 0;
+    avgGain = (1 - alpha) * avgGain + alpha * gain;
+    avgLoss = (1 - alpha) * avgLoss + alpha * loss;
+    out.push({ time: candles[i].time, value: rsiAt(avgGain, avgLoss) });
+  }
+  return out;
+}
+
+function calcMACDLines(candles, fast, slow, signal) {
+  const closes = candles.map(c => c.close);
+  const emaFast = _emaArray(closes, fast);
+  const emaSlow = _emaArray(closes, slow);
+  const macd = closes.map((_, i) => emaFast[i] - emaSlow[i]);
+  const signalArr = _emaArray(macd, signal);
+  const macdOut = [], sigOut = [], histOut = [];
+  const accent = _cssVar('--accent', '#26a69a');
+  const red    = _cssVar('--red',    '#ef5350');
+  for (let i = 0; i < candles.length; i++) {
+    if (i < slow) continue;
+    macdOut.push({ time: candles[i].time, value: macd[i] });
+    sigOut.push({ time: candles[i].time, value: signalArr[i] });
+    const h = macd[i] - signalArr[i];
+    histOut.push({ time: candles[i].time, value: h, color: h >= 0 ? accent : red });
+  }
+  return { macd: macdOut, signal: sigOut, histogram: histOut };
+}
+
+function calcBollingerLines(candles, period, multiplier) {
+  const upper = [], middle = [], lower = [];
+  for (let i = period - 1; i < candles.length; i++) {
+    const window = candles.slice(i - period + 1, i + 1).map(c => c.close);
+    const mean = window.reduce((a, b) => a + b, 0) / period;
+    let variance = 0;
+    for (const v of window) variance += (v - mean) * (v - mean);
+    variance /= period; // population std dev (matches Python pstdev)
+    const std = Math.sqrt(variance);
+    const t = candles[i].time;
+    middle.push({ time: t, value: mean });
+    upper.push({  time: t, value: mean + multiplier * std });
+    lower.push({  time: t, value: mean - multiplier * std });
+  }
+  return { upper, middle, lower };
+}
+
+function calcSupertrendLines(candles, atrPeriod, multiplier) {
+  // Mirrors strategies/indicators/supertrend.py: simple ATR for the first
+  // window then Wilder smoothing, with the trend-following band logic.
+  const n = candles.length;
+  const highs  = candles.map(c => c.high);
+  const lows   = candles.map(c => c.low);
+  const closes = candles.map(c => c.close);
+  if (n < atrPeriod + 1) return { bull: [], bear: [] };
+  const tr = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    tr[i] = Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1]),
+    );
+  }
+  const atr = new Array(n).fill(0);
+  let s = 0;
+  for (let i = 1; i <= atrPeriod; i++) s += tr[i];
+  atr[atrPeriod] = s / atrPeriod;
+  for (let i = atrPeriod + 1; i < n; i++) {
+    atr[i] = (atr[i - 1] * (atrPeriod - 1) + tr[i]) / atrPeriod;
+  }
+
+  const bull = [], bear = [];
+  let prevFinalUpper = 0, prevFinalLower = 0, prevTrend = 1;
+  for (let i = 0; i < n; i++) {
+    if (i < atrPeriod) continue;
+    const mid = (highs[i] + lows[i]) / 2;
+    const basicUpper = mid + multiplier * atr[i];
+    const basicLower = mid - multiplier * atr[i];
+    let finalUpper, finalLower, trend;
+    if (i === atrPeriod) {
+      finalUpper = basicUpper;
+      finalLower = basicLower;
+      trend = closes[i] > basicUpper ? 1 : -1;
+    } else {
+      finalUpper = (basicUpper < prevFinalUpper || closes[i - 1] > prevFinalUpper) ? basicUpper : prevFinalUpper;
+      finalLower = (basicLower > prevFinalLower || closes[i - 1] < prevFinalLower) ? basicLower : prevFinalLower;
+      if (prevTrend === 1) trend = closes[i] < finalLower ? -1 : 1;
+      else                 trend = closes[i] > finalUpper ?  1 : -1;
+    }
+    const stVal = trend === 1 ? finalLower : finalUpper;
+    const t = candles[i].time;
+    if (trend === 1) {
+      bull.push({ time: t, value: stVal });
+      bear.push({ time: t, value: NaN });
+    } else {
+      bear.push({ time: t, value: stVal });
+      bull.push({ time: t, value: NaN });
+    }
+    prevFinalUpper = finalUpper; prevFinalLower = finalLower; prevTrend = trend;
+  }
+  // LWC drops NaN points → gaps. Filter to keep series clean.
+  return {
+    bull: bull.filter(p => Number.isFinite(p.value)),
+    bear: bear.filter(p => Number.isFinite(p.value)),
+  };
+}
+
+function calcSR(closes, lookback, tolerancePct) {
+  // Mirrors strategies/indicators/support_resistance.py. Returns
+  // {support: [levels], resistance: [levels]} clustered.
+  const highs = [], lows = [];
+  for (let i = lookback; i < closes.length - lookback; i++) {
+    const pivot = closes[i];
+    const left  = closes.slice(i - lookback, i);
+    const right = closes.slice(i + 1, i + 1 + lookback);
+    if (left.every(x => pivot > x) && right.every(x => pivot > x)) highs.push(pivot);
+    else if (left.every(x => pivot < x) && right.every(x => pivot < x)) lows.push(pivot);
+  }
+  const cluster = (levels) => {
+    const out = [];
+    for (const lvl of levels) {
+      let merged = false;
+      for (let i = 0; i < out.length; i++) {
+        if (out[i] === 0) continue;
+        const diffPct = Math.abs(lvl - out[i]) / out[i] * 100;
+        if (diffPct <= tolerancePct) { out[i] = lvl; merged = true; break; }
+      }
+      if (!merged) out.push(lvl);
+    }
+    return out;
+  };
+  return { support: cluster(lows), resistance: cluster(highs) };
+}
+
+function calcQFL(closes, lookback, crackPct, baseCandles, maxBases) {
+  const bases = [];
+  for (let i = lookback; i < closes.length - lookback; i++) {
+    const pivot = closes[i];
+    const left  = closes.slice(i - lookback, i);
+    const right = closes.slice(i + 1, i + 1 + lookback);
+    if (left.every(x => pivot < x) && right.every(x => pivot < x)) {
+      const end = Math.min(i + 1 + baseCandles, closes.length);
+      const window = closes.slice(i + 1, end);
+      const rebound = window.length ? Math.max(...window) : pivot;
+      if (rebound >= pivot * (1 + crackPct / 100)) bases.push(pivot);
+    }
+  }
+  return bases.slice(-maxBases);
+}
+
+function calcParabolicSARMarkers(candles, initialAF, maxAF) {
+  // Simplified close-based variant matching parabolic_sar.py. Marker per
+  // candle with shape:circle below (bullish) or above (bearish).
+  const closes = candles.map(c => c.close);
+  if (closes.length < 10) return [];
+  let trend, ep, sar, af = initialAF;
+  if (closes[1] >= closes[0]) { trend = 1; ep = closes[1]; sar = closes[0]; }
+  else                        { trend = -1; ep = closes[1]; sar = closes[0]; }
+  const out = [];
+  const accent = _cssVar('--accent', '#26a69a');
+  const red    = _cssVar('--red',    '#ef5350');
+  for (let i = 2; i < closes.length; i++) {
+    const price = closes[i];
+    const newSar = sar + af * (ep - sar);
+    if (trend === 1) {
+      if (newSar > price) { trend = -1; sar = ep; ep = price; af = initialAF; }
+      else { sar = newSar; if (price > ep) { ep = price; af = Math.min(af + initialAF, maxAF); } }
+    } else {
+      if (newSar < price) { trend = 1; sar = ep; ep = price; af = initialAF; }
+      else { sar = newSar; if (price < ep) { ep = price; af = Math.min(af + initialAF, maxAF); } }
+    }
+  }
+  // Only render the latest marker — full per-candle markers would clutter.
+  out.push({
+    time: candles[candles.length - 1].time,
+    position: trend === 1 ? 'belowBar' : 'aboveBar',
+    color: trend === 1 ? accent : red,
+    shape: 'circle',
+    text: 'SAR',
+  });
+  return out;
+}
+
+function calcMarketStructureMarkers(candles, lookback) {
+  // Surface swing highs/lows as markers — matches market_structure.py
+  // _swing_points. Simplified: we don't try to label HH/HL/LH/LL.
+  const closes = candles.map(c => c.close);
+  const out = [];
+  const accent = _cssVar('--accent', '#26a69a');
+  const red    = _cssVar('--red',    '#ef5350');
+  for (let i = lookback; i < closes.length - lookback; i++) {
+    const pivot = closes[i];
+    const left  = closes.slice(i - lookback, i);
+    const right = closes.slice(i + 1, i + 1 + lookback);
+    if (left.every(x => pivot > x) && right.every(x => pivot > x)) {
+      out.push({ time: candles[i].time, position: 'aboveBar', color: red, shape: 'arrowDown', text: 'H' });
+    } else if (left.every(x => pivot < x) && right.every(x => pivot < x)) {
+      out.push({ time: candles[i].time, position: 'belowBar', color: accent, shape: 'arrowUp', text: 'L' });
+    }
+  }
+  return out;
+}
+
 // ── Event wiring (vervangt alle inline onclick=) ─────────────────────────────
 function setupEventListeners() {
   $('api-key-btn').addEventListener('click', showApiKeyModal);
@@ -2375,6 +3050,15 @@ function setupEventListeners() {
 
   document.querySelectorAll('.detail-subnav .tab').forEach(btn => {
     btn.addEventListener('click', () => showDTab(btn.dataset.dtab, btn));
+  });
+
+  // Chart timeframe selector
+  document.querySelectorAll('.chart-tf-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _chartTimeframe = btn.dataset.tf;
+      updateChartTfButtons();
+      fetchChartData();
+    });
   });
 
   $('modal-clear-btn').addEventListener('click', clearApiKey);
