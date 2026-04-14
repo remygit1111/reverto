@@ -331,6 +331,9 @@ function _settingsApplyTheme(t, persist) {
   const segs = document.querySelectorAll('#settings-modal .settings-seg');
   if (segs[1]) _setSegActive(segs[1], 'theme', v);
   if (persist) localStorage.setItem('reverto-theme', v);
+  // Push the new palette into any live chart instance so the operator
+  // sees the colour change without having to reopen the chart tab.
+  if (typeof _applyChartTheme === 'function') _applyChartTheme();
 }
 function _settingsApplyCompact(c, persist) {
   const v = Boolean(c);
@@ -2897,20 +2900,64 @@ function _cssVar(name, fallback) {
   } catch (e) { return fallback; }
 }
 
+function getChartColors() {
+  // Resolve the live palette from the active theme. Reads CSS vars so
+  // a future palette tweak in style.css automatically flows through to
+  // the chart without code changes. The dataset.theme attribute is set
+  // by applyPersistedSettings() / _settingsApplyTheme().
+  const isDark = document.documentElement.dataset.theme !== 'light';
+  return {
+    background: _cssVar('--bg',     isDark ? '#0a0e14' : '#f0f2f5'),
+    textColor:  _cssVar('--muted',  isDark ? '#4a5568' : '#8a94a6'),
+    gridColor:  _cssVar('--border', isDark ? '#1e2736' : '#dde1e9'),
+    upColor:    _cssVar('--accent', '#00d4aa'),
+    downColor:  _cssVar('--red',    '#ff4d6d'),
+  };
+}
+
 function _chartLayoutOpts() {
+  const c = getChartColors();
   return {
     layout: {
-      background: { color: _cssVar('--surface', '#0f1115') },
-      textColor:  _cssVar('--text', '#c8d3e0'),
+      background: { type: 'solid', color: c.background },
+      textColor:  c.textColor,
     },
     grid: {
-      vertLines: { color: _cssVar('--border', '#1e2736') },
-      horzLines: { color: _cssVar('--border', '#1e2736') },
+      vertLines: { color: c.gridColor },
+      horzLines: { color: c.gridColor },
     },
     timeScale: { timeVisible: true, secondsVisible: false },
-    rightPriceScale: { borderColor: _cssVar('--border', '#1e2736') },
+    rightPriceScale: { borderColor: c.gridColor },
     crosshair: { mode: 0 },
   };
+}
+
+function _applyChartTheme() {
+  // Re-apply the layout options to every live chart instance after a
+  // theme switch so the operator sees the new palette without having
+  // to reopen the tab. No-ops cleanly when a chart isn't mounted.
+  const opts = _chartLayoutOpts();
+  for (const chart of [_chartMain, _chartRsi, _chartMacd, _wizardChart, _wizardChartRsi, _wizardChartMacd]) {
+    if (!chart) continue;
+    try { chart.applyOptions(opts); } catch (e) {}
+  }
+  // Candlestick series colours live on the series, not the chart, so
+  // applyOptions on the chart alone leaves the bodies + wicks at their
+  // creation-time colours. Push the up/down palette onto every live
+  // candle series too.
+  const c = getChartColors();
+  const seriesOpts = {
+    upColor:        c.upColor,
+    downColor:      c.downColor,
+    borderUpColor:  c.upColor,
+    borderDownColor:c.downColor,
+    wickUpColor:    c.upColor,
+    wickDownColor:  c.downColor,
+  };
+  for (const series of [_chartCandles, _wizardCandles]) {
+    if (!series) continue;
+    try { series.applyOptions(seriesOpts); } catch (e) {}
+  }
 }
 
 function _chartLibAvailable() { return typeof window.LightweightCharts !== 'undefined'; }
