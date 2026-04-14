@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=22">
+<link rel="stylesheet" href="/static/style.css?v=23">
 </head>
 <body>
 
@@ -529,11 +529,10 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-detail" class="page">
 
-  <!-- Sub-nav — back button lives inside the subnav instead of a
-       separate bar above it. The detail-back-btn has no data-dtab, so
-       it's naturally excluded from the tab click-handler binding. -->
+  <!-- Sub-nav — the dedicated back button was removed; the operator
+       leaves the detail view via the main nav (Bots tab) or the
+       browser back button, which is wired through the History API. -->
   <div class="detail-subnav">
-    <button class="subnav-back" id="detail-back-btn" title="Back to bots">←</button>
     <button class="tab active" data-dtab="dashboard">Dashboard</button>
     <button class="tab" data-dtab="chart">Chart</button>
     <button class="tab" data-dtab="deals">Deals</button>
@@ -723,6 +722,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=39"></script>
+<script src="/static/app.js?v=40"></script>
 </body>
 </html>
