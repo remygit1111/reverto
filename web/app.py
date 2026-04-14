@@ -24,7 +24,8 @@ import yaml
 
 from config.config_loader import load_bot_config
 from config.models import BotConfig
-from core import credentials
+from core import credentials, deal_store
+from core.database import init_db as _init_db
 from notifications.telegram import TelegramNotifier
 
 import bcrypt
@@ -678,6 +679,13 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONR
 
 _bootstrap_auth_if_missing()
 
+# Initialise the SQLite ledger on portal boot. Idempotent — safe to call
+# on every restart; creates logs/reverto.db + schema on first run.
+try:
+    _init_db()
+except Exception as _e:  # pragma: no cover - defensive
+    logger.warning("init_db failed on portal startup: %s", _e)
+
 app = FastAPI(title="Reverto Portal", docs_url=None, redoc_url=None)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
@@ -1263,6 +1271,88 @@ async def tail_logs():
             except Exception:
                 pass
         await asyncio.sleep(1)
+
+
+# ── SQLite ledger endpoints ───────────────────────────────────────────────────
+# Reads are public (historical data the operator already owns). Writes use the
+# existing API key dependency + rate limiter.
+
+
+@app.get("/api/db/deals")
+async def api_db_deals(
+    bot_slug: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+):
+    limit = max(1, min(1000, int(limit)))
+    deals = deal_store.get_deals(bot_slug=bot_slug, status=status, limit=limit)
+    return [
+        {"deal": d, "orders": deal_store.get_deal_orders(d["id"])}
+        for d in deals
+    ]
+
+
+@app.get("/api/db/deals/{deal_id}/orders")
+async def api_db_deal_orders(deal_id: str):
+    return deal_store.get_deal_orders(deal_id)
+
+
+@app.get("/api/db/stats")
+async def api_db_stats(bot_slug: Optional[str] = None):
+    return deal_store.compute_stats(bot_slug)
+
+
+class AnnotationBody(BaseModel):
+    bot_slug: str
+    type: str
+    timeframe: str
+    x1: int
+    y1: Optional[float] = None
+    x2: Optional[int] = None
+    y2: Optional[float] = None
+    label: Optional[str] = None
+    color: str = "#00d4aa"
+
+
+@app.post("/api/db/annotations")
+@limiter.limit("30/minute")
+async def api_db_annotations_create(
+    body: AnnotationBody,
+    request: Request,
+    key_hint: str = Depends(verify_api_key),
+):
+    new_id = deal_store.save_annotation(
+        bot_slug=body.bot_slug,
+        type_=body.type,
+        timeframe=body.timeframe,
+        x1=body.x1,
+        y1=body.y1,
+        x2=body.x2,
+        y2=body.y2,
+        label=body.label,
+        color=body.color,
+    )
+    return {"id": new_id}
+
+
+@app.get("/api/db/annotations")
+async def api_db_annotations_list(
+    bot_slug: str,
+    timeframe: Optional[str] = None,
+):
+    return deal_store.list_annotations(bot_slug, timeframe)
+
+
+@app.delete("/api/db/annotations/{ann_id}")
+@limiter.limit("30/minute")
+async def api_db_annotations_delete(
+    ann_id: int,
+    request: Request,
+    key_hint: str = Depends(verify_api_key),
+):
+    if not deal_store.delete_annotation(ann_id):
+        raise HTTPException(status_code=404, detail="Annotation not found")
+    return {"ok": True}
 
 
 @app.on_event("startup")

@@ -17,8 +17,18 @@ from notifications.telegram import TelegramNotifier
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from strategies.indicator_engine import IndicatorEngine
 from core.liquidation_guard import LiquidationGuard
+from core import deal_store
+from core.database import init_db as _init_db
 
 logger = logging.getLogger(__name__)
+
+# Ensure the SQLite schema exists before any engine instance writes to it.
+# Paper bots run as subprocesses launched by the portal, so they can't rely
+# on the portal's own init_db() having run in their process space.
+try:
+    _init_db()
+except Exception as _e:  # pragma: no cover - defensive
+    logger.warning("init_db failed on paper_engine import: %s", _e)
 
 # Candle interval in seconds per timeframe. Drives the TTL for the
 # per-timeframe close-price cache — we only need to re-fetch a
@@ -139,8 +149,24 @@ class PaperEngine:
         poll_interval: int = 10,
         state_file: str = None,
         manual_trigger_file: str = None,
+        slug: str | None = None,
     ):
         self.config           = config
+        # Bot slug drives the DB ledger rows. Prefer the explicit arg from
+        # main_paper.py (YAML filename stem). Fall back to deriving it from
+        # the state file path, then to a sanitised config.name. When none
+        # of these yield a non-empty slug we skip DB writes entirely — no
+        # slug, no ledger row.
+        if slug:
+            self._bot_slug: str | None = slug
+        elif state_file:
+            stem = Path(state_file).stem
+            if stem.endswith(".state"):
+                stem = stem[: -len(".state")]
+            self._bot_slug = stem or None
+        else:
+            cleaned = (config.name or "").strip().lower().replace(" ", "_")
+            self._bot_slug = cleaned or None
         self.exchange         = exchange
         self.notifier         = notifier
         self.state            = PaperState(initial_balance_btc)
@@ -191,6 +217,37 @@ class PaperEngine:
         # this, every restart would lose closed-deal history and abandon
         # any open deal that was mid-flight when the bot was stopped.
         self._load_state()
+
+    # ------------------------------------------------------------------
+    # DB ledger helpers — NEVER raise; DB failures must not kill the tick.
+    # ------------------------------------------------------------------
+
+    def _db_save_deal(self, deal: PaperDeal) -> None:
+        if not self._bot_slug:
+            return
+        try:
+            deal_store.save_deal(deal, self._bot_slug, self.config.name)
+        except Exception as e:
+            logger.warning("deal_store.save_deal failed: %s", e)
+
+    def _db_save_order(self, order: PaperOrder, deal_id: str, fee: float) -> None:
+        if not self._bot_slug:
+            return
+        try:
+            deal_store.save_order(order, deal_id, self._bot_slug, fee_btc=fee)
+        except Exception as e:
+            logger.warning("deal_store.save_order failed: %s", e)
+
+    def _db_close_deal(
+        self, deal_id: str, close_price: float, reason: str,
+        pnl_btc: float, pnl_pct: float,
+    ) -> None:
+        if not self._bot_slug:
+            return
+        try:
+            deal_store.close_deal(deal_id, close_price, reason, pnl_btc, pnl_pct)
+        except Exception as e:
+            logger.warning("deal_store.close_deal failed: %s", e)
 
     def _notify(self, fn, *args, **kwargs):
         """Plaats een notificatie-call op de queue zonder te blokkeren."""
@@ -339,6 +396,14 @@ class PaperEngine:
             self._state_file, self.state.balance_btc,
             open_loaded, closed_loaded, self._fees_paid_btc,
         )
+
+        # JSON → SQLite migration. Existing bots predating the DB ledger
+        # have history only in the state file; mirror it into SQLite on
+        # first restart so the portal's /api/db endpoints see it.
+        for deal in list(self.state.open_deals.values()) + list(self.state.closed_deals):
+            self._db_save_deal(deal)
+            for order in deal.orders:
+                self._db_save_order(order, deal.id, 0.0)
 
     def _clear_state(self):
         """
@@ -607,6 +672,8 @@ class PaperEngine:
         fee = self._calc_fee(base_order.size)
         self.state.balance_btc -= fee
         self._fees_paid_btc    += fee
+        self._db_save_deal(deal)
+        self._db_save_order(base_order, deal.id, fee)
         logger.info(f"Deal opened: {deal_id} at ${price:,.2f} (fee {fee:.8f} BTC)")
 
         self._notify(
@@ -668,6 +735,7 @@ class PaperEngine:
             fee = self._calc_fee(exit_size)
             self.state.balance_btc -= fee
             self._fees_paid_btc    += fee
+            self._db_close_deal(deal.id, price, "tp", pnl_btc, pnl_pct)
             logger.info(
                 f"TP hit: {deal.id} at ${price:,.2f} "
                 f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
@@ -701,6 +769,7 @@ class PaperEngine:
             fee = self._calc_fee(exit_size)
             self.state.balance_btc -= fee
             self._fees_paid_btc    += fee
+            self._db_close_deal(deal.id, price, "sl", pnl_btc, pnl_pct)
             logger.info(
                 f"SL hit ({self.config.stop_loss.type}): {deal.id} "
                 f"at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
@@ -736,6 +805,8 @@ class PaperEngine:
             fee = self._calc_fee(dca_size)
             self.state.balance_btc -= fee
             self._fees_paid_btc    += fee
+            self._db_save_order(dca_order, deal.id, fee)
+            self._db_save_deal(deal)
 
             logger.info(
                 f"DCA #{dca_order.order_number} placed: {deal.id} "

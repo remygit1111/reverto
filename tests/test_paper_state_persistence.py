@@ -177,6 +177,52 @@ class TestCorruptStateFile:
         assert len(e.state.closed_deals) == 0
 
 
+class TestDbLedgerIntegration:
+    """Integration test for the SQLite ledger wiring.
+
+    Drives a PaperEngine through _open_deal, _check_dca, _check_tp and
+    then asserts the DB shows the deal closed with matching pnl.
+    """
+
+    def test_open_dca_close_writes_to_db(self, tmp_path):
+        from core import deal_store
+
+        sf = tmp_path / "integration.state.json"
+        engine = PaperEngine(
+            config=_cfg(),
+            exchange=MagicMock(),
+            notifier=_notifier(),
+            initial_balance_btc=0.1,
+            state_file=str(sf),
+            slug="integration_bot",
+        )
+
+        # Open a deal at 80k, then trigger a DCA at 78k, then TP at 82400.
+        engine._open_deal(80000.0)
+        deal = next(iter(engine.state.get_open_deals_snapshot().values()))
+        # _check_dca: spacing 2.5% → next dca price ≈ 78000
+        engine._check_dca(deal, 78000.0)
+        assert deal.dca_count == 1
+
+        # Snapshot realised pnl before the close_deal call nukes the object.
+        expected_pnl, _ = deal.calculate_pnl(82400.0)
+
+        engine._check_tp(deal, 82400.0)
+        assert deal.id not in engine.state.open_deals
+
+        rows = deal_store.get_deals(bot_slug="integration_bot", status="closed")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["id"] == deal.id
+        assert row["close_reason"] == "tp"
+        assert row["pnl_btc"] == pytest.approx(expected_pnl, rel=1e-9)
+
+        orders = deal_store.get_deal_orders(deal.id)
+        assert len(orders) == 2
+        assert orders[0]["order_type"] == "base"
+        assert orders[1]["order_type"] == "dca"
+
+
 class TestStateFileShapeIsFrontendCompatible:
     def test_orders_added_but_dashboard_fields_present(self, tmp_path):
         sf = tmp_path / "bot.state.json"
