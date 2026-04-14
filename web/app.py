@@ -110,6 +110,24 @@ _SESSION_TTL = 86400  # 24h
 _SESSION_SALT = "reverto.session.v1"
 _session_serializer = URLSafeTimedSerializer(_SECRET_KEY, salt=_SESSION_SALT)
 
+# Secure-cookie flag default. Cookies are marked secure (HTTPS-only) by
+# default; this protects production deployments behind a TLS reverse
+# proxy. Localhost / plain-http development opts out by exporting
+# REVERTO_INSECURE_COOKIES=1 — without that flag set, a browser on
+# http:// will silently drop the cookie and the SPA will look broken.
+_INSECURE_COOKIES = os.environ.get("REVERTO_INSECURE_COOKIES") == "1"
+_COOKIE_SECURE = not _INSECURE_COOKIES
+if _COOKIE_SECURE:
+    logger.info(
+        "Session cookies: secure=True (TLS required). "
+        "For local development add `export REVERTO_INSECURE_COOKIES=1` to ~/.bashrc."
+    )
+else:
+    logger.warning(
+        "Session cookies: secure=False (REVERTO_INSECURE_COOKIES=1 set "
+        "— only safe on localhost / private LAN)."
+    )
+
 _AUTH_FILE = Path(__file__).parent.parent / "logs" / ".auth.json"
 _INITIAL_PW_FILE = Path(__file__).parent.parent / "logs" / ".initial_password"
 
@@ -791,7 +809,7 @@ async def auth_login(body: LoginBody, request: Request):
         max_age=_SESSION_TTL,
         httponly=True,
         samesite="strict",
-        secure=False,
+        secure=_COOKIE_SECURE,
         path="/",
     )
     _audit("auth_login", stored_user, "-")
