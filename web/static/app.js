@@ -1474,46 +1474,60 @@ function renderPerformanceStats(closedDeals) {
     ['Total Deals',   'total'],
   ];
   const list = Array.isArray(closedDeals) ? closedDeals : [];
-  let values;
-  if (list.length < 3) {
-    values = {
-      profit_factor: 'Insufficient data',
-      sharpe: 'Insufficient data',
-      sortino: 'Insufficient data',
-      consistency: 'Insufficient data',
-      max_dd: 'Insufficient data',
-      total: String(list.length),
-    };
-  } else {
-    const returns = list.map(d => Number(d.pnl_pct) || 0);
-    const wins = returns.filter(r => r > 0);
-    const losses = returns.filter(r => r < 0);
-    const sum = arr => arr.reduce((a, b) => a + b, 0);
-    const mean = arr => arr.length ? sum(arr) / arr.length : 0;
-    const std = arr => {
-      if (arr.length < 2) return 0;
-      const m = mean(arr);
-      return Math.sqrt(sum(arr.map(x => (x - m) ** 2)) / arr.length);
-    };
+  const n = list.length;
+  const returns = list.map(d => Number(d.pnl_pct) || 0);
+  const wins = returns.filter(r => r > 0);
+  const losses = returns.filter(r => r < 0);
+  const sum = arr => arr.reduce((a, b) => a + b, 0);
+  const mean = arr => arr.length ? sum(arr) / arr.length : 0;
+  const std = arr => {
+    if (arr.length < 2) return 0;
+    const m = mean(arr);
+    return Math.sqrt(sum(arr.map(x => (x - m) ** 2)) / arr.length);
+  };
 
+  // Per-stat minimum sample size. Each metric only becomes meaningful
+  // once we have enough deals — otherwise the cell shows the threshold
+  // so the user knows exactly how many more deals are needed.
+  let profit_factor;
+  if (n < 2) {
+    profit_factor = 'Need 2+ deals';
+  } else {
     const sumWins = sum(wins);
     const sumLosses = Math.abs(sum(losses));
-    const profitFactor = losses.length === 0
+    profit_factor = losses.length === 0 || sumLosses === 0
       ? '∞'
-      : (sumLosses === 0 ? '∞' : (sumWins / sumLosses).toFixed(2));
+      : (sumWins / sumLosses).toFixed(2);
+  }
 
+  let sharpe;
+  if (n < 10) {
+    sharpe = 'Need 10+ deals';
+  } else {
     const stdAll = std(returns);
-    const sharpe = stdAll === 0
+    sharpe = stdAll === 0
       ? '—'
       : ((mean(returns) / stdAll) * Math.sqrt(252)).toFixed(2);
+  }
 
+  let sortino;
+  if (n < 10) {
+    sortino = 'Need 10+ deals';
+  } else {
     const stdLosses = std(losses);
-    const sortino = losses.length === 0
+    sortino = losses.length === 0 || stdLosses === 0
       ? '∞'
-      : (stdLosses === 0 ? '∞' : ((mean(returns) / stdLosses) * Math.sqrt(252)).toFixed(2));
+      : ((mean(returns) / stdLosses) * Math.sqrt(252)).toFixed(2);
+  }
 
-    const consistency = (wins.length / returns.length * 100).toFixed(1) + '%';
+  const consistency = n < 1
+    ? 'Need 1+ deals'
+    : (wins.length / n * 100).toFixed(1) + '%';
 
+  let max_dd;
+  if (n < 1) {
+    max_dd = 'Need 1+ deals';
+  } else {
     let cum = 0, peak = 0, maxDd = 0;
     returns.forEach(r => {
       cum += r;
@@ -1521,17 +1535,17 @@ function renderPerformanceStats(closedDeals) {
       const dd = peak - cum;
       if (dd > maxDd) maxDd = dd;
     });
-    const maxDdStr = '-' + maxDd.toFixed(2) + '%';
-
-    values = {
-      profit_factor: profitFactor,
-      sharpe,
-      sortino,
-      consistency,
-      max_dd: maxDdStr,
-      total: String(returns.length),
-    };
+    max_dd = '-' + maxDd.toFixed(2) + '%';
   }
+
+  const values = {
+    profit_factor,
+    sharpe,
+    sortino,
+    consistency,
+    max_dd,
+    total: String(n),
+  };
   grid.innerHTML = cells.map(([label, key]) => `
     <div class="card">
       <div class="card-label">${safeText(label)}</div>
