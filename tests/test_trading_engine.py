@@ -157,6 +157,21 @@ class TestDCA:
         e._check_dca(d, 80000.0 * 0.98)
         assert d.dca_count == 0
 
+    def test_dca_disabled_when_max_orders_zero(self):
+        # max_orders=0 must short-circuit the DCA check entirely so a
+        # base-order-only bot never adds extra fills.
+        e = _engine(spacing=2.5, max_orders=0); d = _deal(80000.0)
+        e.state.open_deal(d)
+        e._check_dca(d, 80000.0 * 0.95)
+        assert d.dca_count == 0
+
+    def test_dca_disabled_when_max_orders_one(self):
+        # max_orders=1 means "base order only" — same disabled behaviour.
+        e = _engine(spacing=2.5, max_orders=1); d = _deal(80000.0)
+        e.state.open_deal(d)
+        e._check_dca(d, 80000.0 * 0.90)
+        assert d.dca_count == 0
+
     def test_dca_max_orders_respected(self):
         e = _engine(spacing=2.5, max_orders=5, mult=1.0); d = _deal(80000.0)
         e.state.open_deal(d)
