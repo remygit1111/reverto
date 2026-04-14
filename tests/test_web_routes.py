@@ -237,3 +237,33 @@ class TestAuth:
             json={"current_password": "not-it", "new_password": "longenough1"},
         )
         assert r.status_code == 401
+
+
+class TestDbAnnotationsRoutes:
+    """Regression coverage for the /api/db/annotations routes — a past
+    report of a 404 on GET turned out to be a 401 from the auth
+    middleware, but the routes themselves must stay registered and
+    return 200 with a valid session cookie."""
+
+    def test_get_annotations_registered(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.get("/api/db/annotations?bot_slug=nope&timeframe=1h")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_get_annotations_without_timeframe(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.get("/api/db/annotations?bot_slug=nope")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_get_annotations_missing_bot_slug_is_422_not_404(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.get("/api/db/annotations")
+        # Missing required query param is a validation error, not a
+        # missing route — explicitly assert the non-404 so a future
+        # route-removal regression trips this test.
+        assert r.status_code == 422
