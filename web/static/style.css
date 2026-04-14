@@ -169,6 +169,13 @@ nav {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
+  /* Pin below the 52px header so the Overview/Bots/Deals tabs stay
+     reachable while scrolling through long views like the new-bot
+     wizard. Matching z-index just under the header so dropdowns from
+     header elements still stack on top. */
+  position: sticky;
+  top: 52px;
+  z-index: 99;
 }
 
 .tab {
