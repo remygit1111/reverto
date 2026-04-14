@@ -458,6 +458,12 @@ function _stateWsConnected(connected) {
     dot.classList.toggle('connected', !!connected);
     dot.classList.toggle('error', !connected);
   }
+  const lbl = document.getElementById('state-ws-label');
+  if (lbl) {
+    lbl.textContent = connected ? 'live' : 'reconnecting...';
+    lbl.classList.toggle('label-ok', !!connected);
+    lbl.classList.toggle('label-err', !connected);
+  }
 }
 
 function connectStateWS() {

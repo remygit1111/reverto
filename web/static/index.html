@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=21">
+<link rel="stylesheet" href="/static/style.css?v=22">
 </head>
 <body>
 
@@ -22,6 +22,10 @@
     </div>
   </div>
   <span class="uptime-chip" id="hdr-uptime"></span>
+  <span class="state-ws-indicator" title="State sync">
+    <span id="state-ws-dot" class="live-dot"></span>
+    <span id="state-ws-label" class="log-status-text">offline</span>
+  </span>
   <button class="hbtn hbtn-theme hbtn-hide-mobile" id="restart-btn" title="Restart dashboard">Restart Dashboard</button>
   <button id="profile-btn" type="button" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">
     <span id="profile-initial">A</span>
@@ -719,6 +723,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=38"></script>
+<script src="/static/app.js?v=39"></script>
 </body>
 </html>
