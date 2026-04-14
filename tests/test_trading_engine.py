@@ -219,3 +219,37 @@ class TestNoDoubleClose:
         e._check_tp(d, price)
         assert len(e.state.closed_deals) == 1
         assert e.state.closed_deals[0].close_reason == "tp"
+
+
+class TestManualTriggerLiquidationGuard:
+    """Manual deal trigger refuses to open when the entry would land
+    inside the liquidation guard's emergency band. Spot bots are
+    always safe regardless of price."""
+
+    def test_spot_bot_always_safe(self):
+        e = _engine()
+        # Default _engine has leverage.enabled=False, size=1.
+        assert e._manual_trigger_liq_safe(80000.0) is True
+
+    def test_leveraged_bot_safe_at_normal_distance(self):
+        e = _engine()
+        e.config.leverage.enabled = True
+        e.config.leverage.size = 5
+        e.config.leverage.liquidation_guard.emergency_close_pct = 5.0
+        # At 5x leverage liquidation sits ~20% below entry — well clear
+        # of the 5% emergency band, so any positive price is safe.
+        assert e._manual_trigger_liq_safe(80000.0) is True
+
+    def test_excessive_leverage_refused(self):
+        e = _engine()
+        e.config.leverage.enabled = True
+        e.config.leverage.size = 100
+        e.config.leverage.liquidation_guard.emergency_close_pct = 5.0
+        # 100x liquidation distance ≈ 1%, well inside the 5% band.
+        assert e._manual_trigger_liq_safe(80000.0) is False
+
+    def test_zero_price_refused(self):
+        e = _engine()
+        e.config.leverage.enabled = True
+        e.config.leverage.size = 10
+        assert e._manual_trigger_liq_safe(0.0) is False

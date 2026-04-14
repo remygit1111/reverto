@@ -605,7 +605,12 @@ class PaperEngine:
 
     def _check_manual_trigger(self, price: float):
         """If the manual-trigger sentinel exists, consume it and open a
-        deal unconditionally (bypasses schedule + indicator filters)."""
+        deal. By design this bypasses the schedule guard and indicator
+        filters — the operator is taking explicit responsibility. We do
+        still gate on the existing single-open-deal rule and on a
+        liquidation pre-flight check, because opening a leveraged deal
+        within the emergency-distance band would immediately cascade
+        into an emergency-close on the next tick."""
         trigger = self._manual_trigger_file
         if trigger is None or not trigger.exists():
             return
@@ -616,8 +621,44 @@ class PaperEngine:
         if len(self.state.get_open_deals_snapshot()) > 0:
             logger.warning("manual trigger ignored: deal already open")
             return
+        if not self._manual_trigger_liq_safe(price):
+            return
         logger.info("=== Manual deal trigger fired ===")
         self._open_deal(price)
+
+    def _manual_trigger_liq_safe(self, price: float) -> bool:
+        """Return True if opening a new deal at `price` would land safely
+        outside the liquidation guard's emergency band. Spot bots
+        (leverage <= 1) are always safe. Returns False (and logs a
+        warning) when the position would open inside the emergency
+        distance — the trigger file is consumed either way so a stale
+        sentinel doesn't keep retrying."""
+        leverage = self.config.leverage.size
+        if leverage <= 1 or not self.config.leverage.enabled:
+            return True
+        try:
+            from core.liquidation_guard import calculate_liquidation_price
+            liq_price = calculate_liquidation_price(price, leverage, "long")
+        except Exception as e:
+            logger.warning("manual trigger: liq calc failed (%s) — refusing", e)
+            return False
+        if liq_price <= 0 or price <= 0:
+            return False
+        distance_pct = abs(price - liq_price) / price * 100
+        emergency_pct = self.config.leverage.liquidation_guard.emergency_close_pct
+        if distance_pct <= emergency_pct:
+            logger.warning(
+                "manual trigger refused: opening at $%.2f would be %.2f%% "
+                "from liquidation $%.2f (emergency band %.2f%%)",
+                price, distance_pct, liq_price, emergency_pct,
+            )
+            self._notify(
+                self.notifier.notify_error,
+                self.config.name,
+                f"Manual trigger refused — entry within {emergency_pct}% of liquidation",
+            )
+            return False
+        return True
 
     def _check_entry(self, price: float):
         """Check if conditions are met to start a new deal."""
