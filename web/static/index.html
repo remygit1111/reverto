@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=18">
+<link rel="stylesheet" href="/static/style.css?v=19">
 </head>
 <body>
 
@@ -530,6 +530,13 @@
       </div>
       <button id="chart-clear-deal" class="hbtn hbtn-theme hidden" type="button">Clear deal markers</button>
     </div>
+    <div class="chart-tool-bar">
+      <button type="button" class="chart-tool active" data-tool="select" title="Select (normal chart interaction)">&#x1F5B1;</button>
+      <button type="button" class="chart-tool" data-tool="measure" title="Measure">&#x1F4CF;</button>
+      <button type="button" class="chart-tool" data-tool="arrow" title="Arrow (saved)">&#x27A1;</button>
+      <button type="button" class="chart-tool" data-tool="text" title="Text label (saved)">T</button>
+      <button type="button" class="chart-tool" data-tool="delete" title="Delete annotation">&#x1F5D1;</button>
+    </div>
     <div id="chart-main" class="chart-container chart-main"></div>
     <div id="chart-rsi" class="chart-container chart-sub hidden"></div>
     <div id="chart-macd" class="chart-container chart-sub hidden"></div>
@@ -683,6 +690,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=24"></script>
+<script src="/static/app.js?v=25"></script>
 </body>
 </html>

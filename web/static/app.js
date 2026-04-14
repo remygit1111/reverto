@@ -2727,6 +2727,16 @@ let _chartDealPriceLines = [];
 // setMarkers() call — Lightweight Charts replaces the full array on each
 // invocation, so any overlay that forgets to merge wipes the other.
 let _chartIndicatorMarkers = [];
+// Annotations toolbar state. Lightweight Charts v4.1.1 in the standalone
+// build does not expose a stable ISeriesPrimitive, so every "drawing" is
+// approximated with createPriceLine + series markers — enough to make
+// the annotation visible and round-trip it to the DB, without chasing
+// private APIs that may change between patch versions.
+let _chartActiveTool = 'select';
+let _toolFirstPoint = null;
+let _measureLines = [];
+let _chartAnnotations = [];
+let _annotationLineHandles = {};
 let _wizardChart = null;
 let _wizardCandles = null;
 let _wizardRefreshTimer = null;
@@ -2817,6 +2827,7 @@ async function loadChartTab(slug) {
   updateChartTfButtons();
   initCharts();
   await fetchChartData();
+  await _loadAnnotations();
   _chartRefreshTimer = setInterval(fetchChartData, 30000);
 }
 
@@ -2836,6 +2847,17 @@ function teardownChartTab() {
   _chartDealPriceLines = [];
   _chartDealMarkers = [];
   _chartIndicatorMarkers = [];
+  // Annotations toolbar teardown — leaving the chart tab and coming back
+  // must start clean. Handles are owned by the destroyed series, so just
+  // drop refs.
+  _toolFirstPoint = null;
+  _chartActiveTool = 'select';
+  _measureLines = [];
+  _chartAnnotations = [];
+  _annotationLineHandles = {};
+  document.querySelectorAll('.chart-tool').forEach(b => {
+    b.classList.toggle('active', b.dataset.tool === 'select');
+  });
   const r = $('chart-rsi'); if (r) r.classList.add('hidden');
   const m = $('chart-macd'); if (m) m.classList.add('hidden');
 }
@@ -2929,6 +2951,8 @@ function initCharts() {
     if (_chartRsi)  _chartResizeObs.observe($('chart-rsi'));
     if (_chartMacd) _chartResizeObs.observe($('chart-macd'));
   }
+
+  _installChartToolHandlers();
 }
 
 async function fetchChartData() {
@@ -3204,6 +3228,225 @@ function clearDealFromChart() {
   const btn = $('chart-clear-deal');
   if (btn) btn.classList.add('hidden');
   fetchChartData();
+}
+
+// ── Chart annotations (measure / arrow / text / delete) ─────────────────────
+// Lightweight Charts 4.1.1 standalone has no stable primitive API, so every
+// shape below is approximated with createPriceLine handles and/or series
+// markers — enough to make the annotation visible and persist its x/y to
+// the DB via /api/db/annotations. The "arrow" is two horizontal price
+// lines at y1/y2 with title "→"; "text" is a single price line at y1 with
+// the label as its title. Not pixel-perfect, but CSP-safe and zero-deps.
+
+function _setActiveTool(name) {
+  _chartActiveTool = name || 'select';
+  _toolFirstPoint = null;
+  document.querySelectorAll('.chart-tool').forEach(b => {
+    b.classList.toggle('active', b.dataset.tool === _chartActiveTool);
+  });
+  if (_chartActiveTool !== 'measure') _clearMeasureLines();
+}
+
+function _clearMeasureLines() {
+  if (_chartCandles && _measureLines.length) {
+    for (const pl of _measureLines) {
+      try { _chartCandles.removePriceLine(pl); } catch (e) {}
+    }
+  }
+  _measureLines = [];
+}
+
+function _finishTwoPointTool(tool, p1, p2) {
+  if (tool === 'measure') {
+    _clearMeasureLines();
+    const accent = _cssVar('--accent', '#26a69a');
+    const muted  = _cssVar('--muted',  '#888');
+    const priceDiff = p2.price - p1.price;
+    const pct = p1.price ? (priceDiff / p1.price) * 100 : 0;
+    const mid = (p1.price + p2.price) / 2;
+    try {
+      _measureLines.push(_chartCandles.createPriceLine({
+        price: p1.price, color: muted, lineStyle: 2, lineWidth: 1,
+        axisLabelVisible: true, title: `A ${p1.price.toFixed(2)}`,
+      }));
+      _measureLines.push(_chartCandles.createPriceLine({
+        price: p2.price, color: muted, lineStyle: 2, lineWidth: 1,
+        axisLabelVisible: true, title: `B ${p2.price.toFixed(2)}`,
+      }));
+      const sign = pct >= 0 ? '+' : '';
+      _measureLines.push(_chartCandles.createPriceLine({
+        price: mid, color: accent, lineStyle: 0, lineWidth: 1,
+        axisLabelVisible: true,
+        title: `${sign}${pct.toFixed(2)}% / ${sign}${priceDiff.toFixed(2)}`,
+      }));
+    } catch (e) {}
+    return;
+  }
+  if (tool === 'arrow') {
+    _persistAnnotation({
+      type: 'arrow',
+      x1: p1.time, y1: p1.price,
+      x2: p2.time, y2: p2.price,
+      color: _cssVar('--blue', '#5b8dee'),
+    });
+  }
+}
+
+function _promptAnnotationText(point) {
+  const label = window.prompt('Label?');
+  if (!label) return;
+  _persistAnnotation({
+    type: 'text',
+    x1: point.time, y1: point.price,
+    label,
+    color: _cssVar('--amber', '#ffb347'),
+  });
+}
+
+function _requireApiKeyOr(action) {
+  const k = getApiKey();
+  if (k) return k;
+  _pendingAction = action;
+  showApiKeyModal();
+  return null;
+}
+
+async function _persistAnnotation(fields) {
+  if (!currentSlug) return;
+  const doPost = async () => {
+    const key = _requireApiKeyOr(doPost);
+    if (!key) return;
+    const body = Object.assign({
+      bot_slug: currentSlug,
+      timeframe: _chartTimeframe,
+    }, fields);
+    try {
+      const r = await fetch('/api/db/annotations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+        body: JSON.stringify(body),
+      });
+      if (r.status === 401) { _pendingAction = doPost; showApiKeyModal(); return; }
+      if (!r.ok) return;
+      await _loadAnnotations();
+    } catch (e) {}
+  };
+  await doPost();
+}
+
+async function _loadAnnotations() {
+  if (!currentSlug) { _chartAnnotations = []; _renderAnnotations(); return; }
+  try {
+    const r = await fetch(
+      `/api/db/annotations?bot_slug=${encodeURIComponent(currentSlug)}&timeframe=${encodeURIComponent(_chartTimeframe)}`
+    );
+    if (!r.ok) return;
+    _chartAnnotations = await r.json();
+  } catch (e) { _chartAnnotations = []; }
+  _renderAnnotations();
+}
+
+function _renderAnnotations() {
+  if (!_chartCandles) return;
+  // Drop previous handles.
+  for (const id of Object.keys(_annotationLineHandles)) {
+    for (const pl of _annotationLineHandles[id]) {
+      try { _chartCandles.removePriceLine(pl); } catch (e) {}
+    }
+  }
+  _annotationLineHandles = {};
+  const blue  = _cssVar('--blue',  '#5b8dee');
+  const amber = _cssVar('--amber', '#ffb347');
+  for (const a of (_chartAnnotations || [])) {
+    const handles = [];
+    try {
+      if (a.type === 'arrow') {
+        if (a.y1 != null) handles.push(_chartCandles.createPriceLine({
+          price: Number(a.y1), color: a.color || blue, lineStyle: 0,
+          lineWidth: 1, axisLabelVisible: true, title: '→ A',
+        }));
+        if (a.y2 != null) handles.push(_chartCandles.createPriceLine({
+          price: Number(a.y2), color: a.color || blue, lineStyle: 0,
+          lineWidth: 1, axisLabelVisible: true, title: '→ B',
+        }));
+      } else if (a.type === 'text') {
+        if (a.y1 != null) handles.push(_chartCandles.createPriceLine({
+          price: Number(a.y1), color: a.color || amber, lineStyle: 3,
+          lineWidth: 1, axisLabelVisible: true,
+          title: a.label || 'text',
+        }));
+      }
+    } catch (e) {}
+    if (handles.length) _annotationLineHandles[a.id] = handles;
+  }
+}
+
+async function _deleteAnnotationNear(point) {
+  if (!_chartAnnotations.length) return;
+  // Crude Euclidean nearest-neighbour in (time, price) space — the two
+  // axes have wildly different magnitudes, so normalise both against
+  // their respective ranges before comparing.
+  let tMin = Infinity, tMax = -Infinity, pMin = Infinity, pMax = -Infinity;
+  for (const a of _chartAnnotations) {
+    if (a.x1 != null) { tMin = Math.min(tMin, a.x1); tMax = Math.max(tMax, a.x1); }
+    if (a.x2 != null) { tMin = Math.min(tMin, a.x2); tMax = Math.max(tMax, a.x2); }
+    if (a.y1 != null) { pMin = Math.min(pMin, a.y1); pMax = Math.max(pMax, a.y1); }
+    if (a.y2 != null) { pMin = Math.min(pMin, a.y2); pMax = Math.max(pMax, a.y2); }
+  }
+  const tSpan = Math.max(1, tMax - tMin);
+  const pSpan = Math.max(1, pMax - pMin);
+  let best = null, bestD = Infinity;
+  for (const a of _chartAnnotations) {
+    const dt = ((Number(a.x1) || point.time) - point.time) / tSpan;
+    const dp = ((Number(a.y1) || point.price) - point.price) / pSpan;
+    const d = dt * dt + dp * dp;
+    if (d < bestD) { bestD = d; best = a; }
+  }
+  if (!best) return;
+  const doDelete = async () => {
+    const key = _requireApiKeyOr(doDelete);
+    if (!key) return;
+    try {
+      const r = await fetch(`/api/db/annotations/${best.id}`, {
+        method: 'DELETE',
+        headers: { 'X-API-Key': key },
+      });
+      if (r.status === 401) { _pendingAction = doDelete; showApiKeyModal(); return; }
+      if (!r.ok) return;
+      _chartAnnotations = _chartAnnotations.filter(a => a.id !== best.id);
+      _renderAnnotations();
+    } catch (e) {}
+  };
+  await doDelete();
+}
+
+function _installChartToolHandlers() {
+  if (!_chartMain || !_chartCandles) return;
+  try {
+    _chartMain.subscribeClick(param => {
+      if (_chartActiveTool === 'select') return;
+      if (!param || !param.time || !param.point) return;
+      const price = _chartCandles.coordinateToPrice(param.point.y);
+      if (!Number.isFinite(price)) return;
+      const point = { time: Number(param.time), price: Number(price) };
+      if (_chartActiveTool === 'text') {
+        _promptAnnotationText(point);
+        return;
+      }
+      if (_chartActiveTool === 'measure' || _chartActiveTool === 'arrow') {
+        if (!_toolFirstPoint) {
+          _toolFirstPoint = point;
+        } else {
+          _finishTwoPointTool(_chartActiveTool, _toolFirstPoint, point);
+          _toolFirstPoint = null;
+        }
+        return;
+      }
+      if (_chartActiveTool === 'delete') {
+        _deleteAnnotationNear(point);
+      }
+    });
+  } catch (e) {}
 }
 
 async function _renderDealOverlays() {
@@ -3869,7 +4112,13 @@ function setupEventListeners() {
       _chartTimeframe = btn.dataset.tf;
       updateChartTfButtons();
       fetchChartData();
+      _loadAnnotations();
     });
+  });
+
+  // Chart annotation toolbar
+  document.querySelectorAll('.chart-tool').forEach(btn => {
+    btn.addEventListener('click', () => _setActiveTool(btn.dataset.tool));
   });
 
   // Clear deal markers button

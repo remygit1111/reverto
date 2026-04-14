@@ -1623,6 +1623,10 @@ table thead th.drop-after {
 .chart-tf-btn { background:var(--surface2); border:1px solid var(--border); color:var(--muted); padding:6px 12px; border-radius:4px; cursor:pointer; font-size:0.9em; }
 .chart-tf-btn:hover { color:var(--text); }
 .chart-tf-btn.active { background:var(--accent); color:var(--bg); border-color:var(--accent); }
+.chart-tool-bar { display:flex; gap:4px; margin-bottom:6px; }
+.chart-tool { background:var(--surface2); border:1px solid var(--border); color:var(--muted); padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.9em; min-width:32px; }
+.chart-tool:hover { color:var(--text); }
+.chart-tool.active { color:var(--accent); border-color:var(--accent); }
 .chart-container { width:100%; }
 .chart-main { height:500px; margin-bottom:8px; }
 .chart-sub { height:100px; margin-bottom:8px; }
