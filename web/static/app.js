@@ -193,6 +193,8 @@ const ACTIVE_DEALS_COLUMNS = [
     cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
   { key: 'pnl_pct',    label: 'PnL %',
     cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
+  { key: 'started',    label: 'Started',
+    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
   { key: 'age',        label: 'Age',
     cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
 ];
