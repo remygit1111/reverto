@@ -9,3 +9,4 @@ data/
 ml/model_store/
 *.log
 *:Zone.Identifier
+audit_*.docx
