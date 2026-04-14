@@ -1343,6 +1343,23 @@ async def api_db_annotations_list(
     return deal_store.list_annotations(bot_slug, timeframe)
 
 
+@app.delete("/api/db/annotations/all")
+@limiter.limit("10/minute")
+async def api_db_annotations_delete_all(
+    request: Request,
+    bot_slug: str,
+    timeframe: Optional[str] = None,
+    key_hint: str = Depends(verify_api_key),
+):
+    """Bulk-delete every annotation for a bot, optionally scoped to one
+    timeframe. Registered BEFORE the {ann_id} catch-all so FastAPI
+    routes the literal `/all` path here instead of trying to parse
+    "all" as an int."""
+    removed = deal_store.delete_annotations_for(bot_slug, timeframe)
+    _audit("annotations_clear", bot_slug, key_hint)
+    return {"ok": True, "removed": removed}
+
+
 @app.delete("/api/db/annotations/{ann_id}")
 @limiter.limit("30/minute")
 async def api_db_annotations_delete(

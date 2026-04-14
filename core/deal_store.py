@@ -298,3 +298,26 @@ def delete_annotation(ann_id: int) -> bool:
                 (ann_id,),
             )
             return cur.rowcount > 0
+
+
+def delete_annotations_for(bot_slug: str, timeframe: Optional[str] = None) -> int:
+    """Bulk-delete annotations for a bot, optionally scoped to a timeframe.
+
+    Returns the number of rows removed. Used by the "Clear all" toolbar
+    button — scoping by timeframe avoids nuking annotations on other
+    timeframes the user may still want.
+    """
+    with _write_lock:
+        conn = get_db()
+        with conn:
+            if timeframe is None:
+                cur = conn.execute(
+                    "DELETE FROM chart_annotations WHERE bot_slug = ?",
+                    (bot_slug,),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM chart_annotations WHERE bot_slug = ? AND timeframe = ?",
+                    (bot_slug, timeframe),
+                )
+            return cur.rowcount
