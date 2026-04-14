@@ -2736,7 +2736,14 @@ let _chartActiveTool = 'select';
 let _toolFirstPoint = null;
 let _measureLines = [];
 let _chartAnnotations = [];
-let _annotationLineHandles = {};
+// SVG overlay element used to draw text + arrow annotations on top of
+// the chart. Lightweight Charts 4.1.1 standalone has no public
+// primitive API, and createPriceLine renders a thin horizontal line
+// that effectively looks invisible to users. The overlay is an
+// `<svg pointer-events:none>` child of #chart-main, redrawn on every
+// pan / zoom / resize / annotation mutation.
+let _chartAnnotSvg = null;
+const _ANNOT_SVG_NS = 'http://www.w3.org/2000/svg';
 let _wizardChart = null;
 let _wizardCandles = null;
 let _wizardRefreshTimer = null;
@@ -2854,7 +2861,10 @@ function teardownChartTab() {
   _chartActiveTool = 'select';
   _measureLines = [];
   _chartAnnotations = [];
-  _annotationLineHandles = {};
+  if (_chartAnnotSvg && _chartAnnotSvg.parentNode) {
+    try { _chartAnnotSvg.parentNode.removeChild(_chartAnnotSvg); } catch (e) {}
+  }
+  _chartAnnotSvg = null;
   document.querySelectorAll('.chart-tool').forEach(b => {
     b.classList.toggle('active', b.dataset.tool === 'select');
   });
@@ -2942,7 +2952,10 @@ function initCharts() {
     _chartResizeObs = new ResizeObserver(entries => {
       for (const e of entries) {
         const w = e.contentRect.width;
-        if (e.target === mainEl && _chartMain) _chartMain.applyOptions({ width: w });
+        if (e.target === mainEl && _chartMain) {
+          _chartMain.applyOptions({ width: w });
+          _renderAnnotations();
+        }
         if (_chartRsi  && e.target === $('chart-rsi'))  _chartRsi.applyOptions({ width: w });
         if (_chartMacd && e.target === $('chart-macd')) _chartMacd.applyOptions({ width: w });
       }
@@ -2951,6 +2964,13 @@ function initCharts() {
     if (_chartRsi)  _chartResizeObs.observe($('chart-rsi'));
     if (_chartMacd) _chartResizeObs.observe($('chart-macd'));
   }
+
+  // Redraw the SVG annotation overlay whenever the user pans or zooms
+  // the chart — without this, existing annotations would stick to
+  // stale pixel positions until the next full fetch.
+  try {
+    _chartMain.timeScale().subscribeVisibleLogicalRangeChange(_renderAnnotations);
+  } catch (e) {}
 
   _installChartToolHandlers();
 }
@@ -3316,20 +3336,39 @@ async function _persistAnnotation(fields) {
   const doPost = async () => {
     const key = _requireApiKeyOr(doPost);
     if (!key) return;
+    // timeframe is a required field on AnnotationBody — the SPA always
+    // has _chartTimeframe set by the time the tool fires, but fall
+    // through to '1h' just in case a race empties it.
     const body = Object.assign({
       bot_slug: currentSlug,
-      timeframe: _chartTimeframe,
+      timeframe: _chartTimeframe || '1h',
     }, fields);
+    let r;
     try {
-      const r = await fetch('/api/db/annotations', {
+      r = await fetch('/api/db/annotations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
         body: JSON.stringify(body),
+        credentials: 'same-origin',
       });
-      if (r.status === 401) { _pendingAction = doPost; showApiKeyModal(); return; }
-      if (!r.ok) return;
-      await _loadAnnotations();
+    } catch (e) {
+      return;
+    }
+    if (r.status === 401) { _pendingAction = doPost; showApiKeyModal(); return; }
+    if (!r.ok) return;
+    // Optimistic update: splice the new annotation into the local
+    // cache so the SVG overlay updates immediately without waiting
+    // for a round-trip to the GET list endpoint.
+    try {
+      const j = await r.json();
+      if (j && Number.isFinite(j.id)) {
+        _chartAnnotations.push(Object.assign({}, body, { id: j.id }));
+        _renderAnnotations();
+        return;
+      }
     } catch (e) {}
+    // Fallback: full reload if the POST response was malformed.
+    await _loadAnnotations();
   };
   await doPost();
 }
@@ -3359,38 +3398,108 @@ async function _loadAnnotations() {
   _renderAnnotations();
 }
 
-function _renderAnnotations() {
-  if (!_chartCandles) return;
-  // Drop previous handles.
-  for (const id of Object.keys(_annotationLineHandles)) {
-    for (const pl of _annotationLineHandles[id]) {
-      try { _chartCandles.removePriceLine(pl); } catch (e) {}
-    }
+function _svgEl(name, attrs) {
+  const el = document.createElementNS(_ANNOT_SVG_NS, name);
+  if (attrs) {
+    for (const k of Object.keys(attrs)) el.setAttribute(k, String(attrs[k]));
   }
-  _annotationLineHandles = {};
+  return el;
+}
+
+function _ensureAnnotationSvg() {
+  const host = document.getElementById('chart-main');
+  if (!host || !_chartMain) return null;
+  if (_chartAnnotSvg && _chartAnnotSvg.parentNode === host) return _chartAnnotSvg;
+  // Lightweight Charts owns #chart-main's children (canvases). Appending
+  // an extra <svg> as a sibling of those canvases works because LC only
+  // paints on its own canvas elements and leaves unknown children alone.
+  // pointer-events: none lets clicks fall through to the chart below.
+  if (!host.style.position) host.style.position = 'relative';
+  const svg = _svgEl('svg', {
+    class: 'chart-annot-svg',
+    xmlns: _ANNOT_SVG_NS,
+  });
+  svg.style.position = 'absolute';
+  svg.style.left = '0';
+  svg.style.top = '0';
+  svg.style.width = '100%';
+  svg.style.height = '100%';
+  svg.style.pointerEvents = 'none';
+  host.appendChild(svg);
+  _chartAnnotSvg = svg;
+  return svg;
+}
+
+function _chartXOfTime(t) {
+  if (!_chartMain || t == null) return null;
+  try {
+    const x = _chartMain.timeScale().timeToCoordinate(Number(t));
+    return Number.isFinite(x) ? x : null;
+  } catch (e) { return null; }
+}
+function _chartYOfPrice(p) {
+  if (!_chartCandles || p == null) return null;
+  try {
+    const y = _chartCandles.priceToCoordinate(Number(p));
+    return Number.isFinite(y) ? y : null;
+  } catch (e) { return null; }
+}
+
+function _renderAnnotations() {
+  const svg = _ensureAnnotationSvg();
+  if (!svg) return;
+  // Size the SVG viewBox to match the chart container so pixel
+  // coordinates from timeToCoordinate/priceToCoordinate land correctly.
+  const host = document.getElementById('chart-main');
+  if (host) {
+    const w = host.clientWidth, h = host.clientHeight;
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  }
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
   const blue  = _cssVar('--blue',  '#5b8dee');
   const amber = _cssVar('--amber', '#ffb347');
+
   for (const a of (_chartAnnotations || [])) {
-    const handles = [];
-    try {
-      if (a.type === 'arrow') {
-        if (a.y1 != null) handles.push(_chartCandles.createPriceLine({
-          price: Number(a.y1), color: a.color || blue, lineStyle: 0,
-          lineWidth: 1, axisLabelVisible: true, title: '→ A',
-        }));
-        if (a.y2 != null) handles.push(_chartCandles.createPriceLine({
-          price: Number(a.y2), color: a.color || blue, lineStyle: 0,
-          lineWidth: 1, axisLabelVisible: true, title: '→ B',
-        }));
-      } else if (a.type === 'text') {
-        if (a.y1 != null) handles.push(_chartCandles.createPriceLine({
-          price: Number(a.y1), color: a.color || amber, lineStyle: 3,
-          lineWidth: 1, axisLabelVisible: true,
-          title: a.label || 'text',
-        }));
+    const color = a.color || (a.type === 'text' ? amber : blue);
+    const x1 = _chartXOfTime(a.x1);
+    const y1 = _chartYOfPrice(a.y1);
+    if (x1 == null || y1 == null) continue;
+
+    if (a.type === 'text') {
+      const g = _svgEl('g', { 'data-ann-id': a.id });
+      g.appendChild(_svgEl('circle', {
+        cx: x1, cy: y1, r: 4, fill: color, stroke: '#ffffff', 'stroke-width': 1,
+      }));
+      const text = _svgEl('text', {
+        x: x1 + 8, y: y1 + 4, fill: color,
+        'font-family': 'monospace', 'font-size': 11,
+      });
+      text.textContent = a.label || 'text';
+      g.appendChild(text);
+      svg.appendChild(g);
+    } else if (a.type === 'arrow') {
+      const x2 = _chartXOfTime(a.x2);
+      const y2 = _chartYOfPrice(a.y2);
+      if (x2 == null || y2 == null) continue;
+      const g = _svgEl('g', { 'data-ann-id': a.id });
+      g.appendChild(_svgEl('line', {
+        x1, y1, x2, y2, stroke: color, 'stroke-width': 2,
+      }));
+      // Arrowhead: 10px-long triangle pointed at (x2, y2), base 5px wide.
+      const dx = x2 - x1, dy = y2 - y1;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 0.01) {
+        const ux = dx / len, uy = dy / len;
+        const bx = x2 - ux * 10, by = y2 - uy * 10;
+        const px = -uy * 5, py = ux * 5;
+        const points = `${x2},${y2} ${bx + px},${by + py} ${bx - px},${by - py}`;
+        g.appendChild(_svgEl('polygon', { points, fill: color }));
       }
-    } catch (e) {}
-    if (handles.length) _annotationLineHandles[a.id] = handles;
+      svg.appendChild(g);
+    }
   }
 }
 
