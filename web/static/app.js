@@ -83,6 +83,7 @@ function _handle401() {
   if (overviewInterval) { clearInterval(overviewInterval); overviewInterval = null; }
   if (detailInterval)   { clearInterval(detailInterval);   detailInterval   = null; }
   if (ws) { try { ws.close(); } catch (e) {} ws = null; }
+  try { disconnectStateWS(); } catch (e) {}
   document.querySelectorAll('.page').forEach(p => {
     p.classList.remove('active');
     p.classList.add('hidden');
@@ -441,6 +442,128 @@ let currentSlug = null;
 let ws = null;
 let detailInterval = null;
 let overviewInterval = null;
+
+// /ws/state — bot-state push channel. The dashboard used to poll
+// /api/bots every 5s; now we poll every 30s as a safety net and let
+// the WS push handle realtime updates.
+let _stateWs = null;
+let _stateWsReconnectTimer = null;
+
+function _stateWsConnected(connected) {
+  // Reuse the existing .live-dot/.connected/.error convention from
+  // the log streaming widgets. The indicator is optional — if index.html
+  // doesn't expose #state-ws-dot we silently no-op.
+  const dot = document.getElementById('state-ws-dot');
+  if (dot) {
+    dot.classList.toggle('connected', !!connected);
+    dot.classList.toggle('error', !connected);
+  }
+}
+
+function connectStateWS() {
+  if (_stateWs) { try { _stateWs.close(); } catch (e) {} _stateWs = null; }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  _stateWs = new WebSocket(`${proto}//${location.host}/ws/state`);
+  _stateWs.onmessage = (e) => {
+    if (e.data === '__ping__') return;
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'bot_state') {
+        _onWsBotState(msg.slug, msg.data);
+      } else if (msg.type === 'summary') {
+        _onWsSummary(msg.data);
+      }
+    } catch (err) { /* malformed frame — ignore */ }
+  };
+  _stateWs.onopen = () => {
+    _stateWsConnected(true);
+    // Sync after reconnect so we never miss an update during the gap.
+    fetchOverview();
+  };
+  _stateWs.onclose = () => {
+    _stateWsConnected(false);
+    if (_stateWsReconnectTimer) clearTimeout(_stateWsReconnectTimer);
+    _stateWsReconnectTimer = setTimeout(connectStateWS, 2000);
+  };
+  _stateWs.onerror = () => { try { _stateWs.close(); } catch (e) {} };
+}
+
+function disconnectStateWS() {
+  if (_stateWsReconnectTimer) {
+    clearTimeout(_stateWsReconnectTimer);
+    _stateWsReconnectTimer = null;
+  }
+  if (_stateWs) {
+    try { _stateWs.onclose = null; _stateWs.close(); } catch (e) {}
+    _stateWs = null;
+  }
+  _stateWsConnected(false);
+}
+
+function updateBotCard(slug, b) {
+  const card = document.querySelector(`.bot-card[data-slug="${CSS.escape(slug)}"]`);
+  if (!card) {
+    // New bot we don't have a card for yet — fall back to a full
+    // re-render so the wholesale renderBotGrid path picks it up.
+    fetchOverview();
+    return;
+  }
+  const winRate    = Number(b.win_rate) || 0;
+  const balanceBtc = Number(b.balance_btc) || 0;
+  const openCount  = Number(b.open_deals_count) || 0;
+  const closedCount= Number(b.closed_deals_count) || 0;
+  const pnl        = Number(b.total_pnl_btc) || 0;
+
+  const setText = (selector, text) => {
+    const el = card.querySelector(selector);
+    if (el) el.textContent = text;
+  };
+  setText('[data-stat="price"]', b.current_price ? fmtPrice(b.current_price) : '—');
+  setText('[data-stat="balance"]', balanceBtc ? balanceBtc.toFixed(4) : '—');
+  setText('[data-stat="winrate"]', `${winRate.toFixed(0)}%`);
+  setText('[data-stat="open"]', String(openCount));
+  setText('[data-stat="closed"]', String(closedCount));
+
+  const pnlEl = card.querySelector('[data-stat="pnl"]');
+  if (pnlEl) {
+    const sign = pnl >= 0 ? '+' : '';
+    pnlEl.textContent = `${sign}${pnl.toFixed(6)}`;
+    pnlEl.classList.remove('pos', 'neg', 'neu');
+    pnlEl.classList.add(pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'neu');
+  }
+
+  const pill = card.querySelector('.pill');
+  if (pill) {
+    pill.classList.remove('running', 'stopped');
+    pill.classList.add(b.running ? 'running' : 'stopped');
+    const span = pill.querySelector('span');
+    if (span) span.textContent = b.running ? 'Running' : 'Stopped';
+  }
+}
+
+function _onWsBotState(slug, data) {
+  updateBotCard(slug, data);
+}
+
+function _onWsSummary(s) {
+  if (!s) return;
+  const pnlEl = $('ov-pnl');
+  if (pnlEl) pnlEl.innerHTML = fmtPnl(s.total_pnl_btc || 0, 8);
+  const acEl = $('ov-active');
+  if (acEl) acEl.textContent = (s.active_bots ?? '—').toString();
+  const totEl = $('ov-total-sub');
+  if (totEl) totEl.textContent = `of ${s.total_bots ?? 0} configured`;
+  const dlEl = $('ov-deals');
+  if (dlEl) dlEl.textContent = (s.open_deals ?? '—').toString();
+
+  // Running / stopped counts — derived from active_bots + total_bots.
+  const running = Number(s.active_bots) || 0;
+  const total   = Number(s.total_bots) || 0;
+  const runEl = $('ov-running-count');
+  if (runEl) runEl.textContent = String(running);
+  const stopEl = $('ov-stopped-count');
+  if (stopEl) stopEl.textContent = String(Math.max(0, total - running));
+}
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 function showPage(name) {
@@ -942,11 +1065,11 @@ function renderBotCard(b) {
     : '';
 
   return `
-  <div class="bot-card">
+  <div class="bot-card" data-slug="${safeText(b.slug)}">
     <div class="bot-card-top">
       <span class="bot-card-name">${safeText(b.bot_name || b.slug)}</span>
       <div class="pill ${running ? 'running' : 'stopped'} tab-pill-static">
-        <div class="dot"></div>${running ? 'Running' : 'Stopped'}
+        <div class="dot"></div><span>${running ? 'Running' : 'Stopped'}</span>
       </div>
     </div>
     <div class="bot-card-meta">
@@ -956,27 +1079,27 @@ function renderBotCard(b) {
     <div class="bot-card-stats">
       <div class="bot-stat">
         <div class="bot-stat-label">Price</div>
-        <div class="bot-stat-value">${b.current_price ? fmtPrice(b.current_price) : '—'}</div>
+        <div class="bot-stat-value" data-stat="price">${b.current_price ? fmtPrice(b.current_price) : '—'}</div>
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">Balance</div>
-        <div class="bot-stat-value">${balanceBtc ? balanceBtc.toFixed(4) : '—'}</div>
+        <div class="bot-stat-value" data-stat="balance">${balanceBtc ? balanceBtc.toFixed(4) : '—'}</div>
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">Win rate</div>
-        <div class="bot-stat-value">${winRate.toFixed(0)}%</div>
+        <div class="bot-stat-value" data-stat="winrate">${winRate.toFixed(0)}%</div>
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">PnL</div>
-        <div class="bot-stat-value ${pnlCls}">${pnlSign}${pnl.toFixed(6)}</div>
+        <div class="bot-stat-value ${pnlCls}" data-stat="pnl">${pnlSign}${pnl.toFixed(6)}</div>
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">Open deals</div>
-        <div class="bot-stat-value">${openCount}</div>
+        <div class="bot-stat-value" data-stat="open">${openCount}</div>
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">Closed</div>
-        <div class="bot-stat-value">${closedCount}</div>
+        <div class="bot-stat-value" data-stat="closed">${closedCount}</div>
       </div>
     </div>
     ${openDealsHtml ? `<div class="bot-card-deals">${openDealsHtml}${moreDeals}</div>` : ''}
@@ -1120,7 +1243,8 @@ function _resetHeaderForTopLevel() {
 
 function _ensureOverviewPolling() {
   if (!overviewInterval) {
-    overviewInterval = setInterval(fetchOverview, 5000);
+    // Polling is now a safety net — /ws/state handles realtime updates.
+    overviewInterval = setInterval(fetchOverview, 30000);
   }
 }
 
@@ -4847,8 +4971,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   fetchOverview();
   fetchPrice();
-  overviewInterval = setInterval(fetchOverview, 5000);
+  overviewInterval = setInterval(fetchOverview, 30000);
   setInterval(fetchPrice, 15000);
+  connectStateWS();
 
   setTimeout(async () => {
     try {
