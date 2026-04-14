@@ -2411,6 +2411,12 @@ let _wizardCandleCache = null;
 // addLineSeries returns a series we have to removeSeries() ourselves.
 let _wizardOverlaySeries = [];
 let _wizardOverlayPriceLines = [];
+// Sub-charts for RSI / MACD indicators in the wizard preview. Created
+// lazily when the user adds the corresponding indicator and destroyed
+// when they remove it, so a wizard with no RSI/MACD costs nothing.
+let _wizardChartRsi = null;
+let _wizardChartMacd = null;
+let _wizardSubSeries = {};
 
 function _cssVar(name, fallback) {
   try {
@@ -2802,7 +2808,12 @@ function initWizardChart() {
   });
   if (typeof ResizeObserver !== 'undefined') {
     _wizardResizeObs = new ResizeObserver(entries => {
-      for (const e of entries) _wizardChart.applyOptions({ width: e.contentRect.width });
+      for (const e of entries) {
+        const w = e.contentRect.width;
+        if (e.target === el && _wizardChart) _wizardChart.applyOptions({ width: w });
+        if (_wizardChartRsi  && e.target === $('wizard-chart-rsi'))  _wizardChartRsi.applyOptions({ width: w });
+        if (_wizardChartMacd && e.target === $('wizard-chart-macd')) _wizardChartMacd.applyOptions({ width: w });
+      }
     });
     _wizardResizeObs.observe(el);
   }
@@ -2827,12 +2838,15 @@ function teardownWizardChart() {
   const tfSel = $('nb-timeframe');
   if (tfSel && _wizardTfHandler) tfSel.removeEventListener('change', _wizardTfHandler);
   _wizardTfHandler = null;
+  _wizardDestroyRsiChart();
+  _wizardDestroyMacdChart();
   try { if (_wizardChart) _wizardChart.remove(); } catch (e) {}
   _wizardChart = null;
   _wizardCandles = null;
   _wizardCandleCache = null;
   _wizardOverlaySeries = [];
   _wizardOverlayPriceLines = [];
+  _wizardSubSeries = {};
 }
 
 async function fetchWizardChartData() {
@@ -2864,6 +2878,66 @@ function _clearWizardOverlays() {
     try { _wizardCandles.removePriceLine(pl); } catch (e) {}
   }
   _wizardOverlayPriceLines = [];
+}
+
+function _wizardEnsureRsiChart() {
+  if (_wizardChartRsi) return;
+  const el = $('wizard-chart-rsi');
+  if (!el || !_chartLibAvailable()) return;
+  el.classList.remove('hidden');
+  _wizardChartRsi = LightweightCharts.createChart(el, {
+    ..._chartLayoutOpts(),
+    width:  el.clientWidth,
+    height: el.clientHeight || 100,
+  });
+  _wizardSubSeries.rsi = _wizardChartRsi.addLineSeries({
+    color: _cssVar('--blue', '#5b8dee'), lineWidth: 1,
+  });
+  _wizardSubSeries.rsi.createPriceLine({
+    price: 70, color: _cssVar('--red',    '#ef5350'),
+    lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '70',
+  });
+  _wizardSubSeries.rsi.createPriceLine({
+    price: 30, color: _cssVar('--accent', '#26a69a'),
+    lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30',
+  });
+  if (_wizardResizeObs) _wizardResizeObs.observe(el);
+}
+
+function _wizardDestroyRsiChart() {
+  if (!_wizardChartRsi) return;
+  try { _wizardChartRsi.remove(); } catch (e) {}
+  _wizardChartRsi = null;
+  delete _wizardSubSeries.rsi;
+  const el = $('wizard-chart-rsi');
+  if (el) el.classList.add('hidden');
+}
+
+function _wizardEnsureMacdChart() {
+  if (_wizardChartMacd) return;
+  const el = $('wizard-chart-macd');
+  if (!el || !_chartLibAvailable()) return;
+  el.classList.remove('hidden');
+  _wizardChartMacd = LightweightCharts.createChart(el, {
+    ..._chartLayoutOpts(),
+    width:  el.clientWidth,
+    height: el.clientHeight || 100,
+  });
+  _wizardSubSeries.macdHist   = _wizardChartMacd.addHistogramSeries({ color: _cssVar('--muted', '#888') });
+  _wizardSubSeries.macdLine   = _wizardChartMacd.addLineSeries({ color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
+  _wizardSubSeries.macdSignal = _wizardChartMacd.addLineSeries({ color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
+  if (_wizardResizeObs) _wizardResizeObs.observe(el);
+}
+
+function _wizardDestroyMacdChart() {
+  if (!_wizardChartMacd) return;
+  try { _wizardChartMacd.remove(); } catch (e) {}
+  _wizardChartMacd = null;
+  delete _wizardSubSeries.macdHist;
+  delete _wizardSubSeries.macdLine;
+  delete _wizardSubSeries.macdSignal;
+  const el = $('wizard-chart-macd');
+  if (el) el.classList.add('hidden');
 }
 
 function _addWizardLineSeries(data, color, lineWidth = 2, lineStyle = 0) {
@@ -2906,6 +2980,35 @@ function renderWizardOverlays() {
   const amber  = _cssVar('--amber',  '#ffb347');
 
   const indicators = Array.isArray(nbState.indicators) ? nbState.indicators : [];
+
+  // Sub-charts: ensure / tear down based on whether the corresponding
+  // indicator is currently configured. Each sub-chart is independent so
+  // adding RSI alone doesn't drag MACD along.
+  const rsiCfg  = indicators.find(i => i && String(i.type).toUpperCase() === 'RSI');
+  const macdCfg = indicators.find(i => i && String(i.type).toUpperCase() === 'MACD');
+  if (rsiCfg)  _wizardEnsureRsiChart();  else _wizardDestroyRsiChart();
+  if (macdCfg) _wizardEnsureMacdChart(); else _wizardDestroyMacdChart();
+
+  if (rsiCfg && _wizardSubSeries.rsi) {
+    try {
+      const period = Number(rsiCfg.period) || 14;
+      _wizardSubSeries.rsi.setData(calcRSILine(candles, period));
+    } catch (e) {}
+  }
+  if (macdCfg && _wizardSubSeries.macdLine) {
+    try {
+      const fast = Number(macdCfg.macd_fast)   || 12;
+      const slow = Number(macdCfg.macd_slow)   || 26;
+      const sig  = Number(macdCfg.macd_signal) || 9;
+      const m = calcMACDLines(candles, fast, slow, sig);
+      if (m) {
+        if (m.macd)      _wizardSubSeries.macdLine.setData(m.macd);
+        if (m.signal)    _wizardSubSeries.macdSignal.setData(m.signal);
+        if (m.histogram) _wizardSubSeries.macdHist.setData(m.histogram);
+      }
+    } catch (e) {}
+  }
+
   for (const ind of indicators) {
     if (!ind || !ind.type) continue;
     const t = String(ind.type).toUpperCase();
