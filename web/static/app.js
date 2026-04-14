@@ -601,7 +601,7 @@ function getClosedDealsColumns() {
   return loadColumns(CLOSED_DEALS_LS_KEY, CLOSED_DEALS_COLUMNS);
 }
 
-function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, emptyMsg) {
+function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, emptyMsg, opts) {
   const head = $(theadId);
   const tbody = $(tbodyId);
   if (!tbody) return;
@@ -618,12 +618,17 @@ function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, empty
     tbody.innerHTML = `<tr class="empty-row"><td colspan="${colSpan}">${safeText(emptyMsg)}</td></tr>`;
     return;
   }
+  // Optional row decoration: Feature 1 (deal timeline) uses this to tag
+  // each row with the deal id and a clickable-row class so the tbody
+  // delegate handler can find the deal without re-rendering the table.
+  const rowAttrs = (opts && typeof opts.rowAttrs === 'function') ? opts.rowAttrs : null;
   tbody.innerHTML = rows.map(row => {
     const cells = cols.map(c => {
       const def = defs.get(c.key);
       return def ? def.cell(row) : '<td></td>';
     }).join('');
-    return `<tr>${cells}</tr>`;
+    const attrs = rowAttrs ? rowAttrs(row) : '';
+    return `<tr${attrs ? ' ' + attrs : ''}>${cells}</tr>`;
   }).join('');
 }
 
@@ -632,6 +637,7 @@ function renderDetailClosedDeals(deals) {
     'd-closed-thead-row', 'd-closed-tbody',
     CLOSED_DEALS_LS_KEY, CLOSED_DEALS_COLUMNS,
     deals, 'No closed deals',
+    { rowAttrs: d => `data-deal-id="${safeText(d.id)}" class="clickable-row"` },
   );
 }
 
@@ -667,6 +673,7 @@ function renderDetailOpenDeals(deals) {
     'd-open-thead-row', 'd-open-tbody',
     DETAIL_OPEN_DEALS_LS_KEY, DETAIL_OPEN_DEALS_COLUMNS,
     deals, 'No open deals',
+    { rowAttrs: d => `data-deal-id="${safeText(d.id)}" class="clickable-row"` },
   );
 }
 
@@ -1106,6 +1113,8 @@ function _resetHeaderForTopLevel() {
   // and clean up any detail polling / websocket.
   currentSlug = null;
   clearInterval(detailInterval);
+  _chartPendingDeal = null;
+  const _ccd = $('chart-clear-deal'); if (_ccd) _ccd.classList.add('hidden');
   teardownChartTab();
   teardownWizardChart();
   if (ws) { ws.close(); ws = null; }
@@ -2180,11 +2189,26 @@ function _routeFromHash() {
   }
 }
 
+// Cache of the most recent /api/bots/{slug} payload so row click handlers
+// can find the deal object without a second fetch. Keyed by slug so a
+// stale detail fetch from a previous bot never hands back the wrong deal.
+let _lastDetailState = null;
+
+function findDealByIdInCurrentDetail(id) {
+  if (!_lastDetailState || !id) return null;
+  const open = _lastDetailState.open_deals || [];
+  const closed = _lastDetailState.closed_deals || [];
+  return open.find(d => String(d.id) === String(id))
+      || closed.find(d => String(d.id) === String(id))
+      || null;
+}
+
 async function fetchDetail(slug) {
   try {
     const _r = await fetch(`/api/bots/${slug}`);
     if (_r.status === 401) { _handle401(); return; }
     const b = await _r.json();
+    _lastDetailState = b;
 
     if (b.current_price) $('hdr-price').textContent = fmtPrice(b.current_price);
     $('hdr-pair').textContent = b.pair || 'BTC/USD';
@@ -2691,6 +2715,18 @@ let _chartRefreshTimer = null;
 let _chartBotConfig = null;
 let _chartLastDetail = null;
 let _chartResizeObs = null;
+// Feature: deal timeline markers. When the user clicks a deal row we
+// store the target deal here, drive the chart timeframe off its duration
+// and re-apply entry/TP/SL price lines + order markers on every refresh
+// until the Clear button is pressed.
+let _chartPendingDeal = null;
+let _chartDealMarkers = [];
+let _chartDealPriceLines = [];
+// Indicator-driven markers (parabolic SAR + market structure) live here
+// so _setCombinedMarkers() can merge them with deal markers in a single
+// setMarkers() call — Lightweight Charts replaces the full array on each
+// invocation, so any overlay that forgets to merge wipes the other.
+let _chartIndicatorMarkers = [];
 let _wizardChart = null;
 let _wizardCandles = null;
 let _wizardRefreshTimer = null;
@@ -2772,7 +2808,11 @@ async function loadChartTab(slug) {
   } catch (e) { _chartBotConfig = null; }
 
   const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
-  _chartTimeframe = inner.timeframe || '1h';
+  // A pending deal (set by showDealOnChart before showDTab navigated here)
+  // dictates the timeframe — otherwise use the bot's configured default.
+  _chartTimeframe = _chartPendingDeal
+    ? _timeframeForDeal(_chartPendingDeal)
+    : (inner.timeframe || '1h');
   _chartPair = _normalizePair(inner.pair || 'BTC/USD');
   updateChartTfButtons();
   initCharts();
@@ -2789,6 +2829,13 @@ function teardownChartTab() {
   _chartMain = _chartRsi = _chartMacd = null;
   _chartCandles = null;
   _chartSeries = {};
+  // The candle series owned these price-line + marker handles; dropping
+  // the refs is enough — they die with the chart instance. _chartPendingDeal
+  // deliberately survives so showDealOnChart → showDTab → loadChartTab →
+  // teardown → init can still re-apply the deal overlay after init.
+  _chartDealPriceLines = [];
+  _chartDealMarkers = [];
+  _chartIndicatorMarkers = [];
   const r = $('chart-rsi'); if (r) r.classList.add('hidden');
   const m = $('chart-macd'); if (m) m.classList.add('hidden');
 }
@@ -2911,6 +2958,7 @@ async function fetchChartData() {
 
   _renderIndicatorOverlays(candles);
   await _renderDealOverlays();
+  await _applyPendingDealOverlay();
 }
 
 function _renderIndicatorOverlays(candles) {
@@ -2985,7 +3033,9 @@ function _renderIndicatorOverlays(candles) {
       _chartCandles.createPriceLine({ price: b, color: _cssVar('--blue', '#5b8dee'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'QFL' });
     });
   }
-  // Markers — Parabolic SAR + Market Structure
+  // Markers — Parabolic SAR + Market Structure. Stash in module var so
+  // _setCombinedMarkers() can merge indicator markers with deal timeline
+  // markers (setMarkers replaces the array on every call).
   const markers = [];
   const psCfg = _findIndicator('PARABOLIC_SAR');
   if (psCfg) {
@@ -2997,10 +3047,163 @@ function _renderIndicatorOverlays(candles) {
     const ms = calcMarketStructureMarkers(candles, msCfg.lookback || 3);
     for (const p of ms) markers.push(p);
   }
-  if (markers.length && _chartCandles) {
-    markers.sort((a, b) => a.time - b.time);
-    _chartCandles.setMarkers(markers);
+  _chartIndicatorMarkers = markers;
+  _setCombinedMarkers();
+}
+
+function _setCombinedMarkers() {
+  if (!_chartCandles) return;
+  const combined = _chartIndicatorMarkers.concat(_chartDealMarkers);
+  combined.sort((a, b) => a.time - b.time);
+  try { _chartCandles.setMarkers(combined); } catch (e) {}
+}
+
+function _clearDealMarkers() {
+  if (_chartCandles && _chartDealPriceLines.length) {
+    for (const pl of _chartDealPriceLines) {
+      try { _chartCandles.removePriceLine(pl); } catch (e) {}
+    }
   }
+  _chartDealPriceLines = [];
+  _chartDealMarkers = [];
+  _setCombinedMarkers();
+}
+
+function _dealDurationSeconds(deal) {
+  if (!deal || !deal.opened_at) return 0;
+  const start = new Date(deal.opened_at).getTime();
+  const end = deal.closed_at ? new Date(deal.closed_at).getTime() : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  return Math.floor((end - start) / 1000);
+}
+
+function _timeframeForDeal(deal) {
+  const s = _dealDurationSeconds(deal);
+  if (s < 4 * 3600) return '15m';
+  if (s < 24 * 3600) return '1h';
+  return '4h';
+}
+
+function _isoToUnix(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.floor(t / 1000);
+}
+
+async function _applyPendingDealOverlay() {
+  // Called from fetchChartData() after the candle + indicator overlays
+  // finish rendering. Re-applies the deal timeline markers on every
+  // auto-refresh as long as _chartPendingDeal stays set.
+  if (!_chartPendingDeal || !_chartCandles) return;
+  const deal = _chartPendingDeal;
+
+  _clearDealMarkers();
+
+  // Price lines: entry + TP + SL using the bot's configured percentages.
+  const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
+  const tpPct = Number((inner.take_profit || {}).target_pct) || 0;
+  const slPct = Number((inner.stop_loss || {}).pct) || 0;
+  const avg = Number(deal.avg_entry_price) || Number(deal.entry_price) || 0;
+  const blue   = _cssVar('--blue',   '#5b8dee');
+  const accent = _cssVar('--accent', '#26a69a');
+  const red    = _cssVar('--red',    '#ef5350');
+  const muted  = _cssVar('--muted',  '#888');
+
+  if (avg > 0) {
+    try {
+      _chartDealPriceLines.push(_chartCandles.createPriceLine({
+        price: avg, color: blue, lineStyle: 0, lineWidth: 2,
+        axisLabelVisible: true, title: `Entry ${avg.toFixed(2)}`,
+      }));
+    } catch (e) {}
+    if (tpPct > 0) {
+      const tp = avg * (1 + tpPct / 100);
+      try {
+        _chartDealPriceLines.push(_chartCandles.createPriceLine({
+          price: tp, color: accent, lineStyle: 2, lineWidth: 2,
+          axisLabelVisible: true, title: `TP ${tp.toFixed(2)}`,
+        }));
+      } catch (e) {}
+    }
+    if (slPct > 0) {
+      const sl = avg * (1 - slPct / 100);
+      try {
+        _chartDealPriceLines.push(_chartCandles.createPriceLine({
+          price: sl, color: red, lineStyle: 2, lineWidth: 2,
+          axisLabelVisible: true, title: `SL ${sl.toFixed(2)}`,
+        }));
+      } catch (e) {}
+    }
+  }
+
+  // Vertical "lines" are not a thing in Lightweight Charts 4.1.1 — the
+  // standard substitute is a series marker at the relevant time with a
+  // circle/arrow shape. Fetch the order rows for the deal and build one
+  // marker per fill, plus a close marker if the deal closed.
+  let orders = [];
+  try {
+    const r = await fetch(`/api/db/deals/${encodeURIComponent(deal.id)}/orders`);
+    if (r.ok) orders = await r.json();
+  } catch (e) { orders = []; }
+
+  const markers = [];
+  for (const o of (orders || [])) {
+    const t = _isoToUnix(o.placed_at);
+    if (t == null) continue;
+    const isBase = (o.order_type === 'base') || Number(o.order_number) === 1;
+    markers.push({
+      time: t,
+      position: 'belowBar',
+      color: isBase ? blue : '#ff9500',
+      shape: 'circle',
+      text: isBase ? 'BASE' : 'DCA',
+    });
+  }
+  if (deal.closed_at && deal.close_reason) {
+    const t = _isoToUnix(deal.closed_at);
+    if (t != null) {
+      const reason = String(deal.close_reason).toLowerCase();
+      let color = muted;
+      if (reason === 'tp') color = accent;
+      else if (reason === 'sl') color = red;
+      markers.push({
+        time: t,
+        position: 'aboveBar',
+        color,
+        shape: 'arrowDown',
+        text: reason.toUpperCase(),
+      });
+    }
+  }
+  _chartDealMarkers = markers;
+  _setCombinedMarkers();
+
+  const btn = $('chart-clear-deal');
+  if (btn) btn.classList.remove('hidden');
+}
+
+async function showDealOnChart(deal) {
+  if (!deal) return;
+  _chartPendingDeal = deal;
+  _chartTimeframe = _timeframeForDeal(deal);
+  updateChartTfButtons();
+  const chartTab = $('dtab-chart');
+  const isChartActive = chartTab && !chartTab.classList.contains('hidden');
+  if (!isChartActive) {
+    const btn = document.querySelector('.detail-subnav .tab[data-dtab="chart"]');
+    showDTab('chart', btn);
+  } else {
+    await fetchChartData();
+  }
+}
+
+function clearDealFromChart() {
+  _chartPendingDeal = null;
+  _clearDealMarkers();
+  const btn = $('chart-clear-deal');
+  if (btn) btn.classList.add('hidden');
+  fetchChartData();
 }
 
 async function _renderDealOverlays() {
@@ -3668,6 +3871,23 @@ function setupEventListeners() {
       fetchChartData();
     });
   });
+
+  // Clear deal markers button
+  const clearDealBtn = $('chart-clear-deal');
+  if (clearDealBtn) clearDealBtn.addEventListener('click', clearDealFromChart);
+
+  // Delegated click handlers on the bot detail deals tables — clicking
+  // any row jumps to the chart tab with timeline markers for that deal.
+  const _dealRowHandler = (e) => {
+    const tr = e.target.closest('tr[data-deal-id]');
+    if (!tr) return;
+    const deal = findDealByIdInCurrentDetail(tr.dataset.dealId);
+    if (deal) showDealOnChart(deal);
+  };
+  const openTbody = $('d-open-tbody');
+  if (openTbody) openTbody.addEventListener('click', _dealRowHandler);
+  const closedTbody = $('d-closed-tbody');
+  if (closedTbody) closedTbody.addEventListener('click', _dealRowHandler);
 
   $('modal-clear-btn').addEventListener('click', clearApiKey);
   $('modal-cancel-btn').addEventListener('click', closeApiKeyModal);
