@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=13">
+<link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body>
 
@@ -151,16 +151,21 @@
 <!-- VIEW: New bot — single page form                                          -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-new-bot" class="page">
-  <div class="wizard">
+  <div class="wizard wizard-split">
 
-    <div class="wizard-chart-wrap">
-      <div class="wizard-chart-header">
-        <span class="wizard-chart-label" id="wizard-chart-label">BTC/USD</span>
-        <span id="wizard-chart-price" class="wizard-chart-price">—</span>
+    <aside class="wizard-chart-aside">
+      <div class="wizard-chart-wrap">
+        <div class="wizard-chart-header">
+          <span class="wizard-chart-label" id="wizard-chart-label">BTC/USD</span>
+          <span id="wizard-chart-price" class="wizard-chart-price">—</span>
+        </div>
+        <div id="wizard-chart" class="wizard-chart-container"></div>
+        <div id="wizard-chart-rsi"  class="wizard-chart-sub hidden"></div>
+        <div id="wizard-chart-macd" class="wizard-chart-sub hidden"></div>
       </div>
-      <div id="wizard-chart" class="wizard-chart-container"></div>
-    </div>
+    </aside>
 
+    <div class="wizard-form">
     <div class="wizard-error hidden" id="nb-error"></div>
 
     <!-- General -->
@@ -377,6 +382,7 @@
       </div>
     </details>
 
+    </div><!-- /.wizard-form -->
   </div>
 </div>
 
@@ -390,8 +396,8 @@
        it's naturally excluded from the tab click-handler binding. -->
   <div class="detail-subnav">
     <button class="subnav-back" id="detail-back-btn" title="Back to bots">←</button>
-    <button class="tab" data-dtab="chart">Chart</button>
     <button class="tab active" data-dtab="dashboard">Dashboard</button>
+    <button class="tab" data-dtab="chart">Chart</button>
     <button class="tab" data-dtab="deals">Deals</button>
     <button class="tab" data-dtab="config">Config</button>
     <button class="tab" data-dtab="log">Log</button>
@@ -564,6 +570,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=18"></script>
+<script src="/static/app.js?v=19"></script>
 </body>
 </html>

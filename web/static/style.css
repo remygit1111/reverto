@@ -1563,3 +1563,28 @@ table thead th.drop-after {
 .wizard-chart-label { color:var(--muted); font-size:0.9em; }
 .wizard-chart-price { font-size:1.1em; font-weight:600; }
 .wizard-chart-container { height:250px; width:100%; }
+.wizard-chart-sub { height:100px; width:100%; margin-top:6px; }
+
+/* Two-column wizard layout: form on the left, sticky chart on the right.
+   Falls back to the old single-column flow under 1100px so phones and
+   narrow laptops keep the chart-on-top layout. */
+.wizard-split { display: block; }
+.wizard-form  { min-width: 0; }
+.wizard-chart-aside { display: block; }
+
+@media (min-width: 1100px) {
+  .wizard.wizard-split {
+    display: grid;
+    grid-template-columns: minmax(500px, 1fr) 400px;
+    gap: 24px;
+    max-width: 1320px;
+    align-items: start;
+  }
+  .wizard-chart-aside {
+    position: sticky;
+    top: 20px;
+    align-self: start;
+  }
+  .wizard-chart-aside .wizard-chart-container { height: 400px; }
+  .wizard-chart-aside .wizard-chart-wrap { margin-bottom: 0; }
+}
