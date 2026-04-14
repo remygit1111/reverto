@@ -22,6 +22,7 @@ from strategies.indicators.support_resistance import (
     check_support_resistance_signal,
     find_support_resistance,
 )
+from strategies.indicators.qfl import check_qfl_signal, find_qfl_bases
 from config.models import BotConfig
 from pydantic import ValidationError
 
@@ -396,6 +397,65 @@ class TestSupportResistance:
             check_support_resistance_signal(
                 [100.0] * 60, lookback=2, condition="invalid"
             )
+
+
+class TestQFL:
+    @staticmethod
+    def _with_bases(final: float = 100.0):
+        """80 closes with two validated QFL bases:
+          - Swing low 94 at index 10, bounce to 100.5 within 5 candles
+            (6.9% rebound > default 3% crack threshold)
+          - Swing low 95 at index 30, bounce to 101.0 (6.3%)
+        Everything else sits flat at 100.0."""
+        closes = [100.0] * 80
+        closes[8:14]  = [98.0, 96.0, 94.0, 96.0, 98.5, 100.5]
+        closes[28:34] = [99.0, 97.0, 95.0, 97.0, 99.0, 101.0]
+        closes[-1] = final
+        return closes
+
+    def test_bases_detected(self):
+        closes = self._with_bases()
+        bases = find_qfl_bases(closes, lookback=3, crack_pct=3.0, base_candles=5)
+        assert bases == [94.0, 95.0]
+
+    def test_below_base_detected(self):
+        closes = self._with_bases(final=93.0)  # 1% below the 94 base
+        assert check_qfl_signal(
+            closes, lookback=3, condition="below_base"
+        ) is True
+
+    def test_near_base_detected(self):
+        closes = self._with_bases(final=94.5)  # within 1% above the 94 base
+        assert check_qfl_signal(
+            closes, lookback=3, condition="near_base"
+        ) is True
+
+    def test_base_retest_detected(self):
+        closes = self._with_bases(final=94.05)  # within 0.1% of the 94 base
+        assert check_qfl_signal(
+            closes, lookback=3, condition="base_retest"
+        ) is True
+
+    def test_no_signal_far_above(self):
+        closes = self._with_bases(final=100.0)
+        for cond in ("below_base", "near_base", "base_retest"):
+            assert check_qfl_signal(closes, lookback=3, condition=cond) is False
+
+    def test_crack_threshold_filters_weak_rebounds(self):
+        """A swing low without enough rebound should NOT be promoted to a base."""
+        closes = [100.0] * 80
+        # Swing low 99 at index 10, weak 0.3% bounce → fails 3% crack
+        closes[8:14] = [99.5, 99.2, 99.0, 99.1, 99.2, 99.3]
+        bases = find_qfl_bases(closes, lookback=3, crack_pct=3.0, base_candles=5)
+        assert bases == []
+
+    def test_insufficient_data_raises(self):
+        with pytest.raises(ValueError, match="at least"):
+            check_qfl_signal([100.0] * 20, lookback=3, condition="below_base")
+
+    def test_unknown_condition_raises(self):
+        with pytest.raises(ValueError, match="Unknown QFL"):
+            check_qfl_signal([100.0] * 80, lookback=3, condition="invalid")
 
 
 class TestConfigValidation:

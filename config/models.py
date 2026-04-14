@@ -81,6 +81,11 @@ class IndicatorConfig(BaseModel):
     # Support & Resistance — cluster merge + proximity sensitivities (%)
     tolerance_pct: Optional[float] = None
     proximity_pct: Optional[float] = None
+    # QFL Base Scanner — rebound threshold / window / retention / break %
+    crack_pct: Optional[float] = None
+    base_candles: Optional[int] = None
+    max_bases: Optional[int] = None
+    below_pct: Optional[float] = None
 
 
 class EntryConfig(BaseModel):
