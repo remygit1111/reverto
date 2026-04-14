@@ -341,3 +341,45 @@ class TestWsStateSmoke:
             raw = ws.receive_text()
             msg = _json.loads(raw)
             assert msg.get("type") in ("bot_state", "summary")
+
+
+class TestCandlesRange:
+    """Smoke tests for /api/candles/{pair}/{timeframe} — the range
+    endpoint backing the client-side backtester. Only input validation
+    is asserted here; the success path would require hitting the live
+    Bitget exchange which is out of scope for a unit test."""
+
+    def test_candles_route_registered(self):
+        routes = [
+            r for r in app.routes
+            if getattr(r, "path", "") == "/api/candles/{pair}/{timeframe}"
+        ]
+        assert len(routes) == 1, "/api/candles must be registered exactly once"
+
+    def test_invalid_timeframe_is_400(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.get(
+            "/api/candles/BTCUSD/99h",
+            params={"start": "2025-01-01", "end": "2025-01-02"},
+        )
+        assert r.status_code == 400
+        assert "timeframe" in r.json()["detail"]
+
+    def test_start_after_end_is_400(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.get(
+            "/api/candles/BTCUSD/1h",
+            params={"start": "2025-02-01", "end": "2025-01-01"},
+        )
+        assert r.status_code == 400
+
+    def test_malformed_timestamp_is_400(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.get(
+            "/api/candles/BTCUSD/1h",
+            params={"start": "not-a-date", "end": "2025-01-02"},
+        )
+        assert r.status_code == 400

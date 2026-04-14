@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=25">
+<link rel="stylesheet" href="/static/style.css?v=26">
 </head>
 <body>
 
@@ -139,6 +139,46 @@
     <div class="modal-actions">
       <button type="button" id="settings-reset" class="hbtn hbtn-theme btn-danger">Reset to defaults</button>
       <button type="button" id="settings-close" class="hbtn hbtn-theme btn-accent">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Wizard Backtest modal ──────────────────────────────────────────────── -->
+<div id="wizard-backtest-modal" class="modal-overlay">
+  <div class="modal-card bt-modal-card">
+    <div class="modal-title">▶ Strategy Backtest</div>
+    <div class="bt-config-row bt-config-row-compact">
+      <label class="bt-label">Start
+        <input type="date" id="wbt-start" class="bt-input">
+      </label>
+      <label class="bt-label">End
+        <input type="date" id="wbt-end" class="bt-input">
+      </label>
+      <label class="bt-label">Timeframe
+        <select id="wbt-tf" class="bt-input">
+          <option value="15m">15m</option>
+          <option value="1h" selected>1h</option>
+          <option value="4h">4h</option>
+          <option value="1d">1d</option>
+        </select>
+      </label>
+      <label class="bt-label">Balance (BTC)
+        <input type="number" id="wbt-balance" class="bt-input" value="0.1" step="0.01" min="0.0001">
+      </label>
+      <button id="wbt-run-btn" class="hbtn hbtn-theme btn-accent" type="button">▶ Run</button>
+    </div>
+    <div id="wbt-error" class="bt-error hidden"></div>
+    <div id="wbt-loader" class="bt-loader hidden">
+      <div class="bt-progress"><div class="bt-progress-bar" id="wbt-progress-bar"></div></div>
+      <div class="bt-status" id="wbt-status">Preparing…</div>
+    </div>
+    <div id="wbt-results" class="bt-results hidden">
+      <div class="stat-grid stat-grid-mb" id="wbt-summary-grid"></div>
+      <div class="stat-grid stat-grid-mb" id="wbt-ratios-grid"></div>
+      <div id="wbt-equity-chart" class="bt-chart"></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="wbt-close-btn" class="hbtn hbtn-theme">Close</button>
     </div>
   </div>
 </div>
@@ -515,6 +555,7 @@
         <div id="nb-review"></div>
         <div class="wizard-footer">
           <div class="wizard-footer-spacer"></div>
+          <button type="button" class="hbtn hbtn-theme" id="nb-bt-btn">▶ Test Strategy</button>
           <button type="button" class="hbtn hbtn-theme btn-accent" id="nb-submit-btn">Save bot</button>
         </div>
       </div>
@@ -536,6 +577,7 @@
     <button class="tab active" data-dtab="dashboard">Dashboard</button>
     <button class="tab" data-dtab="chart">Chart</button>
     <button class="tab" data-dtab="deals">Deals</button>
+    <button class="tab" data-dtab="backtest">Backtest</button>
     <button class="tab" data-dtab="config">Config</button>
     <button class="tab" data-dtab="log">Log</button>
   </div>
@@ -712,6 +754,82 @@
     </div>
   </div>
 
+  <!-- Backtest tab — client-side simulation, results rendered in place -->
+  <div id="dtab-backtest" class="detail-content hidden">
+    <div class="bt-config card">
+      <div class="bt-config-row">
+        <label class="bt-label">Start date
+          <input type="date" id="bt-start" class="bt-input">
+        </label>
+        <label class="bt-label">End date
+          <input type="date" id="bt-end" class="bt-input">
+        </label>
+        <label class="bt-label">Timeframe
+          <select id="bt-tf" class="bt-input">
+            <option value="15m">15m</option>
+            <option value="1h" selected>1h</option>
+            <option value="4h">4h</option>
+            <option value="1d">1d</option>
+          </select>
+        </label>
+        <label class="bt-label">Initial balance (BTC)
+          <input type="number" id="bt-balance" class="bt-input" value="0.1" step="0.01" min="0.0001">
+        </label>
+        <button id="bt-run-btn" class="hbtn hbtn-theme btn-accent" type="button">▶ Run Backtest</button>
+      </div>
+      <div id="bt-error" class="bt-error hidden"></div>
+    </div>
+    <div id="bt-loader" class="bt-loader hidden">
+      <svg class="chart-skeleton-svg bt-skel-svg" viewBox="0 0 480 240" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <g class="skel-grid-group">
+          <line class="skel-grid" x1="0" y1="50"  x2="480" y2="50"/>
+          <line class="skel-grid" x1="0" y1="100" x2="480" y2="100"/>
+          <line class="skel-grid" x1="0" y1="150" x2="480" y2="150"/>
+          <line class="skel-grid" x1="0" y1="200" x2="480" y2="200"/>
+        </g>
+        <g class="skel-candles">
+          <g class="skel-candle skel-down"><line class="skel-wick" x1="16"  y1="100" x2="16"  y2="180"/><rect class="skel-body" x="9"   y="110" width="14" height="60"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="48"  y1="90"  x2="48"  y2="165"/><rect class="skel-body" x="41"  y="100" width="14" height="55"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="80"  y1="70"  x2="80"  y2="145"/><rect class="skel-body" x="73"  y="80"  width="14" height="55"/></g>
+          <g class="skel-candle skel-down"><line class="skel-wick" x1="112" y1="80"  x2="112" y2="150"/><rect class="skel-body" x="105" y="90"  width="14" height="50"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="144" y1="60"  x2="144" y2="130"/><rect class="skel-body" x="137" y="70"  width="14" height="50"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="176" y1="50"  x2="176" y2="115"/><rect class="skel-body" x="169" y="60"  width="14" height="45"/></g>
+          <g class="skel-candle skel-down"><line class="skel-wick" x1="208" y1="55"  x2="208" y2="125"/><rect class="skel-body" x="201" y="75"  width="14" height="40"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="240" y1="40"  x2="240" y2="110"/><rect class="skel-body" x="233" y="50"  width="14" height="50"/></g>
+          <g class="skel-candle skel-down"><line class="skel-wick" x1="272" y1="45"  x2="272" y2="120"/><rect class="skel-body" x="265" y="65"  width="14" height="45"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="304" y1="35"  x2="304" y2="100"/><rect class="skel-body" x="297" y="45"  width="14" height="45"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="336" y1="30"  x2="336" y2="95"/> <rect class="skel-body" x="329" y="40"  width="14" height="45"/></g>
+          <g class="skel-candle skel-down"><line class="skel-wick" x1="368" y1="40"  x2="368" y2="110"/><rect class="skel-body" x="361" y="60"  width="14" height="40"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="400" y1="25"  x2="400" y2="90"/> <rect class="skel-body" x="393" y="35"  width="14" height="40"/></g>
+          <g class="skel-candle skel-up">  <line class="skel-wick" x1="432" y1="20"  x2="432" y2="85"/> <rect class="skel-body" x="425" y="30"  width="14" height="40"/></g>
+        </g>
+      </svg>
+      <div class="bt-progress"><div class="bt-progress-bar" id="bt-progress-bar"></div></div>
+      <div class="bt-status" id="bt-status">Preparing…</div>
+    </div>
+    <div id="bt-results" class="bt-results hidden">
+      <div class="section-title">Summary</div>
+      <div class="stat-grid stat-grid-mb" id="bt-summary-grid"></div>
+      <div class="section-title">Performance ratios</div>
+      <div class="stat-grid stat-grid-mb" id="bt-ratios-grid"></div>
+      <div class="section-title">Equity curve</div>
+      <div id="bt-equity-chart" class="bt-chart"></div>
+      <div class="section-title">Monthly PnL</div>
+      <div id="bt-monthly-chart" class="bt-chart bt-chart-short"></div>
+      <div class="section-title">Deals</div>
+      <div class="card card-no-pad">
+        <table class="bt-deals-table">
+          <thead><tr id="bt-deals-thead"></tr></thead>
+          <tbody id="bt-deals-tbody"></tbody>
+        </table>
+      </div>
+      <div class="section-title">PnL distribution</div>
+      <div id="bt-pnl-hist" class="bt-pnl-hist"></div>
+      <div class="section-title">Most-used DCA price levels</div>
+      <div id="bt-dca-levels" class="bt-dca-levels"></div>
+    </div>
+  </div>
+
   <!-- Config tab -->
   <div id="dtab-config" class="detail-content hidden">
     <div id="d-config-body">
@@ -745,6 +863,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=42"></script>
+<script src="/static/app.js?v=43"></script>
 </body>
 </html>
