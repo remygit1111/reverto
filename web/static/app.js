@@ -6,10 +6,20 @@
 // ── Persisted UI settings (theme, text size, brightness, compact) ────────────
 // Applied as early as possible so there is no visual flash between the
 // default dark/normal palette and the user's saved preferences.
+// Baseline font-size used by body{} in style.css. The text-size slider is
+// expressed as the desired body font-size in px; we translate it into a
+// uniform `zoom` factor on <html> because the existing stylesheet uses
+// absolute px for every font-size declaration, so setting html{font-size}
+// alone would be a no-op (nothing cascades from it).
+const _TEXTSIZE_BASE = 14;
+function _applyTextSizeZoom(px) {
+  const v = Math.max(12, Math.min(18, parseInt(px, 10) || _TEXTSIZE_BASE));
+  document.documentElement.style.zoom = String(v / _TEXTSIZE_BASE);
+}
 function applyPersistedSettings() {
   const ts = parseInt(localStorage.getItem('reverto-textsize'), 10);
   if (Number.isFinite(ts) && ts >= 12 && ts <= 18) {
-    document.documentElement.style.fontSize = ts + 'px';
+    _applyTextSizeZoom(ts);
   }
   const br = localStorage.getItem('reverto-brightness');
   if (br === 'dimmed' || br === 'normal' || br === 'bright') {
@@ -269,8 +279,8 @@ function _setSegActive(container, attr, value) {
   });
 }
 function _settingsApplyTextSize(n, persist) {
-  const v = Math.max(12, Math.min(18, parseInt(n, 10) || 14));
-  document.documentElement.style.fontSize = v + 'px';
+  const v = Math.max(12, Math.min(18, parseInt(n, 10) || _TEXTSIZE_BASE));
+  _applyTextSizeZoom(v);
   const lbl = document.getElementById('settings-textsize-label');
   if (lbl) lbl.textContent = v + 'px';
   const slider = document.getElementById('settings-textsize');
