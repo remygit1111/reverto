@@ -3455,17 +3455,6 @@ function _renderAnnotations() {
   const amber  = _cssVar('--amber',  '#ffb347');
   const accent = _cssVar('--accent', '#26a69a');
   const muted  = _cssVar('--muted',  '#888');
-  const red    = _cssVar('--red',    '#ef5350');
-
-  // Visibility canary: a small red circle at (100, 100) on every render.
-  // Lets the user verify in 2 seconds that the SVG overlay layer is
-  // mounted and z-stacked above the LC canvases. Once a real annotation
-  // is visible at its mapped coordinates, this canary can be removed in
-  // a follow-up commit. Marked with data-canary="1" for easy grep.
-  svg.appendChild(_svgEl('circle', {
-    cx: 100, cy: 100, r: 5, fill: red, stroke: '#ffffff', 'stroke-width': 1,
-    'data-canary': '1',
-  }));
 
   for (const a of (_chartAnnotations || [])) {
     const color = a.color || (a.type === 'text' ? amber : blue);
@@ -3580,6 +3569,25 @@ async function _deleteAnnotationNear(point) {
     } catch (e) {}
   };
   await doDelete();
+}
+
+async function _clearAllAnnotations(slug, timeframe, onCleared) {
+  if (!slug) return;
+  if (!window.confirm('Delete all annotations for this chart? This cannot be undone.')) return;
+  const doClear = async () => {
+    const key = _requireApiKeyOr(doClear);
+    if (!key) return;
+    const url = '/api/db/annotations/all'
+      + `?bot_slug=${encodeURIComponent(slug)}`
+      + (timeframe ? `&timeframe=${encodeURIComponent(timeframe)}` : '');
+    try {
+      const r = await fetch(url, { method: 'DELETE', headers: { 'X-API-Key': key } });
+      if (r.status === 401) { _pendingAction = doClear; showApiKeyModal(); return; }
+      if (!r.ok) return;
+      if (typeof onCleared === 'function') onCleared();
+    } catch (e) {}
+  };
+  await doClear();
 }
 
 function _installChartToolHandlers() {
@@ -3728,7 +3736,10 @@ function initWizardChart() {
     _wizardResizeObs = new ResizeObserver(entries => {
       for (const e of entries) {
         const w = e.contentRect.width;
-        if (e.target === el && _wizardChart) _wizardChart.applyOptions({ width: w });
+        if (e.target === el && _wizardChart) {
+          _wizardChart.applyOptions({ width: w });
+          _renderWizardAnnotations();
+        }
         if (_wizardChartRsi  && e.target === $('wizard-chart-rsi'))  _wizardChartRsi.applyOptions({ width: w });
         if (_wizardChartMacd && e.target === $('wizard-chart-macd')) _wizardChartMacd.applyOptions({ width: w });
       }
@@ -3748,6 +3759,13 @@ function initWizardChart() {
   }
   if (_wizardRefreshTimer) clearInterval(_wizardRefreshTimer);
   _wizardRefreshTimer = setInterval(fetchWizardChartData, 30000);
+
+  // Annotation tooling for the wizard chart — same SVG-overlay pattern
+  // as the detail chart, just under a dedicated "wizard" pseudo-slug.
+  _installWizardChartToolHandlers();
+  try {
+    _wizardChart.timeScale().subscribeVisibleLogicalRangeChange(_renderWizardAnnotations);
+  } catch (e) {}
 }
 
 function teardownWizardChart() {
@@ -3758,6 +3776,17 @@ function teardownWizardChart() {
   _wizardTfHandler = null;
   _wizardDestroyRsiChart();
   _wizardDestroyMacdChart();
+  if (_wizardAnnotSvg && _wizardAnnotSvg.parentNode) {
+    try { _wizardAnnotSvg.parentNode.removeChild(_wizardAnnotSvg); } catch (e) {}
+  }
+  _wizardAnnotSvg = null;
+  _wizardAnnotations = [];
+  _wizardActiveTool = 'select';
+  _wizardToolFirstPoint = null;
+  _wizardMeasureSession = null;
+  document.querySelectorAll('.chart-tool[data-wtool]').forEach(b => {
+    b.classList.toggle('active', b.dataset.wtool === 'select');
+  });
   try { if (_wizardChart) _wizardChart.remove(); } catch (e) {}
   _wizardChart = null;
   _wizardCandles = null;
@@ -3784,6 +3813,280 @@ async function fetchWizardChartData() {
   const lbl = $('wizard-chart-label'); if (lbl) lbl.textContent = pair;
   const pe  = $('wizard-chart-price'); if (pe)  pe.textContent  = fmtPrice(candles[candles.length - 1].close);
   renderWizardOverlays();
+  _loadWizardAnnotations();
+}
+
+// ── Wizard chart annotations ───────────────────────────────────────────────
+// Brand new bots have no slug, so wizard annotations live under a fixed
+// "wizard" pseudo-slug. Same backend endpoints, same SVG-overlay
+// rendering — the wizard chart just owns its own state + SVG.
+const _WIZARD_ANNOT_SLUG = 'wizard';
+let _wizardAnnotations = [];
+let _wizardActiveTool = 'select';
+let _wizardToolFirstPoint = null;
+let _wizardMeasureSession = null;
+let _wizardAnnotSvg = null;
+
+function _setActiveWizardTool(name) {
+  _wizardActiveTool = name || 'select';
+  _wizardToolFirstPoint = null;
+  document.querySelectorAll('.chart-tool[data-wtool]').forEach(b => {
+    b.classList.toggle('active', b.dataset.wtool === _wizardActiveTool);
+  });
+  if (_wizardActiveTool !== 'measure') {
+    _wizardMeasureSession = null;
+    _renderWizardAnnotations();
+  }
+}
+
+function _ensureWizardAnnotSvg() {
+  const host = document.getElementById('wizard-chart');
+  if (!host || !_wizardChart) return null;
+  if (_wizardAnnotSvg && _wizardAnnotSvg.parentNode === host) return _wizardAnnotSvg;
+  if (!host.style.position) host.style.position = 'relative';
+  const svg = _svgEl('svg', { class: 'chart-annot-svg', xmlns: _ANNOT_SVG_NS });
+  svg.style.position = 'absolute';
+  svg.style.inset = '0';
+  svg.style.width = '100%';
+  svg.style.height = '100%';
+  svg.style.pointerEvents = 'none';
+  svg.style.zIndex = '10';
+  svg.style.display = 'block';
+  host.appendChild(svg);
+  _wizardAnnotSvg = svg;
+  return svg;
+}
+
+function _wizardXOfTime(t) {
+  if (!_wizardChart || t == null) return null;
+  try {
+    const x = _wizardChart.timeScale().timeToCoordinate(Number(t));
+    return Number.isFinite(x) ? x : null;
+  } catch (e) { return null; }
+}
+function _wizardYOfPrice(p) {
+  if (!_wizardCandles || p == null) return null;
+  try {
+    const y = _wizardCandles.priceToCoordinate(Number(p));
+    return Number.isFinite(y) ? y : null;
+  } catch (e) { return null; }
+}
+
+function _renderWizardAnnotations() {
+  const svg = _ensureWizardAnnotSvg();
+  if (!svg) return;
+  const host = document.getElementById('wizard-chart');
+  if (host) {
+    const w = host.clientWidth, h = host.clientHeight;
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  }
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  const blue   = _cssVar('--blue',   '#5b8dee');
+  const amber  = _cssVar('--amber',  '#ffb347');
+  const accent = _cssVar('--accent', '#26a69a');
+  const muted  = _cssVar('--muted',  '#888');
+
+  for (const a of (_wizardAnnotations || [])) {
+    const color = a.color || (a.type === 'text' ? amber : blue);
+    const x1 = _wizardXOfTime(a.x1);
+    const y1 = _wizardYOfPrice(a.y1);
+    if (x1 == null || y1 == null) continue;
+    if (a.type === 'text') {
+      const g = _svgEl('g', { 'data-ann-id': a.id });
+      g.appendChild(_svgEl('circle', { cx: x1, cy: y1, r: 4, fill: color, stroke: '#ffffff', 'stroke-width': 1 }));
+      const text = _svgEl('text', { x: x1 + 8, y: y1 + 4, fill: color, 'font-family': 'monospace', 'font-size': 11 });
+      text.textContent = a.label || 'text';
+      g.appendChild(text);
+      svg.appendChild(g);
+    } else if (a.type === 'arrow') {
+      const x2 = _wizardXOfTime(a.x2);
+      const y2 = _wizardYOfPrice(a.y2);
+      if (x2 == null || y2 == null) continue;
+      const g = _svgEl('g', { 'data-ann-id': a.id });
+      g.appendChild(_svgEl('line', { x1, y1, x2, y2, stroke: color, 'stroke-width': 2 }));
+      const dx = x2 - x1, dy = y2 - y1;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 0.01) {
+        const ux = dx / len, uy = dy / len;
+        const bx = x2 - ux * 10, by = y2 - uy * 10;
+        const px = -uy * 5, py = ux * 5;
+        const points = `${x2},${y2} ${bx + px},${by + py} ${bx - px},${by - py}`;
+        g.appendChild(_svgEl('polygon', { points, fill: color }));
+      }
+      svg.appendChild(g);
+    }
+  }
+
+  if (_wizardMeasureSession) {
+    const { p1, p2, priceDiff, pct } = _wizardMeasureSession;
+    const ax = _wizardXOfTime(p1.time);
+    const ay = _wizardYOfPrice(p1.price);
+    const bx = _wizardXOfTime(p2.time);
+    const by = _wizardYOfPrice(p2.price);
+    if (ax != null && ay != null && bx != null && by != null) {
+      const g = _svgEl('g', { 'data-measure': '1' });
+      g.appendChild(_svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, stroke: accent, 'stroke-width': 2, 'stroke-dasharray': '4 3' }));
+      g.appendChild(_svgEl('circle', { cx: ax, cy: ay, r: 4, fill: muted }));
+      g.appendChild(_svgEl('circle', { cx: bx, cy: by, r: 4, fill: muted }));
+      const mx = (ax + bx) / 2, my = (ay + by) / 2;
+      const sign = pct >= 0 ? '+' : '';
+      const labelText = `${sign}${pct.toFixed(2)}% / ${sign}${priceDiff.toFixed(2)}`;
+      const tw = labelText.length * 6.5 + 8;
+      g.appendChild(_svgEl('rect', { x: mx - tw / 2, y: my - 16, width: tw, height: 14, fill: 'rgba(0,0,0,0.7)', rx: 2 }));
+      const text = _svgEl('text', { x: mx, y: my - 5, fill: accent, 'font-family': 'monospace', 'font-size': 11, 'text-anchor': 'middle' });
+      text.textContent = labelText;
+      g.appendChild(text);
+      svg.appendChild(g);
+    }
+  }
+}
+
+async function _loadWizardAnnotations() {
+  _wizardAnnotations = [];
+  const tf = _wizardTimeframe || '1h';
+  try {
+    const r = await fetch(
+      `/api/db/annotations?bot_slug=${encodeURIComponent(_WIZARD_ANNOT_SLUG)}&timeframe=${encodeURIComponent(tf)}`,
+      { credentials: 'same-origin' }
+    );
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) { _renderWizardAnnotations(); return; }
+    const body = await r.json();
+    if (Array.isArray(body)) _wizardAnnotations = body;
+  } catch (e) {}
+  _renderWizardAnnotations();
+}
+
+async function _persistWizardAnnotation(fields) {
+  const doPost = async () => {
+    const key = _requireApiKeyOr(doPost);
+    if (!key) return;
+    const body = Object.assign({
+      bot_slug: _WIZARD_ANNOT_SLUG,
+      timeframe: _wizardTimeframe || '1h',
+    }, fields);
+    let r;
+    try {
+      r = await fetch('/api/db/annotations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+        body: JSON.stringify(body),
+        credentials: 'same-origin',
+      });
+    } catch (e) { return; }
+    if (r.status === 401) { _pendingAction = doPost; showApiKeyModal(); return; }
+    if (!r.ok) return;
+    try {
+      const j = await r.json();
+      if (j && Number.isFinite(j.id)) {
+        _wizardAnnotations.push(Object.assign({}, body, { id: j.id }));
+        _renderWizardAnnotations();
+        return;
+      }
+    } catch (e) {}
+    await _loadWizardAnnotations();
+  };
+  await doPost();
+}
+
+function _promptWizardAnnotationText(point) {
+  const label = window.prompt('Label?');
+  if (!label) return;
+  _persistWizardAnnotation({
+    type: 'text',
+    x1: point.time, y1: point.price,
+    label,
+    color: _cssVar('--amber', '#ffb347'),
+  });
+}
+
+async function _deleteWizardAnnotationNear(point) {
+  if (!_wizardAnnotations.length) return;
+  let tMin = Infinity, tMax = -Infinity, pMin = Infinity, pMax = -Infinity;
+  for (const a of _wizardAnnotations) {
+    if (a.x1 != null) { tMin = Math.min(tMin, a.x1); tMax = Math.max(tMax, a.x1); }
+    if (a.x2 != null) { tMin = Math.min(tMin, a.x2); tMax = Math.max(tMax, a.x2); }
+    if (a.y1 != null) { pMin = Math.min(pMin, a.y1); pMax = Math.max(pMax, a.y1); }
+    if (a.y2 != null) { pMin = Math.min(pMin, a.y2); pMax = Math.max(pMax, a.y2); }
+  }
+  const tSpan = Math.max(1, tMax - tMin);
+  const pSpan = Math.max(1, pMax - pMin);
+  let best = null, bestD = Infinity;
+  for (const a of _wizardAnnotations) {
+    const dt = ((Number(a.x1) || point.time) - point.time) / tSpan;
+    const dp = ((Number(a.y1) || point.price) - point.price) / pSpan;
+    const d = dt * dt + dp * dp;
+    if (d < bestD) { bestD = d; best = a; }
+  }
+  if (!best) return;
+  const doDelete = async () => {
+    const key = _requireApiKeyOr(doDelete);
+    if (!key) return;
+    try {
+      const r = await fetch(`/api/db/annotations/${best.id}`, {
+        method: 'DELETE',
+        headers: { 'X-API-Key': key },
+      });
+      if (r.status === 401) { _pendingAction = doDelete; showApiKeyModal(); return; }
+      if (!r.ok) return;
+      _wizardAnnotations = _wizardAnnotations.filter(a => a.id !== best.id);
+      _renderWizardAnnotations();
+    } catch (e) {}
+  };
+  await doDelete();
+}
+
+function _installWizardChartToolHandlers() {
+  if (!_wizardChart || !_wizardCandles) return;
+  const ts = _wizardChart.timeScale();
+  const handle = (param) => {
+    if (_wizardActiveTool === 'select') return;
+    if (!param || !param.point) return;
+    const { x, y } = param.point;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    let t = param.time;
+    if (t == null) {
+      try { t = ts.coordinateToTime(x); } catch (e) { t = null; }
+    }
+    if (t == null) return;
+    const price = _wizardCandles.coordinateToPrice(y);
+    if (!Number.isFinite(price)) return;
+    const point = { time: Number(t), price: Number(price) };
+    if (_wizardActiveTool === 'text') {
+      _promptWizardAnnotationText(point);
+      return;
+    }
+    if (_wizardActiveTool === 'measure' || _wizardActiveTool === 'arrow') {
+      if (!_wizardToolFirstPoint) {
+        _wizardToolFirstPoint = point;
+      } else {
+        const p1 = _wizardToolFirstPoint;
+        const p2 = point;
+        if (_wizardActiveTool === 'measure') {
+          const priceDiff = p2.price - p1.price;
+          const pct = p1.price ? (priceDiff / p1.price) * 100 : 0;
+          _wizardMeasureSession = { p1, p2, priceDiff, pct };
+          _renderWizardAnnotations();
+        } else {
+          _persistWizardAnnotation({
+            type: 'arrow',
+            x1: p1.time, y1: p1.price,
+            x2: p2.time, y2: p2.price,
+            color: _cssVar('--blue', '#5b8dee'),
+          });
+        }
+        _wizardToolFirstPoint = null;
+      }
+      return;
+    }
+    if (_wizardActiveTool === 'delete') {
+      _deleteWizardAnnotationNear(point);
+    }
+  };
+  try { _wizardChart.subscribeClick(handle); } catch (e) {}
 }
 
 function _clearWizardOverlays() {
@@ -4294,9 +4597,34 @@ function setupEventListeners() {
     });
   });
 
-  // Chart annotation toolbar
-  document.querySelectorAll('.chart-tool').forEach(btn => {
+  // Chart annotation toolbar — only buttons that declare data-tool.
+  // The "Clear all" button has its own dedicated handler below and the
+  // wizard toolbar uses data-wtool, so neither leaks into _setActiveTool
+  // (which would silently coerce them into 'select').
+  document.querySelectorAll('.chart-tool[data-tool]').forEach(btn => {
     btn.addEventListener('click', () => _setActiveTool(btn.dataset.tool));
+  });
+
+  const clearAllBtn = $('chart-clear-all');
+  if (clearAllBtn) clearAllBtn.addEventListener('click', () => {
+    _clearAllAnnotations(currentSlug, _chartTimeframe || '1h', () => {
+      _chartAnnotations = [];
+      _renderAnnotations();
+    });
+  });
+
+  // Wizard toolbar — separate data-wtool namespace so it doesn't share
+  // active state with the detail chart tools. Each button calls into
+  // _setActiveWizardTool which mirrors _setActiveTool for the wizard.
+  document.querySelectorAll('.chart-tool[data-wtool]').forEach(btn => {
+    btn.addEventListener('click', () => _setActiveWizardTool(btn.dataset.wtool));
+  });
+  const wizardClearAllBtn = $('wizard-chart-clear-all');
+  if (wizardClearAllBtn) wizardClearAllBtn.addEventListener('click', () => {
+    _clearAllAnnotations('wizard', _wizardTimeframe || '1h', () => {
+      _wizardAnnotations = [];
+      _renderWizardAnnotations();
+    });
   });
 
   // Clear deal markers button
