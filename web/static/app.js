@@ -200,20 +200,22 @@ const ACTIVE_DEALS_COLUMNS = [
 ];
 const ACTIVE_DEALS_LS_KEY = 'reverto.active_deals_columns';
 
-function getActiveDealsColumns() {
-  // Returns the user's current column config: an ordered array of
-  // {key, label, visible}. Falls back to defaults (all visible) if
-  // localStorage is empty or corrupt. Unknown keys (from older
-  // versions) are dropped; new defaults are appended at the end.
-  const defaults = ACTIVE_DEALS_COLUMNS.map(c => ({ key: c.key, label: c.label, visible: true }));
+// Generic column-config helpers — single source of truth = localStorage.
+// Both renderers and cog-menu drag handlers call loadColumns() on every
+// invocation, so a freshly dragged order can never be clobbered by a
+// poll-driven re-render. The merge logic appends any default column not
+// present in the stored array (keeps newly added columns visible by
+// default for users with stale localStorage entries).
+function loadColumns(key, defaults) {
+  const baseline = defaults.map(c => ({ key: c.key, label: c.label, visible: true }));
   let stored = null;
   try {
-    const raw = localStorage.getItem(ACTIVE_DEALS_LS_KEY);
+    const raw = localStorage.getItem(key);
     if (raw) stored = JSON.parse(raw);
   } catch (e) {}
-  if (!Array.isArray(stored)) return defaults;
+  if (!Array.isArray(stored)) return baseline;
 
-  const known = new Map(defaults.map(c => [c.key, c]));
+  const known = new Map(baseline.map(c => [c.key, c]));
   const out = [];
   const seen = new Set();
   for (const col of stored) {
@@ -223,19 +225,26 @@ function getActiveDealsColumns() {
     out.push({ key: def.key, label: def.label, visible: col.visible !== false });
     seen.add(col.key);
   }
-  for (const d of defaults) {
+  for (const d of baseline) {
     if (!seen.has(d.key)) out.push({ ...d });
   }
   return out;
 }
 
-function saveActiveDealsColumns(cols) {
+function saveColumns(key, cols) {
   try {
     localStorage.setItem(
-      ACTIVE_DEALS_LS_KEY,
+      key,
       JSON.stringify(cols.map(c => ({ key: c.key, visible: c.visible })))
     );
   } catch (e) {}
+}
+
+function getActiveDealsColumns() {
+  return loadColumns(ACTIVE_DEALS_LS_KEY, ACTIVE_DEALS_COLUMNS);
+}
+function saveActiveDealsColumns(cols) {
+  saveColumns(ACTIVE_DEALS_LS_KEY, cols);
 }
 
 function renderActiveDealsHead() {
@@ -303,10 +312,15 @@ function renderActiveDealsCogMenu() {
     row.appendChild(cb);
     row.appendChild(lbl);
 
+    // HTML5 DnD: dragstart sets the source index, dragover MUST call
+    // preventDefault() or drop never fires, drop reads back the index
+    // and re-orders the column list. We persist via saveColumns() and
+    // re-read via loadColumns() so a concurrent fetchOverview() can
+    // never resurrect the pre-drag order.
     row.addEventListener('dragstart', e => {
-      row.classList.add('dragging');
-      try { e.dataTransfer.setData('text/plain', col.key); } catch (err) {}
       e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', String(idx)); } catch (err) {}
+      row.classList.add('dragging');
     });
     row.addEventListener('dragend', () => row.classList.remove('dragging'));
     row.addEventListener('dragover', e => {
@@ -315,16 +329,16 @@ function renderActiveDealsCogMenu() {
     });
     row.addEventListener('drop', e => {
       e.preventDefault();
-      let srcKey = '';
-      try { srcKey = e.dataTransfer.getData('text/plain'); } catch (err) {}
-      if (!srcKey || srcKey === col.key) return;
-      const cur = getActiveDealsColumns();
-      const srcIdx = cur.findIndex(c => c.key === srcKey);
-      const dstIdx = cur.findIndex(c => c.key === col.key);
-      if (srcIdx < 0 || dstIdx < 0) return;
-      const [moved] = cur.splice(srcIdx, 1);
-      cur.splice(dstIdx, 0, moved);
-      saveActiveDealsColumns(cur);
+      let raw = '';
+      try { raw = e.dataTransfer.getData('text/plain'); } catch (err) {}
+      const from = parseInt(raw, 10);
+      const to = idx;
+      if (Number.isNaN(from) || from === to) return;
+      const cur = loadColumns(ACTIVE_DEALS_LS_KEY, ACTIVE_DEALS_COLUMNS);
+      if (from < 0 || from >= cur.length || to < 0 || to >= cur.length) return;
+      const [moved] = cur.splice(from, 1);
+      cur.splice(to, 0, moved);
+      saveColumns(ACTIVE_DEALS_LS_KEY, cur);
       renderActiveDealsCogMenu();
       fetchOverview();
     });
