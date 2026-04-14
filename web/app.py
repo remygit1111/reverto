@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -1039,8 +1040,15 @@ async def api_price():
 # In-memory cache for chart fetches. Keyed on (pair_normalized, timeframe,
 # limit) → (expires_at, payload). 60s TTL keeps Bitget's REST endpoint
 # reasonably idle even when several tabs poll the same chart simultaneously.
-_chart_cache: dict[tuple, tuple[float, list]] = {}
+# Bounded LRU: 60s TTL plus a 256-entry hard cap. Without the cap the
+# key space (pair × timeframe × limit) was effectively unbounded, so a
+# misbehaving or hostile client could grow the cache indefinitely just
+# by walking the limit parameter. OrderedDict.move_to_end gives us
+# O(1) recency tracking; the eldest entry is evicted on miss when the
+# cap is reached. Expired entries are dropped on access.
+_chart_cache: "OrderedDict[tuple, tuple[float, list]]" = OrderedDict()
 _CHART_CACHE_TTL = 60.0
+_CHART_CACHE_MAX = 256
 _CHART_TIMEFRAMES = ("15m", "1h", "4h", "1d")
 _chart_lock = asyncio.Lock()
 
@@ -1081,8 +1089,13 @@ async def api_chart(pair: str, timeframe: str, limit: int = 200):
     now = time.time()
 
     cached = _chart_cache.get(key)
-    if cached and cached[0] > now:
-        return cached[1]
+    if cached:
+        if cached[0] > now:
+            # Fresh hit — bump recency and return.
+            _chart_cache.move_to_end(key)
+            return cached[1]
+        # Expired — drop and fall through to refetch.
+        _chart_cache.pop(key, None)
 
     try:
         from exchanges.public_exchange import PublicExchange
@@ -1106,6 +1119,12 @@ async def api_chart(pair: str, timeframe: str, limit: int = 200):
         for c in raw
     ]
     _chart_cache[key] = (now + _CHART_CACHE_TTL, payload)
+    _chart_cache.move_to_end(key)
+    # Bound the cache: evict the eldest entry once we cross the cap so
+    # the dict can never grow unbounded under a hostile or misbehaving
+    # client walking the limit parameter.
+    while len(_chart_cache) > _CHART_CACHE_MAX:
+        _chart_cache.popitem(last=False)
     return payload
 
 
