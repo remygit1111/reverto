@@ -221,6 +221,59 @@ class TestNoDoubleClose:
         assert e.state.closed_deals[0].close_reason == "tp"
 
 
+class TestWickSimulation:
+    """Wick simulation: TP/SL fires when the FORMING candle's high/low
+    crosses the target, even if the live tick price hasn't reached it
+    yet. Fill price is capped at the line so realised PnL still matches
+    the configured percentage."""
+
+    def _seed_wick(self, e, high, low):
+        e._wick_candle[e.config.timeframe] = (float(high), float(low), float(low))
+
+    def test_tp_fires_on_wick_high_when_tick_below_target(self):
+        e = _engine(tp_pct=3.0); d = _deal(80000.0); e.state.open_deal(d)
+        # Tick price still 1% above entry (below the 3% TP), but the
+        # candle wick has already pierced the 3% target.
+        tick = 80000.0 * 1.01
+        wick_high = 80000.0 * 1.04
+        self._seed_wick(e, wick_high, tick - 50)
+        e._check_tp(d, tick)
+        assert d.id not in e.state.open_deals
+        closed = e.state.closed_deals[0]
+        assert closed.close_reason == "tp"
+        # Fill capped at the target, not at the wick high.
+        target = 80000.0 * 1.03
+        assert abs(closed.close_price - target) < 0.01
+
+    def test_sl_fires_on_wick_low_when_tick_above_stop(self):
+        e = _engine(sl_type="fixed", sl_pct=5.0); d = _deal(80000.0); e.state.open_deal(d)
+        tick = 80000.0 * 0.97
+        wick_low = 80000.0 * 0.94
+        self._seed_wick(e, tick + 50, wick_low)
+        e._check_sl(d, tick)
+        assert d.id not in e.state.open_deals
+        closed = e.state.closed_deals[0]
+        assert closed.close_reason == "sl"
+        sl_line = 80000.0 * 0.95
+        assert abs(closed.close_price - sl_line) < 0.01
+
+    def test_wick_disabled_falls_back_to_tick_only(self):
+        e = _engine(tp_pct=3.0); d = _deal(80000.0); e.state.open_deal(d)
+        # Force the engine to ignore the wick cache.
+        e.config.use_wick_simulation = False
+        # Cache says target is reached, tick says no.
+        self._seed_wick(e, 80000.0 * 1.05, 80000.0 * 1.04)
+        e._check_tp(d, 80000.0 * 1.01)
+        # Wick was ignored — no close.
+        assert d.id in e.state.open_deals
+
+    def test_tp_normal_tick_path_unchanged(self):
+        e = _engine(tp_pct=3.0); d = _deal(80000.0); e.state.open_deal(d)
+        # No wick cache; tick crosses target the usual way.
+        e._check_tp(d, 80000.0 * 1.03)
+        assert d.id not in e.state.open_deals
+
+
 class TestManualTriggerLiquidationGuard:
     """Manual deal trigger refuses to open when the entry would land
     inside the liquidation guard's emergency band. Spot bots are

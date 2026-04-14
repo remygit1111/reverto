@@ -1207,6 +1207,7 @@ function nbDefaultState() {
     tp_min_pct: null,
     tp_max_age_enabled: false, tp_max_age_hours: 24,
     sl_type: 'fixed', sl_pct: 5.0,
+    use_wick_simulation: true,
     dca_max_orders: 4, dca_size: 0.001, dca_spacing_pct: 2.5,
     dca_volume_scale: 1.0, dca_step_scale: 1.0,
     schedule_timezone: 'Europe/Amsterdam',
@@ -1352,6 +1353,8 @@ function nbReadAll() {
   nbState.tp_max_age_hours = parseInt($('nb-tp-max-age-hours').value, 10);
   nbState.sl_type = $('nb-sl-type').value;
   nbState.sl_pct = parseFloat($('nb-sl-pct').value);
+  const wickEl = $('nb-use-wick-sim');
+  nbState.use_wick_simulation = wickEl ? Boolean(wickEl.checked) : true;
 
   // dca_max_orders is the user-facing DCA-only count. Clamp to [0, 49];
   // serializer adds +1 to write the YAML's base+DCA max_orders.
@@ -1452,6 +1455,8 @@ function nbApplyStateToForm() {
   $('nb-tp-max-age-hours').disabled = !nbState.tp_max_age_enabled;
   $('nb-sl-type').value = nbState.sl_type;
   $('nb-sl-pct').value = nbState.sl_pct;
+  const wickInput = $('nb-use-wick-sim');
+  if (wickInput) wickInput.checked = Boolean(nbState.use_wick_simulation);
 
   $('nb-dca-max').value = nbState.dca_max_orders;
   $('nb-dca-size').value = nbState.dca_size;
@@ -2066,6 +2071,7 @@ function nbBuildBotConfig() {
     },
     take_profit: { target_pct: nbState.tp_target_pct },
     stop_loss: { type: nbState.sl_type, pct: nbState.sl_pct },
+    use_wick_simulation: Boolean(nbState.use_wick_simulation),
   };
   if (nbState.tp_indicator_confirm) {
     cfg.take_profit.indicator_confirm = nbState.tp_indicator_confirm;
@@ -2535,6 +2541,7 @@ function nbStateFromConfig(cfg) {
     tp_min_pct:           tp.minimum_tp_pct != null ? tp.minimum_tp_pct : null,
     sl_type:              sl.type || d.sl_type,
     sl_pct:               sl.pct != null ? sl.pct : d.sl_pct,
+    use_wick_simulation:  b.use_wick_simulation != null ? Boolean(b.use_wick_simulation) : d.use_wick_simulation,
     // YAML stores base+DCA; wizard input is DCA-only, so subtract 1.
     dca_max_orders:       dca.max_orders != null ? Math.max(0, dca.max_orders - 1) : d.dca_max_orders,
     // YAML only stores base_order_size; mirror it as the initial DCA size.

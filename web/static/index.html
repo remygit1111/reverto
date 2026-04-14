@@ -421,6 +421,13 @@
             <label>Percentage %</label>
             <input id="nb-sl-pct" type="number" step="0.1" min="0" value="5.0">
           </div>
+          <div class="form-row form-row-wide">
+            <label class="checkbox-label">
+              <input id="nb-use-wick-sim" type="checkbox" checked>
+              <span>Check candle wicks for TP/SL</span>
+            </label>
+            <div class="form-hint">More realistic — fires TP/SL on the candle's intra-bar high/low instead of only the live tick. Matches backtest behaviour.</div>
+          </div>
         </div>
       </div>
     </details>
@@ -700,6 +707,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=33"></script>
+<script src="/static/app.js?v=34"></script>
 </body>
 </html>

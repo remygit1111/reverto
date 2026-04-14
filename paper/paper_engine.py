@@ -198,6 +198,13 @@ class PaperEngine:
         self._lows_per_tf:   dict[str, list[float]] = {}
         self._closes_fetched_at: dict[str, float] = {}
 
+        # Wick-simulation cache: holds the most recently fetched FORMING
+        # candle (high/low/close) per timeframe so TP/SL checks can fire
+        # against the intra-candle range instead of only the live tick
+        # price. Refreshed at most once per tick — see _refresh_wick_candle.
+        self._wick_candle: dict[str, tuple[float, float, float]] = {}
+        self._wick_candle_fetched_at: float = 0.0
+
         # Track schedule state for transition detection
         self._last_schedule_state: bool = None
 
@@ -509,6 +516,7 @@ class PaperEngine:
 
             self._check_schedule_transition(is_open)
             self._fetch_closes_if_needed()
+            self._refresh_wick_candle()
 
             # Always update indicator snapshot (regardless of schedule)
             # so the dashboard shows current values during off-hours.
@@ -617,6 +625,55 @@ class PaperEngine:
             except Exception as e:
                 logger.error("Failed to fetch %s candles: %s", tf, e)
                 self._closes_fetched_at[tf] = now - max(interval - 100, 0)
+
+    def _refresh_wick_candle(self):
+        """Pull the current FORMING candle's high/low/close for every
+        bucket the engine cares about (today: the bot's configured
+        timeframe). Cached for `min(poll_interval*2, 30s)` so we never
+        spam the exchange — backfilled candles change at most once per
+        tick anyway. No-op when use_wick_simulation is disabled, so
+        spot bots and the existing tick-only logic stay free of extra
+        REST calls.
+        """
+        if not getattr(self.config, "use_wick_simulation", True):
+            return
+        now = time.time()
+        # 5-second TTL by default — enough to dedupe rapid ticks but
+        # short enough that a freshly broken wick lands within ~1 tick
+        # of the real exchange event.
+        ttl = max(5.0, min(self.poll_interval * 2.0, 30.0))
+        if now - self._wick_candle_fetched_at < ttl:
+            return
+        tf = self.config.timeframe
+        try:
+            candles = self.exchange.get_ohlcv(self.config.pair, tf, 1)
+        except Exception as e:
+            logger.debug("wick candle fetch failed (%s) — falling back to tick", e)
+            return
+        if not candles:
+            return
+        c = candles[-1]
+        try:
+            self._wick_candle[tf] = (float(c[2]), float(c[3]), float(c[4]))
+        except (IndexError, ValueError, TypeError):
+            return
+        self._wick_candle_fetched_at = now
+
+    def _wick_high_low(self, tick_price: float) -> tuple[float, float]:
+        """Return (high, low) for TP/SL evaluation. When wick simulation
+        is enabled and we have a fresh forming candle, return its
+        high/low — otherwise fall back to (tick_price, tick_price) so
+        every existing call site keeps working with no behaviour
+        change. The candle's own high/low already incorporates the
+        latest tick on most exchanges, but we still take max/min with
+        the live price as a defensive guard."""
+        if not getattr(self.config, "use_wick_simulation", True):
+            return tick_price, tick_price
+        candle = self._wick_candle.get(self.config.timeframe)
+        if not candle:
+            return tick_price, tick_price
+        high, low, _close = candle
+        return max(high, tick_price), min(low, tick_price)
 
     # ------------------------------------------------------------------
     # Entry logic
@@ -764,11 +821,22 @@ class PaperEngine:
             self._check_dca(deal, price)
 
     def _check_tp(self, deal: PaperDeal, price: float):
-        """Check if take profit target has been reached."""
+        """Check if take profit target has been reached.
+
+        With wick simulation enabled the trigger fires when the FORMING
+        candle's high reaches the target, even if the live tick hasn't
+        printed there yet. The fill price is still capped at the
+        target (we don't simulate slippage past the line) so realised
+        PnL stays consistent with the user's TP percentage.
+        """
         avg          = deal.avg_entry_price
         target_price = avg * (1 + self.config.take_profit.target_pct / 100)
 
-        if price >= target_price:
+        wick_high, _ = self._wick_high_low(price)
+        wick_hit = wick_high >= target_price
+        tick_hit = price >= target_price
+
+        if wick_hit or tick_hit:
             bot_tf = self.config.timeframe
             # Optional minimum-profit gate: if configured, the indicator
             # confirmation path can only fire once the deal is at least
@@ -789,20 +857,30 @@ class PaperEngine:
                 logger.info("TP price reached but confirmation not met — holding")
                 return
 
-            pnl_btc, pnl_pct = deal.calculate_pnl(price)
+            # Wick-only fills cap the simulated exit at the target_price
+            # (no slippage past the line). Tick fills use the live price.
+            fill_price = target_price if (wick_hit and not tick_hit) else price
+            pnl_btc, pnl_pct = deal.calculate_pnl(fill_price)
             exit_size = deal.total_size
-            self.state.close_deal(deal.id, price, "tp")
+            self.state.close_deal(deal.id, fill_price, "tp")
             fee = self._calc_fee(exit_size)
             self.state.balance_btc -= fee
             self._fees_paid_btc    += fee
-            self._db_close_deal(deal.id, price, "tp", pnl_btc, pnl_pct)
-            logger.info(
-                f"TP hit: {deal.id} at ${price:,.2f} "
-                f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
-            )
+            self._db_close_deal(deal.id, fill_price, "tp", pnl_btc, pnl_pct)
+            if wick_hit and not tick_hit:
+                logger.info(
+                    f"TP hit (wick): {deal.id} at ${fill_price:,.2f} "
+                    f"(wick high: ${wick_high:,.2f}) "
+                    f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
+                )
+            else:
+                logger.info(
+                    f"TP hit: {deal.id} at ${fill_price:,.2f} "
+                    f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
+                )
             self._notify(
                 self.notifier.notify_take_profit,
-                self.config.name, deal.symbol, price, pnl_btc, pnl_pct,
+                self.config.name, deal.symbol, fill_price, pnl_btc, pnl_pct,
             )
 
     def _check_sl(self, deal: PaperDeal, price: float):
@@ -810,6 +888,11 @@ class PaperEngine:
         Check if stop loss has been triggered (fixed or trailing).
         _peak_price is stored on PaperDeal so it persists across ticks
         and is included in the state JSON for restart recovery.
+
+        With wick simulation enabled the trigger fires when the FORMING
+        candle's low touches the stop, even if the live tick hasn't
+        printed there yet. Trailing-stop peak still uses the live tick
+        price (we don't want a wick-up to fake the trail).
         """
         sl_pct = self.config.stop_loss.pct
 
@@ -822,21 +905,35 @@ class PaperEngine:
         else:
             sl_price = deal.avg_entry_price * (1 - sl_pct / 100)
 
-        if price <= sl_price:
-            pnl_btc, pnl_pct = deal.calculate_pnl(price)
+        _, wick_low = self._wick_high_low(price)
+        wick_hit = wick_low <= sl_price
+        tick_hit = price <= sl_price
+
+        if wick_hit or tick_hit:
+            # Same fill semantics as TP: wick-only fills cap at the SL
+            # line (no extra slippage), tick fills use the live price.
+            fill_price = sl_price if (wick_hit and not tick_hit) else price
+            pnl_btc, pnl_pct = deal.calculate_pnl(fill_price)
             exit_size = deal.total_size
-            self.state.close_deal(deal.id, price, "sl")
+            self.state.close_deal(deal.id, fill_price, "sl")
             fee = self._calc_fee(exit_size)
             self.state.balance_btc -= fee
             self._fees_paid_btc    += fee
-            self._db_close_deal(deal.id, price, "sl", pnl_btc, pnl_pct)
-            logger.info(
-                f"SL hit ({self.config.stop_loss.type}): {deal.id} "
-                f"at ${price:,.2f} PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
-            )
+            self._db_close_deal(deal.id, fill_price, "sl", pnl_btc, pnl_pct)
+            if wick_hit and not tick_hit:
+                logger.info(
+                    f"SL hit ({self.config.stop_loss.type}, wick): {deal.id} "
+                    f"at ${fill_price:,.2f} (wick low: ${wick_low:,.2f}) "
+                    f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
+                )
+            else:
+                logger.info(
+                    f"SL hit ({self.config.stop_loss.type}): {deal.id} "
+                    f"at ${fill_price:,.2f} PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
+                )
             self._notify(
                 self.notifier.notify_stop_loss,
-                self.config.name, deal.symbol, price, pnl_btc, pnl_pct,
+                self.config.name, deal.symbol, fill_price, pnl_btc, pnl_pct,
             )
 
     def _check_dca(self, deal: PaperDeal, price: float):
