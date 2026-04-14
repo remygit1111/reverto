@@ -417,6 +417,9 @@ const NB_INDICATOR_DESCRIPTIONS = {
   SUPERTREND:
     "Volatility-based trailing stop using ATR. Signals when price crosses " +
     "the supertrend line, flipping the trend direction.",
+  MARKET_STRUCTURE:
+    "Detects swing highs and lows to identify trend structure (HH/HL or " +
+    "LH/LL) and Break of Structure events.",
 };
 
 let nbState = null;
@@ -629,11 +632,13 @@ function nbRenderIndicators() {
                     : ind.type === 'BOLLINGER' ? 'type-bollinger'
                     : ind.type === 'PARABOLIC_SAR' ? 'type-psar'
                     : ind.type === 'SUPERTREND' ? 'type-supertrend'
+                    : ind.type === 'MARKET_STRUCTURE' ? 'type-ms'
                     : '';
     const title = ind.type === 'EMA_CROSS' ? 'EMA Cross'
                 : ind.type === 'BOLLINGER' ? 'Bollinger Bands'
                 : ind.type === 'PARABOLIC_SAR' ? 'Parabolic SAR'
                 : ind.type === 'SUPERTREND' ? 'Supertrend'
+                : ind.type === 'MARKET_STRUCTURE' ? 'Market Structure'
                 : ind.type;
     return `
       <div class="nb-ind-card ${typeClass}">
@@ -651,6 +656,7 @@ function nbRenderIndicators() {
               <option value="BOLLINGER" ${ind.type === 'BOLLINGER' ? 'selected' : ''}>Bollinger Bands</option>
               <option value="PARABOLIC_SAR" ${ind.type === 'PARABOLIC_SAR' ? 'selected' : ''}>Parabolic SAR</option>
               <option value="SUPERTREND" ${ind.type === 'SUPERTREND' ? 'selected' : ''}>Supertrend</option>
+              <option value="MARKET_STRUCTURE" ${ind.type === 'MARKET_STRUCTURE' ? 'selected' : ''}>Market Structure</option>
             </select>
             <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
           </div>
@@ -715,6 +721,30 @@ function nbIndicatorFieldsHtml(ind, i) {
         <select data-nb-ind="${i}" data-nb-field="signal">
           <option value="bullish_cross" ${ind.signal === 'bullish_cross' ? 'selected' : ''}>Bullish</option>
           <option value="bearish_cross" ${ind.signal === 'bearish_cross' ? 'selected' : ''}>Bearish</option>
+        </select>
+      </div>`;
+  }
+  if (ind.type === 'MARKET_STRUCTURE') {
+    const lb = ind.lookback != null ? ind.lookback : 3;
+    const MS_CONDS = [
+      ['bullish_bos', 'Bullish BOS'],
+      ['bearish_bos', 'Bearish BOS'],
+      ['higher_low', 'Higher Low'],
+      ['lower_high', 'Lower High'],
+      ['bullish_structure', 'Bullish structure'],
+      ['bearish_structure', 'Bearish structure'],
+    ];
+    return `
+      <div class="form-row">
+        <label>Lookback</label>
+        <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
+      </div>
+      <div class="form-row">
+        <label>Condition</label>
+        <select data-nb-ind="${i}" data-nb-field="condition">
+          ${MS_CONDS.map(([v, l]) =>
+            `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
+          ).join('')}
         </select>
       </div>`;
   }
@@ -1050,6 +1080,9 @@ function nbBuildBotConfig() {
           out.atr_period = i.atr_period != null ? i.atr_period : 10;
           out.multiplier = i.multiplier != null ? i.multiplier : 3.0;
           out.condition = i.condition || 'bullish';
+        } else if (i.type === 'MARKET_STRUCTURE') {
+          out.lookback = i.lookback != null ? i.lookback : 3;
+          out.condition = i.condition || 'bullish_bos';
         }
         return out;
       }),
@@ -1561,7 +1594,7 @@ function setupEventListeners() {
       const intFields = [
         'period', 'fast', 'slow',
         'rsi_value', 'macd_fast', 'macd_slow', 'macd_signal',
-        'atr_period',
+        'atr_period', 'lookback',
       ];
       const floatFields = ['multiplier', 'initial_af', 'max_af'];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;

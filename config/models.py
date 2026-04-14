@@ -76,6 +76,8 @@ class IndicatorConfig(BaseModel):
     max_af: Optional[float] = None
     # Supertrend — ATR period (multiplier shared with Bollinger field)
     atr_period: Optional[int] = None
+    # Market Structure / Support-Resistance / QFL — swing lookback window
+    lookback: Optional[int] = None
 
 
 class EntryConfig(BaseModel):
