@@ -1450,3 +1450,56 @@ tr:hover td { background: rgba(128,128,128,.04); }
   gap: 12px;
   margin-bottom: 16px;
 }
+
+/* ── Active deals column manager ────────────────────────────────── */
+.active-deals-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cog-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.2em;
+  padding: 4px 8px;
+}
+.cog-btn:hover {
+  color: var(--text);
+}
+.cog-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  z-index: 100;
+  min-width: 200px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.cog-menu.hidden {
+  display: none;
+}
+.cog-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  cursor: grab;
+  user-select: none;
+  border-radius: 3px;
+}
+.cog-menu-row:hover {
+  background: var(--surface2);
+}
+.cog-menu-row.dragging {
+  opacity: 0.4;
+}
+.cog-menu-row label {
+  cursor: pointer;
+  flex: 1;
+}

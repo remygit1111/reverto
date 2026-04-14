@@ -171,24 +171,185 @@ function renderBotGrid(bots) {
   }
 }
 
+// ── Active Deals column manager ─────────────────────────────────────────────
+// Default ordered column set. Each column has a key (used as localStorage
+// id), label (shown in cog menu + thead), and a cell renderer that takes
+// a deal row and returns an HTML string. Visibility + order live in
+// localStorage under "reverto.active_deals_columns".
+const ACTIVE_DEALS_COLUMNS = [
+  { key: 'bot',        label: 'Bot',
+    cell: d => `<td><span class="link-like" data-action="open" data-slug="${safeText(d.bot_slug)}">${safeText(d.bot_name)}</span></td>` },
+  { key: 'deal_id',    label: 'Deal ID',
+    cell: d => `<td class="muted-cell">${safeText(d.id)}</td>` },
+  { key: 'pair',       label: 'Pair',
+    cell: d => `<td>${safeText(d.symbol || '—')}</td>` },
+  { key: 'entry',      label: 'Entry',
+    cell: d => `<td>${fmtPrice(d.entry_price)}</td>` },
+  { key: 'avg_entry',  label: 'Avg Entry',
+    cell: d => `<td>${fmtPrice(d.avg_entry_price)}</td>` },
+  { key: 'orders',     label: 'Orders',
+    cell: d => `<td>${d.order_count}</td>` },
+  { key: 'pnl_btc',    label: 'PnL BTC',
+    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
+  { key: 'pnl_pct',    label: 'PnL %',
+    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
+  { key: 'age',        label: 'Age',
+    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+];
+const ACTIVE_DEALS_LS_KEY = 'reverto.active_deals_columns';
+
+function getActiveDealsColumns() {
+  // Returns the user's current column config: an ordered array of
+  // {key, label, visible}. Falls back to defaults (all visible) if
+  // localStorage is empty or corrupt. Unknown keys (from older
+  // versions) are dropped; new defaults are appended at the end.
+  const defaults = ACTIVE_DEALS_COLUMNS.map(c => ({ key: c.key, label: c.label, visible: true }));
+  let stored = null;
+  try {
+    const raw = localStorage.getItem(ACTIVE_DEALS_LS_KEY);
+    if (raw) stored = JSON.parse(raw);
+  } catch (e) {}
+  if (!Array.isArray(stored)) return defaults;
+
+  const known = new Map(defaults.map(c => [c.key, c]));
+  const out = [];
+  const seen = new Set();
+  for (const col of stored) {
+    if (!col || typeof col.key !== 'string') continue;
+    const def = known.get(col.key);
+    if (!def) continue;
+    out.push({ key: def.key, label: def.label, visible: col.visible !== false });
+    seen.add(col.key);
+  }
+  for (const d of defaults) {
+    if (!seen.has(d.key)) out.push({ ...d });
+  }
+  return out;
+}
+
+function saveActiveDealsColumns(cols) {
+  try {
+    localStorage.setItem(
+      ACTIVE_DEALS_LS_KEY,
+      JSON.stringify(cols.map(c => ({ key: c.key, visible: c.visible })))
+    );
+  } catch (e) {}
+}
+
+function renderActiveDealsHead() {
+  const head = $('all-deals-thead-row');
+  if (!head) return;
+  const cols = getActiveDealsColumns().filter(c => c.visible);
+  const defs = new Map(ACTIVE_DEALS_COLUMNS.map(c => [c.key, c]));
+  head.innerHTML = cols.map(c => `<th>${safeText((defs.get(c.key) || c).label)}</th>`).join('');
+}
+
 function renderActiveDeals(deals) {
   const tbody = $('all-deals-tbody');
   if (!tbody) return;
+  renderActiveDealsHead();
+  const cols = getActiveDealsColumns().filter(c => c.visible);
+  const colSpan = Math.max(1, cols.length);
   if (!deals.length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="9">No open deals across any bot</td></tr>';
-  } else {
-    tbody.innerHTML = deals.map(deal => `<tr>
-      <td><span class="link-like" data-action="open" data-slug="${safeText(deal.bot_slug)}">${safeText(deal.bot_name)}</span></td>
-      <td class="muted-cell">${safeText(deal.id)}</td>
-      <td>${safeText(deal.symbol || '—')}</td>
-      <td>${fmtPrice(deal.entry_price)}</td>
-      <td>${fmtPrice(deal.avg_entry_price)}</td>
-      <td>${deal.order_count}</td>
-      <td>${fmtPnl(deal.pnl_btc)}</td>
-      <td>${fmtPct(deal.pnl_pct)}</td>
-      <td class="muted-cell">${timeAgo(deal.opened_at)}</td>
-    </tr>`).join('');
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="${colSpan}">No open deals across any bot</td></tr>`;
+    return;
   }
+  const defs = new Map(ACTIVE_DEALS_COLUMNS.map(c => [c.key, c]));
+  tbody.innerHTML = deals.map(deal => {
+    const cells = cols.map(c => {
+      const def = defs.get(c.key);
+      return def ? def.cell(deal) : '<td></td>';
+    }).join('');
+    return `<tr>${cells}</tr>`;
+  }).join('');
+}
+
+function renderActiveDealsCogMenu() {
+  const menu = $('active-deals-cog-menu');
+  if (!menu) return;
+  const cols = getActiveDealsColumns();
+  menu.innerHTML = '';
+  cols.forEach((col, idx) => {
+    const row = document.createElement('div');
+    row.className = 'cog-menu-row';
+    row.draggable = true;
+    row.dataset.colKey = col.key;
+    row.dataset.colIdx = String(idx);
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'checkbox-accent';
+    cb.checked = col.visible !== false;
+    cb.addEventListener('change', () => {
+      const cur = getActiveDealsColumns();
+      const target = cur.find(c => c.key === col.key);
+      if (target) target.visible = cb.checked;
+      saveActiveDealsColumns(cur);
+      renderActiveDealsCogMenu();
+      fetchOverview();
+    });
+
+    const lbl = document.createElement('label');
+    lbl.textContent = col.label;
+    lbl.addEventListener('click', e => {
+      // Click on the label toggles the checkbox without bubbling.
+      e.preventDefault();
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event('change'));
+    });
+
+    row.appendChild(cb);
+    row.appendChild(lbl);
+
+    row.addEventListener('dragstart', e => {
+      row.classList.add('dragging');
+      try { e.dataTransfer.setData('text/plain', col.key); } catch (err) {}
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+    row.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+    row.addEventListener('drop', e => {
+      e.preventDefault();
+      let srcKey = '';
+      try { srcKey = e.dataTransfer.getData('text/plain'); } catch (err) {}
+      if (!srcKey || srcKey === col.key) return;
+      const cur = getActiveDealsColumns();
+      const srcIdx = cur.findIndex(c => c.key === srcKey);
+      const dstIdx = cur.findIndex(c => c.key === col.key);
+      if (srcIdx < 0 || dstIdx < 0) return;
+      const [moved] = cur.splice(srcIdx, 1);
+      cur.splice(dstIdx, 0, moved);
+      saveActiveDealsColumns(cur);
+      renderActiveDealsCogMenu();
+      fetchOverview();
+    });
+
+    menu.appendChild(row);
+  });
+}
+
+function setupActiveDealsCog() {
+  const btn  = $('active-deals-cog');
+  const menu = $('active-deals-cog-menu');
+  if (!btn || !menu) return;
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (menu.classList.contains('hidden')) {
+      renderActiveDealsCogMenu();
+      menu.classList.remove('hidden');
+    } else {
+      menu.classList.add('hidden');
+    }
+  });
+  document.addEventListener('click', e => {
+    if (menu.classList.contains('hidden')) return;
+    if (e.target === btn || btn.contains(e.target)) return;
+    if (menu.contains(e.target)) return;
+    menu.classList.add('hidden');
+  });
 }
 
 function renderBotCard(b) {
@@ -1924,6 +2085,8 @@ function setupEventListeners() {
   $('modal-clear-btn').addEventListener('click', clearApiKey);
   $('modal-cancel-btn').addEventListener('click', closeApiKeyModal);
   $('modal-save-btn').addEventListener('click', saveApiKey);
+
+  setupActiveDealsCog();
 
   $('log-clear-btn').addEventListener('click', clearLog);
   $('ov-log-clear-btn').addEventListener('click', () => { $('ov-log-body').innerHTML = ''; });
