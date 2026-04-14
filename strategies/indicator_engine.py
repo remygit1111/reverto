@@ -17,6 +17,7 @@ from strategies.indicators.macd import calculate_macd, check_macd_signal
 from strategies.indicators.bollinger import check_bollinger_signal
 from strategies.indicators.parabolic_sar import check_parabolic_sar_signal
 from strategies.indicators.supertrend import check_supertrend_signal
+from strategies.indicators.market_structure import check_market_structure_signal
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,12 @@ class IndicatorEngine:
                 atr_period=indicator.atr_period or 10,
                 multiplier=indicator.multiplier or 3.0,
                 condition=indicator.condition or "bullish",
+            )
+        elif itype == "MARKET_STRUCTURE":
+            return check_market_structure_signal(
+                closes,
+                lookback=indicator.lookback or 3,
+                condition=indicator.condition or "bullish_bos",
             )
         else:
             logger.warning(

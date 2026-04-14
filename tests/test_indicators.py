@@ -17,6 +17,7 @@ from strategies.indicators.supertrend import (
     calculate_supertrend,
     check_supertrend_signal,
 )
+from strategies.indicators.market_structure import check_market_structure_signal
 from config.models import BotConfig
 from pydantic import ValidationError
 
@@ -276,6 +277,57 @@ class TestSupertrend:
         h, lo, c = self._ohlc(closes)
         with pytest.raises(ValueError, match="Unknown Supertrend"):
             check_supertrend_signal(h, lo, c, condition="invalid")
+
+
+class TestMarketStructure:
+    @staticmethod
+    def _with_swings():
+        """Build a 40-close series with two clear swing lows (HL pattern)
+        and two swing highs so the trend is a textbook uptrend:
+            low1 @ idx 5 = 98, high1 @ idx 12 = 108,
+            low2 @ idx 19 = 100, high2 @ idx 26 = 112,
+            final close = 113 (BOS above high2).
+        """
+        closes = [100.0] * 40
+        # low1 at 5
+        closes[3:8] = [101.0, 99.5, 98.0, 99.5, 101.0]
+        # high1 at 12
+        closes[10:15] = [106.0, 107.0, 108.0, 107.0, 106.0]
+        # low2 at 19 (higher than low1)
+        closes[17:22] = [103.0, 101.5, 100.0, 101.5, 103.0]
+        # high2 at 26 (higher than high1)
+        closes[24:29] = [110.0, 111.0, 112.0, 111.0, 110.0]
+        # final: close above high2 to trigger BOS
+        closes[-1] = 113.0
+        return closes
+
+    def test_bullish_bos_detected(self):
+        closes = self._with_swings()
+        assert check_market_structure_signal(closes, lookback=2, condition="bullish_bos") is True
+
+    def test_higher_low_detected(self):
+        closes = self._with_swings()
+        assert check_market_structure_signal(closes, lookback=2, condition="higher_low") is True
+
+    def test_bullish_structure_detected(self):
+        closes = self._with_swings()
+        assert check_market_structure_signal(
+            closes, lookback=2, condition="bullish_structure"
+        ) is True
+
+    def test_no_signal_on_flat(self):
+        closes = [100.0] * 40
+        for cond in ("bullish_bos", "bearish_bos", "higher_low", "lower_high",
+                     "bullish_structure", "bearish_structure"):
+            assert check_market_structure_signal(closes, lookback=2, condition=cond) is False
+
+    def test_insufficient_data_raises(self):
+        with pytest.raises(ValueError, match="at least"):
+            check_market_structure_signal([100.0] * 10, lookback=3, condition="bullish_bos")
+
+    def test_unknown_condition_raises(self):
+        with pytest.raises(ValueError, match="Unknown Market Structure"):
+            check_market_structure_signal([100.0] * 40, lookback=3, condition="invalid")
 
 
 class TestConfigValidation:
