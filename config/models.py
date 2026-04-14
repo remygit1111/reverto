@@ -180,6 +180,12 @@ class BotConfig(BaseModel):
     # being rejected by extra='forbid'.
     direction: Literal["long", "short"] = "long"
     timeframe: Literal["15m", "1h", "4h", "1d"] = "1h"
+    # Wick simulation: when True, the paper engine pulls the current
+    # forming candle's high/low on every tick and fires TP/SL against
+    # those values instead of only the live tick price. Matches the
+    # backtest behaviour and removes the 10s tick-poll blind spot, at
+    # the cost of one extra OHLCV request per timeframe-cache window.
+    use_wick_simulation: bool = True
     leverage: LeverageConfig = LeverageConfig()
     dca: DCAConfig
     entry: EntryConfig = EntryConfig()
