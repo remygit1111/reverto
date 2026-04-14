@@ -2801,6 +2801,61 @@ function _pairForUrl(p) {
   return (p || 'BTCUSD').replace('/', '');
 }
 
+// Hover prefetch: when the cursor lingers on the Chart tab button we
+// fire-and-forget a /api/chart fetch to warm the backend's per-
+// timeframe cache. By the time the user actually clicks the tab the
+// real fetchChartData() call hits the hot cache and returns instantly,
+// so the chart appears with no perceptible network delay. 200ms
+// debounce avoids hammering the exchange on cursor flicks.
+let _chartPrefetchTimer = null;
+let _chartPrefetchInFlight = false;
+
+async function _prefetchChartForCurrentBot() {
+  if (_chartPrefetchInFlight || !currentSlug) return;
+  // Pull the bot's pair + timeframe from its config so we warm the
+  // cache key the chart tab is actually going to ask for. Falls back
+  // to BTCUSD/1h if the config isn't loaded yet.
+  let pair = 'BTCUSD';
+  let tf = '1h';
+  try {
+    if (_chartBotConfig && _chartBotConfig.bot) {
+      pair = _normalizePair(_chartBotConfig.bot.pair || 'BTC/USD');
+      tf = _chartBotConfig.bot.timeframe || '1h';
+    } else {
+      const r = await fetch(`/api/bots/${currentSlug}/config`);
+      if (r.ok) {
+        const cfg = await r.json();
+        if (cfg && cfg.bot) {
+          pair = _normalizePair(cfg.bot.pair || 'BTC/USD');
+          tf = cfg.bot.timeframe || '1h';
+        }
+      }
+    }
+  } catch (e) { /* keep defaults */ }
+  _chartPrefetchInFlight = true;
+  try {
+    await fetch(`/api/chart/${_pairForUrl(pair)}/${tf}?limit=200`);
+  } catch (e) { /* warm-only fetch — backend cache catches the result */ }
+  finally {
+    _chartPrefetchInFlight = false;
+  }
+}
+
+function _scheduleChartPrefetch() {
+  if (_chartPrefetchTimer) clearTimeout(_chartPrefetchTimer);
+  _chartPrefetchTimer = setTimeout(() => {
+    _chartPrefetchTimer = null;
+    _prefetchChartForCurrentBot();
+  }, 200);
+}
+
+function _cancelChartPrefetch() {
+  if (_chartPrefetchTimer) {
+    clearTimeout(_chartPrefetchTimer);
+    _chartPrefetchTimer = null;
+  }
+}
+
 async function loadChartTab(slug) {
   teardownChartTab();
   const fb = $('chart-fallback');
@@ -4550,6 +4605,15 @@ function setupEventListeners() {
   document.querySelectorAll('.detail-subnav .tab').forEach(btn => {
     btn.addEventListener('click', () => showDTab(btn.dataset.dtab, btn));
   });
+
+  // Chart tab hover prefetch — warm the backend cache so the click
+  // hits a hot key. Only the chart tab needs this; the others render
+  // from the already-cached fetchDetail() payload.
+  const chartTabBtn = document.querySelector('.detail-subnav .tab[data-dtab="chart"]');
+  if (chartTabBtn) {
+    chartTabBtn.addEventListener('mouseenter', _scheduleChartPrefetch);
+    chartTabBtn.addEventListener('mouseleave', _cancelChartPrefetch);
+  }
 
   // Chart timeframe selector
   document.querySelectorAll('.chart-tf-btn').forEach(btn => {
