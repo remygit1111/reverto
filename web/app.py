@@ -1378,22 +1378,29 @@ async def api_db_deals(
     status: Optional[str] = None,
     limit: int = 100,
 ):
+    # SQLite calls are sync — push them onto a worker thread so a slow
+    # disk or a contended write lock doesn't block the asyncio event
+    # loop and starve every other request the portal is serving.
     limit = max(1, min(1000, int(limit)))
-    deals = deal_store.get_deals(bot_slug=bot_slug, status=status, limit=limit)
-    return [
-        {"deal": d, "orders": deal_store.get_deal_orders(d["id"])}
-        for d in deals
-    ]
+
+    def _query():
+        deals = deal_store.get_deals(bot_slug=bot_slug, status=status, limit=limit)
+        return [
+            {"deal": d, "orders": deal_store.get_deal_orders(d["id"])}
+            for d in deals
+        ]
+
+    return await asyncio.to_thread(_query)
 
 
 @app.get("/api/db/deals/{deal_id}/orders")
 async def api_db_deal_orders(deal_id: str):
-    return deal_store.get_deal_orders(deal_id)
+    return await asyncio.to_thread(deal_store.get_deal_orders, deal_id)
 
 
 @app.get("/api/db/stats")
 async def api_db_stats(bot_slug: Optional[str] = None):
-    return deal_store.compute_stats(bot_slug)
+    return await asyncio.to_thread(deal_store.compute_stats, bot_slug)
 
 
 class AnnotationBody(BaseModel):
@@ -1415,16 +1422,17 @@ async def api_db_annotations_create(
     request: Request,
     actor: str = Depends(_request_actor),
 ):
-    new_id = deal_store.save_annotation(
-        bot_slug=body.bot_slug,
-        type_=body.type,
-        timeframe=body.timeframe,
-        x1=body.x1,
-        y1=body.y1,
-        x2=body.x2,
-        y2=body.y2,
-        label=body.label,
-        color=body.color,
+    new_id = await asyncio.to_thread(
+        deal_store.save_annotation,
+        body.bot_slug,
+        body.type,
+        body.timeframe,
+        body.x1,
+        body.y1,
+        body.x2,
+        body.y2,
+        body.label,
+        body.color,
     )
     return {"id": new_id}
 
@@ -1434,7 +1442,7 @@ async def api_db_annotations_list(
     bot_slug: str,
     timeframe: Optional[str] = None,
 ):
-    return deal_store.list_annotations(bot_slug, timeframe)
+    return await asyncio.to_thread(deal_store.list_annotations, bot_slug, timeframe)
 
 
 @app.delete("/api/db/annotations/all")
@@ -1449,7 +1457,9 @@ async def api_db_annotations_delete_all(
     timeframe. Registered BEFORE the {ann_id} catch-all so FastAPI
     routes the literal `/all` path here instead of trying to parse
     "all" as an int."""
-    removed = deal_store.delete_annotations_for(bot_slug, timeframe)
+    removed = await asyncio.to_thread(
+        deal_store.delete_annotations_for, bot_slug, timeframe
+    )
     _audit("annotations_clear", bot_slug, actor)
     return {"ok": True, "removed": removed}
 
@@ -1461,7 +1471,7 @@ async def api_db_annotations_delete(
     request: Request,
     actor: str = Depends(_request_actor),
 ):
-    if not deal_store.delete_annotation(ann_id):
+    if not await asyncio.to_thread(deal_store.delete_annotation, ann_id):
         raise HTTPException(status_code=404, detail="Annotation not found")
     return {"ok": True}
 
