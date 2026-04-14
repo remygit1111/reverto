@@ -164,7 +164,14 @@ _KNOWN_PW = "pytest-known-password-123"
 @pytest.fixture
 def auth_client():
     """TestClient with the known password provisioned in .auth.json.
-    Yields the client and restores the original auth blob afterwards."""
+    Yields the client and restores the original auth blob afterwards.
+
+    Forces _COOKIE_SECURE=False for the duration of the test because
+    TestClient serves over plain http:// and a browser-equivalent
+    silently drops Secure cookies on insecure transports — without
+    this override the post-login cookie would never reach the next
+    request and every authed assertion would 401.
+    """
     original = webapp._load_auth()
     webapp._save_auth({
         "username": "admin",
@@ -172,10 +179,13 @@ def auth_client():
             _KNOWN_PW.encode("utf-8"), bcrypt.gensalt(rounds=4)
         ).decode("utf-8"),
     })
+    prev_secure = webapp._COOKIE_SECURE
+    webapp._COOKIE_SECURE = False
     client = TestClient(webapp.app)
     try:
         yield client
     finally:
+        webapp._COOKIE_SECURE = prev_secure
         if original:
             webapp._save_auth(original)
 
