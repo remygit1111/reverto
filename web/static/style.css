@@ -350,6 +350,16 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .live-dot.connected { background: var(--accent); animation: blink 1.4s infinite; }
 .live-dot.error     { background: var(--red); }
 
+/* Header state-sync indicator — small dot + label sitting next to the
+   uptime chip. Keeps the same visual language as the per-tab live
+   indicators in the log/overview widgets. */
+.state-ws-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+
 .log-status-text {
   font-family: var(--mono);
   font-size: 10px;
