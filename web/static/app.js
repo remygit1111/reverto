@@ -2809,6 +2809,11 @@ async function loadChartTab(slug) {
     return;
   }
   if (fb) fb.classList.add('hidden');
+  // Show skeleton immediately so the user sees something is happening
+  // before the OHLCV fetch lands. Hidden inside fetchChartData() the
+  // moment the candle series gets its first setData() call.
+  const sk = $('chart-skeleton');
+  if (sk) sk.classList.remove('chart-skeleton-hidden');
 
   try {
     const r = await fetch(`/api/bots/${slug}/config`);
@@ -2977,6 +2982,9 @@ async function fetchChartData() {
   if (!Array.isArray(candles) || !candles.length) return;
 
   _chartCandles.setData(candles);
+  // First candles in — drop the skeleton placeholder.
+  const sk = $('chart-skeleton');
+  if (sk) sk.classList.add('chart-skeleton-hidden');
 
   // Price + change
   const first = candles[0].close;
@@ -3683,6 +3691,10 @@ function initWizardChart() {
   if (!_chartLibAvailable()) return;
   const el = $('wizard-chart');
   if (!el) return;
+  // Skeleton up while we wait for the first OHLCV fetch to land —
+  // hidden again inside fetchWizardChartData on success.
+  const sk = $('wizard-chart-skeleton');
+  if (sk) sk.classList.remove('chart-skeleton-hidden');
   _wizardChart = LightweightCharts.createChart(el, {
     ..._chartLayoutOpts(),
     width:  el.clientWidth,
@@ -3774,6 +3786,8 @@ async function fetchWizardChartData() {
   if (!Array.isArray(candles) || !candles.length) return;
   _wizardCandles.setData(candles);
   _wizardCandleCache = candles;
+  const sk = $('wizard-chart-skeleton');
+  if (sk) sk.classList.add('chart-skeleton-hidden');
   const lbl = $('wizard-chart-label'); if (lbl) lbl.textContent = pair;
   const pe  = $('wizard-chart-price'); if (pe)  pe.textContent  = fmtPrice(candles[candles.length - 1].close);
   renderWizardOverlays();

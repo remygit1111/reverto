@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=20">
+<link rel="stylesheet" href="/static/style.css?v=21">
 </head>
 <body>
 
@@ -280,7 +280,13 @@
           <button type="button" class="chart-tool" data-wtool="delete" title="Delete annotation">&#x1F5D1;</button>
           <button type="button" class="chart-tool chart-tool-clear-all" id="wizard-chart-clear-all" title="Delete all annotations">&#x1F5D1; Clear all</button>
         </div>
-        <div id="wizard-chart" class="wizard-chart-container"></div>
+        <div id="wizard-chart-wrap" class="chart-main-wrap">
+          <div id="wizard-chart" class="wizard-chart-container"></div>
+          <div id="wizard-chart-skeleton" class="chart-skeleton">
+            <div class="chart-skeleton-bars"></div>
+            <div class="chart-skeleton-label">Loading chart…</div>
+          </div>
+        </div>
         <div id="wizard-chart-rsi"  class="wizard-chart-sub hidden"></div>
         <div id="wizard-chart-macd" class="wizard-chart-sub hidden"></div>
       </div>
@@ -554,7 +560,13 @@
       <button type="button" class="chart-tool" data-tool="delete" title="Delete annotation">&#x1F5D1;</button>
       <button type="button" class="chart-tool chart-tool-clear-all" id="chart-clear-all" title="Delete all annotations">&#x1F5D1; Clear all</button>
     </div>
-    <div id="chart-main" class="chart-container chart-main"></div>
+    <div id="chart-main-wrap" class="chart-main-wrap">
+      <div id="chart-main" class="chart-container chart-main"></div>
+      <div id="chart-skeleton" class="chart-skeleton">
+        <div class="chart-skeleton-bars"></div>
+        <div class="chart-skeleton-label">Loading chart…</div>
+      </div>
+    </div>
     <div id="chart-rsi" class="chart-container chart-sub hidden"></div>
     <div id="chart-macd" class="chart-container chart-sub hidden"></div>
     <div id="chart-fallback" class="empty-grid hidden">Chart library failed to load (CDN blocked or offline).</div>
@@ -707,6 +719,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=35"></script>
+<script src="/static/app.js?v=36"></script>
 </body>
 </html>
