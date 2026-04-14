@@ -36,6 +36,16 @@
   --muted:    #8a94a6;
 }
 
+/* Text-brightness overrides — applied on top of the theme defaults. The
+   "normal" entries keep the existing palette so untouched installs look
+   unchanged. Dimmed/bright shift --text and --muted only. */
+[data-theme="dark"][data-brightness="dimmed"]  { --text: #8a96a8; --muted: #2d3748; }
+[data-theme="dark"][data-brightness="normal"]  { --text: #c8d3e0; --muted: #4a5568; }
+[data-theme="dark"][data-brightness="bright"]  { --text: #ffffff; --muted: #718096; }
+[data-theme="light"][data-brightness="dimmed"] { --text: #6b7a8d; --muted: #b0bac6; }
+[data-theme="light"][data-brightness="normal"] { --text: #1a2233; --muted: #8a94a6; }
+[data-theme="light"][data-brightness="bright"] { --text: #000000; --muted: #4a5568; }
+
 /* ── Base ───────────────────────────────────────────────────────────────────── */
 body {
   background: var(--bg);
@@ -663,16 +673,6 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .login-form input:focus { outline: none; border-color: var(--accent); }
 .login-btn { margin-top: 12px; }
 .login-error { color: var(--red); font-size: 0.85em; margin-top: 8px; }
-.cpw-label {
-  display: block;
-  font-size: 0.8em;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-top: 10px;
-  margin-bottom: 4px;
-}
-
 .empty-config-msg {
   font-family: var(--mono);
   font-size: 11px;
@@ -1650,3 +1650,72 @@ table thead th.drop-after {
   .wizard-chart-aside .wizard-chart-container { height: 400px; }
   .wizard-chart-aside .wizard-chart-wrap { margin-bottom: 0; }
 }
+
+/* ── Profile button + dropdown menu ────────────────────────────────────── */
+.profile-btn {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--surface2);
+  color: var(--text); font-family: var(--mono); font-size: 14px;
+  font-weight: 600; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; padding: 0;
+  transition: border-color .15s, background .15s;
+}
+.profile-btn:hover { border-color: var(--accent); color: var(--accent); }
+.profile-btn.open  { border-color: var(--accent); color: var(--accent); }
+
+.profile-menu {
+  position: absolute; top: 54px; right: 16px;
+  min-width: 180px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.3);
+  padding: 6px 0; z-index: 200;
+}
+.profile-menu-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 8px 14px;
+  background: none; border: none; color: var(--text);
+  font-family: var(--mono); font-size: 12px;
+  text-align: left; cursor: pointer;
+}
+.profile-menu-item:hover { background: var(--surface2); color: var(--accent); }
+.profile-menu-icon { width: 16px; text-align: center; }
+.profile-menu-divider { height: 1px; background: var(--border); margin: 6px 0; }
+.profile-menu-danger:hover { color: var(--red); }
+
+/* ── Profile + Settings modal shared bits ──────────────────────────────── */
+.profile-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.profile-section:first-of-type { margin-top: 8px; padding-top: 0; border-top: none; }
+.profile-section-title {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); margin-bottom: 10px;
+}
+.profile-label {
+  display: block; font-size: 11px; color: var(--muted);
+  margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .05em;
+}
+.profile-api-row { display: flex; gap: 8px; }
+.profile-api-row .modal-input { flex: 1; }
+.profile-success { color: var(--accent); font-size: 12px; margin-top: 8px; }
+
+.settings-slider { width: 100%; }
+.settings-seg { display: flex; gap: 4px; }
+.settings-seg-btn {
+  flex: 1; background: var(--surface2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px 0; cursor: pointer; font-family: var(--mono);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+}
+.settings-seg-btn:hover { color: var(--accent); }
+.settings-seg-btn.active {
+  background: var(--accent); color: var(--bg); border-color: var(--accent);
+}
+.settings-checkbox-row {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--text); font-size: 13px; cursor: pointer;
+}
+
+/* ── Compact mode — ~20% lighter padding on the heaviest containers ───── */
+html.compact .card { padding: 13px; }
+html.compact .wizard { padding: 19px 16px 32px; }
+html.compact .wizard-section-body { padding: 16px 14px; }
+html.compact .modal-card { padding: 19px; }

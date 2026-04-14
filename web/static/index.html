@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=15">
+<link rel="stylesheet" href="/static/style.css?v=16">
 </head>
 <body>
 
@@ -22,11 +22,22 @@
     </div>
   </div>
   <span class="uptime-chip" id="hdr-uptime"></span>
-  <button class="hbtn hbtn-theme" id="api-key-btn" title="API Key">🔑<span class="btn-label"> API Key</span></button>
-  <button class="hbtn hbtn-theme" id="change-pw-btn" type="button" title="Change password">Change Password</button>
-  <button class="hbtn hbtn-theme" id="logout-btn" type="button" title="Log out">Logout</button>
   <button class="hbtn hbtn-theme hbtn-hide-mobile" id="restart-btn" title="Restart dashboard">Restart Dashboard</button>
-  <button class="hbtn hbtn-theme" id="theme-btn" title="Toggle light/dark">☀︎</button>
+  <button id="profile-btn" type="button" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">
+    <span id="profile-initial">A</span>
+  </button>
+  <div id="profile-menu" class="profile-menu hidden" role="menu">
+    <button type="button" class="profile-menu-item" id="profile-menu-profile" role="menuitem">
+      <span class="profile-menu-icon">👤</span><span>Profile</span>
+    </button>
+    <button type="button" class="profile-menu-item" id="profile-menu-settings" role="menuitem">
+      <span class="profile-menu-icon">⚙</span><span>Settings</span>
+    </button>
+    <div class="profile-menu-divider"></div>
+    <button type="button" class="profile-menu-item profile-menu-danger" id="profile-menu-logout" role="menuitem">
+      <span class="profile-menu-icon">🚪</span><span>Logout</span>
+    </button>
+  </div>
 </header>
 
 <!-- ── API Key modal ───────────────────────────────────────────────────────── -->
@@ -46,20 +57,83 @@
   </div>
 </div>
 
-<!-- ── Change Password modal ───────────────────────────────────────────────── -->
-<div id="change-pw-modal" class="modal-overlay">
+<!-- ── Profile modal ───────────────────────────────────────────────────────── -->
+<div id="profile-modal" class="modal-overlay hidden">
   <div class="modal-card">
-    <div class="modal-title">Change Password</div>
-    <label class="cpw-label">Current password</label>
-    <input id="cpw-current" type="password" autocomplete="current-password" class="modal-input">
-    <label class="cpw-label">New password</label>
-    <input id="cpw-new" type="password" autocomplete="new-password" class="modal-input">
-    <label class="cpw-label">Confirm new password</label>
-    <input id="cpw-confirm" type="password" autocomplete="new-password" class="modal-input">
-    <div id="cpw-error" class="login-error hidden"></div>
+    <div class="modal-title">👤 Profile</div>
+
+    <section class="profile-section">
+      <div class="profile-section-title">Account</div>
+      <label class="profile-label">Username</label>
+      <input id="profile-username" class="modal-input" type="text" readonly>
+      <label class="profile-label">Display name</label>
+      <input id="profile-display-name" class="modal-input" type="text" maxlength="40" placeholder="Optional — used for the avatar initial">
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-title">Change password</div>
+      <label class="profile-label">Current password</label>
+      <input id="profile-pw-current" class="modal-input" type="password" autocomplete="current-password">
+      <label class="profile-label">New password</label>
+      <input id="profile-pw-new" class="modal-input" type="password" autocomplete="new-password">
+      <label class="profile-label">Confirm new password</label>
+      <input id="profile-pw-confirm" class="modal-input" type="password" autocomplete="new-password">
+      <div id="profile-pw-error" class="login-error hidden"></div>
+      <div id="profile-pw-success" class="profile-success hidden">Password updated.</div>
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-title">API key</div>
+      <label class="profile-label">X-API-Key header value</label>
+      <div class="profile-api-row">
+        <input id="profile-api-key" class="modal-input" type="password" readonly>
+        <button type="button" id="profile-api-change" class="hbtn hbtn-theme">Change</button>
+      </div>
+    </section>
+
     <div class="modal-actions">
-      <button type="button" id="cpw-cancel" class="hbtn hbtn-theme">Cancel</button>
-      <button type="button" id="cpw-submit" class="hbtn hbtn-theme btn-accent">Save</button>
+      <button type="button" id="profile-close" class="hbtn hbtn-theme">Close</button>
+      <button type="button" id="profile-save" class="hbtn hbtn-theme btn-accent">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Settings modal ──────────────────────────────────────────────────────── -->
+<div id="settings-modal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-title">⚙ Settings</div>
+
+    <section class="profile-section">
+      <div class="profile-section-title">Appearance</div>
+
+      <label class="profile-label">Text size: <span id="settings-textsize-label">14px</span></label>
+      <input id="settings-textsize" type="range" min="12" max="18" step="1" value="14" class="settings-slider">
+
+      <label class="profile-label">Text brightness</label>
+      <div class="settings-seg" role="tablist">
+        <button type="button" class="settings-seg-btn" data-brightness="dimmed">Dimmed</button>
+        <button type="button" class="settings-seg-btn" data-brightness="normal">Normal</button>
+        <button type="button" class="settings-seg-btn" data-brightness="bright">Bright</button>
+      </div>
+
+      <label class="profile-label">Theme</label>
+      <div class="settings-seg" role="tablist">
+        <button type="button" class="settings-seg-btn" data-theme="dark">Dark</button>
+        <button type="button" class="settings-seg-btn" data-theme="light">Light</button>
+      </div>
+    </section>
+
+    <section class="profile-section">
+      <div class="profile-section-title">Interface</div>
+      <label class="settings-checkbox-row">
+        <input type="checkbox" id="settings-compact">
+        <span>Compact mode — reduces padding and margins by 20%</span>
+      </label>
+    </section>
+
+    <div class="modal-actions">
+      <button type="button" id="settings-reset" class="hbtn hbtn-theme btn-danger">Reset to defaults</button>
+      <button type="button" id="settings-close" class="hbtn hbtn-theme btn-accent">Close</button>
     </div>
   </div>
 </div>
@@ -608,6 +682,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=20"></script>
+<script src="/static/app.js?v=21"></script>
 </body>
 </html>

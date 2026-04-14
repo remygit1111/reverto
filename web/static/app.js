@@ -3,14 +3,30 @@
 // 'unsafe-inline' on script-src. All event handlers are wired via
 // addEventListener in setupEventListeners() — no onclick="..." attributes.
 
-// ── Theme ─────────────────────────────────────────────────────────────────────
-const t0 = localStorage.getItem('reverto-theme') || 'dark';
-document.documentElement.setAttribute('data-theme', t0);
-function toggleTheme() {
-  const n = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', n);
-  localStorage.setItem('reverto-theme', n);
+// ── Persisted UI settings (theme, text size, brightness, compact) ────────────
+// Applied as early as possible so there is no visual flash between the
+// default dark/normal palette and the user's saved preferences.
+function applyPersistedSettings() {
+  const ts = parseInt(localStorage.getItem('reverto-textsize'), 10);
+  if (Number.isFinite(ts) && ts >= 12 && ts <= 18) {
+    document.documentElement.style.fontSize = ts + 'px';
+  }
+  const br = localStorage.getItem('reverto-brightness');
+  if (br === 'dimmed' || br === 'normal' || br === 'bright') {
+    document.documentElement.dataset.brightness = br;
+  } else {
+    document.documentElement.dataset.brightness = 'normal';
+  }
+  const th = localStorage.getItem('reverto-theme');
+  if (th === 'light' || th === 'dark') {
+    document.documentElement.dataset.theme = th;
+  } else {
+    document.documentElement.dataset.theme = 'dark';
+  }
+  const compact = localStorage.getItem('reverto-compact') === '1';
+  document.documentElement.classList.toggle('compact', compact);
 }
+applyPersistedSettings();
 
 // ── API Key management ────────────────────────────────────────────────────────
 // _pendingAction holds a zero-arg callback that should run after the user
@@ -61,6 +77,7 @@ async function checkAuthStatus() {
     const r = await fetch('/auth/status');
     if (r.status === 401) return false;
     const j = await r.json();
+    if (j && j.username) _cachedUsername = j.username;
     return Boolean(j.authenticated);
   } catch (e) { return false; }
 }
@@ -111,54 +128,200 @@ async function handleLogout() {
   location.reload();
 }
 
-function showChangePwModal() {
-  const m = document.getElementById('change-pw-modal');
-  document.getElementById('cpw-current').value = '';
-  document.getElementById('cpw-new').value = '';
-  document.getElementById('cpw-confirm').value = '';
-  const err = document.getElementById('cpw-error');
-  err.classList.add('hidden'); err.textContent = '';
-  m.classList.add('show');
+// ── Profile / Settings / dropdown menu ───────────────────────────────────────
+// _cachedUsername is populated from /auth/status so the profile initial
+// and the Profile modal username field stay in sync without re-fetching
+// on every render.
+let _cachedUsername = '';
+
+function refreshProfileInitial() {
+  const display = (localStorage.getItem('reverto-display-name') || '').trim();
+  const src = display || _cachedUsername || '';
+  const ch = (src.charAt(0) || 'A').toUpperCase();
+  const el = document.getElementById('profile-initial');
+  if (el) el.textContent = ch;
 }
-function closeChangePwModal() {
-  document.getElementById('change-pw-modal').classList.remove('show');
+
+function toggleProfileMenu(force) {
+  const menu = document.getElementById('profile-menu');
+  const btn  = document.getElementById('profile-btn');
+  if (!menu || !btn) return;
+  const willOpen = force === undefined ? menu.classList.contains('hidden') : force;
+  if (willOpen) {
+    menu.classList.remove('hidden');
+    btn.classList.add('open');
+    btn.setAttribute('aria-expanded', 'true');
+  } else {
+    menu.classList.add('hidden');
+    btn.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+  }
 }
-async function submitChangePassword() {
-  const cur = document.getElementById('cpw-current').value;
-  const neu = document.getElementById('cpw-new').value;
-  const conf = document.getElementById('cpw-confirm').value;
-  const err = document.getElementById('cpw-error');
+
+function _installProfileOutsideClickHandler() {
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('profile-menu');
+    const btn  = document.getElementById('profile-btn');
+    if (!menu || !btn) return;
+    if (menu.classList.contains('hidden')) return;
+    if (btn.contains(e.target) || menu.contains(e.target)) return;
+    toggleProfileMenu(false);
+  });
+}
+
+async function showProfileModal() {
+  toggleProfileMenu(false);
+  // Username: prefer cached, otherwise fetch /auth/status.
+  if (!_cachedUsername) {
+    try {
+      const r = await fetch('/auth/status');
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.username) _cachedUsername = j.username;
+      }
+    } catch (e) {}
+  }
+  document.getElementById('profile-username').value = _cachedUsername || '';
+  document.getElementById('profile-display-name').value =
+    localStorage.getItem('reverto-display-name') || '';
+  document.getElementById('profile-api-key').value = getApiKey();
+  // Clear any stale password state.
+  document.getElementById('profile-pw-current').value = '';
+  document.getElementById('profile-pw-new').value = '';
+  document.getElementById('profile-pw-confirm').value = '';
+  const err = document.getElementById('profile-pw-error');
+  const ok  = document.getElementById('profile-pw-success');
   err.classList.add('hidden'); err.textContent = '';
-  if (neu.length < 8) {
-    err.textContent = 'New password must be at least 8 characters';
-    err.classList.remove('hidden'); return;
-  }
-  if (neu !== conf) {
-    err.textContent = 'New passwords do not match';
-    err.classList.remove('hidden'); return;
-  }
-  try {
-    const headers = { 'Content-Type': 'application/json' };
-    const apiKey = getApiKey();
-    if (apiKey) headers['X-API-Key'] = apiKey;
-    const r = await fetch('/api/auth/change-password', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ current_password: cur, new_password: neu }),
-    });
-    if (!r.ok) {
-      let msg = 'Change failed';
-      try { const j = await r.json(); if (j.detail) msg = j.detail; } catch (e) {}
-      err.textContent = msg;
+  ok.classList.add('hidden');
+  document.getElementById('profile-modal').classList.add('show');
+}
+function closeProfileModal() {
+  document.getElementById('profile-modal').classList.remove('show');
+  document.getElementById('profile-pw-current').value = '';
+  document.getElementById('profile-pw-new').value = '';
+  document.getElementById('profile-pw-confirm').value = '';
+}
+async function saveProfileModal() {
+  const err = document.getElementById('profile-pw-error');
+  const ok  = document.getElementById('profile-pw-success');
+  err.classList.add('hidden'); err.textContent = '';
+  ok.classList.add('hidden');
+
+  // 1) Display name
+  const dn = (document.getElementById('profile-display-name').value || '').trim();
+  if (dn) localStorage.setItem('reverto-display-name', dn);
+  else    localStorage.removeItem('reverto-display-name');
+  refreshProfileInitial();
+
+  // 2) Password change (only if any of the three fields is non-empty)
+  const cur  = document.getElementById('profile-pw-current').value;
+  const neu  = document.getElementById('profile-pw-new').value;
+  const conf = document.getElementById('profile-pw-confirm').value;
+  if (cur || neu || conf) {
+    if (!cur) {
+      err.textContent = 'Current password is required';
+      err.classList.remove('hidden'); return;
+    }
+    if (neu.length < 8) {
+      err.textContent = 'New password must be at least 8 characters';
+      err.classList.remove('hidden'); return;
+    }
+    if (neu !== conf) {
+      err.textContent = 'New passwords do not match';
+      err.classList.remove('hidden'); return;
+    }
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      const apiKey = getApiKey();
+      if (apiKey) headers['X-API-Key'] = apiKey;
+      const r = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ current_password: cur, new_password: neu }),
+      });
+      if (!r.ok) {
+        let msg = 'Change failed';
+        try { const j = await r.json(); if (j.detail) msg = j.detail; } catch (e) {}
+        err.textContent = msg;
+        err.classList.remove('hidden');
+        return;
+      }
+      ok.classList.remove('hidden');
+      document.getElementById('profile-pw-current').value = '';
+      document.getElementById('profile-pw-new').value = '';
+      document.getElementById('profile-pw-confirm').value = '';
+      return;
+    } catch (e2) {
+      err.textContent = 'Network error';
       err.classList.remove('hidden');
       return;
     }
-    closeChangePwModal();
-    alert('Password changed');
-  } catch (e2) {
-    err.textContent = 'Network error';
-    err.classList.remove('hidden');
   }
+
+  // 3) Nothing broke → close.
+  closeProfileModal();
+}
+
+// ── Settings modal ───────────────────────────────────────────────────────────
+function _setSegActive(container, attr, value) {
+  container.querySelectorAll('.settings-seg-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset[attr] === value);
+  });
+}
+function _settingsApplyTextSize(n, persist) {
+  const v = Math.max(12, Math.min(18, parseInt(n, 10) || 14));
+  document.documentElement.style.fontSize = v + 'px';
+  const lbl = document.getElementById('settings-textsize-label');
+  if (lbl) lbl.textContent = v + 'px';
+  const slider = document.getElementById('settings-textsize');
+  if (slider) slider.value = String(v);
+  if (persist) localStorage.setItem('reverto-textsize', String(v));
+}
+function _settingsApplyBrightness(b, persist) {
+  const v = (b === 'dimmed' || b === 'bright') ? b : 'normal';
+  document.documentElement.dataset.brightness = v;
+  const segs = document.querySelectorAll('#settings-modal .settings-seg');
+  if (segs[0]) _setSegActive(segs[0], 'brightness', v);
+  if (persist) localStorage.setItem('reverto-brightness', v);
+}
+function _settingsApplyTheme(t, persist) {
+  const v = (t === 'light') ? 'light' : 'dark';
+  document.documentElement.dataset.theme = v;
+  const segs = document.querySelectorAll('#settings-modal .settings-seg');
+  if (segs[1]) _setSegActive(segs[1], 'theme', v);
+  if (persist) localStorage.setItem('reverto-theme', v);
+}
+function _settingsApplyCompact(c, persist) {
+  const v = Boolean(c);
+  document.documentElement.classList.toggle('compact', v);
+  const cb = document.getElementById('settings-compact');
+  if (cb) cb.checked = v;
+  if (persist) localStorage.setItem('reverto-compact', v ? '1' : '0');
+}
+function _settingsRenderFromState() {
+  const ts = parseInt(localStorage.getItem('reverto-textsize'), 10);
+  _settingsApplyTextSize(Number.isFinite(ts) ? ts : 14, false);
+  _settingsApplyBrightness(localStorage.getItem('reverto-brightness') || 'normal', false);
+  _settingsApplyTheme(localStorage.getItem('reverto-theme') || 'dark', false);
+  _settingsApplyCompact(localStorage.getItem('reverto-compact') === '1', false);
+}
+function showSettingsModal() {
+  toggleProfileMenu(false);
+  _settingsRenderFromState();
+  document.getElementById('settings-modal').classList.add('show');
+}
+function closeSettingsModal() {
+  document.getElementById('settings-modal').classList.remove('show');
+}
+function resetSettingsDefaults() {
+  localStorage.removeItem('reverto-textsize');
+  localStorage.removeItem('reverto-brightness');
+  localStorage.removeItem('reverto-theme');
+  localStorage.removeItem('reverto-compact');
+  _settingsApplyTextSize(14, false);
+  _settingsApplyBrightness('normal', false);
+  _settingsApplyTheme('dark', false);
+  _settingsApplyCompact(false, false);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -3428,9 +3591,38 @@ function calcMarketStructureMarkers(candles, lookback) {
 
 // ── Event wiring (vervangt alle inline onclick=) ─────────────────────────────
 function setupEventListeners() {
-  $('api-key-btn').addEventListener('click', showApiKeyModal);
   $('restart-btn').addEventListener('click', restartPortal);
-  $('theme-btn').addEventListener('click', toggleTheme);
+
+  // Profile dropdown button + menu entries
+  $('profile-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleProfileMenu();
+  });
+  $('profile-menu-profile').addEventListener('click', showProfileModal);
+  $('profile-menu-settings').addEventListener('click', showSettingsModal);
+  $('profile-menu-logout').addEventListener('click', handleLogout);
+  _installProfileOutsideClickHandler();
+
+  // Profile modal
+  $('profile-close').addEventListener('click', closeProfileModal);
+  $('profile-save').addEventListener('click', saveProfileModal);
+  $('profile-api-change').addEventListener('click', showApiKeyModal);
+
+  // Settings modal
+  $('settings-close').addEventListener('click', closeSettingsModal);
+  $('settings-reset').addEventListener('click', resetSettingsDefaults);
+  $('settings-textsize').addEventListener('input', (e) => {
+    _settingsApplyTextSize(e.target.value, true);
+  });
+  document.querySelectorAll('#settings-modal .settings-seg-btn[data-brightness]').forEach(b => {
+    b.addEventListener('click', () => _settingsApplyBrightness(b.dataset.brightness, true));
+  });
+  document.querySelectorAll('#settings-modal .settings-seg-btn[data-theme]').forEach(b => {
+    b.addEventListener('click', () => _settingsApplyTheme(b.dataset.theme, true));
+  });
+  $('settings-compact').addEventListener('change', (e) => {
+    _settingsApplyCompact(e.target.checked, true);
+  });
 
   // Wrap in arrow fns so the native click event isn't forwarded as the
   // fromPop argument — passing a truthy Event suppressed history.pushState.
@@ -3460,11 +3652,6 @@ function setupEventListeners() {
   $('modal-cancel-btn').addEventListener('click', closeApiKeyModal);
   $('modal-save-btn').addEventListener('click', saveApiKey);
 
-  // Logout + change password
-  const lo = $('logout-btn');    if (lo) lo.addEventListener('click', handleLogout);
-  const cp = $('change-pw-btn'); if (cp) cp.addEventListener('click', showChangePwModal);
-  const cpc = $('cpw-cancel');   if (cpc) cpc.addEventListener('click', closeChangePwModal);
-  const cps = $('cpw-submit');   if (cps) cps.addEventListener('click', submitChangePassword);
   const lf  = $('login-form');   if (lf) lf.addEventListener('submit', handleLoginSubmit);
 
   setupActiveDealsCog();
@@ -3608,6 +3795,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     _handle401();
     return;
   }
+
+  refreshProfileInitial();
 
   if (!getApiKey()) showApiKeyModal();
 
