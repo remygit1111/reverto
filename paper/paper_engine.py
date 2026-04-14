@@ -358,6 +358,7 @@ class PaperEngine:
 
     def start(self):
         """Start the paper engine loop."""
+        logger.info(f"=== Bot started: {self.config.name} ===")
         logger.info(f"Starting paper engine: {self.config.name}")
         self._started_at = datetime.now()
         self.running = True
@@ -379,6 +380,7 @@ class PaperEngine:
 
     def stop(self):
         """Stop the paper engine and liquidation guard gracefully."""
+        logger.info(f"=== Bot stopped: {self.config.name} ===")
         self.running = False
         self.liq_guard.stop()
         self._clear_state()
