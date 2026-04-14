@@ -127,10 +127,12 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-deals" class="page">
   <div class="all-deals-section">
-    <div class="active-deals-header">
+    <div class="deals-table-header">
       <div class="section-title">All open deals</div>
-      <button id="active-deals-cog" type="button" class="cog-btn" aria-label="Customize columns">⚙</button>
-      <div id="active-deals-cog-menu" class="cog-menu hidden"></div>
+      <div class="deals-table-cog-wrap">
+        <button id="active-deals-cog" type="button" class="cog-btn" aria-label="Customize columns">⚙</button>
+        <div id="active-deals-cog-menu" class="cog-menu hidden"></div>
+      </div>
     </div>
     <div class="card card-no-pad mb-20">
       <table>
@@ -463,18 +465,30 @@
 
   <!-- Deals tab -->
   <div id="dtab-deals" class="detail-content hidden">
-    <div class="section-title">Open deals</div>
+    <div class="deals-table-header">
+      <div class="section-title">Open deals</div>
+      <div class="deals-table-cog-wrap">
+        <button id="d-open-deals-cog" type="button" class="cog-btn" aria-label="Customize columns">⚙</button>
+        <div id="d-open-deals-cog-menu" class="cog-menu hidden"></div>
+      </div>
+    </div>
     <div class="card card-no-pad mb-16">
       <table>
         <thead>
-          <tr><th>ID</th><th>Entry</th><th>Avg entry</th><th>Orders</th><th>Size</th><th>PnL</th><th>Opened</th></tr>
+          <tr id="d-open-thead-row"></tr>
         </thead>
         <tbody id="d-open-tbody">
-          <tr class="empty-row"><td colspan="7">No open deals</td></tr>
+          <tr class="empty-row"><td colspan="9">No open deals</td></tr>
         </tbody>
       </table>
     </div>
-    <div class="section-title">Closed deals</div>
+    <div class="deals-table-header">
+      <div class="section-title">Closed deals</div>
+      <div class="deals-table-cog-wrap">
+        <button id="d-closed-deals-cog" type="button" class="cog-btn" aria-label="Customize columns">⚙</button>
+        <div id="d-closed-deals-cog-menu" class="cog-menu hidden"></div>
+      </div>
+    </div>
     <div class="card card-no-pad">
       <table>
         <thead>
@@ -519,6 +533,6 @@
 
 </div>
 
-<script src="/static/app.js?v=13"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>
