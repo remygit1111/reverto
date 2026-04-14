@@ -834,28 +834,37 @@ function _ensureOverviewPolling() {
   }
 }
 
-function goOverview() {
+function _pushHistory(view, hash, extra = {}) {
+  try {
+    history.pushState({ view, ...extra }, '', hash);
+  } catch (e) {}
+}
+
+function goOverview(fromPop = false) {
   _resetHeaderForTopLevel();
   _setActiveTab('nav-overview-btn');
   showPage('overview');
   fetchOverview();
   _ensureOverviewPolling();
+  if (!fromPop) _pushHistory('overview', '#overview');
 }
 
-function goBots() {
+function goBots(fromPop = false) {
   _resetHeaderForTopLevel();
   _setActiveTab('nav-bots-btn');
   showPage('bots');
   fetchOverview();
   _ensureOverviewPolling();
+  if (!fromPop) _pushHistory('bots', '#bots');
 }
 
-function goDeals() {
+function goDeals(fromPop = false) {
   _resetHeaderForTopLevel();
   _setActiveTab('nav-deals-btn');
   showPage('deals');
   fetchOverview();
   _ensureOverviewPolling();
+  if (!fromPop) _pushHistory('deals', '#deals');
 }
 
 function goNewBot() {
@@ -1833,7 +1842,7 @@ async function nbSubmit() {
 
 // ── Bot detail ────────────────────────────────────────────────────────────────
 
-function openBot(slug) {
+function openBot(slug, fromPop = false) {
   clearInterval(overviewInterval);
   overviewInterval = null;
   currentSlug = slug;
@@ -1853,6 +1862,21 @@ function openBot(slug) {
   connectWS(slug);
   fetchDetail(slug);
   detailInterval = setInterval(() => fetchDetail(slug), 5000);
+  if (!fromPop) _pushHistory('bot', `#bot/${slug}`, { slug });
+}
+
+function _routeFromHash() {
+  const h = (window.location.hash || '').replace(/^#/, '');
+  if (h.startsWith('bot/')) {
+    const slug = h.slice(4);
+    if (slug) { openBot(slug, true); return; }
+  }
+  switch (h) {
+    case 'bots':     goBots(true); break;
+    case 'deals':    goDeals(true); break;
+    case 'overview': goOverview(true); break;
+    default:         goOverview(true); break;
+  }
 }
 
 async function fetchDetail(slug) {
@@ -2493,6 +2517,25 @@ document.addEventListener('DOMContentLoaded', () => {
   setupEventListeners();
 
   if (!getApiKey()) showApiKeyModal();
+
+  // History API wiring — back/forward in the browser replays pushState
+  // events without triggering another push. Initial load parses the
+  // hash so reloads preserve view state.
+  window.addEventListener('popstate', (e) => {
+    const s = e.state;
+    if (!s) { _routeFromHash(); return; }
+    switch (s.view) {
+      case 'bot':      if (s.slug) openBot(s.slug, true); else goOverview(true); break;
+      case 'bots':     goBots(true); break;
+      case 'deals':    goDeals(true); break;
+      case 'overview':
+      default:         goOverview(true); break;
+    }
+  });
+
+  if (window.location.hash) {
+    _routeFromHash();
+  }
 
   fetchOverview();
   fetchPrice();
