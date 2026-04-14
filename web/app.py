@@ -290,7 +290,8 @@ def _request_actor(request: Request) -> str:
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
     if payload and payload.get("u"):
         return f"session:{payload['u']}"
-    provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    # Header-only — query-string fallback removed, see AuthMiddleware.
+    provided = request.headers.get("X-API-Key")
     if provided and secrets.compare_digest(provided, _API_KEY):
         hint = hashlib.sha256(provided.encode("utf-8")).hexdigest()[:8]
         return f"apikey:{hint}"
@@ -747,10 +748,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if _verify_session_cookie(request.cookies.get(_SESSION_COOKIE)):
             return await call_next(request)
 
-        # API key callers still pass through — the API key dependency runs
-        # later and remains the second layer of protection on mutating
-        # routes. Legacy scripts/tests that only carry X-API-Key keep working.
-        provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        # API key callers still pass through, but ONLY via the X-API-Key
+        # header. The legacy `?api_key=` query-string fallback was
+        # dropped — query strings end up in proxy / nginx / cloud
+        # access logs and the browser's history, which leaked the
+        # long-lived API key to every collector that tailed those
+        # files. Scripts and CI tools must send the header.
+        provided = request.headers.get("X-API-Key")
         if provided and secrets.compare_digest(provided, _API_KEY):
             return await call_next(request)
 
