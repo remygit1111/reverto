@@ -383,27 +383,98 @@ async def start_bot(slug: str) -> dict:
         await registry.end_start(slug)
 
 
+def _pid_alive(pid: int) -> bool:
+    """Return True if `pid` is still a live process. Uses signal 0 probe."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but is owned by another user — treat as alive.
+        return True
+
+
 async def stop_bot(slug: str) -> dict:
     bot = await registry.get(slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
     if not bot.running:
+        # Clean up stale PID file if the process is gone but file remains.
+        if bot.pid_file.exists():
+            try:
+                bot.pid_file.unlink()
+                logger.info(f"Bot {slug}: removed stale PID file")
+            except OSError:
+                pass
         return {"ok": False, "error": f"{slug} is not running"}
+
+    pid = bot.pid
     try:
-        pid = bot.pid
         os.kill(pid, signal.SIGTERM)
-        time.sleep(0.5)
-        logger.info(f"Bot {slug} stopped (PID {pid})")
-        return {"ok": True, "message": f"{slug} stopped (PID {pid})"}
+        logger.info(f"Bot {slug}: sent SIGTERM to PID {pid}")
     except ProcessLookupError:
+        if bot.pid_file.exists():
+            try:
+                bot.pid_file.unlink()
+            except OSError:
+                pass
         return {"ok": False, "error": "Process not found — already stopped?"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+    # Wait up to 5s for graceful exit (poll PID file + liveness).
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if not _pid_alive(pid) or not bot.pid_file.exists():
+            break
+        await asyncio.sleep(0.1)
+
+    if _pid_alive(pid):
+        # Graceful shutdown timed out — escalate to SIGKILL.
+        logger.warning(
+            f"Bot {slug}: PID {pid} still alive after 5s — escalating to SIGKILL"
+        )
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # Brief wait for the kernel to reap the process.
+        for _ in range(20):
+            if not _pid_alive(pid):
+                break
+            await asyncio.sleep(0.1)
+
+    # Remove any lingering PID file so the next start doesn't see stale state.
+    if bot.pid_file.exists():
+        try:
+            bot.pid_file.unlink()
+            logger.info(f"Bot {slug}: cleaned up PID file after stop")
+        except OSError:
+            pass
+
+    logger.info(f"Bot {slug} stopped (PID {pid})")
+    return {"ok": True, "message": f"{slug} stopped (PID {pid})"}
+
 
 async def restart_bot(slug: str) -> dict:
-    await stop_bot(slug)
-    time.sleep(1)
+    bot = await registry.get(slug)
+    if not bot:
+        return {"ok": False, "error": f"Unknown bot: {slug}"}
+
+    if bot.running:
+        stop_result = await stop_bot(slug)
+        if not stop_result.get("ok"):
+            return stop_result
+
+    # Poll up to 5s for PID file to disappear so start_bot() doesn't see
+    # stale "already running" state from a slow-exiting previous process.
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if not bot.pid_file.exists() and not bot.running:
+            break
+        await asyncio.sleep(0.1)
+
     return await start_bot(slug)
 
 

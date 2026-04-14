@@ -213,6 +213,9 @@ class BacktestEngine:
 
     def _check_dca(self, deal: PaperDeal, price: float):
         """Voeg een DCA order toe als de prijs genoeg gedaald is."""
+        # max_orders=0 means "base order only, never DCA".
+        if self.config.dca.max_orders <= 1:
+            return
         if deal.dca_count >= self.config.dca.max_orders - 1:
             return
 
