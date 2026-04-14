@@ -230,23 +230,6 @@ def _require_session(request: Request) -> dict:
     return payload
 
 
-def verify_api_key(request: Request) -> str:
-    """FastAPI dependency: require X-API-Key header or ?api_key= query param.
-
-    Kept for backwards compatibility — the AuthMiddleware already gates
-    every request on either a session cookie or a valid API key, so
-    routes no longer need this as a Depends. The function is still
-    available for callers that explicitly want a hard 401 on bad keys.
-
-    Returns een 8-char sha256 hint van de aangeleverde key, bruikbaar als
-    actor-identifier in de audit log zonder de key zelf vast te leggen.
-    """
-    provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-    if not provided or not secrets.compare_digest(provided, _API_KEY):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return hashlib.sha256(provided.encode("utf-8")).hexdigest()[:8]
-
-
 def _request_actor(request: Request) -> str:
     """Return a short audit-log identifier for the caller.
 
