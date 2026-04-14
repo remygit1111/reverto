@@ -474,7 +474,7 @@ function nbDefaultState() {
     tp_min_pct: null,
     tp_max_age_enabled: false, tp_max_age_hours: 24,
     sl_type: 'fixed', sl_pct: 5.0,
-    dca_max_orders: 5, dca_size: 0.001, dca_spacing_pct: 2.5,
+    dca_max_orders: 4, dca_size: 0.001, dca_spacing_pct: 2.5,
     dca_volume_scale: 1.0, dca_step_scale: 1.0,
     schedule_timezone: 'Europe/Amsterdam',
     schedule_windows: [],
@@ -620,7 +620,13 @@ function nbReadAll() {
   nbState.sl_type = $('nb-sl-type').value;
   nbState.sl_pct = parseFloat($('nb-sl-pct').value);
 
-  nbState.dca_max_orders = parseInt($('nb-dca-max').value, 10);
+  // dca_max_orders is the user-facing DCA-only count. Clamp to [0, 49];
+  // serializer adds +1 to write the YAML's base+DCA max_orders.
+  let _dcaMax = parseInt($('nb-dca-max').value, 10);
+  if (isNaN(_dcaMax)) _dcaMax = 0;
+  if (_dcaMax < 0) _dcaMax = 0;
+  if (_dcaMax > 49) _dcaMax = 49;
+  nbState.dca_max_orders = _dcaMax;
   nbState.dca_size = parseFloat($('nb-dca-size').value);
   nbState.dca_spacing_pct = parseFloat($('nb-dca-spacing').value);
   nbState.dca_volume_scale = parseFloat($('nb-dca-volume').value);
@@ -655,8 +661,8 @@ function nbValidateAll() {
     errors.push('Stop Loss: percentage must be > 0');
 
   if (nbState.dca_max_orders == null || isNaN(nbState.dca_max_orders) ||
-      nbState.dca_max_orders < 0 || nbState.dca_max_orders > 50)
-    errors.push('DCA: max orders must be between 0 and 50');
+      nbState.dca_max_orders < 0 || nbState.dca_max_orders > 49)
+    errors.push('DCA: max DCA orders must be between 0 and 49');
   if (!nbState.dca_spacing_pct || nbState.dca_spacing_pct <= 0)
     errors.push('DCA: order spacing must be > 0');
 
@@ -1150,7 +1156,7 @@ function nbRenderDcaPreview() {
     gainPct,
   });
 
-  for (let i = 1; i < nbState.dca_max_orders; i++) {
+  for (let i = 1; i <= nbState.dca_max_orders; i++) {
     const spacing = nbState.dca_spacing_pct * Math.pow(nbState.dca_step_scale, i - 1);
     curPrice = curPrice * (1 - spacing / 100);
     const size = nbState.dca_size * Math.pow(nbState.dca_volume_scale, i - 1);
@@ -1191,7 +1197,7 @@ function nbRenderDcaPreview() {
 
 function nbCalcTotalSize() {
   let total = nbState.base_size;
-  for (let i = 1; i < nbState.dca_max_orders; i++) {
+  for (let i = 1; i <= nbState.dca_max_orders; i++) {
     total += nbState.dca_size * Math.pow(nbState.dca_volume_scale, i - 1);
   }
   return total;
@@ -1238,7 +1244,7 @@ function nbRenderReview() {
     </div>
     <div class="review-section">
       <div class="review-section-title">DCA</div>
-      <div class="review-row"><span class="review-key">Max orders</span><span>${nbState.dca_max_orders}</span></div>
+      <div class="review-row"><span class="review-key">Max DCA orders</span><span>${nbState.dca_max_orders}</span></div>
       <div class="review-row"><span class="review-key">DCA size</span><span>${nbState.dca_size} ${unit}</span></div>
       <div class="review-row"><span class="review-key">Spacing</span><span>${nbState.dca_spacing_pct}%</span></div>
       <div class="review-row"><span class="review-key">Volume scale</span><span>${nbState.dca_volume_scale}</span></div>
@@ -1264,7 +1270,8 @@ function nbBuildBotConfig() {
     },
     dca: {
       base_order_size: nbState.base_size,
-      max_orders: nbState.dca_max_orders,
+      // Wizard stores DCA-only count; YAML expects base+DCA total.
+      max_orders: nbState.dca_max_orders + 1,
       order_spacing_pct: nbState.dca_spacing_pct,
       multiplier: nbState.dca_volume_scale,
     },
@@ -1664,7 +1671,7 @@ function renderDetailConfig(cfg) {
 
     <div class="cfg-section">
       <div class="cfg-section-title">DCA Settings</div>
-      <div class="cfg-row"><span class="cfg-key">Max orders</span><span>${dca.max_orders != null ? dca.max_orders : '—'}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Max DCA orders</span><span>${dca.max_orders != null ? Math.max(0, dca.max_orders - 1) + ' DCA orders' : '—'}</span></div>
       <div class="cfg-row"><span class="cfg-key">Order spacing</span><span>${dca.order_spacing_pct != null ? dca.order_spacing_pct + '%' : '—'}</span></div>
       <div class="cfg-row"><span class="cfg-key">Multiplier</span><span>${dca.multiplier != null ? dca.multiplier : '—'}</span></div>
       <div class="cfg-row"><span class="cfg-key">Taker fee</span><span>${dca.taker_fee != null ? (dca.taker_fee * 100).toFixed(3) + '%' : '—'}</span></div>
@@ -1756,7 +1763,8 @@ function nbStateFromConfig(cfg) {
     tp_min_pct:           tp.minimum_tp_pct != null ? tp.minimum_tp_pct : null,
     sl_type:              sl.type || d.sl_type,
     sl_pct:               sl.pct != null ? sl.pct : d.sl_pct,
-    dca_max_orders:       dca.max_orders != null ? dca.max_orders : d.dca_max_orders,
+    // YAML stores base+DCA; wizard input is DCA-only, so subtract 1.
+    dca_max_orders:       dca.max_orders != null ? Math.max(0, dca.max_orders - 1) : d.dca_max_orders,
     // YAML only stores base_order_size; mirror it as the initial DCA size.
     dca_size:             dca.base_order_size != null ? dca.base_order_size : d.dca_size,
     dca_spacing_pct:      dca.order_spacing_pct != null ? dca.order_spacing_pct : d.dca_spacing_pct,
