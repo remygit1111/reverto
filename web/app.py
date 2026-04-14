@@ -233,18 +233,43 @@ def _require_session(request: Request) -> dict:
 def verify_api_key(request: Request) -> str:
     """FastAPI dependency: require X-API-Key header or ?api_key= query param.
 
-    Used on all mutating endpoints (start/stop/restart). GET endpoints stay
-    public so dashboards and read-only clients still work without a key.
+    Kept for backwards compatibility — the AuthMiddleware already gates
+    every request on either a session cookie or a valid API key, so
+    routes no longer need this as a Depends. The function is still
+    available for callers that explicitly want a hard 401 on bad keys.
 
     Returns een 8-char sha256 hint van de aangeleverde key, bruikbaar als
     actor-identifier in de audit log zonder de key zelf vast te leggen.
     """
     provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
     if not provided or not secrets.compare_digest(provided, _API_KEY):
-        # Generieke message — onthul niet of de key ontbrak of fout was,
-        # zodat een attacker geen extra info krijgt over geldige requests.
         raise HTTPException(status_code=401, detail="Unauthorized")
     return hashlib.sha256(provided.encode("utf-8")).hexdigest()[:8]
+
+
+def _request_actor(request: Request) -> str:
+    """Return a short audit-log identifier for the caller.
+
+    Resolution order:
+      * session cookie  → `session:<username>`
+      * X-API-Key header → `apikey:<8-char sha256 hint>`
+      * neither         → `-` (the AuthMiddleware would normally have
+                          rejected the request before we get here, so
+                          this branch only fires for the public /auth
+                          paths that opt out of the gate).
+    Used as a `Depends(_request_actor)` on mutating endpoints in place
+    of the old `Depends(_request_actor)` so the audit trail still
+    captures who took the action even though the API-key dependency
+    itself is gone.
+    """
+    payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if payload and payload.get("u"):
+        return f"session:{payload['u']}"
+    provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if provided and secrets.compare_digest(provided, _API_KEY):
+        hint = hashlib.sha256(provided.encode("utf-8")).hexdigest()[:8]
+        return f"apikey:{hint}"
+    return "-"
 
 # Module-level ccxt client — reused across /api/price calls so we don't pay
 # instantiation overhead on every request.
@@ -904,25 +929,25 @@ async def get_bot(slug: str):
 
 @app.post("/api/bots/{slug}/start")
 @limiter.limit("20/minute")
-async def api_start(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
-    _audit("bot_start", slug, key_hint)
+async def api_start(slug: str, request: Request, actor: str = Depends(_request_actor)):
+    _audit("bot_start", slug, actor)
     return await start_bot(slug)
 
 @app.post("/api/bots/{slug}/stop")
 @limiter.limit("20/minute")
-async def api_stop(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
-    _audit("bot_stop", slug, key_hint)
+async def api_stop(slug: str, request: Request, actor: str = Depends(_request_actor)):
+    _audit("bot_stop", slug, actor)
     return await stop_bot(slug)
 
 @app.post("/api/bots/{slug}/restart")
 @limiter.limit("20/minute")
-async def api_restart(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
-    _audit("bot_restart", slug, key_hint)
+async def api_restart(slug: str, request: Request, actor: str = Depends(_request_actor)):
+    _audit("bot_restart", slug, actor)
     return await restart_bot(slug)
 
 @app.post("/api/bots/{slug}/deal/start")
 @limiter.limit("5/minute")
-async def api_deal_start(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
+async def api_deal_start(slug: str, request: Request, actor: str = Depends(_request_actor)):
     """Manual deal trigger — writes a sentinel file that the running
     paper engine consumes on its next tick to force-open a deal."""
     bot = await registry.get(slug)
@@ -934,19 +959,19 @@ async def api_deal_start(slug: str, request: Request, key_hint: str = Depends(ve
         trigger.write_text("", encoding="utf-8")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to write trigger: {e}")
-    _audit("bot_manual_deal", slug, key_hint)
+    _audit("bot_manual_deal", slug, actor)
     return {"ok": True}
 
 
 @app.post("/api/portal/restart")
 @limiter.limit("5/minute")
-async def api_portal_restart(request: Request, key_hint: str = Depends(verify_api_key)):
+async def api_portal_restart(request: Request, actor: str = Depends(_request_actor)):
     """Restart the portal process.
 
     Uses os.execv in a background thread so the HTTP response can reach
     the browser before the process is replaced.
     """
-    _audit("portal_restart", "-", key_hint)
+    _audit("portal_restart", "-", actor)
     logger.info("Portal restart requested via API")
     t = threading.Thread(target=_do_portal_restart, daemon=True)
     t.start()
@@ -1082,12 +1107,12 @@ async def save_exchange_keys(
     name: str,
     body: ExchangeKeysBody,
     request: Request,
-    key_hint: str = Depends(verify_api_key),
+    actor: str = Depends(_request_actor),
 ):
     if name not in _KNOWN_EXCHANGES:
         raise HTTPException(status_code=404, detail="Unknown exchange")
     credentials.save_keys(name, body.api_key, body.api_secret)
-    _audit("exchange_keys_set", name, key_hint)
+    _audit("exchange_keys_set", name, actor)
     return {"ok": True, "exchange": name}
 
 
@@ -1096,14 +1121,14 @@ async def save_exchange_keys(
 async def delete_exchange_keys(
     name: str,
     request: Request,
-    key_hint: str = Depends(verify_api_key),
+    actor: str = Depends(_request_actor),
 ):
     if name not in _KNOWN_EXCHANGES:
         raise HTTPException(status_code=404, detail="Unknown exchange")
     removed = credentials.delete_keys(name)
     if not removed:
         raise HTTPException(status_code=404, detail="No keys stored for exchange")
-    _audit("exchange_keys_delete", name, key_hint)
+    _audit("exchange_keys_delete", name, actor)
     return {"ok": True, "exchange": name}
 
 
@@ -1130,7 +1155,7 @@ def _validate_bot_payload(payload: dict) -> BotConfig:
 async def create_bot(
     body: dict,
     request: Request,
-    key_hint: str = Depends(verify_api_key),
+    actor: str = Depends(_request_actor),
 ):
     """Maak een nieuwe bot YAML aan. Slug komt uit de bot naam."""
     try:
@@ -1154,7 +1179,7 @@ async def create_bot(
         encoding="utf-8",
     )
     await registry.invalidate()
-    _audit("bot_create", slug, key_hint)
+    _audit("bot_create", slug, actor)
     return {"ok": True, "slug": slug}
 
 
@@ -1176,7 +1201,7 @@ async def update_bot_config(
     slug: str,
     body: dict,
     request: Request,
-    key_hint: str = Depends(verify_api_key),
+    actor: str = Depends(_request_actor),
 ):
     path = _bot_yaml_path(slug)
     if not path.exists():
@@ -1191,7 +1216,7 @@ async def update_bot_config(
         yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
-    _audit("bot_update", slug, key_hint)
+    _audit("bot_update", slug, actor)
     return {"ok": True, "slug": slug}
 
 
@@ -1200,7 +1225,7 @@ async def update_bot_config(
 async def delete_bot(
     slug: str,
     request: Request,
-    key_hint: str = Depends(verify_api_key),
+    actor: str = Depends(_request_actor),
 ):
     bot = await registry.get(slug)
     if bot is None:
@@ -1214,7 +1239,7 @@ async def delete_bot(
         raise HTTPException(status_code=404, detail="YAML not found")
     path.unlink()
     await registry.invalidate()
-    _audit("bot_delete", slug, key_hint)
+    _audit("bot_delete", slug, actor)
     return {"ok": True, "slug": slug}
 
 
@@ -1388,7 +1413,7 @@ class AnnotationBody(BaseModel):
 async def api_db_annotations_create(
     body: AnnotationBody,
     request: Request,
-    key_hint: str = Depends(verify_api_key),
+    actor: str = Depends(_request_actor),
 ):
     new_id = deal_store.save_annotation(
         bot_slug=body.bot_slug,
@@ -1418,14 +1443,14 @@ async def api_db_annotations_delete_all(
     request: Request,
     bot_slug: str,
     timeframe: Optional[str] = None,
-    key_hint: str = Depends(verify_api_key),
+    actor: str = Depends(_request_actor),
 ):
     """Bulk-delete every annotation for a bot, optionally scoped to one
     timeframe. Registered BEFORE the {ann_id} catch-all so FastAPI
     routes the literal `/all` path here instead of trying to parse
     "all" as an int."""
     removed = deal_store.delete_annotations_for(bot_slug, timeframe)
-    _audit("annotations_clear", bot_slug, key_hint)
+    _audit("annotations_clear", bot_slug, actor)
     return {"ok": True, "removed": removed}
 
 
@@ -1434,7 +1459,7 @@ async def api_db_annotations_delete_all(
 async def api_db_annotations_delete(
     ann_id: int,
     request: Request,
-    key_hint: str = Depends(verify_api_key),
+    actor: str = Depends(_request_actor),
 ):
     if not deal_store.delete_annotation(ann_id):
         raise HTTPException(status_code=404, detail="Annotation not found")

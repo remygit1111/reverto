@@ -39,13 +39,10 @@ function applyPersistedSettings() {
 applyPersistedSettings();
 
 // ── API Key management ────────────────────────────────────────────────────────
-// _pendingAction holds a zero-arg callback that should run after the user
-// enters a valid API key. Used when an action (bot start/stop, wizard save)
-// hits a 401 or discovers there is no key — we stash the action, show the
-// modal, and rerun it from saveApiKey() so in-progress wizard state is not
-// lost to a page reload.
-let _pendingAction = null;
-
+// The portal now uses session-cookie auth for browser users. The API key is
+// kept around purely as an alternative for scripts and CLI tools that don't
+// hold a session — set it via Profile → API Key. The SPA itself never sends
+// the X-API-Key header anymore.
 function getApiKey() {
   return localStorage.getItem('reverto_api_key') || '';
 }
@@ -62,23 +59,11 @@ function saveApiKey() {
   if (!key) { alert('Empty key — not saved'); return; }
   localStorage.setItem('reverto_api_key', key);
   closeApiKeyModal();
-  // Resume whatever action was waiting for a valid key. If nothing was
-  // pending (first-time visit), we deliberately do NOT reload the page
-  // so the user stays where they are.
-  if (_pendingAction) {
-    const fn = _pendingAction;
-    _pendingAction = null;
-    fn();
-  }
 }
 function clearApiKey() {
   localStorage.removeItem('reverto_api_key');
   document.getElementById('api-key-input').value = '';
   closeApiKeyModal();
-  // Full reset: reload so WebSockets re-connect without a key (and get
-  // rejected cleanly) and the UI shows the modal again on next load.
-  _pendingAction = null;
-  location.reload();
 }
 
 // ── Session auth ──────────────────────────────────────────────────────────────
@@ -241,12 +226,9 @@ async function saveProfileModal() {
       err.classList.remove('hidden'); return;
     }
     try {
-      const headers = { 'Content-Type': 'application/json' };
-      const apiKey = getApiKey();
-      if (apiKey) headers['X-API-Key'] = apiKey;
       const r = await fetch('/api/auth/change-password', {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ current_password: cur, new_password: neu }),
       });
       if (!r.ok) {
@@ -973,21 +955,8 @@ document.addEventListener('click', e => {
 // ── Delete bot ───────────────────────────────────────────────────────────────
 async function deleteBot(slug, name) {
   if (!confirm(`Delete bot '${name}'? This cannot be undone.`)) return;
-  if (!getApiKey()) {
-    _pendingAction = () => deleteBot(slug, name);
-    showApiKeyModal();
-    return;
-  }
-  const res = await fetch(`/api/bots/${slug}`, {
-    method: 'DELETE',
-    headers: { 'X-API-Key': getApiKey() },
-  });
-  if (res.status === 401) {
-    _pendingAction = () => deleteBot(slug, name);
-    alert('Auth error — check your API key');
-    showApiKeyModal();
-    return;
-  }
+  const res = await fetch(`/api/bots/${slug}`, { method: 'DELETE' });
+  if (res.status === 401) { _handle401(); return; }
   let detail = '';
   try { detail = (await res.json()).detail || ''; } catch (e) {}
   if (!res.ok) {
@@ -1037,25 +1006,10 @@ async function _withButtonFeedback(btn, action, fn) {
 
 async function botAction(slug, action, srcBtn = null) {
   _debounceBotButtons(slug, action);
-  // No key yet → queue the action and prompt for one. Once the user
-  // enters a valid key in the modal, saveApiKey() re-invokes this.
-  if (!getApiKey()) {
-    _pendingAction = () => botAction(slug, action);
-    showApiKeyModal();
-    return;
-  }
   await _withButtonFeedback(srcBtn, action, async () => {
     try {
-      const res = await fetch(`/api/bots/${slug}/${action}`, {
-        method: 'POST',
-        headers: { 'X-API-Key': getApiKey() }
-      });
-      if (res.status === 401) {
-        _pendingAction = () => botAction(slug, action);
-        alert('Auth error — check your API key');
-        showApiKeyModal();
-        return;
-      }
+      const res = await fetch(`/api/bots/${slug}/${action}`, { method: 'POST' });
+      if (res.status === 401) { _handle401(); return; }
       const r = await res.json();
       if (!r.ok) alert(`${action} failed: ${r.error}`);
     } catch (e) {
@@ -1069,24 +1023,11 @@ async function botAction(slug, action, srcBtn = null) {
 }
 
 async function manualStartDeal(slug, srcBtn = null) {
-  if (!getApiKey()) {
-    _pendingAction = () => manualStartDeal(slug);
-    showApiKeyModal();
-    return;
-  }
   const origLabel = srcBtn ? srcBtn.innerHTML : null;
   if (srcBtn) { srcBtn.disabled = true; srcBtn.textContent = 'Starting...'; }
   try {
-    const res = await fetch(`/api/bots/${slug}/deal/start`, {
-      method: 'POST',
-      headers: { 'X-API-Key': getApiKey() },
-    });
-    if (res.status === 401) {
-      _pendingAction = () => manualStartDeal(slug);
-      alert('Auth error — check your API key');
-      showApiKeyModal();
-      return;
-    }
+    const res = await fetch(`/api/bots/${slug}/deal/start`, { method: 'POST' });
+    if (res.status === 401) { _handle401(); return; }
     if (!res.ok) {
       let detail = '';
       try { detail = (await res.json()).detail || ''; } catch (e) {}
@@ -2107,11 +2048,6 @@ async function nbSubmit() {
     nbShowError(errors.map(e => safeText(e)).join('<br>'));
     return;
   }
-  if (!getApiKey()) {
-    _pendingAction = () => nbSubmit();
-    showApiKeyModal();
-    return;
-  }
   const body = nbBuildBotConfig();
   const btn = $('nb-submit-btn');
   const wasEdit = nbEditSlug;
@@ -2123,15 +2059,10 @@ async function nbSubmit() {
     const method = wasEdit ? 'PUT' : 'POST';
     const res = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': getApiKey() },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (res.status === 401) {
-      _pendingAction = () => nbSubmit();
-      nbShowError('Auth error — check your API key');
-      showApiKeyModal();
-      return;
-    }
+    if (res.status === 401) { _handle401(); return; }
     const r = await res.json();
     if (!res.ok) {
       nbShowError(safeText(r.detail || `Save failed (${res.status})`));
@@ -2684,10 +2615,7 @@ async function restartPortal() {
   btn.disabled = true;
 
   try {
-    await fetch('/api/portal/restart', {
-      method: 'POST',
-      headers: { 'X-API-Key': getApiKey() }
-    });
+    await fetch('/api/portal/restart', { method: 'POST' });
   } catch (e) {}
 
   const poll = setInterval(async () => {
@@ -3318,52 +3246,38 @@ function _promptAnnotationText(point) {
   });
 }
 
-function _requireApiKeyOr(action) {
-  const k = getApiKey();
-  if (k) return k;
-  _pendingAction = action;
-  showApiKeyModal();
-  return null;
-}
-
 async function _persistAnnotation(fields) {
   if (!currentSlug) return;
-  const doPost = async () => {
-    const key = _requireApiKeyOr(doPost);
-    if (!key) return;
-    // timeframe is a required field on AnnotationBody — the SPA always
-    // has _chartTimeframe set by the time the tool fires, but fall
-    // through to '1h' just in case a race empties it.
-    const body = Object.assign({
-      bot_slug: currentSlug,
-      timeframe: _chartTimeframe || '1h',
-    }, fields);
-    let r;
-    try {
-      r = await fetch('/api/db/annotations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
-        body: JSON.stringify(body),
-        credentials: 'same-origin',
-      });
-    } catch (e) { return; }
-    if (r.status === 401) { _pendingAction = doPost; showApiKeyModal(); return; }
-    if (!r.ok) return;
-    // Optimistic update: splice the new annotation into the local
-    // cache so the SVG overlay updates immediately without waiting
-    // for a round-trip to the GET list endpoint.
-    try {
-      const j = await r.json();
-      if (j && Number.isFinite(j.id)) {
-        _chartAnnotations.push(Object.assign({}, body, { id: j.id }));
-        _renderAnnotations();
-        return;
-      }
-    } catch (e) {}
-    // Fallback: full reload if the POST response was malformed.
-    await _loadAnnotations();
-  };
-  await doPost();
+  // timeframe is a required field on AnnotationBody — the SPA always
+  // has _chartTimeframe set by the time the tool fires, but fall
+  // through to '1h' just in case a race empties it.
+  const body = Object.assign({
+    bot_slug: currentSlug,
+    timeframe: _chartTimeframe || '1h',
+  }, fields);
+  let r;
+  try {
+    r = await fetch('/api/db/annotations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) { return; }
+  if (r.status === 401) { _handle401(); return; }
+  if (!r.ok) return;
+  // Optimistic update: splice the new annotation into the local
+  // cache so the SVG overlay updates immediately without waiting
+  // for a round-trip to the GET list endpoint.
+  try {
+    const j = await r.json();
+    if (j && Number.isFinite(j.id)) {
+      _chartAnnotations.push(Object.assign({}, body, { id: j.id }));
+      _renderAnnotations();
+      return;
+    }
+  } catch (e) {}
+  // Fallback: full reload if the POST response was malformed.
+  await _loadAnnotations();
 }
 
 async function _loadAnnotations() {
@@ -3558,40 +3472,27 @@ async function _deleteAnnotationNear(point) {
     if (d < bestD) { bestD = d; best = a; }
   }
   if (!best) return;
-  const doDelete = async () => {
-    const key = _requireApiKeyOr(doDelete);
-    if (!key) return;
-    try {
-      const r = await fetch(`/api/db/annotations/${best.id}`, {
-        method: 'DELETE',
-        headers: { 'X-API-Key': key },
-      });
-      if (r.status === 401) { _pendingAction = doDelete; showApiKeyModal(); return; }
-      if (!r.ok) return;
-      _chartAnnotations = _chartAnnotations.filter(a => a.id !== best.id);
-      _renderAnnotations();
-    } catch (e) {}
-  };
-  await doDelete();
+  try {
+    const r = await fetch(`/api/db/annotations/${best.id}`, { method: 'DELETE' });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) return;
+    _chartAnnotations = _chartAnnotations.filter(a => a.id !== best.id);
+    _renderAnnotations();
+  } catch (e) {}
 }
 
 async function _clearAllAnnotations(slug, timeframe, onCleared) {
   if (!slug) return;
   if (!window.confirm('Delete all annotations for this chart? This cannot be undone.')) return;
-  const doClear = async () => {
-    const key = _requireApiKeyOr(doClear);
-    if (!key) return;
-    const url = '/api/db/annotations/all'
-      + `?bot_slug=${encodeURIComponent(slug)}`
-      + (timeframe ? `&timeframe=${encodeURIComponent(timeframe)}` : '');
-    try {
-      const r = await fetch(url, { method: 'DELETE', headers: { 'X-API-Key': key } });
-      if (r.status === 401) { _pendingAction = doClear; showApiKeyModal(); return; }
-      if (!r.ok) return;
-      if (typeof onCleared === 'function') onCleared();
-    } catch (e) {}
-  };
-  await doClear();
+  const url = '/api/db/annotations/all'
+    + `?bot_slug=${encodeURIComponent(slug)}`
+    + (timeframe ? `&timeframe=${encodeURIComponent(timeframe)}` : '');
+  try {
+    const r = await fetch(url, { method: 'DELETE' });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) return;
+    if (typeof onCleared === 'function') onCleared();
+  } catch (e) {}
 }
 
 function _installChartToolHandlers() {
@@ -3965,35 +3866,29 @@ async function _loadWizardAnnotations() {
 }
 
 async function _persistWizardAnnotation(fields) {
-  const doPost = async () => {
-    const key = _requireApiKeyOr(doPost);
-    if (!key) return;
-    const body = Object.assign({
-      bot_slug: _WIZARD_ANNOT_SLUG,
-      timeframe: _wizardTimeframe || '1h',
-    }, fields);
-    let r;
-    try {
-      r = await fetch('/api/db/annotations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
-        body: JSON.stringify(body),
-        credentials: 'same-origin',
-      });
-    } catch (e) { return; }
-    if (r.status === 401) { _pendingAction = doPost; showApiKeyModal(); return; }
-    if (!r.ok) return;
-    try {
-      const j = await r.json();
-      if (j && Number.isFinite(j.id)) {
-        _wizardAnnotations.push(Object.assign({}, body, { id: j.id }));
-        _renderWizardAnnotations();
-        return;
-      }
-    } catch (e) {}
-    await _loadWizardAnnotations();
-  };
-  await doPost();
+  const body = Object.assign({
+    bot_slug: _WIZARD_ANNOT_SLUG,
+    timeframe: _wizardTimeframe || '1h',
+  }, fields);
+  let r;
+  try {
+    r = await fetch('/api/db/annotations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) { return; }
+  if (r.status === 401) { _handle401(); return; }
+  if (!r.ok) return;
+  try {
+    const j = await r.json();
+    if (j && Number.isFinite(j.id)) {
+      _wizardAnnotations.push(Object.assign({}, body, { id: j.id }));
+      _renderWizardAnnotations();
+      return;
+    }
+  } catch (e) {}
+  await _loadWizardAnnotations();
 }
 
 function _promptWizardAnnotationText(point) {
@@ -4026,21 +3921,13 @@ async function _deleteWizardAnnotationNear(point) {
     if (d < bestD) { bestD = d; best = a; }
   }
   if (!best) return;
-  const doDelete = async () => {
-    const key = _requireApiKeyOr(doDelete);
-    if (!key) return;
-    try {
-      const r = await fetch(`/api/db/annotations/${best.id}`, {
-        method: 'DELETE',
-        headers: { 'X-API-Key': key },
-      });
-      if (r.status === 401) { _pendingAction = doDelete; showApiKeyModal(); return; }
-      if (!r.ok) return;
-      _wizardAnnotations = _wizardAnnotations.filter(a => a.id !== best.id);
-      _renderWizardAnnotations();
-    } catch (e) {}
-  };
-  await doDelete();
+  try {
+    const r = await fetch(`/api/db/annotations/${best.id}`, { method: 'DELETE' });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) return;
+    _wizardAnnotations = _wizardAnnotations.filter(a => a.id !== best.id);
+    _renderWizardAnnotations();
+  } catch (e) {}
 }
 
 function _installWizardChartToolHandlers() {
@@ -4798,7 +4685,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   refreshProfileInitial();
 
-  if (!getApiKey()) showApiKeyModal();
+  // No more first-visit API key prompt — session cookie auth covers
+  // the SPA. The API key is still settable via Profile → API Key for
+  // operators who want to call mutating endpoints from scripts.
 
   // History API wiring — back/forward in the browser replays pushState
   // events without triggering another push. Initial load parses the
