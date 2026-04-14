@@ -3335,14 +3335,27 @@ async function _persistAnnotation(fields) {
 }
 
 async function _loadAnnotations() {
-  if (!currentSlug) { _chartAnnotations = []; _renderAnnotations(); return; }
+  _chartAnnotations = [];
+  if (!currentSlug) { _renderAnnotations(); return; }
+  const tf = _chartTimeframe || '1h';
   try {
     const r = await fetch(
-      `/api/db/annotations?bot_slug=${encodeURIComponent(currentSlug)}&timeframe=${encodeURIComponent(_chartTimeframe)}`
+      `/api/db/annotations?bot_slug=${encodeURIComponent(currentSlug)}&timeframe=${encodeURIComponent(tf)}`,
+      { credentials: 'same-origin' }
     );
-    if (!r.ok) return;
-    _chartAnnotations = await r.json();
-  } catch (e) { _chartAnnotations = []; }
+    if (r.status === 401) {
+      // Session expired — kick the SPA back to the login view rather
+      // than silently showing an empty annotation list.
+      _handle401();
+      return;
+    }
+    if (!r.ok) {
+      _renderAnnotations();
+      return;
+    }
+    const body = await r.json();
+    if (Array.isArray(body)) _chartAnnotations = body;
+  } catch (e) { /* keep empty */ }
   _renderAnnotations();
 }
 
@@ -3422,31 +3435,47 @@ async function _deleteAnnotationNear(point) {
 
 function _installChartToolHandlers() {
   if (!_chartMain || !_chartCandles) return;
-  try {
-    _chartMain.subscribeClick(param => {
-      if (_chartActiveTool === 'select') return;
-      if (!param || !param.time || !param.point) return;
-      const price = _chartCandles.coordinateToPrice(param.point.y);
-      if (!Number.isFinite(price)) return;
-      const point = { time: Number(param.time), price: Number(price) };
-      if (_chartActiveTool === 'text') {
-        _promptAnnotationText(point);
-        return;
+  // Lightweight Charts' subscribeClick only populates `param.time` when
+  // the cursor is parked exactly on a candle tick — clicks between
+  // candles yield undefined and the handler bailed, so roughly half
+  // the clicks felt like no-ops. Derive the time and price from the
+  // raw point via the time scale's coordinateToTime() and the candle
+  // series' coordinateToPrice() instead, which work anywhere inside
+  // the chart area. The subscribed callback is still the right place
+  // to receive clicks (LC doesn't expose the canvas DOM to outside
+  // listeners) — we just stop trusting param.time.
+  const ts = _chartMain.timeScale();
+  const handle = (param) => {
+    if (_chartActiveTool === 'select') return;
+    if (!param || !param.point) return;
+    const { x, y } = param.point;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    let t = param.time;
+    if (t == null) {
+      try { t = ts.coordinateToTime(x); } catch (e) { t = null; }
+    }
+    if (t == null) return;
+    const price = _chartCandles.coordinateToPrice(y);
+    if (!Number.isFinite(price)) return;
+    const point = { time: Number(t), price: Number(price) };
+    if (_chartActiveTool === 'text') {
+      _promptAnnotationText(point);
+      return;
+    }
+    if (_chartActiveTool === 'measure' || _chartActiveTool === 'arrow') {
+      if (!_toolFirstPoint) {
+        _toolFirstPoint = point;
+      } else {
+        _finishTwoPointTool(_chartActiveTool, _toolFirstPoint, point);
+        _toolFirstPoint = null;
       }
-      if (_chartActiveTool === 'measure' || _chartActiveTool === 'arrow') {
-        if (!_toolFirstPoint) {
-          _toolFirstPoint = point;
-        } else {
-          _finishTwoPointTool(_chartActiveTool, _toolFirstPoint, point);
-          _toolFirstPoint = null;
-        }
-        return;
-      }
-      if (_chartActiveTool === 'delete') {
-        _deleteAnnotationNear(point);
-      }
-    });
-  } catch (e) {}
+      return;
+    }
+    if (_chartActiveTool === 'delete') {
+      _deleteAnnotationNear(point);
+    }
+  };
+  try { _chartMain.subscribeClick(handle); } catch (e) {}
 }
 
 async function _renderDealOverlays() {
