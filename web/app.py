@@ -1053,7 +1053,17 @@ async def api_price():
 # O(1) recency tracking; the eldest entry is evicted on miss when the
 # cap is reached. Expired entries are dropped on access.
 _chart_cache: "OrderedDict[tuple, tuple[float, list]]" = OrderedDict()
-_CHART_CACHE_TTL = 60.0
+# TTL per timeframe — the longer the bar, the slower the data moves,
+# so we can hold each cached payload longer without hiding a real
+# market move from the user. 15m bars go stale fast (operators want
+# to see the latest wick); 1d bars are essentially static.
+_CHART_CACHE_TTL = {
+    "15m": 30.0,
+    "1h":  120.0,
+    "4h":  300.0,
+    "1d":  600.0,
+}
+_CHART_CACHE_TTL_DEFAULT = 60.0
 _CHART_CACHE_MAX = 256
 _CHART_TIMEFRAMES = ("15m", "1h", "4h", "1d")
 _chart_lock = asyncio.Lock()
@@ -1124,7 +1134,8 @@ async def api_chart(pair: str, timeframe: str, limit: int = 200):
         }
         for c in raw
     ]
-    _chart_cache[key] = (now + _CHART_CACHE_TTL, payload)
+    ttl = _CHART_CACHE_TTL.get(timeframe, _CHART_CACHE_TTL_DEFAULT)
+    _chart_cache[key] = (now + ttl, payload)
     _chart_cache.move_to_end(key)
     # Bound the cache: evict the eldest entry once we cross the cap so
     # the dict can never grow unbounded under a hostile or misbehaving
