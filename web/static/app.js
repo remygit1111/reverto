@@ -3259,6 +3259,9 @@ function clearDealFromChart() {
 // the label as its title. Not pixel-perfect, but CSP-safe and zero-deps.
 
 function _setActiveTool(name) {
+  // DEBUG — temporary logging for annotation flow. Strip with a
+  // follow-up `grep -n '\[ANNOT\]'` pass once the bug is confirmed fixed.
+  console.log('[ANNOT] tool activated:', name);
   _chartActiveTool = name || 'select';
   _toolFirstPoint = null;
   document.querySelectorAll('.chart-tool').forEach(b => {
@@ -3313,8 +3316,13 @@ function _finishTwoPointTool(tool, p1, p2) {
 }
 
 function _promptAnnotationText(point) {
+  console.log('[ANNOT] showing prompt for text annotation at', point);
   const label = window.prompt('Label?');
-  if (!label) return;
+  console.log('[ANNOT] prompt result:', label);
+  if (!label) {
+    console.log('[ANNOT] empty label — aborting');
+    return;
+  }
   _persistAnnotation({
     type: 'text',
     x1: point.time, y1: point.price,
@@ -3332,9 +3340,14 @@ function _requireApiKeyOr(action) {
 }
 
 async function _persistAnnotation(fields) {
-  if (!currentSlug) return;
+  console.log('[ANNOT] _persistAnnotation called', fields, 'currentSlug:', currentSlug);
+  if (!currentSlug) {
+    console.log('[ANNOT] no currentSlug — aborting persist');
+    return;
+  }
   const doPost = async () => {
     const key = _requireApiKeyOr(doPost);
+    console.log('[ANNOT] api key present:', Boolean(key));
     if (!key) return;
     // timeframe is a required field on AnnotationBody — the SPA always
     // has _chartTimeframe set by the time the tool fires, but fall
@@ -3343,6 +3356,7 @@ async function _persistAnnotation(fields) {
       bot_slug: currentSlug,
       timeframe: _chartTimeframe || '1h',
     }, fields);
+    console.log('[ANNOT] persisting payload:', JSON.stringify(body));
     let r;
     try {
       r = await fetch('/api/db/annotations', {
@@ -3352,22 +3366,35 @@ async function _persistAnnotation(fields) {
         credentials: 'same-origin',
       });
     } catch (e) {
+      console.log('[ANNOT] POST threw', e);
       return;
     }
-    if (r.status === 401) { _pendingAction = doPost; showApiKeyModal(); return; }
-    if (!r.ok) return;
+    console.log('[ANNOT] POST response status:', r.status);
+    if (r.status === 401) {
+      console.log('[ANNOT] 401 from POST — re-prompting api key');
+      _pendingAction = doPost; showApiKeyModal(); return;
+    }
+    if (!r.ok) {
+      console.log('[ANNOT] non-OK POST — bailing without rerender');
+      return;
+    }
     // Optimistic update: splice the new annotation into the local
     // cache so the SVG overlay updates immediately without waiting
     // for a round-trip to the GET list endpoint.
     try {
       const j = await r.json();
+      console.log('[ANNOT] POST response body:', j);
       if (j && Number.isFinite(j.id)) {
         _chartAnnotations.push(Object.assign({}, body, { id: j.id }));
+        console.log('[ANNOT] cache spliced, count now', _chartAnnotations.length);
         _renderAnnotations();
         return;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.log('[ANNOT] POST json parse threw', e);
+    }
     // Fallback: full reload if the POST response was malformed.
+    console.log('[ANNOT] falling back to full reload');
     await _loadAnnotations();
   };
   await doPost();
@@ -3446,8 +3473,12 @@ function _chartYOfPrice(p) {
 }
 
 function _renderAnnotations() {
+  console.log('[ANNOT] _renderAnnotations called, count:', (_chartAnnotations || []).length);
   const svg = _ensureAnnotationSvg();
-  if (!svg) return;
+  if (!svg) {
+    console.log('[ANNOT] no SVG host available — chart not initialised yet');
+    return;
+  }
   // Size the SVG viewBox to match the chart container so pixel
   // coordinates from timeToCoordinate/priceToCoordinate land correctly.
   const host = document.getElementById('chart-main');
@@ -3466,7 +3497,11 @@ function _renderAnnotations() {
     const color = a.color || (a.type === 'text' ? amber : blue);
     const x1 = _chartXOfTime(a.x1);
     const y1 = _chartYOfPrice(a.y1);
-    if (x1 == null || y1 == null) continue;
+    console.log('[ANNOT] mapping annotation', a.id, a.type, 'x1=', a.x1, '→', x1, 'y1=', a.y1, '→', y1);
+    if (x1 == null || y1 == null) {
+      console.log('[ANNOT] coords out of view — skipping');
+      continue;
+    }
 
     if (a.type === 'text') {
       const g = _svgEl('g', { 'data-ann-id': a.id });
@@ -3555,18 +3590,37 @@ function _installChartToolHandlers() {
   // listeners) — we just stop trusting param.time.
   const ts = _chartMain.timeScale();
   const handle = (param) => {
-    if (_chartActiveTool === 'select') return;
-    if (!param || !param.point) return;
+    // DEBUG — annotation flow tracing.
+    console.log('[ANNOT] chart click', param, 'active tool:', _chartActiveTool);
+    if (_chartActiveTool === 'select') {
+      console.log('[ANNOT] tool is select — ignoring click');
+      return;
+    }
+    if (!param || !param.point) {
+      console.log('[ANNOT] click missing param.point — bailing', param);
+      return;
+    }
     const { x, y } = param.point;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      console.log('[ANNOT] non-finite coords', x, y);
+      return;
+    }
     let t = param.time;
     if (t == null) {
       try { t = ts.coordinateToTime(x); } catch (e) { t = null; }
+      console.log('[ANNOT] time fallback via coordinateToTime →', t);
     }
-    if (t == null) return;
+    if (t == null) {
+      console.log('[ANNOT] no time resolvable — bailing');
+      return;
+    }
     const price = _chartCandles.coordinateToPrice(y);
-    if (!Number.isFinite(price)) return;
+    if (!Number.isFinite(price)) {
+      console.log('[ANNOT] non-finite price from coordinateToPrice', price);
+      return;
+    }
     const point = { time: Number(t), price: Number(price) };
+    console.log('[ANNOT] resolved point', point);
     if (_chartActiveTool === 'text') {
       _promptAnnotationText(point);
       return;
@@ -3574,17 +3628,22 @@ function _installChartToolHandlers() {
     if (_chartActiveTool === 'measure' || _chartActiveTool === 'arrow') {
       if (!_toolFirstPoint) {
         _toolFirstPoint = point;
+        console.log('[ANNOT] first point armed for', _chartActiveTool);
       } else {
+        console.log('[ANNOT] second point — finishing two-point tool');
         _finishTwoPointTool(_chartActiveTool, _toolFirstPoint, point);
         _toolFirstPoint = null;
       }
       return;
     }
     if (_chartActiveTool === 'delete') {
+      console.log('[ANNOT] delete near point', point);
       _deleteAnnotationNear(point);
     }
   };
-  try { _chartMain.subscribeClick(handle); } catch (e) {}
+  try { _chartMain.subscribeClick(handle); } catch (e) {
+    console.log('[ANNOT] subscribeClick threw', e);
+  }
 }
 
 async function _renderDealOverlays() {
