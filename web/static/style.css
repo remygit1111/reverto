@@ -1712,6 +1712,8 @@ table tbody tr.clickable-row:hover td { background:var(--surface2); }
 }
 .profile-api-row { display: flex; gap: 8px; }
 .profile-api-row .modal-input { flex: 1; }
+.profile-api-help { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.profile-api-key-display { font-family: var(--mono); letter-spacing: 0.5px; }
 .profile-success { color: var(--accent); font-size: 12px; margin-top: 8px; }
 
 .settings-slider { width: 100%; }

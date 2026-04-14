@@ -179,7 +179,16 @@ async function showProfileModal() {
   document.getElementById('profile-username').value = _cachedUsername || '';
   document.getElementById('profile-display-name').value =
     localStorage.getItem('reverto-display-name') || '';
-  document.getElementById('profile-api-key').value = getApiKey();
+  // Show the API key masked: first 8 chars visible, the rest replaced
+  // by a fixed-length run of asterisks. The full key is still kept in
+  // localStorage and copied to the clipboard by the Copy button.
+  const fullKey = getApiKey();
+  const apiInput = document.getElementById('profile-api-key');
+  apiInput.value = fullKey
+    ? fullKey.slice(0, 8) + '*'.repeat(Math.max(0, fullKey.length - 8))
+    : '(not set)';
+  apiInput.dataset.fullKey = fullKey || '';
+  document.getElementById('profile-api-copy-status').classList.add('hidden');
   // Clear any stale password state.
   document.getElementById('profile-pw-current').value = '';
   document.getElementById('profile-pw-new').value = '';
@@ -195,6 +204,41 @@ function closeProfileModal() {
   document.getElementById('profile-pw-current').value = '';
   document.getElementById('profile-pw-new').value = '';
   document.getElementById('profile-pw-confirm').value = '';
+}
+async function copyProfileApiKey() {
+  const status = document.getElementById('profile-api-copy-status');
+  const apiInput = document.getElementById('profile-api-key');
+  const fullKey = (apiInput && apiInput.dataset.fullKey) || '';
+  if (!fullKey) {
+    status.textContent = 'No API key set yet.';
+    status.classList.remove('hidden');
+    return;
+  }
+  let copied = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(fullKey);
+      copied = true;
+    }
+  } catch (e) { copied = false; }
+  if (!copied) {
+    // Clipboard API unavailable (insecure context, no permission). Fall
+    // back to a temporary textarea + execCommand("copy") so the button
+    // still works on plain http://.
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = fullKey;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) { copied = false; }
+  }
+  status.textContent = copied ? 'Copied to clipboard.' : 'Copy failed.';
+  status.classList.remove('hidden');
 }
 async function saveProfileModal() {
   const err = document.getElementById('profile-pw-error');
@@ -4445,7 +4489,7 @@ function setupEventListeners() {
   // Profile modal
   $('profile-close').addEventListener('click', closeProfileModal);
   $('profile-save').addEventListener('click', saveProfileModal);
-  $('profile-api-change').addEventListener('click', showApiKeyModal);
+  $('profile-api-copy').addEventListener('click', copyProfileApiKey);
 
   // Settings modal
   $('settings-close').addEventListener('click', closeSettingsModal);
