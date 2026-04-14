@@ -93,6 +93,10 @@ function _handle401() {
     login.classList.remove('hidden');
     login.classList.add('active');
   }
+  // Strip the chrome (main nav, header buttons, state indicators) so
+  // the login screen is the only thing visible. CSS hides everything
+  // except the REVERTO logo when body carries .is-login.
+  document.body.classList.add('is-login');
 }
 
 async function handleLoginSubmit(e) {
@@ -4949,6 +4953,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     _handle401();
     return;
   }
+  // Authed — make sure the chrome is visible (a previous _handle401
+  // call from a stale tab on the same page could have left the
+  // .is-login class on body).
+  document.body.classList.remove('is-login');
 
   refreshProfileInitial();
 
