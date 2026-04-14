@@ -17,6 +17,8 @@ _TELEGRAM_BASE = "https://api.telegram.org/bot"
 # Event type constants — used to match against notify_on config
 EVENT_STARTUP        = "startup"
 EVENT_SHUTDOWN       = "shutdown"
+EVENT_STOP           = "stop"
+EVENT_RESTART        = "restart"
 EVENT_ENTRY          = "entry"
 EVENT_DCA            = "dca_trigger"
 EVENT_TP             = "tp_hit"
@@ -103,6 +105,26 @@ class TelegramNotifier:
         if not self._is_enabled(EVENT_SHUTDOWN):
             return
         self.send(f"🛑 <b>Reverto stopped</b>\nBot: {bot_name}")
+
+    def notify_stop(self, bot_name: str, mode: str, exchange: str):
+        # New-style stop event. Falls back to the legacy "shutdown"
+        # gate so existing configs still notify.
+        if not (self._is_enabled(EVENT_STOP) or self._is_enabled(EVENT_SHUTDOWN)):
+            return
+        self.send(
+            f"🛑 <b>Reverto stopped</b>\n"
+            f"Bot      : {bot_name}\n"
+            f"Mode     : {mode.upper()}\n"
+            f"Exchange : {exchange.upper()}"
+        )
+
+    def notify_restart(self, bot_name: str):
+        if not self._is_enabled(EVENT_RESTART):
+            return
+        self.send(
+            f"🔄 <b>Reverto restarting</b>\n"
+            f"Bot: {bot_name}"
+        )
 
     # ------------------------------------------------------------------
     # Schedule events

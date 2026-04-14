@@ -22,8 +22,10 @@ from typing import Optional
 
 import yaml
 
+from config.config_loader import load_bot_config
 from config.models import BotConfig
 from core import credentials
+from notifications.telegram import TelegramNotifier
 
 import ccxt
 import uvicorn
@@ -461,6 +463,16 @@ async def restart_bot(slug: str) -> dict:
     bot = await registry.get(slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
+
+    # Fire restart notification before tearing the subprocess down.
+    # The portal owns the restart lifecycle, so the bot itself never
+    # gets a chance to send this from inside its own engine loop.
+    try:
+        cfg = load_bot_config(bot.config_file)
+        notifier = TelegramNotifier(notify_on=cfg.telegram.notify_on)
+        notifier.notify_restart(cfg.name)
+    except Exception as e:
+        logger.warning("restart notify failed for %s: %s", slug, e)
 
     if bot.running:
         stop_result = await stop_bot(slug)
