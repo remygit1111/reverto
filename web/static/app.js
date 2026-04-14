@@ -322,9 +322,10 @@ function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, empty
   const cols = loadColumns(lsKey, defaults).filter(c => c.visible);
   const defs = new Map(defaults.map(c => [c.key, c]));
   if (head) {
-    head.innerHTML = cols.map(c =>
-      `<th>${safeText((defs.get(c.key) || c).label)}</th>`
+    head.innerHTML = cols.map((c, i) =>
+      `<th draggable="true" data-col-idx="${i}" data-col-key="${safeText(c.key)}">${safeText((defs.get(c.key) || c).label)}</th>`
     ).join('');
+    _attachHeaderDragHandlers(head, lsKey, defaults);
   }
   const colSpan = Math.max(1, cols.length);
   if (!rows || !rows.length) {
@@ -388,7 +389,61 @@ function renderActiveDealsHead() {
   if (!head) return;
   const cols = getActiveDealsColumns().filter(c => c.visible);
   const defs = new Map(ACTIVE_DEALS_COLUMNS.map(c => [c.key, c]));
-  head.innerHTML = cols.map(c => `<th>${safeText((defs.get(c.key) || c).label)}</th>`).join('');
+  head.innerHTML = cols.map((c, i) =>
+    `<th draggable="true" data-col-idx="${i}" data-col-key="${safeText(c.key)}">${safeText((defs.get(c.key) || c).label)}</th>`
+  ).join('');
+  _attachHeaderDragHandlers(head, ACTIVE_DEALS_LS_KEY, ACTIVE_DEALS_COLUMNS);
+}
+
+// Map lsKey → re-render callback so the header drag drop can refresh
+// both the table and any open cog menu after persisting a new order.
+const _HEADER_RERENDER = new Map();
+
+function _attachHeaderDragHandlers(headEl, lsKey, defaults) {
+  // Header drag-and-drop: swaps two visible columns by their VISIBLE
+  // index, then maps that back to the underlying column array (which
+  // includes hidden columns) before persisting. This keeps hidden
+  // columns in their original slots so toggling them back doesn't
+  // shuffle into a surprise position.
+  const ths = Array.from(headEl.querySelectorAll('th'));
+  ths.forEach(th => {
+    th.addEventListener('dragstart', e => {
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', th.dataset.colKey || ''); } catch (err) {}
+      th.classList.add('dragging');
+    });
+    th.addEventListener('dragend', () => {
+      th.classList.remove('dragging');
+      ths.forEach(x => x.classList.remove('drop-before', 'drop-after'));
+    });
+    th.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const half = th.offsetWidth / 2;
+      const before = e.offsetX < half;
+      ths.forEach(x => x.classList.remove('drop-before', 'drop-after'));
+      th.classList.add(before ? 'drop-before' : 'drop-after');
+    });
+    th.addEventListener('dragleave', () => {
+      th.classList.remove('drop-before', 'drop-after');
+    });
+    th.addEventListener('drop', e => {
+      e.preventDefault();
+      ths.forEach(x => x.classList.remove('drop-before', 'drop-after'));
+      let srcKey = '';
+      try { srcKey = e.dataTransfer.getData('text/plain'); } catch (err) {}
+      const dstKey = th.dataset.colKey;
+      if (!srcKey || !dstKey || srcKey === dstKey) return;
+      const cur = loadColumns(lsKey, defaults);
+      const a = cur.findIndex(c => c.key === srcKey);
+      const b = cur.findIndex(c => c.key === dstKey);
+      if (a < 0 || b < 0) return;
+      [cur[a], cur[b]] = [cur[b], cur[a]];
+      saveColumns(lsKey, cur);
+      const cb = _HEADER_RERENDER.get(lsKey);
+      if (cb) cb();
+    });
+  });
 }
 
 function renderActiveDeals(deals) {
@@ -422,7 +477,6 @@ function renderCogMenu(menuEl, lsKey, defaults, onChange) {
   cols.forEach((col, idx) => {
     const row = document.createElement('div');
     row.className = 'cog-menu-row';
-    row.draggable = true;
     row.dataset.colKey = col.key;
     row.dataset.colIdx = String(idx);
 
@@ -447,36 +501,41 @@ function renderCogMenu(menuEl, lsKey, defaults, onChange) {
       cb.dispatchEvent(new Event('change'));
     });
 
-    row.appendChild(cb);
-    row.appendChild(lbl);
-
-    // HTML5 DnD: dragstart sets source index, dragover preventDefault'd
-    // to enable drop, drop parseInt's the index, splices, persists.
-    row.addEventListener('dragstart', e => {
-      e.dataTransfer.effectAllowed = 'move';
-      try { e.dataTransfer.setData('text/plain', String(idx)); } catch (err) {}
-      row.classList.add('dragging');
-    });
-    row.addEventListener('dragend', () => row.classList.remove('dragging'));
-    row.addEventListener('dragover', e => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-    });
-    row.addEventListener('drop', e => {
-      e.preventDefault();
-      let raw = '';
-      try { raw = e.dataTransfer.getData('text/plain'); } catch (err) {}
-      const from = parseInt(raw, 10);
-      const to = idx;
-      if (Number.isNaN(from) || from === to) return;
+    // Up/down arrow buttons to reorder — replaces the HTML5 drag that
+    // was hard to trigger in a compact dropdown menu. Disabled at the
+    // ends; swap with neighbour on click.
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.className = 'cog-arrow-btn';
+    up.textContent = '↑';
+    up.disabled = idx === 0;
+    up.addEventListener('click', () => {
+      if (idx === 0) return;
       const cur = loadColumns(lsKey, defaults);
-      if (from < 0 || from >= cur.length || to < 0 || to >= cur.length) return;
-      const [moved] = cur.splice(from, 1);
-      cur.splice(to, 0, moved);
+      [cur[idx - 1], cur[idx]] = [cur[idx], cur[idx - 1]];
       saveColumns(lsKey, cur);
       renderCogMenu(menuEl, lsKey, defaults, onChange);
       onChange();
     });
+
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.className = 'cog-arrow-btn';
+    down.textContent = '↓';
+    down.disabled = idx === cols.length - 1;
+    down.addEventListener('click', () => {
+      const cur = loadColumns(lsKey, defaults);
+      if (idx >= cur.length - 1) return;
+      [cur[idx + 1], cur[idx]] = [cur[idx], cur[idx + 1]];
+      saveColumns(lsKey, cur);
+      renderCogMenu(menuEl, lsKey, defaults, onChange);
+      onChange();
+    });
+
+    row.appendChild(cb);
+    row.appendChild(lbl);
+    row.appendChild(up);
+    row.appendChild(down);
 
     menuEl.appendChild(row);
   });
@@ -487,6 +546,9 @@ function setupCogMenu(btnId, menuId, lsKey, defaults, onChange) {
   const menu = $(menuId);
   if (!btn || !menu) return;
   _COG_MENUS.push({ btn, menu });
+  // Header-drag swaps re-use this same onChange so a drop refreshes the
+  // table immediately instead of waiting for the next poll.
+  _HEADER_RERENDER.set(lsKey, onChange);
   btn.addEventListener('click', e => {
     e.stopPropagation();
     if (menu.classList.contains('hidden')) {
