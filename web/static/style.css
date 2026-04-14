@@ -70,6 +70,29 @@ header {
   z-index: 100;
 }
 
+/* Login mode: body.is-login is added by _handle401 and stripped on
+   successful auth in DOMContentLoaded. While it's set we strip every
+   chrome element except the REVERTO logo so the login screen is the
+   only thing the user sees — the main nav, all header buttons, the
+   pair/price chip, the state-sync indicator, and the profile dropdown
+   all collapse. */
+body.is-login #main-nav,
+body.is-login #hdr-pair,
+body.is-login #hdr-price,
+body.is-login #hdr-pill,
+body.is-login #hdr-uptime,
+body.is-login .state-ws-indicator,
+body.is-login #restart-btn,
+body.is-login #profile-btn,
+body.is-login #profile-menu {
+  display: none !important;
+}
+/* Hide the "Multi-Bot Portal" subtitle too — only the bare "Reverto"
+   logo remains visible in the header during login. */
+body.is-login #hdr-context {
+  display: none;
+}
+
 .logo {
   font-family: var(--mono);
   font-size: 13px;
