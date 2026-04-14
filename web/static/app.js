@@ -2580,8 +2580,12 @@ function nbStateFromConfig(cfg) {
 function connectWS(slug) {
   if (ws) ws.close();
   $('log-body').innerHTML = '';
-  const key = encodeURIComponent(getApiKey());
-  ws = new WebSocket(`ws://${location.host}/ws/logs/${slug}?api_key=${key}`);
+  // Auth via the session cookie only — the backend dropped the legacy
+  // ?api_key= query-string fallback because query strings leak into
+  // proxy/access logs and browser history. Same-origin WS upgrades
+  // automatically forward cookies, so the cookie does the work.
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/logs/${slug}`);
   const dot = $('ws-dot');
   const lbl = $('ws-label');
   ws.onopen = () => { dot.className = 'live-dot connected'; lbl.textContent = 'live'; lbl.classList.remove('label-err'); lbl.classList.add('label-ok'); };
@@ -2630,9 +2634,9 @@ function connectOverviewLogs(slugs) {
   const lbl = $('ov-ws-label');
   let connected = 0;
 
-  const key = encodeURIComponent(getApiKey());
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   slugs.forEach(slug => {
-    const w = new WebSocket(`ws://${location.host}/ws/logs/${slug}?api_key=${key}`);
+    const w = new WebSocket(`${proto}//${location.host}/ws/logs/${slug}`);
     w.onopen = () => {
       connected++;
       dot.className = 'live-dot connected';

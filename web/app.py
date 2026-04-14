@@ -1192,14 +1192,15 @@ broadcaster = LogBroadcaster()
 @app.websocket("/ws/logs/{slug}")
 async def ws_logs(websocket: WebSocket, slug: str):
     # WebSocket auth — BaseHTTPMiddleware doesn't run on WS, so we check
-    # the session cookie (or legacy API key query param) here. Reject
-    # before accept() so we never leak logs to unauthenticated clients.
+    # the session cookie here. The legacy `?api_key=` query param fallback
+    # was removed: query strings end up in proxy / access logs and browser
+    # history, which leaked the API key. Browsers always send the session
+    # cookie on a same-origin WS upgrade, so this is no regression for the
+    # SPA. Reject before accept() so unauthenticated clients never see logs.
     session_ok = _verify_session_cookie(
         websocket.cookies.get(_SESSION_COOKIE)
     ) is not None
-    provided = websocket.query_params.get("api_key")
-    api_ok = bool(provided) and secrets.compare_digest(provided, _API_KEY)
-    if not (session_ok or api_ok):
+    if not session_ok:
         await websocket.close(code=4401)
         return
 
