@@ -1643,20 +1643,14 @@ table thead th.drop-after {
   pointer-events: none;
 }
 .chart-skeleton-hidden { display: none; }
-.chart-skeleton-bars {
-  width: 70%;
-  max-width: 480px;
-  height: 60%;
-  max-height: 240px;
-  border-radius: 4px;
-  background: linear-gradient(
-    90deg,
-    var(--surface2) 0%,
-    var(--border) 50%,
-    var(--surface2) 100%
-  );
-  background-size: 200% 100%;
-  animation: chart-skeleton-shimmer 1.4s ease-in-out infinite;
+.chart-skeleton-svg {
+  width: 90%;
+  max-width: 600px;
+  height: 70%;
+  max-height: 280px;
+  display: block;
+  /* Whole-svg pulse kicks in after the cascade finishes. */
+  animation: skel-pulse 2.4s ease-in-out 0.9s infinite;
 }
 .chart-skeleton-label {
   color: var(--muted);
@@ -1665,9 +1659,51 @@ table thead th.drop-after {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-@keyframes chart-skeleton-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+
+/* Faux candlestick chart inside the skeleton overlay. Greens use
+   --accent, reds use --red, grid lines use --border so the placeholder
+   blends with whichever theme the operator picked. Each candle starts
+   invisible and cascades in left-to-right via a per-:nth-child delay
+   so the animation feels like data streaming in. */
+.skel-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+  opacity: 0.45;
+}
+.skel-candle {
+  opacity: 0;
+  animation: skel-cascade 0.55s ease-out forwards;
+}
+.skel-up   .skel-body { fill: var(--accent); }
+.skel-up   .skel-wick { stroke: var(--accent); }
+.skel-down .skel-body { fill: var(--red); }
+.skel-down .skel-wick { stroke: var(--red); }
+.skel-wick { stroke-width: 1.6; }
+.skel-body { stroke: none; }
+
+.skel-candles > g:nth-child(1)  { animation-delay: 0ms; }
+.skel-candles > g:nth-child(2)  { animation-delay: 60ms; }
+.skel-candles > g:nth-child(3)  { animation-delay: 120ms; }
+.skel-candles > g:nth-child(4)  { animation-delay: 180ms; }
+.skel-candles > g:nth-child(5)  { animation-delay: 240ms; }
+.skel-candles > g:nth-child(6)  { animation-delay: 300ms; }
+.skel-candles > g:nth-child(7)  { animation-delay: 360ms; }
+.skel-candles > g:nth-child(8)  { animation-delay: 420ms; }
+.skel-candles > g:nth-child(9)  { animation-delay: 480ms; }
+.skel-candles > g:nth-child(10) { animation-delay: 540ms; }
+.skel-candles > g:nth-child(11) { animation-delay: 600ms; }
+.skel-candles > g:nth-child(12) { animation-delay: 660ms; }
+.skel-candles > g:nth-child(13) { animation-delay: 720ms; }
+.skel-candles > g:nth-child(14) { animation-delay: 780ms; }
+
+@keyframes skel-cascade {
+  from { opacity: 0; }
+  to   { opacity: 0.85; }
+}
+@keyframes skel-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.65; }
 }
 
 /* Deal timeline: rows in the bot detail Deals tab are clickable and jump

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=23">
+<link rel="stylesheet" href="/static/style.css?v=24">
 </head>
 <body>
 
@@ -566,7 +566,30 @@
     <div id="chart-main-wrap" class="chart-main-wrap">
       <div id="chart-main" class="chart-container chart-main"></div>
       <div id="chart-skeleton" class="chart-skeleton">
-        <div class="chart-skeleton-bars"></div>
+        <svg class="chart-skeleton-svg" viewBox="0 0 480 240" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <g class="skel-grid-group">
+            <line class="skel-grid" x1="0" y1="50"  x2="480" y2="50"/>
+            <line class="skel-grid" x1="0" y1="100" x2="480" y2="100"/>
+            <line class="skel-grid" x1="0" y1="150" x2="480" y2="150"/>
+            <line class="skel-grid" x1="0" y1="200" x2="480" y2="200"/>
+          </g>
+          <g class="skel-candles">
+            <g class="skel-candle skel-down"><line class="skel-wick" x1="16"  y1="100" x2="16"  y2="180"/><rect class="skel-body" x="9"   y="110" width="14" height="60"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="48"  y1="90"  x2="48"  y2="165"/><rect class="skel-body" x="41"  y="100" width="14" height="55"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="80"  y1="70"  x2="80"  y2="145"/><rect class="skel-body" x="73"  y="80"  width="14" height="55"/></g>
+            <g class="skel-candle skel-down"><line class="skel-wick" x1="112" y1="80"  x2="112" y2="150"/><rect class="skel-body" x="105" y="90"  width="14" height="50"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="144" y1="60"  x2="144" y2="130"/><rect class="skel-body" x="137" y="70"  width="14" height="50"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="176" y1="50"  x2="176" y2="115"/><rect class="skel-body" x="169" y="60"  width="14" height="45"/></g>
+            <g class="skel-candle skel-down"><line class="skel-wick" x1="208" y1="55"  x2="208" y2="125"/><rect class="skel-body" x="201" y="75"  width="14" height="40"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="240" y1="40"  x2="240" y2="110"/><rect class="skel-body" x="233" y="50"  width="14" height="50"/></g>
+            <g class="skel-candle skel-down"><line class="skel-wick" x1="272" y1="45"  x2="272" y2="120"/><rect class="skel-body" x="265" y="65"  width="14" height="45"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="304" y1="35"  x2="304" y2="100"/><rect class="skel-body" x="297" y="45"  width="14" height="45"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="336" y1="30"  x2="336" y2="95"/> <rect class="skel-body" x="329" y="40"  width="14" height="45"/></g>
+            <g class="skel-candle skel-down"><line class="skel-wick" x1="368" y1="40"  x2="368" y2="110"/><rect class="skel-body" x="361" y="60"  width="14" height="40"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="400" y1="25"  x2="400" y2="90"/> <rect class="skel-body" x="393" y="35"  width="14" height="40"/></g>
+            <g class="skel-candle skel-up">  <line class="skel-wick" x1="432" y1="20"  x2="432" y2="85"/> <rect class="skel-body" x="425" y="30"  width="14" height="40"/></g>
+          </g>
+        </svg>
         <div class="chart-skeleton-label">Loading chart…</div>
       </div>
     </div>
