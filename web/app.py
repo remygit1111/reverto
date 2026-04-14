@@ -76,17 +76,40 @@ class BotStateModel(BaseModel):
     indicators:          dict  = Field(default_factory=dict)
 
 # ── API key auth ──────────────────────────────────────────────────────────────
-# Read from REVERTO_API_KEY or auto-generate one and surface it via WARNING
-# log so the operator can copy it. Auto-generated keys are ephemeral —
-# restart of the portal yields a fresh key.
+# Read from REVERTO_API_KEY or auto-generate one. Generated keys NEVER
+# get logged — that would leak the credential into portal.log and any
+# log shipper. Instead they're written to logs/.api_key_ephemeral with
+# mode 0600 and removed at clean exit via atexit. The operator can
+# `cat logs/.api_key_ephemeral` to retrieve it once.
+_EPHEMERAL_API_KEY_FILE = (
+    Path(__file__).parent.parent / "logs" / ".api_key_ephemeral"
+)
 _API_KEY = os.environ.get("REVERTO_API_KEY")
 if not _API_KEY:
     _API_KEY = secrets.token_hex(32)
-    logger.warning(
-        "REVERTO_API_KEY not set — generated ephemeral key for this session: %s "
-        "(set REVERTO_API_KEY=... in your environment to make it persistent)",
-        _API_KEY,
-    )
+    try:
+        _EPHEMERAL_API_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _EPHEMERAL_API_KEY_FILE.write_text(_API_KEY + "\n", encoding="utf-8")
+        os.chmod(_EPHEMERAL_API_KEY_FILE, 0o600)
+        import atexit
+        atexit.register(
+            lambda p=_EPHEMERAL_API_KEY_FILE: p.exists() and p.unlink()
+        )
+        logger.warning(
+            "REVERTO_API_KEY not set — generated ephemeral key, written to %s "
+            "(mode 0600). For production set REVERTO_API_KEY=... in your "
+            "environment so the key survives restarts.",
+            _EPHEMERAL_API_KEY_FILE,
+        )
+    except OSError as e:
+        # Last-resort fallback: if we genuinely can't write the file
+        # the operator still needs the key, so log it. Should never
+        # hit in practice — logs/ is writable on every supported host.
+        logger.error(
+            "REVERTO_API_KEY not set and could not write %s (%s). "
+            "Ephemeral key (will be lost on restart): %s",
+            _EPHEMERAL_API_KEY_FILE, e, _API_KEY,
+        )
 
 
 # ── Session auth ──────────────────────────────────────────────────────────────
@@ -100,9 +123,10 @@ _SECRET_KEY = os.environ.get("REVERTO_SECRET_KEY")
 if not _SECRET_KEY:
     _SECRET_KEY = secrets.token_hex(32)
     logger.warning(
-        "REVERTO_SECRET_KEY not set — generated ephemeral session key for "
-        "this session (set REVERTO_SECRET_KEY=... to make sessions survive "
-        "portal restarts)."
+        "REVERTO_SECRET_KEY not set — generated ephemeral signing key. "
+        "EVERY EXISTING SESSION COOKIE WILL BE INVALIDATED ON THE NEXT "
+        "PORTAL RESTART. For production add to ~/.bashrc: "
+        "export REVERTO_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     )
 
 _SESSION_COOKIE = "reverto_session"
