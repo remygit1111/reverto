@@ -1374,6 +1374,14 @@ tr:hover td { background: rgba(128,128,128,.04); }
   border-left-color: #f050a0;  /* magenta */
 }
 
+.nb-ind-card.type-asap {
+  background: var(--surface2);
+  border-left-color: var(--muted);  /* neutral white/grey */
+}
+.nb-ind-card.type-asap .nb-ind-title {
+  color: var(--muted);
+}
+
 /* ── Schedule windows ──────────────────────────────────────────── */
 .sched-window {
   background: var(--surface2);

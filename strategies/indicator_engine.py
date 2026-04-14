@@ -95,6 +95,14 @@ class IndicatorEngine:
             logger.debug("No entry indicators configured — signal always True")
             return True
 
+        # ASAP short-circuit: if any configured entry indicator is ASAP,
+        # the entry signal is unconditionally True. Useful for manual
+        # trigger strategies where the operator wants to bypass filters.
+        for ind in self.entry_indicators:
+            if ind.type.upper() == "ASAP":
+                logger.info("Entry signal: ASAP indicator present — bypassing all filters")
+                return True
+
         results = []
         for indicator in self.entry_indicators:
             tf = indicator.timeframe or bot_timeframe
@@ -206,6 +214,11 @@ class IndicatorEngine:
         """
         itype = indicator.type.upper()
 
+        if itype == "ASAP":
+            # ASAP always fires. check_entry_signal short-circuits before
+            # reaching here, but we keep this branch so a direct call to
+            # _evaluate_indicator stays consistent.
+            return True
         if itype == "RSI":
             return check_rsi_signal(
                 closes,
