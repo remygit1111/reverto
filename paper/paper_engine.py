@@ -46,6 +46,7 @@ def _deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
         pnl_btc, pnl_pct = 0.0, 0.0
     return {
         "id":              deal.id,
+        "bot_name":        deal.bot_name,
         "symbol":          deal.symbol,
         "side":            deal.side,
         "leverage":        deal.leverage,
@@ -61,7 +62,65 @@ def _deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
         "close_reason":    deal.close_reason,
         "is_open":         deal.is_open,
         "_peak_price":     deal._peak_price,  # persist trailing stop peak
+        # Full order list — required to reconstruct the deal on restart.
+        # The dashboard only reads order_count, so adding this list is
+        # backwards-compatible with the frontend.
+        "orders": [
+            {
+                "order_number": o.order_number,
+                "price":        o.price,
+                "size":         o.size,
+                "timestamp":    o.timestamp.isoformat() if o.timestamp else None,
+                "order_type":   o.order_type,
+            }
+            for o in deal.orders
+        ],
     }
+
+
+def _dict_to_deal(d: dict) -> PaperDeal:
+    """Reconstruct a PaperDeal (with orders) from a state-file dict.
+
+    Used at startup to restore deals that survived a previous run. Only
+    fields that affect engine logic are restored; cosmetic fields like
+    rounded prices are recomputed from the order list.
+    """
+    def _parse_dt(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    orders = [
+        PaperOrder(
+            order_number=int(o.get("order_number", 1)),
+            price=float(o.get("price", 0.0)),
+            size=float(o.get("size", 0.0)),
+            timestamp=_parse_dt(o.get("timestamp")) or datetime.now(UTC),
+            order_type=str(o.get("order_type", "base")),
+        )
+        for o in d.get("orders", [])
+    ]
+
+    deal = PaperDeal(
+        id=str(d["id"]),
+        bot_name=str(d.get("bot_name", "")),
+        symbol=str(d.get("symbol", "")),
+        side=str(d.get("side", "long")),
+        leverage=int(d.get("leverage", 1)),
+        orders=orders,
+        is_open=bool(d.get("is_open", True)),
+        opened_at=_parse_dt(d.get("opened_at")) or datetime.now(UTC),
+        closed_at=_parse_dt(d.get("closed_at")),
+        close_price=d.get("close_price"),
+        close_reason=d.get("close_reason"),
+        pnl_btc=float(d.get("pnl_btc", 0.0)),
+        pnl_pct=float(d.get("pnl_pct", 0.0)),
+    )
+    deal._peak_price = float(d.get("_peak_price", 0.0))
+    return deal
 
 
 class PaperEngine:
@@ -120,6 +179,11 @@ class PaperEngine:
             target=self._notify_worker, daemon=True, name="reverto-notify"
         )
         self._notify_thread.start()
+
+        # Resume from previous run if a state file already exists. Without
+        # this, every restart would lose closed-deal history and abandon
+        # any open deal that was mid-flight when the bot was stopped.
+        self._load_state()
 
     def _notify(self, fn, *args, **kwargs):
         """Plaats een notificatie-call op de queue zonder te blokkeren."""
@@ -189,6 +253,84 @@ class PaperEngine:
             tmp.replace(self._state_file)  # atomic write
         except Exception as e:
             logger.debug(f"State write failed: {e}")
+
+    def _load_state(self):
+        """Restore engine state from a previously written state file.
+
+        Called once from __init__. If no state file exists we keep the
+        clean PaperState created above (first ever startup). If one does
+        exist we rehydrate balance, fees, deal counter, closed history
+        and any open deal that was in flight when the bot stopped — so
+        that the engine resumes monitoring it instead of silently
+        forgetting it.
+        """
+        if not self._state_file or not self._state_file.exists():
+            return
+
+        try:
+            data = json.loads(self._state_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(
+                "State file %s exists but could not be parsed (%s) — "
+                "starting clean", self._state_file, e,
+            )
+            return
+
+        # Balance + fees: persisted floats survive a restart as-is.
+        if "balance_btc" in data:
+            try:
+                self.state.balance_btc = float(data["balance_btc"])
+            except (TypeError, ValueError):
+                pass
+        if "initial_balance_btc" in data:
+            try:
+                self.state.initial_balance_btc = float(data["initial_balance_btc"])
+            except (TypeError, ValueError):
+                pass
+        if "fees_paid_btc" in data:
+            try:
+                self._fees_paid_btc = float(data["fees_paid_btc"])
+            except (TypeError, ValueError):
+                pass
+
+        # Closed deal history.
+        closed_loaded = 0
+        for raw in data.get("closed_deals", []):
+            try:
+                self.state.closed_deals.append(_dict_to_deal(raw))
+                closed_loaded += 1
+            except Exception as e:
+                logger.warning("Skipping unparseable closed deal: %s", e)
+
+        # Open deals — restored straight into open_deals so the next tick
+        # picks them up via _monitor_open_deals.
+        open_loaded = 0
+        for raw in data.get("open_deals", []):
+            try:
+                deal = _dict_to_deal(raw)
+                self.state.open_deals[deal.id] = deal
+                open_loaded += 1
+            except Exception as e:
+                logger.warning("Skipping unparseable open deal: %s", e)
+
+        # Deal counter must be ahead of any restored ID so new_deal_id()
+        # never collides with a resurrected one. IDs follow PAPER-XXXX.
+        max_idx = 0
+        for deal in list(self.state.open_deals.values()) + self.state.closed_deals:
+            try:
+                idx = int(deal.id.rsplit("-", 1)[-1])
+                if idx > max_idx:
+                    max_idx = idx
+            except (ValueError, AttributeError):
+                continue
+        if max_idx > self.state._deal_counter:
+            self.state._deal_counter = max_idx
+
+        logger.info(
+            "Resumed state from %s — balance=%.8f BTC, open=%d, closed=%d, fees=%.8f",
+            self._state_file, self.state.balance_btc,
+            open_loaded, closed_loaded, self._fees_paid_btc,
+        )
 
     def _clear_state(self):
         """
