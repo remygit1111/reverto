@@ -1382,6 +1382,28 @@ tr:hover td { background: rgba(128,128,128,.04); }
   color: var(--muted);
 }
 
+/* ── Draggable table headers ───────────────────────────────────── */
+/* All column-driven tables (Active Deals, detail Open Deals, detail
+   Closed Deals) attach draggable="true" to each <th>. The cursor and
+   visual indicators below tell the user which column they're about
+   to drop into. */
+table thead th[draggable="true"] {
+  cursor: grab;
+  user-select: none;
+}
+table thead th[draggable="true"]:active {
+  cursor: grabbing;
+}
+table thead th.dragging {
+  opacity: 0.4;
+}
+table thead th.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+table thead th.drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
+}
+
 /* ── Schedule windows ──────────────────────────────────────────── */
 .sched-window {
   background: var(--surface2);
