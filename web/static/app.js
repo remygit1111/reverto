@@ -175,7 +175,7 @@ function renderActiveDeals(deals) {
   const tbody = $('all-deals-tbody');
   if (!tbody) return;
   if (!deals.length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No open deals across any bot</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="9">No open deals across any bot</td></tr>';
   } else {
     tbody.innerHTML = deals.map(deal => `<tr>
       <td><span class="link-like" data-action="open" data-slug="${safeText(deal.bot_slug)}">${safeText(deal.bot_name)}</span></td>
@@ -185,6 +185,7 @@ function renderActiveDeals(deals) {
       <td>${fmtPrice(deal.avg_entry_price)}</td>
       <td>${deal.order_count}</td>
       <td>${fmtPnl(deal.pnl_btc)}</td>
+      <td>${fmtPct(deal.pnl_pct)}</td>
       <td class="muted-cell">${timeAgo(deal.opened_at)}</td>
     </tr>`).join('');
   }
@@ -445,7 +446,88 @@ function nbDefaultState() {
     sl_type: 'fixed', sl_pct: 5.0,
     dca_max_orders: 5, dca_size: 0.001, dca_spacing_pct: 2.5,
     dca_volume_scale: 1.0, dca_step_scale: 1.0,
+    schedule_timezone: 'Europe/Amsterdam',
+    schedule_windows: [],
+    schedule_blackouts: [],
   };
+}
+
+const NB_SCHED_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+function nbRenderScheduleWindows() {
+  const wrap = $('nb-sched-windows');
+  if (!wrap) return;
+  if (!nbState.schedule_windows.length) {
+    wrap.innerHTML = '<div class="empty-config-msg">No trading windows — bot trades 24/7</div>';
+    return;
+  }
+  wrap.innerHTML = '';
+  nbState.schedule_windows.forEach((w, idx) => {
+    const row = document.createElement('div');
+    row.className = 'sched-window';
+    row.dataset.nbSchedIdx = String(idx);
+
+    const days = document.createElement('div');
+    days.className = 'sched-window-days';
+    NB_SCHED_DAYS.forEach(day => {
+      const lbl = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'checkbox-accent';
+      cb.checked = (w.days || []).includes(day);
+      cb.addEventListener('change', () => {
+        const set = new Set(nbState.schedule_windows[idx].days || []);
+        if (cb.checked) set.add(day); else set.delete(day);
+        nbState.schedule_windows[idx].days = NB_SCHED_DAYS.filter(d => set.has(d));
+        nbRecompute();
+      });
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(' ' + day));
+      days.appendChild(lbl);
+    });
+    row.appendChild(days);
+
+    const times = document.createElement('div');
+    times.className = 'sched-window-times';
+
+    const fromLbl = document.createElement('span');
+    fromLbl.textContent = 'From';
+    times.appendChild(fromLbl);
+    const fromInp = document.createElement('input');
+    fromInp.type = 'time';
+    fromInp.value = w.from || '09:00';
+    fromInp.addEventListener('change', () => {
+      nbState.schedule_windows[idx].from = fromInp.value || '00:00';
+      nbRecompute();
+    });
+    times.appendChild(fromInp);
+
+    const toLbl = document.createElement('span');
+    toLbl.textContent = 'To';
+    times.appendChild(toLbl);
+    const toInp = document.createElement('input');
+    toInp.type = 'time';
+    toInp.value = w.to || '17:00';
+    toInp.addEventListener('change', () => {
+      nbState.schedule_windows[idx].to = toInp.value || '00:00';
+      nbRecompute();
+    });
+    times.appendChild(toInp);
+
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'hbtn hbtn-theme btn-danger sched-window-remove';
+    rm.textContent = '✕ Remove';
+    rm.addEventListener('click', () => {
+      nbState.schedule_windows.splice(idx, 1);
+      nbRenderScheduleWindows();
+      nbRecompute();
+    });
+    times.appendChild(rm);
+
+    row.appendChild(times);
+    wrap.appendChild(row);
+  });
 }
 
 function nbInit() {
@@ -454,6 +536,7 @@ function nbInit() {
   const btn = $('nb-submit-btn');
   if (btn) btn.textContent = 'Save bot';
   nbApplyStateToForm();
+  nbRenderScheduleWindows();
   nbHideError();
   nbRecompute();
   nbApplyMobileCollapse();
@@ -512,6 +595,16 @@ function nbReadAll() {
   nbState.dca_spacing_pct = parseFloat($('nb-dca-spacing').value);
   nbState.dca_volume_scale = parseFloat($('nb-dca-volume').value);
   nbState.dca_step_scale = parseFloat($('nb-dca-step').value);
+
+  const tzEl = $('nb-sched-tz');
+  if (tzEl) nbState.schedule_timezone = tzEl.value.trim() || 'Europe/Amsterdam';
+  const blEl = $('nb-sched-blackouts');
+  if (blEl) {
+    nbState.schedule_blackouts = blEl.value
+      .split('\n')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+  }
 }
 
 function nbValidateAll() {
@@ -531,8 +624,9 @@ function nbValidateAll() {
   if (!nbState.sl_pct || nbState.sl_pct <= 0)
     errors.push('Stop Loss: percentage must be > 0');
 
-  if (!nbState.dca_max_orders || nbState.dca_max_orders < 1 || nbState.dca_max_orders > 10)
-    errors.push('DCA: max orders must be between 1 and 10');
+  if (nbState.dca_max_orders == null || isNaN(nbState.dca_max_orders) ||
+      nbState.dca_max_orders < 0 || nbState.dca_max_orders > 50)
+    errors.push('DCA: max orders must be between 0 and 50');
   if (!nbState.dca_spacing_pct || nbState.dca_spacing_pct <= 0)
     errors.push('DCA: order spacing must be > 0');
 
@@ -593,7 +687,13 @@ function nbApplyStateToForm() {
   $('nb-dca-volume').value = nbState.dca_volume_scale;
   $('nb-dca-step').value = nbState.dca_step_scale;
 
+  const tzEl = $('nb-sched-tz');
+  if (tzEl) tzEl.value = nbState.schedule_timezone || 'Europe/Amsterdam';
+  const blEl = $('nb-sched-blackouts');
+  if (blEl) blEl.value = (nbState.schedule_blackouts || []).join('\n');
+
   nbRenderIndicators();
+  nbRenderScheduleWindows();
   nbUpdateLeverageUI();
 }
 
@@ -1193,6 +1293,15 @@ function nbBuildBotConfig() {
   if (nbState.tp_min_pct != null && nbState.tp_min_pct > 0) {
     cfg.take_profit.minimum_tp_pct = nbState.tp_min_pct;
   }
+  cfg.schedule = {
+    timezone: nbState.schedule_timezone || 'Europe/Amsterdam',
+    trading_windows: (nbState.schedule_windows || []).map(w => ({
+      days: (w.days || []).slice(),
+      from: w.from || '00:00',
+      to:   w.to   || '00:00',
+    })),
+    blackout_dates: (nbState.schedule_blackouts || []).slice(),
+  };
   return { bot: cfg };
 }
 
@@ -1279,6 +1388,15 @@ async function fetchDetail(slug) {
     $('status-text').textContent = b.running ? 'Running' : 'Stopped';
     pill.className = 'pill ' + (b.running ? 'running' : 'stopped');
 
+    const rs = $('d-running-status');
+    if (rs) {
+      rs.textContent = b.running ? 'RUNNING' : 'STOPPED';
+      rs.className = 'running-status ' + (b.running ? 'running' : 'stopped');
+    }
+    const sb = $('d-btn-start');   if (sb) sb.disabled = !!b.running;
+    const xb = $('d-btn-stop');    if (xb) xb.disabled = !b.running;
+    const rb = $('d-btn-restart'); if (rb) rb.disabled = !b.running;
+
     $('d-price').textContent = fmtPrice(b.current_price) || '—';
     $('d-pair-sub').textContent = b.pair || 'BTC/USD';
     $('d-balance').textContent = b.balance_btc ? b.balance_btc.toFixed(6) : '—';
@@ -1336,9 +1454,89 @@ async function fetchDetail(slug) {
         </tr>`).join('')
       : '<tr class="empty-row"><td colspan="7">No closed deals</td></tr>';
 
+    renderPerformanceStats(cd);
+
     $('log-title').textContent = slug + '.log';
 
   } catch (e) {}
+}
+
+// ── Performance stats ────────────────────────────────────────────────────────
+function renderPerformanceStats(closedDeals) {
+  const grid = $('perf-stats-grid');
+  if (!grid) return;
+  const cells = [
+    ['Profit Factor', 'profit_factor'],
+    ['Sharpe Ratio',  'sharpe'],
+    ['Sortino Ratio', 'sortino'],
+    ['Consistency',   'consistency'],
+    ['Max Drawdown',  'max_dd'],
+    ['Total Deals',   'total'],
+  ];
+  const list = Array.isArray(closedDeals) ? closedDeals : [];
+  let values;
+  if (list.length < 3) {
+    values = {
+      profit_factor: 'Insufficient data',
+      sharpe: 'Insufficient data',
+      sortino: 'Insufficient data',
+      consistency: 'Insufficient data',
+      max_dd: 'Insufficient data',
+      total: String(list.length),
+    };
+  } else {
+    const returns = list.map(d => Number(d.pnl_pct) || 0);
+    const wins = returns.filter(r => r > 0);
+    const losses = returns.filter(r => r < 0);
+    const sum = arr => arr.reduce((a, b) => a + b, 0);
+    const mean = arr => arr.length ? sum(arr) / arr.length : 0;
+    const std = arr => {
+      if (arr.length < 2) return 0;
+      const m = mean(arr);
+      return Math.sqrt(sum(arr.map(x => (x - m) ** 2)) / arr.length);
+    };
+
+    const sumWins = sum(wins);
+    const sumLosses = Math.abs(sum(losses));
+    const profitFactor = losses.length === 0
+      ? '∞'
+      : (sumLosses === 0 ? '∞' : (sumWins / sumLosses).toFixed(2));
+
+    const stdAll = std(returns);
+    const sharpe = stdAll === 0
+      ? '—'
+      : ((mean(returns) / stdAll) * Math.sqrt(252)).toFixed(2);
+
+    const stdLosses = std(losses);
+    const sortino = losses.length === 0
+      ? '∞'
+      : (stdLosses === 0 ? '∞' : ((mean(returns) / stdLosses) * Math.sqrt(252)).toFixed(2));
+
+    const consistency = (wins.length / returns.length * 100).toFixed(1) + '%';
+
+    let cum = 0, peak = 0, maxDd = 0;
+    returns.forEach(r => {
+      cum += r;
+      if (cum > peak) peak = cum;
+      const dd = peak - cum;
+      if (dd > maxDd) maxDd = dd;
+    });
+    const maxDdStr = '-' + maxDd.toFixed(2) + '%';
+
+    values = {
+      profit_factor: profitFactor,
+      sharpe,
+      sortino,
+      consistency,
+      max_dd: maxDdStr,
+      total: String(returns.length),
+    };
+  }
+  grid.innerHTML = cells.map(([label, key]) => `
+    <div class="card">
+      <div class="card-label">${safeText(label)}</div>
+      <div class="card-value">${safeText(values[key])}</div>
+    </div>`).join('');
 }
 
 // ── Bot detail: Config tab ───────────────────────────────────────────────────
@@ -1370,6 +1568,7 @@ function renderDetailConfig(cfg) {
   const tp  = b.take_profit || {};
   const sl  = b.stop_loss || {};
   const indicators = (b.entry && b.entry.indicators) || [];
+  const sched = b.schedule || null;
 
   const leverageStr = lev.enabled ? `${lev.size || 1}x` : 'off';
   const indHtml = indicators.length
@@ -1426,7 +1625,38 @@ function renderDetailConfig(cfg) {
       <div class="cfg-row"><span class="cfg-key">Multiplier</span><span>${dca.multiplier != null ? dca.multiplier : '—'}</span></div>
       <div class="cfg-row"><span class="cfg-key">Taker fee</span><span>${dca.taker_fee != null ? (dca.taker_fee * 100).toFixed(3) + '%' : '—'}</span></div>
     </div>
+
+    ${renderScheduleSection(sched)}
   `;
+}
+
+function renderScheduleSection(sched) {
+  if (!sched || (!sched.timezone && !(sched.trading_windows || []).length && !(sched.blackout_dates || []).length)) {
+    return `
+      <div class="cfg-section">
+        <div class="cfg-section-title">Schedule</div>
+        <div class="cfg-empty">No schedule configured — bot trades 24/7</div>
+      </div>`;
+  }
+  const dayNames = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
+  const windows = (sched.trading_windows || []).map(w => {
+    const days = (w.days || []).map(d => dayNames[d] || d).join(',');
+    const from = w.from || w.from_time || '?';
+    const to   = w.to   || w.to_time   || '?';
+    return `<div class="cfg-row"><span class="cfg-key">Window</span><span>${safeText(days)} ${safeText(from)}-${safeText(to)}</span></div>`;
+  }).join('') || '<div class="cfg-row"><span class="cfg-key">Windows</span><span>none (24/7)</span></div>';
+  const blackouts = (sched.blackout_dates || []).length
+    ? '<ul class="cfg-blackouts">' +
+      (sched.blackout_dates || []).map(d => `<li>${safeText(d)}</li>`).join('') +
+      '</ul>'
+    : '<span>none</span>';
+  return `
+    <div class="cfg-section">
+      <div class="cfg-section-title">Schedule</div>
+      <div class="cfg-row"><span class="cfg-key">Timezone</span><span>${safeText(sched.timezone || '—')}</span></div>
+      ${windows}
+      <div class="cfg-row"><span class="cfg-key">Blackout dates</span>${blackouts}</div>
+    </div>`;
 }
 
 // ── Edit flow: load an existing bot into the wizard ─────────────────────────
@@ -1487,6 +1717,13 @@ function nbStateFromConfig(cfg) {
     dca_size:             dca.base_order_size != null ? dca.base_order_size : d.dca_size,
     dca_spacing_pct:      dca.order_spacing_pct != null ? dca.order_spacing_pct : d.dca_spacing_pct,
     dca_volume_scale:     dca.multiplier != null ? dca.multiplier : d.dca_volume_scale,
+    schedule_timezone:    (b.schedule && b.schedule.timezone) || d.schedule_timezone,
+    schedule_windows:     ((b.schedule && b.schedule.trading_windows) || []).map(w => ({
+      days: (w.days || []).slice(),
+      from: w.from || w.from_time || '09:00',
+      to:   w.to   || w.to_time   || '17:00',
+    })),
+    schedule_blackouts:   ((b.schedule && b.schedule.blackout_dates) || []).slice(),
   };
 }
 
@@ -1652,6 +1889,30 @@ function setupEventListeners() {
   // ── New bot form ─────────────────────────────────────────────────────────
   $('nb-submit-btn').addEventListener('click', nbSubmit);
   $('nb-add-indicator-btn').addEventListener('click', nbAddIndicator);
+
+  const addWinBtn = $('nb-sched-add-window');
+  if (addWinBtn) {
+    addWinBtn.addEventListener('click', () => {
+      if (!nbState) return;
+      nbState.schedule_windows.push({
+        days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+        from: '09:00',
+        to:   '17:00',
+      });
+      nbRenderScheduleWindows();
+      nbRecompute();
+    });
+  }
+
+  // Bot detail control buttons
+  ['start', 'stop', 'restart'].forEach(action => {
+    const btn = $('d-btn-' + action);
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (currentSlug) botAction(currentSlug, action);
+      });
+    }
+  });
 
   // Base unit toggle
   document.querySelectorAll('[data-base-unit]').forEach(b => {
