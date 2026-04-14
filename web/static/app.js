@@ -787,6 +787,8 @@ const NB_INDICATOR_DESCRIPTIONS = {
   QFL:
     "QFL Base Scanner. Tracks consolidation lows that were rejected fast " +
     "and signals when price returns to or cracks a validated base.",
+  ASAP:
+    "Opens a deal immediately on the next tick, ignoring all other entry conditions.",
 };
 
 let nbState = null;
@@ -1107,6 +1109,7 @@ function nbRenderIndicators() {
                     : ind.type === 'MARKET_STRUCTURE' ? 'type-ms'
                     : ind.type === 'SUPPORT_RESISTANCE' ? 'type-sr'
                     : ind.type === 'QFL' ? 'type-qfl'
+                    : ind.type === 'ASAP' ? 'type-asap'
                     : '';
     const title = ind.type === 'EMA_CROSS' ? 'EMA Cross'
                 : ind.type === 'BOLLINGER' ? 'Bollinger Bands'
@@ -1135,6 +1138,7 @@ function nbRenderIndicators() {
               <option value="MARKET_STRUCTURE" ${ind.type === 'MARKET_STRUCTURE' ? 'selected' : ''}>Market Structure</option>
               <option value="SUPPORT_RESISTANCE" ${ind.type === 'SUPPORT_RESISTANCE' ? 'selected' : ''}>Support &amp; Resistance</option>
               <option value="QFL" ${ind.type === 'QFL' ? 'selected' : ''}>QFL Base Scanner</option>
+              <option value="ASAP" ${ind.type === 'ASAP' ? 'selected' : ''}>ASAP (no filter)</option>
             </select>
             <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
           </div>
