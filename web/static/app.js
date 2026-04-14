@@ -85,6 +85,26 @@ function timeAgo(iso) {
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
   return Math.floor(s / 86400) + 'd ago';
 }
+function formatDuration(startIso, endIso) {
+  // Human-readable diff between two ISO timestamps. Used by the closed
+  // deals "Duration" column. Returns "—" if either timestamp is missing
+  // or invalid so the table never shows NaN/Infinity.
+  if (!startIso || !endIso) return '—';
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '—';
+  const s = Math.floor((end - start) / 1000);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return m === 0 ? h + 'h' : h + 'h ' + m + 'm';
+  }
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  return h === 0 ? d + 'd' : d + 'd ' + h + 'h';
+}
 function reasonBadge(r) {
   if (!r) return '—';
   const c = r === 'tp' ? 'badge-tp' : r === 'sl' ? 'badge-sl' : 'badge-open';
@@ -245,6 +265,73 @@ function getActiveDealsColumns() {
 }
 function saveActiveDealsColumns(cols) {
   saveColumns(ACTIVE_DEALS_LS_KEY, cols);
+}
+
+// ── Closed Deals column manager ─────────────────────────────────────────────
+// The detail Deals tab's "Closed deals" table is driven by the same loadColumns
+// pattern as Active Deals. Columns include Opened/Closed/Duration which the
+// previous fixed-table layout did not surface. The cog menu that lets the
+// user toggle/reorder these columns is wired up in a separate fix; this
+// commit only adds the column array + render path.
+const CLOSED_DEALS_COLUMNS = [
+  { key: 'deal_id',     label: 'Deal ID',
+    cell: d => `<td class="muted-cell">${safeText(d.id)}</td>` },
+  { key: 'side',        label: 'Side',
+    cell: d => `<td>${safeText((d.side || '—').toUpperCase())}</td>` },
+  { key: 'avg_entry',   label: 'Avg Entry',
+    cell: d => `<td>${fmtPrice(d.avg_entry_price || d.entry_price)}</td>` },
+  { key: 'close_price', label: 'Close Price',
+    cell: d => `<td>${fmtPrice(d.close_price)}</td>` },
+  { key: 'pnl_btc',     label: 'PnL BTC',
+    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
+  { key: 'pnl_pct',     label: 'PnL %',
+    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
+  { key: 'reason',      label: 'Reason',
+    cell: d => `<td>${reasonBadge(d.close_reason)}</td>` },
+  { key: 'opened',      label: 'Opened',
+    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${timeAgo(d.opened_at)}</td>` },
+  { key: 'closed',      label: 'Closed',
+    cell: d => `<td class="muted-cell" title="${safeText(d.closed_at || '')}">${timeAgo(d.closed_at)}</td>` },
+  { key: 'duration',    label: 'Duration',
+    cell: d => `<td class="muted-cell">${formatDuration(d.opened_at, d.closed_at)}</td>` },
+];
+const CLOSED_DEALS_LS_KEY = 'reverto.closed_deals_columns';
+
+function getClosedDealsColumns() {
+  return loadColumns(CLOSED_DEALS_LS_KEY, CLOSED_DEALS_COLUMNS);
+}
+
+function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, emptyMsg) {
+  const head = $(theadId);
+  const tbody = $(tbodyId);
+  if (!tbody) return;
+  const cols = loadColumns(lsKey, defaults).filter(c => c.visible);
+  const defs = new Map(defaults.map(c => [c.key, c]));
+  if (head) {
+    head.innerHTML = cols.map(c =>
+      `<th>${safeText((defs.get(c.key) || c).label)}</th>`
+    ).join('');
+  }
+  const colSpan = Math.max(1, cols.length);
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="${colSpan}">${safeText(emptyMsg)}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(row => {
+    const cells = cols.map(c => {
+      const def = defs.get(c.key);
+      return def ? def.cell(row) : '<td></td>';
+    }).join('');
+    return `<tr>${cells}</tr>`;
+  }).join('');
+}
+
+function renderDetailClosedDeals(deals) {
+  _renderColumnDrivenTable(
+    'd-closed-thead-row', 'd-closed-tbody',
+    CLOSED_DEALS_LS_KEY, CLOSED_DEALS_COLUMNS,
+    deals, 'No closed deals',
+  );
 }
 
 function renderActiveDealsHead() {
@@ -1654,19 +1741,8 @@ async function fetchDetail(slug) {
         </tr>`).join('')
       : '<tr class="empty-row"><td colspan="7">No open deals</td></tr>';
 
-    const cb = $('d-closed-tbody');
     const cd = b.closed_deals || [];
-    cb.innerHTML = cd.length
-      ? cd.map(d => `<tr>
-          <td class="muted-cell">${safeText(d.id)}</td>
-          <td>${reasonBadge(d.close_reason)}</td>
-          <td>${fmtPrice(d.entry_price)}</td>
-          <td>${fmtPrice(d.close_price)}</td>
-          <td>${fmtPnl(d.pnl_btc)}</td>
-          <td>${fmtPct(d.pnl_pct)}</td>
-          <td class="muted-cell">${timeAgo(d.closed_at)}</td>
-        </tr>`).join('')
-      : '<tr class="empty-row"><td colspan="7">No closed deals</td></tr>';
+    renderDetailClosedDeals(cd);
 
     renderPerformanceStats(cd);
 
