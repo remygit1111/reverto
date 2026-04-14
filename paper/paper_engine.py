@@ -889,23 +889,32 @@ class PaperEngine:
         _peak_price is stored on PaperDeal so it persists across ticks
         and is included in the state JSON for restart recovery.
 
-        With wick simulation enabled the trigger fires when the FORMING
-        candle's low touches the stop, even if the live tick hasn't
-        printed there yet. Trailing-stop peak still uses the live tick
-        price (we don't want a wick-up to fake the trail).
+        With wick simulation enabled both the trigger AND the trailing
+        peak use the FORMING candle's high/low: this matches the
+        backtest engine which reads candle.high/low directly. Without
+        the wick the trailing peak only saw the 10-second tick price
+        and would lag the real high by however much the wick exceeded
+        the next sampled tick — a measurable bias that made paper and
+        backtest results diverge.
         """
         sl_pct = self.config.stop_loss.pct
+        wick_high, wick_low = self._wick_high_low(price)
 
         if self.config.stop_loss.type == "trailing":
-            # Initialize peak on first tick after deal opens
+            # Initialize peak on first tick after deal opens.
             if deal._peak_price == 0.0:
                 deal._peak_price = price
-            deal._peak_price = max(deal._peak_price, price)
+            new_peak = max(deal._peak_price, wick_high)
+            if wick_high > price and new_peak > deal._peak_price:
+                logger.debug(
+                    "Trailing peak updated via wick: $%.2f (tick: $%.2f)",
+                    wick_high, price,
+                )
+            deal._peak_price = new_peak
             sl_price = deal._peak_price * (1 - sl_pct / 100)
         else:
             sl_price = deal.avg_entry_price * (1 - sl_pct / 100)
 
-        _, wick_low = self._wick_high_low(price)
         wick_hit = wick_low <= sl_price
         tick_hit = price <= sl_price
 

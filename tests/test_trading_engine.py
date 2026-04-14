@@ -273,6 +273,18 @@ class TestWickSimulation:
         e._check_tp(d, 80000.0 * 1.03)
         assert d.id not in e.state.open_deals
 
+    def test_trailing_peak_updates_via_wick_high(self):
+        e = _engine(sl_type="trailing", sl_pct=5.0)
+        d = _deal(80000.0); e.state.open_deal(d)
+        # Wick high above the current tick — peak should track the wick.
+        wick_high = 82000.0
+        tick = 81000.0
+        self._seed_wick(e, wick_high, tick - 100)
+        e._check_sl(d, tick)
+        assert d._peak_price == pytest.approx(wick_high)
+        # Deal still open — wick low is well above the new SL line.
+        assert d.id in e.state.open_deals
+
 
 class TestManualTriggerLiquidationGuard:
     """Manual deal trigger refuses to open when the entry would land
