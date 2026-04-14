@@ -122,12 +122,19 @@ def _bootstrap_auth_if_missing() -> None:
     logged — logging it would leak it into portal.log and any log tail
     that ships to stdout / remote collectors. The file is deleted
     automatically on the first successful password change.
+
+    `session_epoch` starts at 0 and is bumped on every logout and
+    password change so old session cookies are immediately invalid.
     """
     if _AUTH_FILE.exists():
         return
     pw = secrets.token_urlsafe(12)
     pw_hash = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
-    credentials.save_encrypted(_AUTH_FILE, {"username": "admin", "password_hash": pw_hash})
+    credentials.save_encrypted(_AUTH_FILE, {
+        "username": "admin",
+        "password_hash": pw_hash,
+        "session_epoch": 0,
+    })
     try:
         _INITIAL_PW_FILE.parent.mkdir(parents=True, exist_ok=True)
         _INITIAL_PW_FILE.write_text(pw + "\n", encoding="utf-8")
@@ -157,8 +164,40 @@ def _save_auth(data: dict) -> None:
     credentials.save_encrypted(_AUTH_FILE, data)
 
 
+def _current_session_epoch() -> int:
+    """Read the current session epoch from .auth.json. Defaults to 0.
+
+    Bumping this integer instantly invalidates every previously-issued
+    session cookie because each cookie embeds the epoch it was minted
+    under and _verify_session_cookie compares the two.
+    """
+    auth = _load_auth() or {}
+    try:
+        return int(auth.get("session_epoch", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bump_session_epoch() -> int:
+    """Increment the session epoch and persist. Used on logout and on
+    password change to nuke every outstanding cookie at once."""
+    auth = _load_auth() or {}
+    current = 0
+    try:
+        current = int(auth.get("session_epoch", 0))
+    except (TypeError, ValueError):
+        current = 0
+    auth["session_epoch"] = current + 1
+    _save_auth(auth)
+    return current + 1
+
+
 def _create_session_cookie(username: str) -> str:
-    return _session_serializer.dumps({"u": username, "iat": int(time.time())})
+    return _session_serializer.dumps({
+        "u": username,
+        "iat": int(time.time()),
+        "ep": _current_session_epoch(),
+    })
 
 
 def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
@@ -169,6 +208,16 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
     except (BadSignature, SignatureExpired):
         return None
     if not isinstance(data, dict) or not data.get("u"):
+        return None
+    # Epoch check — any cookie minted under an older epoch is rejected
+    # immediately, so logout / password-change invalidate every browser
+    # that's holding a copy. Cookies minted before the epoch field
+    # existed (legacy) get treated as epoch 0.
+    try:
+        cookie_epoch = int(data.get("ep", 0))
+    except (TypeError, ValueError):
+        return None
+    if cookie_epoch != _current_session_epoch():
         return None
     return data
 
@@ -743,6 +792,15 @@ async def auth_login(body: LoginBody, request: Request):
 
 @app.post("/auth/logout")
 async def auth_logout():
+    # Server-side invalidation: bump the session epoch so every other
+    # browser holding a copy of the cookie is rejected on the next
+    # request, not just the one calling logout. itsdangerous tokens
+    # are stateless, so without this the cookie would stay valid until
+    # its TTL expired even though the user clicked "log out".
+    try:
+        _bump_session_epoch()
+    except Exception as e:
+        logger.warning("logout: failed to bump session epoch (%s)", e)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(_SESSION_COOKIE, path="/")
     return resp
@@ -780,6 +838,16 @@ async def auth_change_password(
         body.new_password.encode("utf-8"), bcrypt.gensalt(rounds=12)
     ).decode("utf-8")
     auth["password_hash"] = new_hash
+    # Bump the session epoch so any other browser still authenticated
+    # under the old password is signed out on its next request. The
+    # current request's caller will need to log in again too — that's
+    # by design and matches what every other dashboard does on a
+    # password change.
+    try:
+        current_epoch = int(auth.get("session_epoch", 0))
+    except (TypeError, ValueError):
+        current_epoch = 0
+    auth["session_epoch"] = current_epoch + 1
     _save_auth(auth)
     # First change after bootstrap: drop the plaintext crib file so the
     # initial password no longer sits on disk. Best-effort: a missing

@@ -239,6 +239,49 @@ class TestAuth:
         assert r.status_code == 401
 
 
+class TestSessionEpochInvalidation:
+    """Server-side session invalidation via the .auth.json session_epoch.
+    Logout and password change both bump the epoch, so any cookie minted
+    under the previous epoch is rejected on the next request."""
+
+    def test_logout_invalidates_existing_cookie(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        # Cookie works before logout.
+        assert auth_client.get("/api/bots").status_code == 200
+        # Logout bumps the epoch.
+        assert auth_client.post("/auth/logout").status_code == 200
+        # Same cookie value, but the server now rejects it because the
+        # embedded epoch no longer matches the on-disk one.
+        auth_client.cookies.set("reverto_session", token)
+        assert auth_client.get("/api/bots").status_code == 401
+
+    def test_password_change_invalidates_existing_cookie(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        # Successful change → epoch bump → cookie no longer valid.
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={"current_password": _KNOWN_PW, "new_password": "newpassword42"},
+        )
+        assert r.status_code == 200
+        auth_client.cookies.set("reverto_session", token)
+        assert auth_client.get("/api/bots").status_code == 401
+
+    def test_fresh_login_after_logout_works(self, auth_client):
+        # Bump the epoch via logout first.
+        auth_client.post("/auth/logout")
+        # New login mints a cookie under the new epoch and works.
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": _KNOWN_PW},
+        )
+        assert r.status_code == 200
+        # The TestClient picks up the Set-Cookie automatically and the
+        # next request is authenticated.
+        assert auth_client.get("/api/bots").status_code == 200
+
+
 class TestDbAnnotationsRoutes:
     """Regression coverage for the /api/db/annotations routes — a past
     report of a 404 on GET turned out to be a 401 from the auth
