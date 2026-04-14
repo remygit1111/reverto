@@ -269,7 +269,7 @@ document.addEventListener('click', e => {
   if (!slug) return;
   if (action === 'open') openBot(slug);
   else if (action === 'delete') deleteBot(slug, el.dataset.name || slug);
-  else if (['start', 'stop', 'restart'].includes(action)) botAction(slug, action);
+  else if (['start', 'stop', 'restart'].includes(action)) botAction(slug, action, el);
 });
 
 // ── Delete bot ───────────────────────────────────────────────────────────────
@@ -315,7 +315,29 @@ function _debounceBotButtons(slug, action, ms = 3000) {
   setTimeout(() => btns.forEach(b => { b.disabled = false; }), ms);
 }
 
-async function botAction(slug, action) {
+// Busy-label map so Start/Stop/Restart buttons immediately reflect the
+// in-flight action. Restored in finally{} so success and error both
+// re-enable the button cleanly.
+const _BUSY_LABELS = {
+  start:   'Starting...',
+  stop:    'Stopping...',
+  restart: 'Restarting...',
+};
+
+async function _withButtonFeedback(btn, action, fn) {
+  if (!btn) return await fn();
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = _BUSY_LABELS[action] || 'Working...';
+  try {
+    return await fn();
+  } finally {
+    btn.innerHTML = orig;
+    btn.disabled = false;
+  }
+}
+
+async function botAction(slug, action, srcBtn = null) {
   _debounceBotButtons(slug, action);
   // No key yet → queue the action and prompt for one. Once the user
   // enters a valid key in the modal, saveApiKey() re-invokes this.
@@ -324,20 +346,28 @@ async function botAction(slug, action) {
     showApiKeyModal();
     return;
   }
-  const res = await fetch(`/api/bots/${slug}/${action}`, {
-    method: 'POST',
-    headers: { 'X-API-Key': getApiKey() }
+  await _withButtonFeedback(srcBtn, action, async () => {
+    try {
+      const res = await fetch(`/api/bots/${slug}/${action}`, {
+        method: 'POST',
+        headers: { 'X-API-Key': getApiKey() }
+      });
+      if (res.status === 401) {
+        _pendingAction = () => botAction(slug, action);
+        alert('Auth error — check your API key');
+        showApiKeyModal();
+        return;
+      }
+      const r = await res.json();
+      if (!r.ok) alert(`${action} failed: ${r.error}`);
+    } catch (e) {
+      alert(`${action} failed: ${e.message}`);
+    }
   });
-  if (res.status === 401) {
-    _pendingAction = () => botAction(slug, action);
-    alert('Auth error — check your API key');
-    showApiKeyModal();
-    return;
-  }
-  const r = await res.json();
-  if (!r.ok) alert(`${action} failed: ${r.error}`);
-  setTimeout(fetchOverview, 1200);
-  if (currentSlug === slug) setTimeout(() => fetchDetail(slug), 1500);
+  // Refresh after the busy-label has been restored so the next render
+  // reflects the real running-state.
+  fetchOverview();
+  if (currentSlug === slug) fetchDetail(slug);
 }
 
 // ── Top-level tab navigation ─────────────────────────────────────────────────
@@ -1923,7 +1953,7 @@ function setupEventListeners() {
     const btn = $('d-btn-' + action);
     if (btn) {
       btn.addEventListener('click', () => {
-        if (currentSlug) botAction(currentSlug, action);
+        if (currentSlug) botAction(currentSlug, action, btn);
       });
     }
   });
