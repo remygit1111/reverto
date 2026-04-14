@@ -112,6 +112,15 @@ def _install_signal_handlers(engine: PaperEngine) -> None:
     def _on_sigterm(_signum, _frame):
         logger.info("Received SIGTERM — stopping engine cleanly")
         try:
+            # Queue the notify_stop BEFORE engine.stop() so the drain
+            # loop inside stop() flushes it. Calling it after would race
+            # the daemon notify worker's exit.
+            engine._notify(
+                engine.notifier.notify_stop,
+                engine.config.name,
+                engine.config.mode.value,
+                engine.config.exchange.value,
+            )
             engine.stop()
         finally:
             sys.exit(0)
