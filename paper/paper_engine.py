@@ -227,6 +227,7 @@ class PaperEngine:
             "running":             True,
             "current_price":       price,
             "schedule_open":       is_open,
+            "has_trading_windows": len(self.config.schedule.trading_windows) > 0,
             "balance_btc":         summary["balance_btc"],
             "initial_balance_btc": self.state.initial_balance_btc,
             "total_pnl_btc":       summary["total_pnl_btc"],

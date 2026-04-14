@@ -66,6 +66,7 @@ class BotStateModel(BaseModel):
     closed_deals:        list  = Field(default_factory=list)
     current_price:       float = 0.0
     schedule_open:       bool  = False
+    has_trading_windows: bool  = False
     started_at:          Optional[str] = None
     updated_at:          Optional[str] = None
     fees_paid_btc:       float = 0.0
@@ -242,6 +243,7 @@ class BotInfo:
             "running":             self.running,
             "current_price":       0.0,
             "schedule_open":       False,
+            "has_trading_windows": False,
             "balance_btc":         0.0,
             "initial_balance_btc": 0.0,
             "total_pnl_btc":       0.0,
