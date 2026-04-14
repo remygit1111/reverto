@@ -110,21 +110,41 @@ _SESSION_SALT = "reverto.session.v1"
 _session_serializer = URLSafeTimedSerializer(_SECRET_KEY, salt=_SESSION_SALT)
 
 _AUTH_FILE = Path(__file__).parent.parent / "logs" / ".auth.json"
+_INITIAL_PW_FILE = Path(__file__).parent.parent / "logs" / ".initial_password"
 
 
 def _bootstrap_auth_if_missing() -> None:
     """Create logs/.auth.json on first run with a random admin password.
-    The generated password is surfaced via a WARNING log so the operator
-    can pick it up from logs/portal.log on first launch."""
+
+    The plaintext password is written ONCE to logs/.initial_password with
+    mode 0600 so the operator can retrieve it from disk. It is never
+    logged — logging it would leak it into portal.log and any log tail
+    that ships to stdout / remote collectors. The file is deleted
+    automatically on the first successful password change.
+    """
     if _AUTH_FILE.exists():
         return
     pw = secrets.token_urlsafe(12)
     pw_hash = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
     credentials.save_encrypted(_AUTH_FILE, {"username": "admin", "password_hash": pw_hash})
+    try:
+        _INITIAL_PW_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _INITIAL_PW_FILE.write_text(pw + "\n", encoding="utf-8")
+        os.chmod(_INITIAL_PW_FILE, 0o600)
+    except OSError as e:
+        # Fall back to logging the password only if we can't write the
+        # file at all — losing the credential would be worse than the
+        # log leak, and this branch should never hit in practice.
+        logger.error(
+            "First run — could not write %s (%s). Password: %s",
+            _INITIAL_PW_FILE, e, pw,
+        )
+        return
     logger.warning(
-        "First run — default credentials: admin / %s\n"
-        "Change via: POST /api/auth/change-password",
-        pw,
+        "First run — default credentials created for user 'admin'. "
+        "Initial password written to %s (mode 0600). "
+        "Log in, change the password, and delete that file.",
+        _INITIAL_PW_FILE,
     )
 
 
@@ -753,6 +773,14 @@ async def auth_change_password(
     ).decode("utf-8")
     auth["password_hash"] = new_hash
     _save_auth(auth)
+    # First change after bootstrap: drop the plaintext crib file so the
+    # initial password no longer sits on disk. Best-effort: a missing
+    # file is fine (user may have deleted it manually).
+    if _INITIAL_PW_FILE.exists():
+        try:
+            _INITIAL_PW_FILE.unlink()
+        except OSError:
+            pass
     _audit("auth_change_password", session.get("u", "-"), "-")
     return {"ok": True}
 
