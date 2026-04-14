@@ -420,6 +420,9 @@ const NB_INDICATOR_DESCRIPTIONS = {
   MARKET_STRUCTURE:
     "Detects swing highs and lows to identify trend structure (HH/HL or " +
     "LH/LL) and Break of Structure events.",
+  SUPPORT_RESISTANCE:
+    "Clusters recent swing points into support and resistance levels and " +
+    "signals when price approaches or breaks through them.",
 };
 
 let nbState = null;
@@ -633,12 +636,14 @@ function nbRenderIndicators() {
                     : ind.type === 'PARABOLIC_SAR' ? 'type-psar'
                     : ind.type === 'SUPERTREND' ? 'type-supertrend'
                     : ind.type === 'MARKET_STRUCTURE' ? 'type-ms'
+                    : ind.type === 'SUPPORT_RESISTANCE' ? 'type-sr'
                     : '';
     const title = ind.type === 'EMA_CROSS' ? 'EMA Cross'
                 : ind.type === 'BOLLINGER' ? 'Bollinger Bands'
                 : ind.type === 'PARABOLIC_SAR' ? 'Parabolic SAR'
                 : ind.type === 'SUPERTREND' ? 'Supertrend'
                 : ind.type === 'MARKET_STRUCTURE' ? 'Market Structure'
+                : ind.type === 'SUPPORT_RESISTANCE' ? 'Support & Resistance'
                 : ind.type;
     return `
       <div class="nb-ind-card ${typeClass}">
@@ -657,6 +662,7 @@ function nbRenderIndicators() {
               <option value="PARABOLIC_SAR" ${ind.type === 'PARABOLIC_SAR' ? 'selected' : ''}>Parabolic SAR</option>
               <option value="SUPERTREND" ${ind.type === 'SUPERTREND' ? 'selected' : ''}>Supertrend</option>
               <option value="MARKET_STRUCTURE" ${ind.type === 'MARKET_STRUCTURE' ? 'selected' : ''}>Market Structure</option>
+              <option value="SUPPORT_RESISTANCE" ${ind.type === 'SUPPORT_RESISTANCE' ? 'selected' : ''}>Support &amp; Resistance</option>
             </select>
             <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
           </div>
@@ -721,6 +727,38 @@ function nbIndicatorFieldsHtml(ind, i) {
         <select data-nb-ind="${i}" data-nb-field="signal">
           <option value="bullish_cross" ${ind.signal === 'bullish_cross' ? 'selected' : ''}>Bullish</option>
           <option value="bearish_cross" ${ind.signal === 'bearish_cross' ? 'selected' : ''}>Bearish</option>
+        </select>
+      </div>`;
+  }
+  if (ind.type === 'SUPPORT_RESISTANCE') {
+    const lb = ind.lookback != null ? ind.lookback : 3;
+    const tol = ind.tolerance_pct != null ? ind.tolerance_pct : 0.5;
+    const prox = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
+    const SR_CONDS = [
+      ['near_support', 'Near support'],
+      ['near_resistance', 'Near resistance'],
+      ['below_support', 'Below support'],
+      ['above_resistance', 'Above resistance'],
+    ];
+    return `
+      <div class="form-row">
+        <label>Lookback</label>
+        <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
+      </div>
+      <div class="form-row">
+        <label>Tolerance %</label>
+        <input type="number" min="0" step="0.1" value="${tol}" data-nb-ind="${i}" data-nb-field="tolerance_pct">
+      </div>
+      <div class="form-row">
+        <label>Proximity %</label>
+        <input type="number" min="0" step="0.1" value="${prox}" data-nb-ind="${i}" data-nb-field="proximity_pct">
+      </div>
+      <div class="form-row">
+        <label>Condition</label>
+        <select data-nb-ind="${i}" data-nb-field="condition">
+          ${SR_CONDS.map(([v, l]) =>
+            `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
+          ).join('')}
         </select>
       </div>`;
   }
@@ -1083,6 +1121,11 @@ function nbBuildBotConfig() {
         } else if (i.type === 'MARKET_STRUCTURE') {
           out.lookback = i.lookback != null ? i.lookback : 3;
           out.condition = i.condition || 'bullish_bos';
+        } else if (i.type === 'SUPPORT_RESISTANCE') {
+          out.lookback = i.lookback != null ? i.lookback : 3;
+          out.tolerance_pct = i.tolerance_pct != null ? i.tolerance_pct : 0.5;
+          out.proximity_pct = i.proximity_pct != null ? i.proximity_pct : 1.0;
+          out.condition = i.condition || 'near_support';
         }
         return out;
       }),
@@ -1596,7 +1639,10 @@ function setupEventListeners() {
         'rsi_value', 'macd_fast', 'macd_slow', 'macd_signal',
         'atr_period', 'lookback',
       ];
-      const floatFields = ['multiplier', 'initial_af', 'max_af'];
+      const floatFields = [
+        'multiplier', 'initial_af', 'max_af',
+        'tolerance_pct', 'proximity_pct',
+      ];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;
       else if (floatFields.includes(f)) v = parseFloat(v) || 0;
       nbState.indicators[i][f] = v;
