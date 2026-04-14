@@ -124,6 +124,19 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # busy_timeout: when a write hits a locked DB (another writer in
+    # progress) wait up to 5s for the lock instead of failing with
+    # SQLITE_BUSY immediately. Combined with the per-process
+    # threading.Lock in deal_store this means a parallel test run or
+    # a transient burst of writes from multiple bots no longer
+    # surfaces as an exception in the engine tick.
+    conn.execute("PRAGMA busy_timeout=5000")
+    # synchronous=NORMAL is the SQLite-recommended pairing with WAL:
+    # ~10x write throughput vs FULL with no risk of corruption (only
+    # of losing the most recent commit on an OS-level crash, which is
+    # acceptable here — the JSON state file is the live-state source
+    # of truth and the DB ledger is append-only history).
+    conn.execute("PRAGMA synchronous=NORMAL")
     _connection_cache.conn = conn
     return conn
 
