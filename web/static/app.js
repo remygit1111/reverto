@@ -5496,7 +5496,12 @@ function btClearError(elId) {
 
 async function btFetchCandles(pair, tf, startIso, endIso) {
   const params = new URLSearchParams({ start: startIso, end: endIso, limit: '5000' });
-  const r = await fetch(`/api/candles/${encodeURIComponent(pair)}/${tf}?${params}`);
+  // FastAPI path params don't survive %2F: the router still splits on
+  // it and "BTC/USD" routes to pair="BTC" + timeframe="USD/...".
+  // Send the slash-less form and let the backend's
+  // _normalize_chart_pair() re-insert the slash server-side, exactly
+  // like the /api/chart endpoint already does.
+  const r = await fetch(`/api/candles/${_pairForUrl(pair)}/${tf}?${params}`);
   if (r.status === 401) { _handle401(); throw new Error('Not authenticated'); }
   if (!r.ok) {
     let detail = `HTTP ${r.status}`;
