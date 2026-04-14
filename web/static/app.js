@@ -1137,6 +1137,9 @@ function nbRecompute() {
   nbUpdateMinTpHint();
   nbRenderDcaPreview();
   nbRenderReview();
+  // Live update the wizard chart overlays (indicators + TP/DCA lines)
+  // whenever any wizard input changes.
+  if (typeof renderWizardOverlays === 'function') renderWizardOverlays();
 }
 
 function nbUpdateMinTpHint() {
@@ -2400,6 +2403,14 @@ let _wizardRefreshTimer = null;
 let _wizardResizeObs = null;
 let _wizardTimeframe = '1h';
 let _wizardTfHandler = null;
+// Cache the most recent candle array so nbRecompute can re-draw indicator
+// overlays without re-fetching from the API on every keystroke.
+let _wizardCandleCache = null;
+// Track overlay series + price lines so we can clear them before each
+// re-render. createPriceLine returns a handle that survives setData;
+// addLineSeries returns a series we have to removeSeries() ourselves.
+let _wizardOverlaySeries = [];
+let _wizardOverlayPriceLines = [];
 
 function _cssVar(name, fallback) {
   try {
@@ -2700,35 +2711,70 @@ async function _renderDealOverlays() {
   } catch (e) { return; }
   if (!bot || !bot.running) return;
   const open = bot.open_deals || [];
-  const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
-  const tpPct = ((inner.tp || {}).target_pct) || 0;
-  const slPct = ((inner.sl || {}).pct) || 0;
-  const dcaCfg = inner.dca || {};
-  const dcaSpacing = dcaCfg.spacing_pct || 0;
-  const dcaMax = dcaCfg.max_orders || 0;
+  if (!open.length) return;
 
-  const blue = _cssVar('--blue', '#5b8dee');
+  // YAML config keys are take_profit / stop_loss / dca, not tp/sl —
+  // the previous overlay code read from the wrong paths so every line
+  // except Entry silently rendered at price 0.
+  const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
+  const tpPct = Number((inner.take_profit || {}).target_pct) || 0;
+  const slCfg = inner.stop_loss || {};
+  const slPct = Number(slCfg.pct) || 0;
+  const slType = slCfg.type || 'fixed';
+  const dcaCfg = inner.dca || {};
+  const dcaSpacing = Number(dcaCfg.order_spacing_pct) || 0;
+  const dcaMax = Number(dcaCfg.max_orders) || 0;
+
+  const blue   = _cssVar('--blue',   '#5b8dee');
   const accent = _cssVar('--accent', '#26a69a');
-  const red = _cssVar('--red', '#ef5350');
-  const amber = _cssVar('--amber', '#ffb347');
+  const red    = _cssVar('--red',    '#ef5350');
+  const amber  = _cssVar('--amber',  '#ffb347');
 
   for (const d of open) {
-    const avg = d.avg_entry_price || d.entry_price;
+    const avg = Number(d.avg_entry_price) || Number(d.entry_price) || 0;
     if (!avg) continue;
-    _chartCandles.createPriceLine({ price: avg, color: blue, lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: 'Entry' });
-    if (tpPct) {
-      _chartCandles.createPriceLine({ price: avg * (1 + tpPct / 100), color: accent, lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'TP' });
+
+    _chartCandles.createPriceLine({
+      price: avg, color: blue, lineStyle: 0, lineWidth: 1,
+      axisLabelVisible: true, title: 'Entry',
+    });
+
+    if (tpPct > 0) {
+      _chartCandles.createPriceLine({
+        price: avg * (1 + tpPct / 100),
+        color: accent, lineStyle: 2, lineWidth: 1,
+        axisLabelVisible: true, title: 'TP',
+      });
     }
-    if (slPct) {
-      _chartCandles.createPriceLine({ price: avg * (1 - slPct / 100), color: red, lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'SL' });
+
+    if (slPct > 0) {
+      // Trailing stops anchor to _peak_price (high-water mark) instead of
+      // the average entry. The state file serialises it as _peak_price.
+      const slAnchor = (slType === 'trailing' && d._peak_price)
+        ? Number(d._peak_price) : avg;
+      _chartCandles.createPriceLine({
+        price: slAnchor * (1 - slPct / 100),
+        color: red, lineStyle: 2, lineWidth: 1,
+        axisLabelVisible: true, title: 'SL',
+      });
     }
-    if (dcaSpacing && dcaMax) {
-      const cur = d.order_count || 1;
-      let last = d.entry_price || avg;
-      const remaining = Math.max(0, dcaMax - (cur - 1));
+
+    if (dcaSpacing > 0 && dcaMax > 1) {
+      // DCA ladders down from the last placed order — on the first tick
+      // that's the base order's fill price. The engine uses the MOST
+      // recently placed order as the anchor for each next DCA, so we
+      // mirror that: starting point is entry_price (base order), next
+      // ladder step = last * (1 - spacing/100). Remaining = total slots
+      // (max_orders) minus the number already placed (order_count).
+      const placed = Number(d.order_count) || 1;
+      const remaining = Math.max(0, dcaMax - placed);
+      let last = Number(d.entry_price) || avg;
       for (let i = 0; i < remaining; i++) {
         last = last * (1 - dcaSpacing / 100);
-        _chartCandles.createPriceLine({ price: last, color: amber, lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: `DCA${cur + i}` });
+        _chartCandles.createPriceLine({
+          price: last, color: amber, lineStyle: 2, lineWidth: 1,
+          axisLabelVisible: true, title: `DCA${placed + i}`,
+        });
       }
     }
   }
@@ -2784,6 +2830,9 @@ function teardownWizardChart() {
   try { if (_wizardChart) _wizardChart.remove(); } catch (e) {}
   _wizardChart = null;
   _wizardCandles = null;
+  _wizardCandleCache = null;
+  _wizardOverlaySeries = [];
+  _wizardOverlayPriceLines = [];
 }
 
 async function fetchWizardChartData() {
@@ -2799,8 +2848,120 @@ async function fetchWizardChartData() {
   } catch (e) { return; }
   if (!Array.isArray(candles) || !candles.length) return;
   _wizardCandles.setData(candles);
+  _wizardCandleCache = candles;
   const lbl = $('wizard-chart-label'); if (lbl) lbl.textContent = pair;
   const pe  = $('wizard-chart-price'); if (pe)  pe.textContent  = fmtPrice(candles[candles.length - 1].close);
+  renderWizardOverlays();
+}
+
+function _clearWizardOverlays() {
+  if (!_wizardChart || !_wizardCandles) return;
+  for (const s of _wizardOverlaySeries) {
+    try { _wizardChart.removeSeries(s); } catch (e) {}
+  }
+  _wizardOverlaySeries = [];
+  for (const pl of _wizardOverlayPriceLines) {
+    try { _wizardCandles.removePriceLine(pl); } catch (e) {}
+  }
+  _wizardOverlayPriceLines = [];
+}
+
+function _addWizardLineSeries(data, color, lineWidth = 2, lineStyle = 0) {
+  if (!_wizardChart || !data || !data.length) return null;
+  const s = _wizardChart.addLineSeries({
+    color, lineWidth, lineStyle, lastValueVisible: false, priceLineVisible: false,
+  });
+  s.setData(data);
+  _wizardOverlaySeries.push(s);
+  return s;
+}
+
+function _addWizardPriceLine(price, color, title, lineStyle = 2) {
+  if (!_wizardCandles || !Number.isFinite(price)) return;
+  const pl = _wizardCandles.createPriceLine({
+    price, color, lineWidth: 1, lineStyle, axisLabelVisible: true, title,
+  });
+  _wizardOverlayPriceLines.push(pl);
+}
+
+// Re-draw all wizard chart overlays from the current nbState. Called on
+// every nbRecompute() so adding/removing/tweaking an indicator updates
+// the preview live, plus on every fresh candle fetch.
+function renderWizardOverlays() {
+  if (!_wizardChart || !_wizardCandles || !_wizardCandleCache) return;
+  if (typeof nbState !== 'object' || !nbState) return;
+
+  _clearWizardOverlays();
+
+  const candles = _wizardCandleCache;
+  const closes = candles.map(c => c.close);
+  const highs  = candles.map(c => c.high);
+  const lows   = candles.map(c => c.low);
+  const lastClose = closes[closes.length - 1];
+
+  const accent = _cssVar('--accent', '#26a69a');
+  const blue   = _cssVar('--blue',   '#5b8dee');
+  const muted  = _cssVar('--muted',  '#888');
+  const red    = _cssVar('--red',    '#ef5350');
+  const amber  = _cssVar('--amber',  '#ffb347');
+
+  const indicators = Array.isArray(nbState.indicators) ? nbState.indicators : [];
+  for (const ind of indicators) {
+    if (!ind || !ind.type) continue;
+    const t = String(ind.type).toUpperCase();
+    try {
+      if (t === 'EMA_CROSS') {
+        const fast = Number(ind.fast) || 9;
+        const slow = Number(ind.slow) || 21;
+        _addWizardLineSeries(calcEMALine(candles, fast), accent, 2);
+        _addWizardLineSeries(calcEMALine(candles, slow), blue,   2);
+      } else if (t === 'BOLLINGER') {
+        const period = Number(ind.period) || 20;
+        const mult   = Number(ind.multiplier) || 2.0;
+        if (typeof calcBollingerLines === 'function') {
+          const bb = calcBollingerLines(candles, period, mult);
+          _addWizardLineSeries(bb.upper,  muted, 1, 2);
+          _addWizardLineSeries(bb.middle, blue,  1, 0);
+          _addWizardLineSeries(bb.lower,  muted, 1, 2);
+        }
+      } else if (t === 'SUPERTREND') {
+        const atr  = Number(ind.atr_period) || 10;
+        const mult = Number(ind.multiplier) || 3.0;
+        if (typeof calcSupertrendLines === 'function') {
+          const st = calcSupertrendLines(candles, highs, lows, atr, mult);
+          if (st && st.bull) _addWizardLineSeries(st.bull, accent, 2);
+          if (st && st.bear) _addWizardLineSeries(st.bear, red,    2);
+        }
+      } else if (t === 'SUPPORT_RESISTANCE') {
+        const lookback  = Number(ind.lookback) || 3;
+        const tolerance = Number(ind.tolerance_pct) || 0.5;
+        if (typeof calcSR === 'function') {
+          const sr = calcSR(highs, lows, closes, lookback, tolerance);
+          if (sr) {
+            for (const lvl of (sr.support || [])) _addWizardPriceLine(lvl, accent, 'S');
+            for (const lvl of (sr.resistance || [])) _addWizardPriceLine(lvl, red, 'R');
+          }
+        }
+      }
+    } catch (e) { /* keep going if one indicator fails */ }
+  }
+
+  // TP / DCA preview lines anchored on the latest close — when the user
+  // tweaks tp_target_pct or dca_spacing_pct in the wizard the lines move
+  // immediately because nbRecompute calls back here.
+  const tpPct = Number(nbState.tp_target_pct) || 0;
+  if (tpPct > 0 && Number.isFinite(lastClose)) {
+    _addWizardPriceLine(lastClose * (1 + tpPct / 100), accent, 'TP');
+  }
+  const dcaSpacing = Number(nbState.dca_spacing_pct) || 0;
+  const dcaCount   = Number(nbState.dca_max_orders) || 0;
+  if (dcaSpacing > 0 && dcaCount > 0 && Number.isFinite(lastClose)) {
+    let last = lastClose;
+    for (let i = 1; i <= dcaCount; i++) {
+      last = last * (1 - dcaSpacing / 100);
+      _addWizardPriceLine(last, amber, `DCA${i}`);
+    }
+  }
 }
 
 // ── Indicator helpers (JS ports of strategies/indicators/*.py) ───────────────
@@ -3058,12 +3219,14 @@ function setupEventListeners() {
   $('restart-btn').addEventListener('click', restartPortal);
   $('theme-btn').addEventListener('click', toggleTheme);
 
-  $('nav-overview-btn').addEventListener('click', goOverview);
-  $('nav-bots-btn').addEventListener('click', goBots);
-  $('nav-deals-btn').addEventListener('click', goDeals);
+  // Wrap in arrow fns so the native click event isn't forwarded as the
+  // fromPop argument — passing a truthy Event suppressed history.pushState.
+  $('nav-overview-btn').addEventListener('click', () => goOverview());
+  $('nav-bots-btn').addEventListener('click', () => goBots());
+  $('nav-deals-btn').addEventListener('click', () => goDeals());
 
   // Back button inside the bot detail sub-view
-  $('detail-back-btn').addEventListener('click', goBots);
+  $('detail-back-btn').addEventListener('click', () => goBots());
 
   $('new-bot-btn').addEventListener('click', goNewBot);
 
