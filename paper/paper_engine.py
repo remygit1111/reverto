@@ -384,9 +384,17 @@ class PaperEngine:
         self._clear_state()
         summary = self.state.summary()
         logger.info(f"Paper engine stopped. Summary: {summary}")
-        # Stuur shutdown notificatie en wacht tot de queue leeg is, anders
-        # mist de laatste boodschap omdat de daemon thread direct mee sterft.
+        # Stuur shutdown + stop notificaties en wacht tot de queue leeg is,
+        # anders mist de laatste boodschap omdat de daemon thread direct
+        # mee sterft. notify_shutdown blijft bestaan voor back-compat;
+        # notify_stop is het nieuwe event analoog aan notify_startup.
         self._notify(self.notifier.notify_shutdown, self.config.name)
+        self._notify(
+            self.notifier.notify_stop,
+            self.config.name,
+            self.config.mode.value,
+            self.config.exchange.value,
+        )
         self._notify_queue.put(None)  # sentinel
         self._notify_thread.join(timeout=15)
 

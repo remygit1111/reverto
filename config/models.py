@@ -149,12 +149,16 @@ class TelegramConfig(BaseModel):
     # Controls which events trigger a Telegram notification.
     # Valid values: entry, dca_trigger, tp_hit, sl_hit, liquidation_warn,
     #               schedule_open, schedule_close, error, startup, shutdown
+    # "shutdown" is a legacy synonym kept for back-compat — new bots use
+    # "stop" / "restart" which fire on portal-driven lifecycle events.
     notify_on: list[Literal[
         "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn",
-        "schedule_open", "schedule_close", "error", "startup", "shutdown"
+        "schedule_open", "schedule_close", "error", "startup",
+        "shutdown", "stop", "restart"
     ]] = [
         "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn",
-        "schedule_open", "schedule_close", "error", "startup", "shutdown"
+        "schedule_open", "schedule_close", "error", "startup",
+        "shutdown", "stop", "restart"
     ]
 
 
