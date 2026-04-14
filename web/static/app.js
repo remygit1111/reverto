@@ -5336,9 +5336,26 @@ class RevertoBacktest {
     this.initial_balance_btc = initialBalance;
     const total = this.candles.length;
     const sigArrays = this._precomputeSignalArrays();
-    // Warm-up: skip the first 80 candles so indicator arrays are stable
-    // (MACD needs 3×26 ≈ 78 bars — matches the Python engine).
-    const warmup = Math.min(80, Math.floor(total / 4));
+    // One-shot config dump on debug. Surfaces exactly what the engine
+    // received so the operator can spot config-shape bugs (wrong key
+    // names, missing entry block, etc.) without re-running.
+    if (window._BT_DEBUG) {
+      const indicators = (this.config.entry && this.config.entry.indicators) || [];
+      console.log('[BT] config entry.indicators:', indicators);
+      console.log('[BT] tp_pct:', this._tp_pct, 'sl_pct:', this._sl_pct,
+        'sl_type:', this._sl_type, 'lev:', this._lev,
+        'max_orders:', this._max_orders, 'spacing:', this._spacing,
+        'mult:', this._mult, 'base_size:', this._base_size);
+      console.log('[BT] sigArrays count:', sigArrays.length,
+        'first 5 of sigArrays[0]:', sigArrays[0] && sigArrays[0].slice(0, 5),
+        'true count:', sigArrays[0] ? sigArrays[0].filter(Boolean).length : 0,
+        '/', total);
+    }
+    // Warm-up: skip the first 78 candles so indicator arrays are stable
+    // (MACD needs 3×26 = 78 bars — matches BacktestEngine's `warmup = 78`
+    // exactly so the first eligible entry candle is identical to the
+    // Python reference).
+    const warmup = Math.min(78, Math.floor(total / 4));
     for (let i = 0; i < total; i++) {
       const candle = this.candles[i];
       if (this.open_deal) {
