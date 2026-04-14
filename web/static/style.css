@@ -1366,3 +1366,8 @@ tr:hover td { background: rgba(128,128,128,.04); }
   background: var(--surface2);
   border-left-color: #50c0f0;  /* cyan */
 }
+
+.nb-ind-card.type-qfl {
+  background: var(--surface2);
+  border-left-color: #f050a0;  /* magenta */
+}

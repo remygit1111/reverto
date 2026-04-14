@@ -19,6 +19,7 @@ from strategies.indicators.parabolic_sar import check_parabolic_sar_signal
 from strategies.indicators.supertrend import check_supertrend_signal
 from strategies.indicators.market_structure import check_market_structure_signal
 from strategies.indicators.support_resistance import check_support_resistance_signal
+from strategies.indicators.qfl import check_qfl_signal
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +263,16 @@ class IndicatorEngine:
                 tolerance_pct=indicator.tolerance_pct or 0.5,
                 proximity_pct=indicator.proximity_pct or 1.0,
                 condition=indicator.condition or "near_support",
+            )
+        elif itype == "QFL":
+            return check_qfl_signal(
+                closes,
+                lookback=indicator.lookback or 3,
+                crack_pct=indicator.crack_pct or 3.0,
+                base_candles=indicator.base_candles or 5,
+                max_bases=indicator.max_bases or 5,
+                below_pct=indicator.below_pct if indicator.below_pct is not None else 0.0,
+                condition=indicator.condition or "below_base",
             )
         else:
             logger.warning(
