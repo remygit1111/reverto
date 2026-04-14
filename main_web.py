@@ -57,14 +57,37 @@ logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
     logger.info("Reverto dashboard starting on http://localhost:8080")
+    # First-run hint: surface the env vars an operator needs to make
+    # the portal production-safe. Each branch logs only when its var
+    # is missing so the noise disappears once the operator sets them.
+    missing = []
     if not os.environ.get("REVERTO_API_KEY"):
+        missing.append("REVERTO_API_KEY")
+    if not os.environ.get("REVERTO_SECRET_KEY"):
+        missing.append("REVERTO_SECRET_KEY")
+    if missing:
         logger.warning(
-            "REVERTO_API_KEY is not set — an ephemeral key will be generated "
-            "and printed below. For persistent auth, set it before starting:"
+            "%s not set — ephemeral value(s) will be generated. "
+            "For production add to ~/.bashrc:",
+            " / ".join(missing),
         )
-        logger.warning(
-            "    export REVERTO_API_KEY=$(python3 -c "
-            "'import secrets; print(secrets.token_hex(32))')"
+        if "REVERTO_API_KEY" in missing:
+            logger.warning(
+                "    export REVERTO_API_KEY=$(python3 -c "
+                "'import secrets; print(secrets.token_hex(32))')"
+            )
+        if "REVERTO_SECRET_KEY" in missing:
+            logger.warning(
+                "    export REVERTO_SECRET_KEY=$(python3 -c "
+                "'import secrets; print(secrets.token_hex(32))')"
+            )
+    if "REVERTO_INSECURE_COOKIES" not in os.environ:
+        # Not a warning — just a one-line hint. Production behind TLS
+        # leaves this unset; localhost dev sets it to 1.
+        logger.info(
+            "REVERTO_INSECURE_COOKIES not set — cookies require HTTPS. "
+            "For local http://localhost development add to ~/.bashrc: "
+            "export REVERTO_INSECURE_COOKIES=1"
         )
     from web.app import run_portal
     run_portal(host="0.0.0.0", port=8080)

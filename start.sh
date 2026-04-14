@@ -10,6 +10,15 @@ cd "$(dirname "$0")"
 # en kan geen enkele client (browser/script) bij de control endpoints.
 # Voorbeeld:
 #   export REVERTO_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+#
+# REVERTO_SECRET_KEY tekent de sessie-cookies. Zonder deze worden alle
+# bestaande sessies ongeldig bij elke restart.
+#   export REVERTO_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+#
+# Voor localhost development (http://, geen TLS) moet de Secure-cookie
+# vlag uit, anders dropt de browser de sessie-cookie stilletjes:
+#   export REVERTO_INSECURE_COOKIES=1
+# Voor productie achter een TLS reverse proxy: NIET zetten.
 
 PORTAL_PID_FILE="logs/pids/portal.pid"
 mkdir -p logs/pids
