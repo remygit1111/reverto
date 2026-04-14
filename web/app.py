@@ -1421,7 +1421,9 @@ async def tail_logs():
 
 
 @app.get("/api/db/deals")
+@limiter.limit("60/minute")
 async def api_db_deals(
+    request: Request,
     bot_slug: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 100,
@@ -1442,12 +1444,14 @@ async def api_db_deals(
 
 
 @app.get("/api/db/deals/{deal_id}/orders")
-async def api_db_deal_orders(deal_id: str):
+@limiter.limit("60/minute")
+async def api_db_deal_orders(deal_id: str, request: Request):
     return await asyncio.to_thread(deal_store.get_deal_orders, deal_id)
 
 
 @app.get("/api/db/stats")
-async def api_db_stats(bot_slug: Optional[str] = None):
+@limiter.limit("60/minute")
+async def api_db_stats(request: Request, bot_slug: Optional[str] = None):
     return await asyncio.to_thread(deal_store.compute_stats, bot_slug)
 
 
@@ -1486,7 +1490,9 @@ async def api_db_annotations_create(
 
 
 @app.get("/api/db/annotations")
+@limiter.limit("60/minute")
 async def api_db_annotations_list(
+    request: Request,
     bot_slug: str,
     timeframe: Optional[str] = None,
 ):
