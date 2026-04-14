@@ -44,7 +44,9 @@ class LeverageConfig(BaseModel):
 class DCAConfig(BaseModel):
     model_config = _STRICT
     base_order_size: float
-    max_orders: int = 5      # Total orders including base order. DCA orders = max_orders - 1.
+    # Total orders including base order. DCA orders = max_orders - 1.
+    # max_orders=0 or 1 disables DCA (base order only).
+    max_orders: int = Field(default=5, ge=0, le=50)
     order_spacing_pct: float = 2.5
     multiplier: float = 1.0
     taker_fee: float = 0.0006  # Bitget BTCUSD inverse taker fee, 0.06%
