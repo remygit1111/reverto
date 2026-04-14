@@ -399,11 +399,30 @@ class PaperEngine:
 
         # JSON → SQLite migration. Existing bots predating the DB ledger
         # have history only in the state file; mirror it into SQLite on
-        # first restart so the portal's /api/db endpoints see it.
-        for deal in list(self.state.open_deals.values()) + list(self.state.closed_deals):
-            self._db_save_deal(deal)
-            for order in deal.orders:
-                self._db_save_order(order, deal.id, 0.0)
+        # first restart so the portal's /api/db endpoints see it. The
+        # whole replay runs inside a single transaction via
+        # deal_store.replay_deals_in_transaction so a corrupt deal in
+        # the middle of the JSON rolls back the entire batch instead
+        # of leaving the ledger half-migrated.
+        if self._bot_slug:
+            try:
+                deals_to_replay = (
+                    list(self.state.open_deals.values())
+                    + list(self.state.closed_deals)
+                )
+                migrated = deal_store.replay_deals_in_transaction(
+                    deals_to_replay, self._bot_slug, self.config.name,
+                )
+                if migrated:
+                    logger.info(
+                        "Migrated %d deals from %s into the DB ledger",
+                        migrated, self._state_file,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "JSON → DB migration failed (%s) — ledger unchanged",
+                    e,
+                )
 
     def _clear_state(self):
         """
