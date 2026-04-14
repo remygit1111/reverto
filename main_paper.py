@@ -91,6 +91,7 @@ def main() -> None:
         poll_interval=10,
         state_file=str(state_file),
         manual_trigger_file=str(manual_trigger_file),
+        slug=slug,
     )
 
     _install_signal_handlers(engine)
