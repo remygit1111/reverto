@@ -329,7 +329,18 @@ def save_annotation(
     label: Optional[str] = None,
     color: str = "#00d4aa",
 ) -> int:
-    """Insert a chart annotation row and return its new autoincrement id."""
+    """Insert a chart annotation row and return its new autoincrement id.
+
+    x1 / x2 are clamped to [0, 2_000_000_000] (Unix seconds, ~year 2033)
+    as a defence-in-depth guard. The web AnnotationBody also enforces
+    the same range, but anything calling save_annotation directly
+    (tests, future internal callers) gets the same protection so a
+    junk timestamp can never reach the SQLite row.
+    """
+    _TS_MAX = 2_000_000_000
+    x1 = max(0, min(_TS_MAX, int(x1)))
+    if x2 is not None:
+        x2 = max(0, min(_TS_MAX, int(x2)))
     with _write_lock:
         conn = get_db()
         with conn:

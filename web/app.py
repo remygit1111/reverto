@@ -1465,9 +1465,12 @@ class AnnotationBody(BaseModel):
     bot_slug: str
     type: str
     timeframe: str
-    x1: int
+    # Unix-second timestamps, clamped to a sane range (1970-01-01 .. ~2033).
+    # Without bounds a hostile or buggy client could store a million-year
+    # timestamp that would later overflow Lightweight Charts' time scale.
+    x1: int = Field(ge=0, le=2_000_000_000)
     y1: Optional[float] = None
-    x2: Optional[int] = None
+    x2: Optional[int] = Field(default=None, ge=0, le=2_000_000_000)
     y2: Optional[float] = None
     label: Optional[str] = None
     color: str = "#00d4aa"
