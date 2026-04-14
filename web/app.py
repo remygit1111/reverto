@@ -27,11 +27,13 @@ from config.models import BotConfig
 from core import credentials
 from notifications.telegram import TelegramNotifier
 
+import bcrypt
 import ccxt
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -84,6 +86,78 @@ if not _API_KEY:
         "(set REVERTO_API_KEY=... in your environment to make it persistent)",
         _API_KEY,
     )
+
+
+# ── Session auth ──────────────────────────────────────────────────────────────
+# Username/password authentication for the portal UI. The session cookie is
+# signed (not encrypted) with REVERTO_SECRET_KEY — falls back to an ephemeral
+# key with a WARNING so casual local usage still works. Credentials themselves
+# live in logs/.auth.json as an encrypted blob, reusing the Fernet master key
+# from core.credentials.
+
+_SECRET_KEY = os.environ.get("REVERTO_SECRET_KEY")
+if not _SECRET_KEY:
+    _SECRET_KEY = secrets.token_hex(32)
+    logger.warning(
+        "REVERTO_SECRET_KEY not set — generated ephemeral session key for "
+        "this session (set REVERTO_SECRET_KEY=... to make sessions survive "
+        "portal restarts)."
+    )
+
+_SESSION_COOKIE = "reverto_session"
+_SESSION_TTL = 86400  # 24h
+_SESSION_SALT = "reverto.session.v1"
+_session_serializer = URLSafeTimedSerializer(_SECRET_KEY, salt=_SESSION_SALT)
+
+_AUTH_FILE = Path(__file__).parent.parent / "logs" / ".auth.json"
+
+
+def _bootstrap_auth_if_missing() -> None:
+    """Create logs/.auth.json on first run with a random admin password.
+    The generated password is surfaced via a WARNING log so the operator
+    can pick it up from logs/portal.log on first launch."""
+    if _AUTH_FILE.exists():
+        return
+    pw = secrets.token_urlsafe(12)
+    pw_hash = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    credentials.save_encrypted(_AUTH_FILE, {"username": "admin", "password_hash": pw_hash})
+    logger.warning(
+        "First run — default credentials: admin / %s\n"
+        "Change via: POST /api/auth/change-password",
+        pw,
+    )
+
+
+def _load_auth() -> Optional[dict]:
+    return credentials.load_encrypted(_AUTH_FILE)
+
+
+def _save_auth(data: dict) -> None:
+    credentials.save_encrypted(_AUTH_FILE, data)
+
+
+def _create_session_cookie(username: str) -> str:
+    return _session_serializer.dumps({"u": username, "iat": int(time.time())})
+
+
+def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
+    if not token:
+        return None
+    try:
+        data = _session_serializer.loads(token, max_age=_SESSION_TTL)
+    except (BadSignature, SignatureExpired):
+        return None
+    if not isinstance(data, dict) or not data.get("u"):
+        return None
+    return data
+
+
+def _require_session(request: Request) -> dict:
+    """FastAPI dependency — reject if the caller has no valid session cookie."""
+    payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if not payload:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return payload
 
 
 def verify_api_key(request: Request) -> str:
@@ -526,6 +600,52 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+_PUBLIC_PATHS = {
+    "/",
+    "/favicon.ico",
+    "/health",
+    "/auth/status",
+    "/auth/login",
+    "/auth/logout",
+}
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Gate every HTTP request on a valid session cookie, except for the
+    small set of public paths (landing page, static assets, auth endpoints).
+
+    API requests without a cookie get a JSON 401 so the SPA fetch helpers
+    can handle them. Non-API requests get a redirect to /, where the SPA
+    will render the login view.
+    """
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if path in _PUBLIC_PATHS or path.startswith("/static/"):
+            return await call_next(request)
+
+        if _verify_session_cookie(request.cookies.get(_SESSION_COOKIE)):
+            return await call_next(request)
+
+        # API key callers still pass through — the API key dependency runs
+        # later and remains the second layer of protection on mutating
+        # routes. Legacy scripts/tests that only carry X-API-Key keep working.
+        provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        if provided and secrets.compare_digest(provided, _API_KEY):
+            return await call_next(request)
+
+        accept = request.headers.get("accept", "")
+        if (
+            path.startswith("/api/")
+            or path.startswith("/ws")
+            or "application/json" in accept
+        ):
+            return JSONResponse(
+                {"detail": "Authentication required"}, status_code=401
+            )
+        return RedirectResponse(url="/", status_code=303)
+
+
 # Rate limiter — beperkt brute force en DoS op control endpoints. Sleutel
 # per remote IP; in een setup achter een reverse proxy moet je X-Forwarded-For
 # parsing toevoegen via een eigen key_func.
@@ -536,11 +656,105 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONR
     return JSONResponse(status_code=429, content={"detail": "Too many requests"})
 
 
+_bootstrap_auth_if_missing()
+
 app = FastAPI(title="Reverto Portal", docs_url=None, redoc_url=None)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+# Order: SecurityHeaders added first (runs last on the response), Auth added
+# second (runs first on the request so 401s never leak past the gate).
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(AuthMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# ── Auth endpoints ────────────────────────────────────────────────────────────
+
+
+class LoginBody(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=1, max_length=512)
+
+
+@app.post("/auth/login")
+@limiter.limit("5/minute")
+async def auth_login(body: LoginBody, request: Request):
+    auth = _load_auth() or {}
+    stored_hash = auth.get("password_hash", "")
+    stored_user = auth.get("username", "")
+    ok = False
+    if stored_user and stored_hash and body.username == stored_user:
+        try:
+            ok = bcrypt.checkpw(body.password.encode("utf-8"), stored_hash.encode("utf-8"))
+        except ValueError:
+            ok = False
+    if not ok:
+        # Damp brute force without blocking the event loop.
+        await asyncio.sleep(0.1)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = _create_session_cookie(stored_user)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        key=_SESSION_COOKIE,
+        value=token,
+        max_age=_SESSION_TTL,
+        httponly=True,
+        samesite="strict",
+        secure=False,
+        path="/",
+    )
+    _audit("auth_login", stored_user, "-")
+    return resp
+
+
+@app.post("/auth/logout")
+async def auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/auth/status")
+async def auth_status(request: Request):
+    payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if payload:
+        return {"authenticated": True, "username": payload.get("u")}
+    return {"authenticated": False, "username": None}
+
+
+@app.post("/api/auth/change-password")
+@limiter.limit("10/minute")
+async def auth_change_password(
+    body: ChangePasswordBody,
+    request: Request,
+    session: dict = Depends(_require_session),
+):
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    auth = _load_auth() or {}
+    stored_hash = auth.get("password_hash", "")
+    try:
+        ok = bool(stored_hash) and bcrypt.checkpw(
+            body.current_password.encode("utf-8"), stored_hash.encode("utf-8")
+        )
+    except ValueError:
+        ok = False
+    if not ok:
+        await asyncio.sleep(0.1)
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    new_hash = bcrypt.hashpw(
+        body.new_password.encode("utf-8"), bcrypt.gensalt(rounds=12)
+    ).decode("utf-8")
+    auth["password_hash"] = new_hash
+    _save_auth(auth)
+    _audit("auth_change_password", session.get("u", "-"), "-")
+    return {"ok": True}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -941,11 +1155,15 @@ broadcaster = LogBroadcaster()
 
 @app.websocket("/ws/logs/{slug}")
 async def ws_logs(websocket: WebSocket, slug: str):
-    # WebSocket auth — browsers can't set custom headers on ws, so the key
-    # must arrive via query param. Reject before accept() so we never leak
-    # logs to unauthenticated clients.
+    # WebSocket auth — BaseHTTPMiddleware doesn't run on WS, so we check
+    # the session cookie (or legacy API key query param) here. Reject
+    # before accept() so we never leak logs to unauthenticated clients.
+    session_ok = _verify_session_cookie(
+        websocket.cookies.get(_SESSION_COOKIE)
+    ) is not None
     provided = websocket.query_params.get("api_key")
-    if not provided or not secrets.compare_digest(provided, _API_KEY):
+    api_ok = bool(provided) and secrets.compare_digest(provided, _API_KEY)
+    if not (session_ok or api_ok):
         await websocket.close(code=4401)
         return
 
