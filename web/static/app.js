@@ -1776,8 +1776,13 @@ async function fetchDetail(slug) {
     $('d-pnl').innerHTML = fmtPnl(pnl, 8);
     $('d-open-count').textContent = b.open_deals_count ?? '—';
     $('d-winrate').textContent = (b.win_rate ?? 0) + '%';
-    $('d-schedule').textContent = b.schedule_open ? 'Open' : 'Closed';
-    $('d-schedule').className = 'card-value ' + (b.schedule_open ? 'pos' : 'neu');
+    if (b.has_trading_windows === false) {
+      $('d-schedule').textContent = '24/7';
+      $('d-schedule').className = 'card-value pos';
+    } else {
+      $('d-schedule').textContent = b.schedule_open ? 'Open' : 'Closed';
+      $('d-schedule').className = 'card-value ' + (b.schedule_open ? 'pos' : 'neu');
+    }
 
     $('d-config').textContent = b.config_file || '—';
     $('d-mode').textContent = (b.mode || '—').toUpperCase();

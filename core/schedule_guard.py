@@ -40,6 +40,12 @@ class ScheduleGuard:
         if today_str in self.schedule.blackout_dates:
             return False
 
+        # No trading windows configured → 24/7 operation. Blackout dates
+        # still override so operators can exclude specific days even on a
+        # windowless schedule.
+        if not self.schedule.trading_windows:
+            return True
+
         # Check if current time falls within any trading window
         for window in self.schedule.trading_windows:
             window_days = [DAY_MAP[d.lower()] for d in window.days]
