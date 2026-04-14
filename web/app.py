@@ -425,8 +425,13 @@ async def stop_bot(slug: str) -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-    # Wait up to 5s for graceful exit (poll PID file + liveness).
-    deadline = time.time() + 5.0
+    # Wait up to 10s for graceful exit (poll PID file + liveness).
+    # 10s instead of 5s because PaperEngine.stop() joins the notify
+    # worker with a 15s budget so notify_shutdown + notify_stop have
+    # time to actually flush to Telegram (single HTTP POST per message,
+    # 10s httpx timeout each). 5s wasn't enough — the bot got SIGKILL'd
+    # mid-send and the stop notification never landed.
+    deadline = time.time() + 10.0
     while time.time() < deadline:
         if not _pid_alive(pid) or not bot.pid_file.exists():
             break
@@ -435,7 +440,7 @@ async def stop_bot(slug: str) -> dict:
     if _pid_alive(pid):
         # Graceful shutdown timed out — escalate to SIGKILL.
         logger.warning(
-            f"Bot {slug}: PID {pid} still alive after 5s — escalating to SIGKILL"
+            f"Bot {slug}: PID {pid} still alive after 10s — escalating to SIGKILL"
         )
         try:
             os.kill(pid, signal.SIGKILL)

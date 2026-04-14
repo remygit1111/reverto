@@ -10,6 +10,8 @@ import argparse
 import atexit
 import logging
 import os
+import signal as _signal
+import sys
 from pathlib import Path
 
 from config.config_loader import load_bot_config
@@ -88,7 +90,33 @@ def main() -> None:
         poll_interval=10,
         state_file=str(state_file),
     )
+
+    _install_signal_handlers(engine)
+
     engine.start()
+
+
+def _install_signal_handlers(engine: PaperEngine) -> None:
+    """Translate SIGTERM into a clean engine.stop() call.
+
+    The portal stops bots via os.kill(pid, SIGTERM). Without an explicit
+    handler the default SIGTERM action terminates the Python process
+    immediately — so engine.stop() never runs and the queued
+    notify_shutdown / notify_stop messages never reach Telegram. Wiring
+    SIGTERM to engine.stop() lets the notify worker flush its queue
+    (engine.stop() joins it with a 15s timeout) before we exit.
+
+    SIGINT is intentionally NOT touched so the existing KeyboardInterrupt
+    path in PaperEngine.start() keeps working unchanged.
+    """
+    def _on_sigterm(_signum, _frame):
+        logger.info("Received SIGTERM — stopping engine cleanly")
+        try:
+            engine.stop()
+        finally:
+            sys.exit(0)
+
+    _signal.signal(_signal.SIGTERM, _on_sigterm)
 
 
 if __name__ == "__main__":
