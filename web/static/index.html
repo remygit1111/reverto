@@ -127,14 +127,15 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-deals" class="page">
   <div class="all-deals-section">
-    <div class="section-title">All open deals</div>
+    <div class="active-deals-header">
+      <div class="section-title">All open deals</div>
+      <button id="active-deals-cog" type="button" class="cog-btn" aria-label="Customize columns">⚙</button>
+      <div id="active-deals-cog-menu" class="cog-menu hidden"></div>
+    </div>
     <div class="card card-no-pad mb-20">
       <table>
         <thead>
-          <tr>
-            <th>Bot</th><th>Deal ID</th><th>Pair</th><th>Entry</th>
-            <th>Avg entry</th><th>Orders</th><th>PnL</th><th>PnL %</th><th>Opened</th>
-          </tr>
+          <tr id="all-deals-thead-row"></tr>
         </thead>
         <tbody id="all-deals-tbody">
           <tr class="empty-row"><td colspan="9">No open deals</td></tr>
