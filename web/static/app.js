@@ -77,6 +77,20 @@ function fmtPct(v) {
   const s = v >= 0 ? '+' : ''; const c = v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu';
   return `<span class="${c}">${s}${v.toFixed(2)}%</span>`;
 }
+const _MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function formatDateTime(iso) {
+  // Locale-independent formatter → "14 Apr 2026 11:22". Renders in the
+  // browser's local timezone (matching the rest of the dashboard).
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '—';
+  const day = String(d.getDate()).padStart(2, '0');
+  const mon = _MONTH_ABBR[d.getMonth()];
+  const yr  = d.getFullYear();
+  const hh  = String(d.getHours()).padStart(2, '0');
+  const mm  = String(d.getMinutes()).padStart(2, '0');
+  return `${day} ${mon} ${yr} ${hh}:${mm}`;
+}
 function timeAgo(iso) {
   if (!iso) return '—';
   const s = Math.floor((Date.now() - new Date(iso)) / 1000);
@@ -213,8 +227,8 @@ const ACTIVE_DEALS_COLUMNS = [
     cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
   { key: 'pnl_pct',    label: 'PnL %',
     cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
-  { key: 'started',    label: 'Started',
-    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+  { key: 'started',    label: 'Start Date',
+    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>` },
   { key: 'age',        label: 'Age',
     cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
 ];
@@ -288,10 +302,10 @@ const CLOSED_DEALS_COLUMNS = [
     cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
   { key: 'reason',      label: 'Reason',
     cell: d => `<td>${reasonBadge(d.close_reason)}</td>` },
-  { key: 'opened',      label: 'Opened',
-    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${timeAgo(d.opened_at)}</td>` },
-  { key: 'closed',      label: 'Closed',
-    cell: d => `<td class="muted-cell" title="${safeText(d.closed_at || '')}">${timeAgo(d.closed_at)}</td>` },
+  { key: 'opened',      label: 'Start Date',
+    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>` },
+  { key: 'closed',      label: 'Close Date',
+    cell: d => `<td class="muted-cell" title="${safeText(d.closed_at || '')}">${formatDateTime(d.closed_at)}</td>` },
   { key: 'duration',    label: 'Duration',
     cell: d => `<td class="muted-cell">${formatDuration(d.opened_at, d.closed_at)}</td>` },
 ];
@@ -354,8 +368,8 @@ const DETAIL_OPEN_DEALS_COLUMNS = [
     cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
   { key: 'pnl_pct',   label: 'PnL %',
     cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
-  { key: 'started',   label: 'Started',
-    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+  { key: 'started',   label: 'Start Date',
+    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>` },
   { key: 'age',       label: 'Age',
     cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
 ];
