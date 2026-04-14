@@ -138,6 +138,7 @@ class PaperEngine:
         initial_balance_btc: float = 0.1,
         poll_interval: int = 10,
         state_file: str = None,
+        manual_trigger_file: str = None,
     ):
         self.config           = config
         self.exchange         = exchange
@@ -153,6 +154,12 @@ class PaperEngine:
 
         # State file for portal communication
         self._state_file = Path(state_file) if state_file else None
+        # Manual-trigger sentinel file — the web portal writes this path
+        # when the operator clicks "Start Deal". The engine deletes it on
+        # the next tick and opens a deal regardless of schedule / filters.
+        self._manual_trigger_file = (
+            Path(manual_trigger_file) if manual_trigger_file else None
+        )
 
         # Rolling window of OHLC close/high/low per timeframe. The
         # indicator engine needs separate buckets so each indicator can
@@ -430,6 +437,10 @@ class PaperEngine:
             self._monitor_open_deals(price)
             self._update_liq_guard(price)
 
+            # Manual trigger: the portal writes a sentinel file to force
+            # an immediate deal open, bypassing schedule + indicators.
+            self._check_manual_trigger(price)
+
             if is_open:
                 self._check_entry(price)
 
@@ -526,6 +537,22 @@ class PaperEngine:
     # ------------------------------------------------------------------
     # Entry logic
     # ------------------------------------------------------------------
+
+    def _check_manual_trigger(self, price: float):
+        """If the manual-trigger sentinel exists, consume it and open a
+        deal unconditionally (bypasses schedule + indicator filters)."""
+        trigger = self._manual_trigger_file
+        if trigger is None or not trigger.exists():
+            return
+        try:
+            trigger.unlink()
+        except OSError:
+            pass
+        if len(self.state.get_open_deals_snapshot()) > 0:
+            logger.warning("manual trigger ignored: deal already open")
+            return
+        logger.info("=== Manual deal trigger fired ===")
+        self._open_deal(price)
 
     def _check_entry(self, price: float):
         """Check if conditions are met to start a new deal."""

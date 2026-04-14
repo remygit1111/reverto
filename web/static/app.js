@@ -700,6 +700,39 @@ async function botAction(slug, action, srcBtn = null) {
   if (currentSlug === slug) fetchDetail(slug);
 }
 
+async function manualStartDeal(slug, srcBtn = null) {
+  if (!getApiKey()) {
+    _pendingAction = () => manualStartDeal(slug);
+    showApiKeyModal();
+    return;
+  }
+  const origLabel = srcBtn ? srcBtn.innerHTML : null;
+  if (srcBtn) { srcBtn.disabled = true; srcBtn.textContent = 'Starting...'; }
+  try {
+    const res = await fetch(`/api/bots/${slug}/deal/start`, {
+      method: 'POST',
+      headers: { 'X-API-Key': getApiKey() },
+    });
+    if (res.status === 401) {
+      _pendingAction = () => manualStartDeal(slug);
+      alert('Auth error — check your API key');
+      showApiKeyModal();
+      return;
+    }
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.json()).detail || ''; } catch (e) {}
+      alert(`Start Deal failed: ${detail || res.status}`);
+      return;
+    }
+  } catch (e) {
+    alert(`Start Deal failed: ${e.message}`);
+  } finally {
+    if (srcBtn) { srcBtn.innerHTML = origLabel; srcBtn.disabled = false; }
+    if (currentSlug === slug) fetchDetail(slug);
+  }
+}
+
 // ── Top-level tab navigation ─────────────────────────────────────────────────
 function _setActiveTab(btnId) {
   document.querySelectorAll('#main-nav .tab').forEach(t => t.classList.remove('active'));
@@ -1767,6 +1800,14 @@ async function fetchDetail(slug) {
     const sb = $('d-btn-start');   if (sb) sb.disabled = !!b.running;
     const xb = $('d-btn-stop');    if (xb) xb.disabled = !b.running;
     const rb = $('d-btn-restart'); if (rb) rb.disabled = !b.running;
+    // Manual deal button — only visible when bot is running AND has
+    // no open deals. Mirrors the engine's refusal to open a second deal.
+    const mb = $('d-btn-manual-deal');
+    if (mb) {
+      const openCnt = b.open_deals_count || (b.open_deals || []).length || 0;
+      const show = !!b.running && openCnt === 0;
+      mb.classList.toggle('hidden', !show);
+    }
 
     $('d-price').textContent = fmtPrice(b.current_price) || '—';
     $('d-pair-sub').textContent = b.pair || 'BTC/USD';
@@ -2286,6 +2327,12 @@ function setupEventListeners() {
       });
     }
   });
+  const manualBtn = $('d-btn-manual-deal');
+  if (manualBtn) {
+    manualBtn.addEventListener('click', () => {
+      if (currentSlug) manualStartDeal(currentSlug, manualBtn);
+    });
+  }
 
   // Base unit toggle
   document.querySelectorAll('[data-base-unit]').forEach(b => {

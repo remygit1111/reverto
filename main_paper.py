@@ -65,6 +65,7 @@ def main() -> None:
 
     pid_file = pid_dir / f"{slug}.pid"
     state_file = log_dir / f"{slug}.state.json"
+    manual_trigger_file = log_dir / f"{slug}.manual_trigger"
 
     # Write PID file early so the portal's start_bot() polling sees it
     # within the 3s starting-slot window. atexit removes it on a clean
@@ -89,6 +90,7 @@ def main() -> None:
         initial_balance_btc=args.balance,
         poll_interval=10,
         state_file=str(state_file),
+        manual_trigger_file=str(manual_trigger_file),
     )
 
     _install_signal_handlers(engine)

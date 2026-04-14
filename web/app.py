@@ -602,6 +602,23 @@ async def api_restart(slug: str, request: Request, key_hint: str = Depends(verif
     _audit("bot_restart", slug, key_hint)
     return await restart_bot(slug)
 
+@app.post("/api/bots/{slug}/deal/start")
+@limiter.limit("5/minute")
+async def api_deal_start(slug: str, request: Request, key_hint: str = Depends(verify_api_key)):
+    """Manual deal trigger — writes a sentinel file that the running
+    paper engine consumes on its next tick to force-open a deal."""
+    bot = await registry.get(slug)
+    if not bot:
+        raise HTTPException(status_code=404, detail=f"Unknown bot: {slug}")
+    trigger = LOG_DIR / f"{slug}.manual_trigger"
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        trigger.write_text("", encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write trigger: {e}")
+    _audit("bot_manual_deal", slug, key_hint)
+    return {"ok": True}
+
 
 @app.post("/api/portal/restart")
 @limiter.limit("5/minute")
