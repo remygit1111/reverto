@@ -55,6 +55,112 @@ function clearApiKey() {
   location.reload();
 }
 
+// ── Session auth ──────────────────────────────────────────────────────────────
+async function checkAuthStatus() {
+  try {
+    const r = await fetch('/auth/status');
+    if (r.status === 401) return false;
+    const j = await r.json();
+    return Boolean(j.authenticated);
+  } catch (e) { return false; }
+}
+
+function _handle401() {
+  // Stop background polling so we don't keep hammering protected endpoints
+  // after the session has expired.
+  if (overviewInterval) { clearInterval(overviewInterval); overviewInterval = null; }
+  if (detailInterval)   { clearInterval(detailInterval);   detailInterval   = null; }
+  if (ws) { try { ws.close(); } catch (e) {} ws = null; }
+  document.querySelectorAll('.page').forEach(p => {
+    p.classList.remove('active');
+    p.classList.add('hidden');
+  });
+  const login = document.getElementById('view-login');
+  if (login) {
+    login.classList.remove('hidden');
+    login.classList.add('active');
+  }
+}
+
+async function handleLoginSubmit(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  const u = document.getElementById('login-username').value;
+  const p = document.getElementById('login-password').value;
+  const err = document.getElementById('login-error');
+  err.classList.add('hidden');
+  try {
+    const r = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p }),
+    });
+    if (!r.ok) {
+      err.textContent = 'Invalid credentials';
+      err.classList.remove('hidden');
+      return;
+    }
+    location.reload();
+  } catch (e2) {
+    err.textContent = 'Login failed';
+    err.classList.remove('hidden');
+  }
+}
+
+async function handleLogout() {
+  try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
+  location.reload();
+}
+
+function showChangePwModal() {
+  const m = document.getElementById('change-pw-modal');
+  document.getElementById('cpw-current').value = '';
+  document.getElementById('cpw-new').value = '';
+  document.getElementById('cpw-confirm').value = '';
+  const err = document.getElementById('cpw-error');
+  err.classList.add('hidden'); err.textContent = '';
+  m.classList.add('show');
+}
+function closeChangePwModal() {
+  document.getElementById('change-pw-modal').classList.remove('show');
+}
+async function submitChangePassword() {
+  const cur = document.getElementById('cpw-current').value;
+  const neu = document.getElementById('cpw-new').value;
+  const conf = document.getElementById('cpw-confirm').value;
+  const err = document.getElementById('cpw-error');
+  err.classList.add('hidden'); err.textContent = '';
+  if (neu.length < 8) {
+    err.textContent = 'New password must be at least 8 characters';
+    err.classList.remove('hidden'); return;
+  }
+  if (neu !== conf) {
+    err.textContent = 'New passwords do not match';
+    err.classList.remove('hidden'); return;
+  }
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const apiKey = getApiKey();
+    if (apiKey) headers['X-API-Key'] = apiKey;
+    const r = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ current_password: cur, new_password: neu }),
+    });
+    if (!r.ok) {
+      let msg = 'Change failed';
+      try { const j = await r.json(); if (j.detail) msg = j.detail; } catch (e) {}
+      err.textContent = msg;
+      err.classList.remove('hidden');
+      return;
+    }
+    closeChangePwModal();
+    alert('Password changed');
+  } catch (e2) {
+    err.textContent = 'Network error';
+    err.classList.remove('hidden');
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 function safeText(s) {
@@ -161,7 +267,9 @@ function showDTab(name, btn) {
 // ── Overview ──────────────────────────────────────────────────────────────────
 async function fetchOverview() {
   try {
-    const d = await fetch('/api/bots').then(r => r.json());
+    const r = await fetch('/api/bots');
+    if (r.status === 401) { _handle401(); return; }
+    const d = await r.json();
     renderOverview(d);
   } catch (e) {}
 }
@@ -1896,7 +2004,9 @@ function _routeFromHash() {
 
 async function fetchDetail(slug) {
   try {
-    const b = await fetch(`/api/bots/${slug}`).then(r => r.json());
+    const _r = await fetch(`/api/bots/${slug}`);
+    if (_r.status === 401) { _handle401(); return; }
+    const b = await _r.json();
 
     if (b.current_price) $('hdr-price').textContent = fmtPrice(b.current_price);
     $('hdr-pair').textContent = b.pair || 'BTC/USD';
@@ -3350,6 +3460,13 @@ function setupEventListeners() {
   $('modal-cancel-btn').addEventListener('click', closeApiKeyModal);
   $('modal-save-btn').addEventListener('click', saveApiKey);
 
+  // Logout + change password
+  const lo = $('logout-btn');    if (lo) lo.addEventListener('click', handleLogout);
+  const cp = $('change-pw-btn'); if (cp) cp.addEventListener('click', showChangePwModal);
+  const cpc = $('cpw-cancel');   if (cpc) cpc.addEventListener('click', closeChangePwModal);
+  const cps = $('cpw-submit');   if (cps) cps.addEventListener('click', submitChangePassword);
+  const lf  = $('login-form');   if (lf) lf.addEventListener('submit', handleLoginSubmit);
+
   setupActiveDealsCog();
   setupDetailOpenDealsCog();
   setupDetailClosedDealsCog();
@@ -3482,8 +3599,15 @@ function setupEventListeners() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
+
+  // Gate: require a valid session cookie before bringing up the SPA.
+  const authed = await checkAuthStatus();
+  if (!authed) {
+    _handle401();
+    return;
+  }
 
   if (!getApiKey()) showApiKeyModal();
 

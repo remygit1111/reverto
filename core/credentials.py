@@ -117,6 +117,39 @@ def list_exchanges_with_keys() -> list[str]:
     return sorted(_read_store().keys())
 
 
+def save_encrypted(path: Path, data: dict) -> None:
+    """Versleutel `data` (JSON serialiseerbaar) met de Reverto master key
+    en schrijf het resultaat naar `path`. Herbruikt dezelfde Fernet key
+    die ook de exchange credentials beschermt zodat er maar één
+    key-bestand is om te bewaren.
+    """
+    f = _fernet()
+    blob = f.encrypt(json.dumps(data).encode("utf-8"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(blob)
+    tmp.replace(path)
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass
+
+
+def load_encrypted(path: Path) -> Optional[dict]:
+    """Decrypt een met `save_encrypted` geschreven file en retourneer
+    de originele dict, of None als de file ontbreekt of onleesbaar is."""
+    if not path.exists():
+        return None
+    try:
+        blob = path.read_bytes()
+        f = _fernet()
+        raw = f.decrypt(blob)
+        return json.loads(raw.decode("utf-8"))
+    except (InvalidToken, ValueError, OSError, json.JSONDecodeError) as e:
+        logger.error("Kan encrypted file %s niet lezen: %s", path, e)
+        return None
+
+
 def delete_keys(exchange: str) -> bool:
     """Verwijder credentials voor `exchange`. Retourneert True als er
     iets verwijderd is."""

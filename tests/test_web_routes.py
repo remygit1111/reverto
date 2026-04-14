@@ -7,7 +7,6 @@
 # leven op hetzelfde pad en moeten beide beschikbaar zijn.
 
 import os
-import shutil
 import sys
 
 os.environ.setdefault("REVERTO_API_KEY", "testkey-for-pytest")
@@ -35,10 +34,12 @@ def _cleanup_yaml():
     yield
     if os.path.exists(_TEST_YAML):
         os.remove(_TEST_YAML)
-    # credentials files created by the auth path during tests
-    for f in ("logs/credentials.json", "logs/.credentials.key"):
-        if os.path.exists(f):
-            os.remove(f)
+    # credentials files created by the auth path during tests. .auth.json
+    # is left in place because the bootstrap runs once at module import —
+    # removing it would not regenerate it, and removing .credentials.key
+    # would poison decryption on the next run. Only touch credentials.json.
+    if os.path.exists("logs/credentials.json"):
+        os.remove("logs/credentials.json")
 
 
 def _make_payload(name: str = "Pytest Route Check") -> dict:
@@ -124,7 +125,9 @@ class TestPostBotsSmoke:
     def test_post_does_not_break_get(self):
         # After a POST the GET listing should still return 200, not 405
         CLIENT.post("/api/bots", json=_make_payload(), headers=JSON)
-        r = CLIENT.get("/api/bots")
+        # AuthMiddleware now gates /api/*, so pass the API key — the
+        # middleware treats a valid X-API-Key as an authenticated principal.
+        r = CLIENT.get("/api/bots", headers=AUTH)
         assert r.status_code == 200
         assert "bots" in r.json()
 
@@ -143,3 +146,94 @@ class TestInvalidPayload:
         r = CLIENT.post("/api/bots", json=bad, headers=JSON)
         # Pydantic BotConfig.name validator rejects non-alnum first
         assert r.status_code == 400
+
+
+# ── Auth tests ────────────────────────────────────────────────────────────────
+# These exercise the session-cookie login flow, the gating middleware, and
+# the change-password endpoint. They use a dedicated TestClient without the
+# API key cookie so we're testing the session path, not the legacy API-key
+# bypass.
+
+import bcrypt  # noqa: E402
+
+from web import app as webapp  # noqa: E402
+
+_KNOWN_PW = "pytest-known-password-123"
+
+
+@pytest.fixture
+def auth_client():
+    """TestClient with the known password provisioned in .auth.json.
+    Yields the client and restores the original auth blob afterwards."""
+    original = webapp._load_auth()
+    webapp._save_auth({
+        "username": "admin",
+        "password_hash": bcrypt.hashpw(
+            _KNOWN_PW.encode("utf-8"), bcrypt.gensalt(rounds=4)
+        ).decode("utf-8"),
+    })
+    client = TestClient(webapp.app)
+    try:
+        yield client
+    finally:
+        if original:
+            webapp._save_auth(original)
+
+
+class TestAuth:
+    def test_status_unauthenticated_without_cookie(self):
+        client = TestClient(webapp.app)
+        client.cookies.clear()
+        r = client.get("/auth/status")
+        assert r.status_code == 200
+        assert r.json() == {"authenticated": False, "username": None}
+
+    def test_login_bad_credentials_returns_401(self, auth_client):
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "wrong"},
+        )
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Invalid credentials"
+
+    def test_login_success_sets_cookie(self, auth_client):
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": _KNOWN_PW},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+        # Set-Cookie header must carry the session cookie.
+        set_cookie = r.headers.get("set-cookie", "")
+        assert "reverto_session=" in set_cookie
+
+    def test_gated_endpoint_requires_session(self):
+        client = TestClient(webapp.app)
+        client.cookies.clear()
+        r = client.get("/api/bots")
+        assert r.status_code == 401
+
+    def test_gated_endpoint_with_session_cookie_works(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.get("/api/bots")
+        assert r.status_code == 200
+        assert "bots" in r.json()
+
+    def test_change_password_rejects_short(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={"current_password": _KNOWN_PW, "new_password": "short"},
+        )
+        assert r.status_code == 400
+
+    def test_change_password_rejects_wrong_current(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={"current_password": "not-it", "new_password": "longenough1"},
+        )
+        assert r.status_code == 401
