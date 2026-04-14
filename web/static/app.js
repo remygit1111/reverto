@@ -5175,13 +5175,21 @@ class RevertoBacktest {
     if (deal.dca_count >= this._max_orders - 1) return;
     const lastPrice = deal.orders[deal.orders.length - 1].price;
     const nextDca = lastPrice * (1 - this._spacing / 100);
-    if (candle.low <= nextDca) {
-      const dcaSize = this._base_size * Math.pow(this._mult, deal.dca_count + 1);
+    // Match Python backtest_engine._check_dca exactly: trigger on
+    // candle.close (not candle.low), fill at candle.close (not the
+    // line), and use dca_count as the multiplier exponent BEFORE
+    // incrementing it. The previous JS version triggered on wicks,
+    // filled at the line, and over-multiplied size by one step.
+    if (candle.close <= nextDca) {
+      const dcaSize = this._base_size * Math.pow(this._mult, deal.dca_count);
       const fee = this._calcFee(dcaSize);
       this.balance_btc -= fee;
       this.fees_paid_btc += fee;
-      deal.orders.push({ price: nextDca, size: dcaSize, type: 'dca' });
+      deal.orders.push({ price: candle.close, size: dcaSize, type: 'dca' });
       deal.dca_count += 1;
+      if (window._BT_DEBUG) {
+        console.log('[BT] DCA #', deal.dca_count, 'at', candle.close, 'avg now', this._avgEntry(deal));
+      }
     }
   }
 
@@ -5194,6 +5202,10 @@ class RevertoBacktest {
     const fee = this._calcFee(size);
     this.balance_btc += pnlBtc - fee;
     this.fees_paid_btc += fee;
+    if (window._BT_DEBUG && this.closed_deals.length < 10) {
+      console.log('[BT] close deal #', deal.id, 'reason', reason,
+        'price', price, 'pnl', pnlBtc.toFixed(8));
+    }
     this.closed_deals.push({
       id: deal.id,
       opened_at: deal.opened_at,
@@ -5241,15 +5253,31 @@ class RevertoBacktest {
         const cond  = m ? m[1] : 'below';
         const value = m ? parseInt(m[2], 10) : 30;
         const line = calcRSILine(this.candles, period);
+        // Build an aligned values array so cross_* can compare i vs i-1
+        // without a Map lookup. Indices without an RSI value (warmup)
+        // stay NaN and never fire a signal.
+        const rsiByIdx = new Array(n).fill(NaN);
         const timeToI = new Map();
         this.candles.forEach((c, i) => timeToI.set(c.time, i));
         for (const p of line) {
           const i = timeToI.get(p.time);
-          if (i == null) continue;
+          if (i != null) rsiByIdx[i] = p.value;
+        }
+        for (let i = 0; i < n; i++) {
+          const v = rsiByIdx[i];
+          if (!Number.isFinite(v)) continue;
           let hit = false;
-          if (cond === 'below') hit = p.value < value;
-          else if (cond === 'above') hit = p.value > value;
-          else if (cond === 'cross_above' || cond === 'cross_below') hit = true;
+          if (cond === 'below') {
+            hit = v < value;
+          } else if (cond === 'above') {
+            hit = v > value;
+          } else if (cond === 'cross_above') {
+            const prev = rsiByIdx[i - 1];
+            hit = Number.isFinite(prev) && prev <= value && v > value;
+          } else if (cond === 'cross_below') {
+            const prev = rsiByIdx[i - 1];
+            hit = Number.isFinite(prev) && prev >= value && v < value;
+          }
           arr[i] = hit;
         }
       } else if (type === 'EMA_CROSS') {
@@ -5259,6 +5287,10 @@ class RevertoBacktest {
         const slowLine = calcEMALine(this.candles, slow);
         const fastMap = new Map(fastLine.map(p => [p.time, p.value]));
         const slowMap = new Map(slowLine.map(p => [p.time, p.value]));
+        // Cross-only — match the Python check_ema_cross_signal which
+        // requires fast just crossed up through slow on this bar.
+        // The earlier "also allow currently above" fallback turned the
+        // filter into a permanent pass once fast > slow happened once.
         let prevDiff = null;
         for (let i = 0; i < n; i++) {
           const t = this.candles[i].time;
@@ -5266,9 +5298,6 @@ class RevertoBacktest {
           if (f == null || s == null) { prevDiff = null; continue; }
           const d = f - s;
           if (prevDiff != null && d > 0 && prevDiff <= 0) arr[i] = true;
-          // Also allow "currently above" — the Python engine's check
-          // is fast>slow with a small memory, so we permit the same.
-          if (d > 0) arr[i] = true;
           prevDiff = d;
         }
       } else if (type === 'MACD') {
@@ -5318,9 +5347,26 @@ class RevertoBacktest {
         if (!closed && this.open_deal) this._checkDca(this.open_deal, candle);
       }
       if (!this.open_deal && i >= warmup) {
-        let entry = true;
-        for (const a of sigArrays) { if (!a[i]) { entry = false; break; } }
-        if (entry) this._openDeal(candle.close, candle.time, i);
+        // Look-ahead guard: Python's BacktestEngine evaluates indicators
+        // on candles strictly BEFORE the current driving candle (see
+        // _ohlc_up_to: `candles[ptr].timestamp < cur_ts`). Mirror that
+        // by reading the signal at index i-1 — the most recently
+        // closed bar — instead of i. Without this the JS engine
+        // peeks at the current candle's RSI/MACD/EMA values, which
+        // shifts the entry timing one bar earlier and inflates the
+        // deal count compared to the authoritative Python run.
+        const sigIdx = i - 1;
+        let entry = sigIdx >= 0;
+        if (entry) {
+          for (const a of sigArrays) { if (!a[sigIdx]) { entry = false; break; } }
+        }
+        if (entry) {
+          if (window._BT_DEBUG && this.closed_deals.length < 10) {
+            console.log('[BT] open deal #', this._deal_counter + 1,
+              'at candle', i, 'price', candle.close);
+          }
+          this._openDeal(candle.close, candle.time, i);
+        }
       }
       this.equity_curve.push({
         time: candle.time,
