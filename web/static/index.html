@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=19">
+<link rel="stylesheet" href="/static/style.css?v=20">
 </head>
 <body>
 
@@ -84,11 +84,12 @@
 
     <section class="profile-section">
       <div class="profile-section-title">API key</div>
-      <label class="profile-label">X-API-Key header value</label>
+      <div class="profile-api-help">API key for external scripts and tools</div>
       <div class="profile-api-row">
-        <input id="profile-api-key" class="modal-input" type="password" readonly>
-        <button type="button" id="profile-api-change" class="hbtn hbtn-theme">Change</button>
+        <input id="profile-api-key" class="modal-input profile-api-key-display" type="text" readonly>
+        <button type="button" id="profile-api-copy" class="hbtn hbtn-theme">Copy</button>
       </div>
+      <div id="profile-api-copy-status" class="profile-success hidden">Copied to clipboard.</div>
     </section>
 
     <div class="modal-actions">
@@ -699,6 +700,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=32"></script>
+<script src="/static/app.js?v=33"></script>
 </body>
 </html>
