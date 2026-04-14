@@ -4727,8 +4727,8 @@ function setupEventListeners() {
   $('nav-bots-btn').addEventListener('click', () => goBots());
   $('nav-deals-btn').addEventListener('click', () => goDeals());
 
-  // Back button inside the bot detail sub-view
-  $('detail-back-btn').addEventListener('click', () => goBots());
+  // The dedicated detail-back button is gone; users leave the detail
+  // view via the main Bots tab or the browser back button (popstate).
 
   $('new-bot-btn').addEventListener('click', goNewBot);
 
