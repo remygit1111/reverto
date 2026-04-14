@@ -1458,6 +1458,15 @@ tr:hover td { background: rgba(128,128,128,.04); }
   align-items: center;
   gap: 8px;
 }
+.deals-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.deals-table-cog-wrap {
+  position: relative;
+}
 .cog-btn {
   background: none;
   border: none;

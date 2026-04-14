@@ -334,6 +334,41 @@ function renderDetailClosedDeals(deals) {
   );
 }
 
+// ── Detail Open Deals column manager ────────────────────────────────────────
+// The bot detail view's Open deals table uses its own column set + storage
+// key so it can stay independent from the global Active Deals table — the
+// detail view doesn't need a "Bot" identifying column since the slug is
+// already in the page header.
+const DETAIL_OPEN_DEALS_COLUMNS = [
+  { key: 'deal_id',   label: 'Deal ID',
+    cell: d => `<td class="deal-id-cell">${safeText(d.id)}</td>` },
+  { key: 'pair',      label: 'Pair',
+    cell: d => `<td>${safeText(d.symbol || '—')}</td>` },
+  { key: 'entry',     label: 'Entry',
+    cell: d => `<td>${fmtPrice(d.entry_price)}</td>` },
+  { key: 'avg_entry', label: 'Avg Entry',
+    cell: d => `<td>${fmtPrice(d.avg_entry_price)}</td>` },
+  { key: 'orders',    label: 'Orders',
+    cell: d => `<td>${d.order_count}</td>` },
+  { key: 'pnl_btc',   label: 'PnL BTC',
+    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
+  { key: 'pnl_pct',   label: 'PnL %',
+    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
+  { key: 'started',   label: 'Started',
+    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+  { key: 'age',       label: 'Age',
+    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+];
+const DETAIL_OPEN_DEALS_LS_KEY = 'reverto.detail_open_deals_columns';
+
+function renderDetailOpenDeals(deals) {
+  _renderColumnDrivenTable(
+    'd-open-thead-row', 'd-open-tbody',
+    DETAIL_OPEN_DEALS_LS_KEY, DETAIL_OPEN_DEALS_COLUMNS,
+    deals, 'No open deals',
+  );
+}
+
 function renderActiveDealsHead() {
   const head = $('all-deals-thead-row');
   if (!head) return;
@@ -362,11 +397,14 @@ function renderActiveDeals(deals) {
   }).join('');
 }
 
-function renderActiveDealsCogMenu() {
-  const menu = $('active-deals-cog-menu');
-  if (!menu) return;
-  const cols = getActiveDealsColumns();
-  menu.innerHTML = '';
+// Track every cog-menu instance we set up. The single document-level
+// click listener uses this list to close any open menu on outside clicks
+// — adding a new cog menu does not need its own outside-click handler.
+const _COG_MENUS = [];
+
+function renderCogMenu(menuEl, lsKey, defaults, onChange) {
+  const cols = loadColumns(lsKey, defaults);
+  menuEl.innerHTML = '';
   cols.forEach((col, idx) => {
     const row = document.createElement('div');
     row.className = 'cog-menu-row';
@@ -379,18 +417,17 @@ function renderActiveDealsCogMenu() {
     cb.className = 'checkbox-accent';
     cb.checked = col.visible !== false;
     cb.addEventListener('change', () => {
-      const cur = getActiveDealsColumns();
+      const cur = loadColumns(lsKey, defaults);
       const target = cur.find(c => c.key === col.key);
       if (target) target.visible = cb.checked;
-      saveActiveDealsColumns(cur);
-      renderActiveDealsCogMenu();
-      fetchOverview();
+      saveColumns(lsKey, cur);
+      renderCogMenu(menuEl, lsKey, defaults, onChange);
+      onChange();
     });
 
     const lbl = document.createElement('label');
     lbl.textContent = col.label;
     lbl.addEventListener('click', e => {
-      // Click on the label toggles the checkbox without bubbling.
       e.preventDefault();
       cb.checked = !cb.checked;
       cb.dispatchEvent(new Event('change'));
@@ -399,11 +436,8 @@ function renderActiveDealsCogMenu() {
     row.appendChild(cb);
     row.appendChild(lbl);
 
-    // HTML5 DnD: dragstart sets the source index, dragover MUST call
-    // preventDefault() or drop never fires, drop reads back the index
-    // and re-orders the column list. We persist via saveColumns() and
-    // re-read via loadColumns() so a concurrent fetchOverview() can
-    // never resurrect the pre-drag order.
+    // HTML5 DnD: dragstart sets source index, dragover preventDefault'd
+    // to enable drop, drop parseInt's the index, splices, persists.
     row.addEventListener('dragstart', e => {
       e.dataTransfer.effectAllowed = 'move';
       try { e.dataTransfer.setData('text/plain', String(idx)); } catch (err) {}
@@ -421,38 +455,70 @@ function renderActiveDealsCogMenu() {
       const from = parseInt(raw, 10);
       const to = idx;
       if (Number.isNaN(from) || from === to) return;
-      const cur = loadColumns(ACTIVE_DEALS_LS_KEY, ACTIVE_DEALS_COLUMNS);
+      const cur = loadColumns(lsKey, defaults);
       if (from < 0 || from >= cur.length || to < 0 || to >= cur.length) return;
       const [moved] = cur.splice(from, 1);
       cur.splice(to, 0, moved);
-      saveColumns(ACTIVE_DEALS_LS_KEY, cur);
-      renderActiveDealsCogMenu();
-      fetchOverview();
+      saveColumns(lsKey, cur);
+      renderCogMenu(menuEl, lsKey, defaults, onChange);
+      onChange();
     });
 
-    menu.appendChild(row);
+    menuEl.appendChild(row);
   });
 }
 
-function setupActiveDealsCog() {
-  const btn  = $('active-deals-cog');
-  const menu = $('active-deals-cog-menu');
+function setupCogMenu(btnId, menuId, lsKey, defaults, onChange) {
+  const btn  = $(btnId);
+  const menu = $(menuId);
   if (!btn || !menu) return;
+  _COG_MENUS.push({ btn, menu });
   btn.addEventListener('click', e => {
     e.stopPropagation();
     if (menu.classList.contains('hidden')) {
-      renderActiveDealsCogMenu();
+      renderCogMenu(menu, lsKey, defaults, onChange);
       menu.classList.remove('hidden');
     } else {
       menu.classList.add('hidden');
     }
   });
+}
+
+function _installCogOutsideClickHandler() {
+  // Generic outside-click closer. Iterates every registered cog menu so
+  // future cogs do not need to add their own handler.
   document.addEventListener('click', e => {
-    if (menu.classList.contains('hidden')) return;
-    if (e.target === btn || btn.contains(e.target)) return;
-    if (menu.contains(e.target)) return;
-    menu.classList.add('hidden');
+    for (const { btn, menu } of _COG_MENUS) {
+      if (menu.classList.contains('hidden')) continue;
+      if (e.target === btn || btn.contains(e.target)) continue;
+      if (menu.contains(e.target)) continue;
+      menu.classList.add('hidden');
+    }
   });
+}
+
+function setupActiveDealsCog() {
+  setupCogMenu(
+    'active-deals-cog', 'active-deals-cog-menu',
+    ACTIVE_DEALS_LS_KEY, ACTIVE_DEALS_COLUMNS,
+    () => fetchOverview(),
+  );
+}
+
+function setupDetailOpenDealsCog() {
+  setupCogMenu(
+    'd-open-deals-cog', 'd-open-deals-cog-menu',
+    DETAIL_OPEN_DEALS_LS_KEY, DETAIL_OPEN_DEALS_COLUMNS,
+    () => { if (currentSlug) fetchDetail(currentSlug); },
+  );
+}
+
+function setupDetailClosedDealsCog() {
+  setupCogMenu(
+    'd-closed-deals-cog', 'd-closed-deals-cog-menu',
+    CLOSED_DEALS_LS_KEY, CLOSED_DEALS_COLUMNS,
+    () => { if (currentSlug) fetchDetail(currentSlug); },
+  );
 }
 
 function renderBotCard(b) {
@@ -1727,19 +1793,7 @@ async function fetchDetail(slug) {
         </div>`).join('');
     }
 
-    const ob = $('d-open-tbody');
-    const od = b.open_deals || [];
-    ob.innerHTML = od.length
-      ? od.map(d => `<tr>
-          <td class="deal-id-cell">${safeText(d.id)}</td>
-          <td>${fmtPrice(d.entry_price)}</td>
-          <td>${fmtPrice(d.avg_entry_price)}</td>
-          <td>${d.order_count}</td>
-          <td>${d.total_size?.toFixed(4) || '—'}</td>
-          <td>${fmtPnl(d.pnl_btc)}</td>
-          <td class="muted-cell">${timeAgo(d.opened_at)}</td>
-        </tr>`).join('')
-      : '<tr class="empty-row"><td colspan="7">No open deals</td></tr>';
+    renderDetailOpenDeals(b.open_deals || []);
 
     const cd = b.closed_deals || [];
     renderDetailClosedDeals(cd);
@@ -2179,6 +2233,9 @@ function setupEventListeners() {
   $('modal-save-btn').addEventListener('click', saveApiKey);
 
   setupActiveDealsCog();
+  setupDetailOpenDealsCog();
+  setupDetailClosedDealsCog();
+  _installCogOutsideClickHandler();
 
   $('log-clear-btn').addEventListener('click', clearLog);
   $('ov-log-clear-btn').addEventListener('click', () => { $('ov-log-body').innerHTML = ''; });
