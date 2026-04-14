@@ -18,6 +18,10 @@ from strategies.indicators.supertrend import (
     check_supertrend_signal,
 )
 from strategies.indicators.market_structure import check_market_structure_signal
+from strategies.indicators.support_resistance import (
+    check_support_resistance_signal,
+    find_support_resistance,
+)
 from config.models import BotConfig
 from pydantic import ValidationError
 
@@ -328,6 +332,70 @@ class TestMarketStructure:
     def test_unknown_condition_raises(self):
         with pytest.raises(ValueError, match="Unknown Market Structure"):
             check_market_structure_signal([100.0] * 40, lookback=3, condition="invalid")
+
+
+class TestSupportResistance:
+    @staticmethod
+    def _with_levels(final: float = 100.0):
+        """Build a 60-close series with two swing lows around 98 and
+        two swing highs around 108, letting us probe near/below/above
+        behaviour by changing the final close."""
+        closes = [100.0] * 60
+        closes[3:8] = [101.0, 99.5, 98.0, 99.5, 101.0]      # low @ 5
+        closes[10:15] = [106.0, 107.0, 108.0, 107.0, 106.0]  # high @ 12
+        closes[17:22] = [101.0, 99.5, 98.2, 99.5, 101.0]    # low @ 19
+        closes[24:29] = [106.0, 107.0, 108.1, 107.0, 106.0]  # high @ 26
+        closes[-1] = final
+        return closes
+
+    def test_near_support_detected(self):
+        closes = self._with_levels(final=98.3)  # within 1% of ~98
+        assert check_support_resistance_signal(
+            closes, lookback=2, proximity_pct=1.0, condition="near_support"
+        ) is True
+
+    def test_near_resistance_detected(self):
+        closes = self._with_levels(final=108.0)
+        assert check_support_resistance_signal(
+            closes, lookback=2, proximity_pct=1.0, condition="near_resistance"
+        ) is True
+
+    def test_above_resistance_detected(self):
+        closes = self._with_levels(final=115.0)
+        assert check_support_resistance_signal(
+            closes, lookback=2, condition="above_resistance"
+        ) is True
+
+    def test_below_support_detected(self):
+        closes = self._with_levels(final=90.0)
+        assert check_support_resistance_signal(
+            closes, lookback=2, condition="below_support"
+        ) is True
+
+    def test_clustering_collapses_close_levels(self):
+        # Two isolated peaks in a flat floor — both within 1% of each
+        # other, no swing lows (flat equals aren't strict minima). The
+        # clustering step must collapse the pair into a single level.
+        closes = [100.0] * 60
+        closes[10] = 108.0
+        closes[30] = 108.5  # within 0.5% of 108.0 → same cluster
+        support, resistance = find_support_resistance(
+            closes, lookback=2, tolerance_pct=1.0
+        )
+        assert support == []
+        assert len(resistance) == 1
+
+    def test_insufficient_data_raises(self):
+        with pytest.raises(ValueError, match="at least"):
+            check_support_resistance_signal(
+                [100.0] * 20, lookback=3, condition="near_support"
+            )
+
+    def test_unknown_condition_raises(self):
+        with pytest.raises(ValueError, match="Unknown Support/Resistance"):
+            check_support_resistance_signal(
+                [100.0] * 60, lookback=2, condition="invalid"
+            )
 
 
 class TestConfigValidation:

@@ -78,6 +78,9 @@ class IndicatorConfig(BaseModel):
     atr_period: Optional[int] = None
     # Market Structure / Support-Resistance / QFL — swing lookback window
     lookback: Optional[int] = None
+    # Support & Resistance — cluster merge + proximity sensitivities (%)
+    tolerance_pct: Optional[float] = None
+    proximity_pct: Optional[float] = None
 
 
 class EntryConfig(BaseModel):
