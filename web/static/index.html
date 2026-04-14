@@ -133,11 +133,11 @@
         <thead>
           <tr>
             <th>Bot</th><th>Deal ID</th><th>Pair</th><th>Entry</th>
-            <th>Avg entry</th><th>Orders</th><th>PnL</th><th>Opened</th>
+            <th>Avg entry</th><th>Orders</th><th>PnL</th><th>PnL %</th><th>Opened</th>
           </tr>
         </thead>
         <tbody id="all-deals-tbody">
-          <tr class="empty-row"><td colspan="8">No open deals</td></tr>
+          <tr class="empty-row"><td colspan="9">No open deals</td></tr>
         </tbody>
       </table>
     </div>
@@ -295,7 +295,8 @@
         <div class="form-grid">
           <div class="form-row">
             <label>Max orders (incl. base)</label>
-            <input id="nb-dca-max" type="number" min="1" max="10" value="5">
+            <input id="nb-dca-max" type="number" min="0" max="50" value="5">
+            <div class="form-hint">0 or 1 disables DCA (base order only). Max 50.</div>
           </div>
           <div class="form-row">
             <label>DCA order size (<span id="nb-dca-unit-label">BTC</span>)</label>
@@ -332,6 +333,27 @@
       </div>
     </details>
 
+    <!-- Schedule -->
+    <details class="wizard-section" open>
+      <summary class="wizard-section-header">Schedule</summary>
+      <div class="wizard-section-body">
+        <div class="form-grid">
+          <div class="form-row form-row-wide">
+            <label>Timezone</label>
+            <input id="nb-sched-tz" type="text" value="Europe/Amsterdam">
+          </div>
+        </div>
+        <div class="section-title mt-16">Trading windows</div>
+        <div id="nb-sched-windows"></div>
+        <button type="button" class="hbtn hbtn-theme btn-accent" id="nb-sched-add-window">＋ Add trading window</button>
+        <div class="section-title mt-16">Blackout dates</div>
+        <div class="form-row form-row-wide">
+          <label>One ISO date per line</label>
+          <textarea id="nb-sched-blackouts" rows="3" placeholder="2026-12-25"></textarea>
+        </div>
+      </div>
+    </details>
+
     <!-- Review & Save -->
     <details class="wizard-section" open>
       <summary class="wizard-section-header">Review &amp; Save</summary>
@@ -365,6 +387,12 @@
 
   <!-- Dashboard tab -->
   <div id="dtab-dashboard" class="detail-content">
+    <div class="detail-controls">
+      <button class="hbtn hbtn-theme btn-accent" id="d-btn-start">▶ Start</button>
+      <button class="hbtn hbtn-theme btn-danger" id="d-btn-stop">■ Stop</button>
+      <button class="hbtn hbtn-theme" id="d-btn-restart">↺ Restart</button>
+      <span class="running-status" id="d-running-status">—</span>
+    </div>
     <div class="stat-grid stat-grid-mb">
       <div class="card">
         <div class="card-label">Price</div>
@@ -397,6 +425,10 @@
         <div class="card-sub">trading window</div>
       </div>
     </div>
+
+    <!-- Performance statistics -->
+    <div class="section-title">Performance Statistics</div>
+    <div class="perf-stats-grid" id="perf-stats-grid"></div>
 
     <!-- Indicators -->
     <div class="section-title">Last indicator values</div>

@@ -838,6 +838,8 @@ tr:hover td { background: rgba(128,128,128,.04); }
 }
 .form-row input[type="text"],
 .form-row input[type="number"],
+.form-row input[type="time"],
+.form-row textarea,
 .form-row select {
   font-family: var(--mono);
   font-size: 13px;
@@ -1370,4 +1372,81 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .nb-ind-card.type-qfl {
   background: var(--surface2);
   border-left-color: #f050a0;  /* magenta */
+}
+
+/* ── Schedule windows ──────────────────────────────────────────── */
+.sched-window {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.sched-window-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sched-window-days label {
+  font-family: var(--mono);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text);
+}
+.sched-window-times {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sched-window-times input[type="time"] {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 6px 9px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+}
+.sched-window-remove {
+  margin-left: auto;
+}
+
+/* ── Bot detail control buttons ─────────────────────────────────── */
+.detail-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.detail-controls .running-status {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.detail-controls .running-status.running {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.detail-controls .running-status.stopped {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+/* ── Performance stats grid ─────────────────────────────────────── */
+.perf-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
 }
