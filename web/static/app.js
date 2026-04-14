@@ -918,9 +918,17 @@ function setupDetailClosedDealsCog() {
 
 function renderBotCard(b) {
   const running = b.running;
-  const pnl = b.total_pnl_btc || 0;
+  // Defence-in-depth: every numeric field reaching the HTML template
+  // is coerced through Number() so a tampered state.json that smuggled
+  // a string past the Pydantic validator (or a future validator bug)
+  // can't surface as raw markup. fmtPnl/fmtPrice already coerce too.
+  const pnl = Number(b.total_pnl_btc) || 0;
   const pnlSign = pnl >= 0 ? '+' : '';
   const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'neu';
+  const winRate = Number(b.win_rate) || 0;
+  const balanceBtc = Number(b.balance_btc) || 0;
+  const openCount = Number(b.open_deals_count) || 0;
+  const closedCount = Number(b.closed_deals_count) || 0;
 
   const openDealsHtml = (b.open_deals || []).slice(0, 3).map(d => `
     <div class="bot-card-deal-row">
@@ -929,8 +937,8 @@ function renderBotCard(b) {
       <span>${fmtPnl(d.pnl_btc)}</span>
     </div>`).join('');
 
-  const moreDeals = (b.open_deals_count || 0) > 3
-    ? `<div class="more-deals-row">+${b.open_deals_count - 3} more deals</div>`
+  const moreDeals = openCount > 3
+    ? `<div class="more-deals-row">+${openCount - 3} more deals</div>`
     : '';
 
   return `
@@ -952,11 +960,11 @@ function renderBotCard(b) {
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">Balance</div>
-        <div class="bot-stat-value">${b.balance_btc ? b.balance_btc.toFixed(4) : '—'}</div>
+        <div class="bot-stat-value">${balanceBtc ? balanceBtc.toFixed(4) : '—'}</div>
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">Win rate</div>
-        <div class="bot-stat-value">${b.win_rate || 0}%</div>
+        <div class="bot-stat-value">${winRate.toFixed(0)}%</div>
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">PnL</div>
@@ -964,11 +972,11 @@ function renderBotCard(b) {
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">Open deals</div>
-        <div class="bot-stat-value">${b.open_deals_count || 0}</div>
+        <div class="bot-stat-value">${openCount}</div>
       </div>
       <div class="bot-stat">
         <div class="bot-stat-label">Closed</div>
-        <div class="bot-stat-value">${b.closed_deals_count || 0}</div>
+        <div class="bot-stat-value">${closedCount}</div>
       </div>
     </div>
     ${openDealsHtml ? `<div class="bot-card-deals">${openDealsHtml}${moreDeals}</div>` : ''}
