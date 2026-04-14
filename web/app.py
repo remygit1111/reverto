@@ -498,6 +498,7 @@ async def restart_bot(slug: str) -> dict:
 def _do_portal_restart():
     """Restart the portal process using os.execv — replaces current process."""
     time.sleep(0.8)  # Give the HTTP response time to reach the browser
+    logger.info("=== Portal restarting ===")
     logger.info("Portal restarting via os.execv...")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -927,6 +928,7 @@ async def tail_logs():
 
 @app.on_event("startup")
 async def on_startup():
+    logger.info("=== Portal started ===")
     asyncio.create_task(tail_logs())
 
 
