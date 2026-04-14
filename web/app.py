@@ -250,6 +250,12 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
         data = _session_serializer.loads(token, max_age=_SESSION_TTL)
     except (BadSignature, SignatureExpired):
         return None
+    except Exception as e:  # noqa: BLE001 — defensive catch-all
+        # itsdangerous can raise on malformed base64 / non-JSON payloads
+        # too. Treat anything weird as an invalid session — never let a
+        # broken cookie escape as a 500 from the auth gate.
+        logger.debug("session cookie parse failed: %s", e)
+        return None
     if not isinstance(data, dict) or not data.get("u"):
         return None
     # Epoch check — any cookie minted under an older epoch is rejected
