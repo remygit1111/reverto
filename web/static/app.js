@@ -585,7 +585,7 @@ function showPage(name) {
 }
 
 function showDTab(name, btn) {
-  ['chart', 'dashboard', 'deals', 'config', 'log'].forEach(n => {
+  ['chart', 'dashboard', 'deals', 'backtest', 'config', 'log'].forEach(n => {
     const el = $('dtab-' + n);
     if (el) { el.classList.toggle('hidden', n !== name); }
   });
@@ -5044,4 +5044,793 @@ document.addEventListener('DOMContentLoaded', async () => {
       connectOverviewLogs(slugs);
     } catch (e) {}
   }, 1000);
+
+  // ── Backtest tab wiring ────────────────────────────────────────────────
+  const btRunBtn = $('bt-run-btn');
+  if (btRunBtn) btRunBtn.addEventListener('click', btRunFromTab);
+  // Default dates — last 30 days
+  const btEnd = new Date();
+  const btStart = new Date(btEnd.getTime() - 30 * 86400 * 1000);
+  const ymd = d => d.toISOString().slice(0, 10);
+  if ($('bt-start')) $('bt-start').value = ymd(btStart);
+  if ($('bt-end'))   $('bt-end').value   = ymd(btEnd);
+  if ($('wbt-start')) $('wbt-start').value = ymd(btStart);
+  if ($('wbt-end'))   $('wbt-end').value   = ymd(btEnd);
+
+  const nbBtBtn = $('nb-bt-btn');
+  if (nbBtBtn) nbBtBtn.addEventListener('click', btOpenWizardModal);
+  const wbtRun = $('wbt-run-btn');
+  if (wbtRun) wbtRun.addEventListener('click', btRunFromWizard);
+  const wbtClose = $('wbt-close-btn');
+  if (wbtClose) wbtClose.addEventListener('click', () => {
+    $('wizard-backtest-modal').classList.remove('show');
+  });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Backtest ────────────────────────────────────────────────────────────────
+// Client-side simulator that mirrors backtest/backtest_engine.py for
+// entry/DCA/TP/SL/fees. Long-only, inverse perpetual math:
+//   pnl_btc = size * (close - avg_entry) / avg_entry * leverage
+// Indicators are a simplified subset of the Python engine — RSI, EMA
+// cross, MACD histogram and Bollinger lower-band are supported; the
+// rest (Supertrend, PSAR, market structure, S/R, QFL) short-circuit to
+// "always true" and the entry signal is the logical AND of every
+// configured indicator. See _precomputeSignalArrays for details.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BT_TF_SECONDS = { '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+const BT_DEAL_LS_KEY = 'reverto.bt_deal_columns';
+const BT_DEAL_COLUMNS = [
+  { key: 'id',        label: '#'        },
+  { key: 'opened',    label: 'Opened'   },
+  { key: 'closed',    label: 'Closed'   },
+  { key: 'duration',  label: 'Duration' },
+  { key: 'entry',     label: 'Entry'    },
+  { key: 'avg',       label: 'Avg Entry'},
+  { key: 'close',     label: 'Close'    },
+  { key: 'dcas',      label: 'DCAs'     },
+  { key: 'pnl_btc',   label: 'PnL BTC'  },
+  { key: 'pnl_pct',   label: 'PnL %'    },
+  { key: 'reason',    label: 'Reason'   },
+];
+
+class RevertoBacktest {
+  constructor(config, candles) {
+    this.config = config;
+    this.candles = candles;
+    this.balance_btc = 0;
+    this.initial_balance_btc = 0;
+    this.open_deal = null;
+    this.closed_deals = [];
+    this.equity_curve = [];
+    this.fees_paid_btc = 0;
+    this._deal_counter = 0;
+    this._tp_pct   = (config.take_profit && config.take_profit.target_pct) || 3.0;
+    this._sl_pct   = (config.stop_loss   && config.stop_loss.pct)          || 5.0;
+    this._sl_type  = (config.stop_loss   && config.stop_loss.type)         || 'fixed';
+    this._base_size = (config.dca && config.dca.base_order_size) || 0.001;
+    this._max_orders = (config.dca && config.dca.max_orders)      || 1;
+    this._spacing = (config.dca && config.dca.order_spacing_pct)  || 2.5;
+    this._mult    = (config.dca && config.dca.multiplier)         || 1.0;
+    this._taker_fee = (config.dca && config.dca.taker_fee) || 0.0006;
+    this._lev = (config.leverage && config.leverage.enabled && config.leverage.size) || 1;
+  }
+
+  _calcFee(size) { return size * this._taker_fee; }
+
+  _openDeal(price, time, i) {
+    this._deal_counter += 1;
+    const fee = this._calcFee(this._base_size);
+    this.balance_btc -= fee;
+    this.fees_paid_btc += fee;
+    this.open_deal = {
+      id: this._deal_counter,
+      opened_at: time,
+      opened_idx: i,
+      orders: [{ price, size: this._base_size, type: 'base' }],
+      dca_count: 0,
+      peak_price: 0,
+    };
+  }
+
+  _avgEntry(deal) {
+    let totSize = 0, totVal = 0;
+    for (const o of deal.orders) { totSize += o.size; totVal += o.size * o.price; }
+    return totVal / totSize;
+  }
+  _totalSize(deal) {
+    let s = 0; for (const o of deal.orders) s += o.size; return s;
+  }
+
+  _checkTp(deal, candle) {
+    const avg = this._avgEntry(deal);
+    const tpPrice = avg * (1 + this._tp_pct / 100);
+    if (candle.high >= tpPrice) {
+      this._closeDeal(deal, tpPrice, 'tp', candle.time);
+      return true;
+    }
+    return false;
+  }
+
+  _checkSl(deal, candle) {
+    const avg = this._avgEntry(deal);
+    let slPrice;
+    if (this._sl_type === 'trailing') {
+      if (deal.peak_price === 0) deal.peak_price = candle.open;
+      if (candle.high > deal.peak_price) deal.peak_price = candle.high;
+      slPrice = deal.peak_price * (1 - this._sl_pct / 100);
+    } else {
+      slPrice = avg * (1 - this._sl_pct / 100);
+    }
+    if (candle.low <= slPrice) {
+      this._closeDeal(deal, slPrice, 'sl', candle.time);
+      return true;
+    }
+    return false;
+  }
+
+  _checkDca(deal, candle) {
+    if (this._max_orders <= 1) return;
+    if (deal.dca_count >= this._max_orders - 1) return;
+    const lastPrice = deal.orders[deal.orders.length - 1].price;
+    const nextDca = lastPrice * (1 - this._spacing / 100);
+    if (candle.low <= nextDca) {
+      const dcaSize = this._base_size * Math.pow(this._mult, deal.dca_count + 1);
+      const fee = this._calcFee(dcaSize);
+      this.balance_btc -= fee;
+      this.fees_paid_btc += fee;
+      deal.orders.push({ price: nextDca, size: dcaSize, type: 'dca' });
+      deal.dca_count += 1;
+    }
+  }
+
+  _closeDeal(deal, price, reason, time) {
+    const avg = this._avgEntry(deal);
+    const size = this._totalSize(deal);
+    const pnlBtc = size * (price - avg) / avg * this._lev;
+    const margin = size / this._lev;
+    const pnlPct = margin > 0 ? (pnlBtc / margin) * 100 : 0;
+    const fee = this._calcFee(size);
+    this.balance_btc += pnlBtc - fee;
+    this.fees_paid_btc += fee;
+    this.closed_deals.push({
+      id: deal.id,
+      opened_at: deal.opened_at,
+      closed_at: time,
+      entry_price: deal.orders[0].price,
+      avg_entry_price: avg,
+      close_price: price,
+      dca_count: deal.dca_count,
+      orders: deal.orders,
+      pnl_btc: pnlBtc,
+      pnl_pct: pnlPct,
+      reason,
+      total_size: size,
+    });
+    this.open_deal = null;
+  }
+
+  _unrealizedPnl(close) {
+    if (!this.open_deal) return 0;
+    const avg = this._avgEntry(this.open_deal);
+    const size = this._totalSize(this.open_deal);
+    return size * (close - avg) / avg * this._lev;
+  }
+
+  _precomputeSignalArrays() {
+    // Build aligned boolean "is the entry signal active at index i"
+    // arrays per configured indicator. The caller then ANDs across all
+    // indicators per candle. Matches the Python check_entry_signal
+    // semantics for RSI / EMA_CROSS / MACD histogram / Bollinger lower
+    // band; other indicator types simplify to "always true" — they are
+    // intentionally documented as a client-side-backtester limitation.
+    const indicators = (this.config.entry && this.config.entry.indicators) || [];
+    const n = this.candles.length;
+    const result = [];
+    if (!indicators.length) {
+      return [new Array(n).fill(true)];
+    }
+    for (const ind of indicators) {
+      const arr = new Array(n).fill(false);
+      const type = ind.type;
+      if (type === 'RSI') {
+        const period = ind.period || 14;
+        const thr = (ind.threshold || 'below_30').toString();
+        const m = thr.match(/^([a-z_]+)_(\d+)/i);
+        const cond  = m ? m[1] : 'below';
+        const value = m ? parseInt(m[2], 10) : 30;
+        const line = calcRSILine(this.candles, period);
+        const timeToI = new Map();
+        this.candles.forEach((c, i) => timeToI.set(c.time, i));
+        for (const p of line) {
+          const i = timeToI.get(p.time);
+          if (i == null) continue;
+          let hit = false;
+          if (cond === 'below') hit = p.value < value;
+          else if (cond === 'above') hit = p.value > value;
+          else if (cond === 'cross_above' || cond === 'cross_below') hit = true;
+          arr[i] = hit;
+        }
+      } else if (type === 'EMA_CROSS') {
+        const fast = ind.fast || 12;
+        const slow = ind.slow || 26;
+        const fastLine = calcEMALine(this.candles, fast);
+        const slowLine = calcEMALine(this.candles, slow);
+        const fastMap = new Map(fastLine.map(p => [p.time, p.value]));
+        const slowMap = new Map(slowLine.map(p => [p.time, p.value]));
+        let prevDiff = null;
+        for (let i = 0; i < n; i++) {
+          const t = this.candles[i].time;
+          const f = fastMap.get(t), s = slowMap.get(t);
+          if (f == null || s == null) { prevDiff = null; continue; }
+          const d = f - s;
+          if (prevDiff != null && d > 0 && prevDiff <= 0) arr[i] = true;
+          // Also allow "currently above" — the Python engine's check
+          // is fast>slow with a small memory, so we permit the same.
+          if (d > 0) arr[i] = true;
+          prevDiff = d;
+        }
+      } else if (type === 'MACD') {
+        const fast   = ind.macd_fast   || 12;
+        const slow   = ind.macd_slow   || 26;
+        const signal = ind.macd_signal || 9;
+        const { histogram } = calcMACDLines(this.candles, fast, slow, signal);
+        const histMap = new Map(histogram.map(p => [p.time, p.value]));
+        for (let i = 0; i < n; i++) {
+          const v = histMap.get(this.candles[i].time);
+          if (v != null && v > 0) arr[i] = true;
+        }
+      } else if (type === 'BOLLINGER') {
+        const period = ind.period || 20;
+        const mult = ind.multiplier != null ? ind.multiplier : 2.0;
+        const bb = calcBollingerLines(this.candles, period, mult);
+        const lowerMap = new Map(bb.lower.map(p => [p.time, p.value]));
+        for (let i = 0; i < n; i++) {
+          const v = lowerMap.get(this.candles[i].time);
+          if (v != null && this.candles[i].close < v) arr[i] = true;
+        }
+      } else {
+        // SUPERTREND, PARABOLIC_SAR, MARKET_STRUCTURE,
+        // SUPPORT_RESISTANCE, QFL — simplified to always-true in the
+        // client-side engine. The Python backtester is authoritative
+        // for those; the wizard modal shows a note.
+        for (let i = 0; i < n; i++) arr[i] = true;
+      }
+      result.push(arr);
+    }
+    return result;
+  }
+
+  async run(initialBalance, onProgress) {
+    this.balance_btc = initialBalance;
+    this.initial_balance_btc = initialBalance;
+    const total = this.candles.length;
+    const sigArrays = this._precomputeSignalArrays();
+    // Warm-up: skip the first 80 candles so indicator arrays are stable
+    // (MACD needs 3×26 ≈ 78 bars — matches the Python engine).
+    const warmup = Math.min(80, Math.floor(total / 4));
+    for (let i = 0; i < total; i++) {
+      const candle = this.candles[i];
+      if (this.open_deal) {
+        const closed = this._checkTp(this.open_deal, candle)
+                    || this._checkSl(this.open_deal, candle);
+        if (!closed && this.open_deal) this._checkDca(this.open_deal, candle);
+      }
+      if (!this.open_deal && i >= warmup) {
+        let entry = true;
+        for (const a of sigArrays) { if (!a[i]) { entry = false; break; } }
+        if (entry) this._openDeal(candle.close, candle.time, i);
+      }
+      this.equity_curve.push({
+        time: candle.time,
+        balance: this.balance_btc + this._unrealizedPnl(candle.close),
+      });
+      if (i % 200 === 0 && onProgress) {
+        const pct = Math.round((i / total) * 100);
+        onProgress(pct, `Running backtest… ${i.toLocaleString()} / ${total.toLocaleString()} candles`);
+        // Yield to the event loop every 200 candles so the UI can
+        // repaint the progress bar and stay responsive.
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+    if (this.open_deal) {
+      const last = this.candles[this.candles.length - 1];
+      this._closeDeal(this.open_deal, last.close, 'forced', last.time);
+    }
+    if (onProgress) onProgress(100, 'Calculating statistics…');
+    return this._buildResults();
+  }
+
+  _buildResults() {
+    const deals = this.closed_deals;
+    const wins = deals.filter(d => d.pnl_btc > 0).length;
+    const losses = deals.filter(d => d.pnl_btc < 0).length;
+    const totalPnlBtc = deals.reduce((s, d) => s + d.pnl_btc, 0);
+    const totalPnlPct = this.initial_balance_btc > 0
+      ? (totalPnlBtc / this.initial_balance_btc) * 100 : 0;
+    const winRate = deals.length ? (wins / deals.length) * 100 : 0;
+    const avgDurationHours = deals.length
+      ? deals.reduce((s, d) => s + (d.closed_at - d.opened_at), 0) / deals.length / 3600
+      : 0;
+    // Max drawdown from the equity curve
+    let peak = this.initial_balance_btc, maxDd = 0;
+    for (const p of this.equity_curve) {
+      if (p.balance > peak) peak = p.balance;
+      if (peak > 0) {
+        const dd = (peak - p.balance) / peak * 100;
+        if (dd > maxDd) maxDd = dd;
+      }
+    }
+    // Buy & hold curve
+    const buyHoldCurve = [];
+    if (this.candles.length) {
+      const p0 = this.candles[0].close;
+      for (const c of this.candles) {
+        buyHoldCurve.push({
+          time: c.time,
+          balance: this.initial_balance_btc * (c.close / p0),
+        });
+      }
+    }
+    const buyHoldEnd = buyHoldCurve.length ? buyHoldCurve[buyHoldCurve.length - 1].balance : this.initial_balance_btc;
+    const buyHoldPnlBtc = buyHoldEnd - this.initial_balance_btc;
+    const buyHoldPnlPct = this.initial_balance_btc > 0
+      ? (buyHoldPnlBtc / this.initial_balance_btc) * 100 : 0;
+
+    // Profit factor / Sharpe / Sortino
+    const grossWin = deals.filter(d => d.pnl_btc > 0).reduce((s, d) => s + d.pnl_btc, 0);
+    const grossLoss = Math.abs(deals.filter(d => d.pnl_btc < 0).reduce((s, d) => s + d.pnl_btc, 0));
+    const profitFactor = grossLoss > 0 ? (grossWin / grossLoss) : (grossWin > 0 ? Infinity : 0);
+
+    const pctReturns = deals.map(d => d.pnl_pct);
+    let sharpe = '—', sortino = '—';
+    if (pctReturns.length >= 2) {
+      const mean = pctReturns.reduce((s, v) => s + v, 0) / pctReturns.length;
+      const variance = pctReturns.reduce((s, v) => s + (v - mean) * (v - mean), 0) / pctReturns.length;
+      const sd = Math.sqrt(variance);
+      sharpe = sd > 0 ? ((mean / sd) * Math.sqrt(252)).toFixed(2) : '—';
+      const losses = pctReturns.filter(v => v < 0);
+      if (losses.length === 0) {
+        sortino = '∞';
+      } else {
+        const lMean = 0;
+        const lVar = losses.reduce((s, v) => s + (v - lMean) * (v - lMean), 0) / losses.length;
+        const lSd = Math.sqrt(lVar);
+        sortino = lSd > 0 ? ((mean / lSd) * Math.sqrt(252)).toFixed(2) : '∞';
+      }
+    }
+
+    // Win / loss streaks
+    let maxWinStreak = 0, maxLossStreak = 0, curW = 0, curL = 0;
+    for (const d of deals) {
+      if (d.pnl_btc > 0) { curW += 1; curL = 0; if (curW > maxWinStreak) maxWinStreak = curW; }
+      else if (d.pnl_btc < 0) { curL += 1; curW = 0; if (curL > maxLossStreak) maxLossStreak = curL; }
+      else { curW = 0; curL = 0; }
+    }
+    const bestDeal = deals.reduce((m, d) => (d.pnl_btc > (m ? m.pnl_btc : -Infinity) ? d : m), null);
+    const worstDeal = deals.reduce((m, d) => (d.pnl_btc < (m ? m.pnl_btc : Infinity) ? d : m), null);
+
+    // Monthly PnL
+    const monthlyMap = new Map();
+    for (const d of deals) {
+      const dt = new Date(d.closed_at * 1000);
+      const key = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
+      monthlyMap.set(key, (monthlyMap.get(key) || 0) + d.pnl_btc);
+    }
+    const monthlyPnl = Array.from(monthlyMap.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, pnl_btc]) => ({
+        month, pnl_btc,
+        pnl_pct: this.initial_balance_btc > 0 ? (pnl_btc / this.initial_balance_btc) * 100 : 0,
+      }));
+
+    // PnL histogram — 1% buckets, clipped to [-20, +20]
+    const histMap = new Map();
+    for (const d of deals) {
+      const b = Math.max(-20, Math.min(20, Math.round(d.pnl_pct)));
+      histMap.set(b, (histMap.get(b) || 0) + 1);
+    }
+    const pnlHistogram = [];
+    for (let b = -20; b <= 20; b++) {
+      pnlHistogram.push({ bucket_pct: b, count: histMap.get(b) || 0 });
+    }
+
+    // DCA price levels — count occurrences of DCA fill prices
+    const dcaMap = new Map();
+    for (const d of deals) {
+      for (const o of d.orders) {
+        if (o.type !== 'dca') continue;
+        const p = Math.round(o.price);
+        dcaMap.set(p, (dcaMap.get(p) || 0) + 1);
+      }
+    }
+    const dcaLevels = Array.from(dcaMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([price, count]) => ({ price, count }));
+
+    return {
+      summary: {
+        total_pnl_btc: totalPnlBtc,
+        total_pnl_pct: totalPnlPct,
+        win_rate: winRate,
+        total_deals: deals.length,
+        wins, losses,
+        avg_duration_hours: avgDurationHours,
+        total_fees_btc: this.fees_paid_btc,
+        max_drawdown_pct: maxDd,
+        buy_and_hold_pnl_btc: buyHoldPnlBtc,
+        buy_and_hold_pnl_pct: buyHoldPnlPct,
+      },
+      ratios: {
+        profit_factor: profitFactor,
+        sharpe, sortino,
+        max_consecutive_wins: maxWinStreak,
+        max_consecutive_losses: maxLossStreak,
+        best_deal_pnl_btc: bestDeal ? bestDeal.pnl_btc : 0,
+        worst_deal_pnl_btc: worstDeal ? worstDeal.pnl_btc : 0,
+      },
+      equity_curve: this.equity_curve,
+      buy_hold_curve: buyHoldCurve,
+      monthly_pnl: monthlyPnl,
+      deals,
+      pnl_histogram: pnlHistogram,
+      dca_levels: dcaLevels,
+    };
+  }
+}
+
+// ── Backtest UI glue ────────────────────────────────────────────────────────
+
+function btShowError(elId, msg) {
+  const el = $(elId);
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+function btClearError(elId) {
+  const el = $(elId);
+  if (el) el.classList.add('hidden');
+}
+
+async function btFetchCandles(pair, tf, startIso, endIso) {
+  const params = new URLSearchParams({ start: startIso, end: endIso, limit: '5000' });
+  const r = await fetch(`/api/candles/${encodeURIComponent(pair)}/${tf}?${params}`);
+  if (r.status === 401) { _handle401(); throw new Error('Not authenticated'); }
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`;
+    try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return r.json();
+}
+
+async function btRunFromTab() {
+  btClearError('bt-error');
+  const startStr = $('bt-start').value;
+  const endStr = $('bt-end').value;
+  const tf = $('bt-tf').value;
+  const balance = parseFloat($('bt-balance').value);
+  if (!startStr || !endStr) { btShowError('bt-error', 'Pick start and end dates'); return; }
+  if (!(balance > 0)) { btShowError('bt-error', 'Balance must be > 0'); return; }
+
+  // Pull the bot config from the detail cache; fall back to a refetch.
+  let cfg = null;
+  if (_detailConfigCache && _detailConfigCache.bot) cfg = _detailConfigCache.bot;
+  if (!cfg && currentSlug) {
+    try {
+      const r = await fetch(`/api/bots/${currentSlug}/config`);
+      if (r.ok) { const j = await r.json(); cfg = j.bot || j; }
+    } catch (e) {}
+  }
+  if (!cfg) { btShowError('bt-error', 'No bot config available'); return; }
+  const pair = cfg.pair || 'BTC/USD';
+
+  const startIso = new Date(startStr + 'T00:00:00Z').toISOString();
+  const endIso = new Date(endStr + 'T23:59:59Z').toISOString();
+
+  await btRunPipeline({
+    cfg, pair, tf, startIso, endIso, balance,
+    loaderId: 'bt-loader', progressBarId: 'bt-progress-bar',
+    statusId: 'bt-status', resultsId: 'bt-results',
+    errorId: 'bt-error', mode: 'tab',
+  });
+}
+
+async function btRunFromWizard() {
+  btClearError('wbt-error');
+  nbReadAll();
+  const body = nbBuildBotConfig();
+  const cfg = body.bot;
+  const startStr = $('wbt-start').value;
+  const endStr = $('wbt-end').value;
+  const tf = $('wbt-tf').value;
+  const balance = parseFloat($('wbt-balance').value);
+  if (!startStr || !endStr) { btShowError('wbt-error', 'Pick start and end dates'); return; }
+  if (!(balance > 0)) { btShowError('wbt-error', 'Balance must be > 0'); return; }
+  const pair = cfg.pair || 'BTC/USD';
+  const startIso = new Date(startStr + 'T00:00:00Z').toISOString();
+  const endIso = new Date(endStr + 'T23:59:59Z').toISOString();
+  await btRunPipeline({
+    cfg, pair, tf, startIso, endIso, balance,
+    loaderId: 'wbt-loader', progressBarId: 'wbt-progress-bar',
+    statusId: 'wbt-status', resultsId: 'wbt-results',
+    errorId: 'wbt-error', mode: 'wizard',
+  });
+}
+
+function btOpenWizardModal() {
+  $('wizard-backtest-modal').classList.add('show');
+  // Reset panels
+  $('wbt-loader').classList.add('hidden');
+  $('wbt-results').classList.add('hidden');
+  btClearError('wbt-error');
+}
+
+// Charts held between runs so re-running disposes the previous chart
+// cleanly instead of stacking them on top of each other.
+let _btEquityChart = null;
+let _btMonthlyChart = null;
+let _wbtEquityChart = null;
+
+async function btRunPipeline(opts) {
+  const {
+    cfg, pair, tf, startIso, endIso, balance,
+    loaderId, progressBarId, statusId, resultsId, errorId, mode,
+  } = opts;
+  const loader = $(loaderId);
+  const results = $(resultsId);
+  const bar = $(progressBarId);
+  const status = $(statusId);
+
+  results.classList.add('hidden');
+  loader.classList.remove('hidden');
+  bar.classList.add('bt-progress-bar');
+  // Reset width via style attribute is CSP-unfriendly — use a helper
+  // class toggled by swapping inline style is not allowed either.
+  // Instead, set the bar width via JS by toggling a CSS var on an
+  // ancestor. Simpler: recreate the bar element with a fresh 0 width.
+  bar.style.width = '0%';   // eslint-disable-line -- CSP allows style *property* writes
+  status.textContent = 'Fetching candles from Bitget…';
+
+  try {
+    const candles = await btFetchCandles(pair, tf, startIso, endIso);
+    if (!candles || candles.length < 50) {
+      throw new Error(`Not enough candles (${candles ? candles.length : 0}) for backtest`);
+    }
+    status.textContent = `Fetched ${candles.length.toLocaleString()} candles, starting simulation…`;
+    const engine = new RevertoBacktest(cfg, candles);
+    const result = await engine.run(balance, (pct, msg) => {
+      bar.style.width = pct + '%';
+      status.textContent = msg;
+    });
+    bar.style.width = '100%';
+    loader.classList.add('hidden');
+    results.classList.remove('hidden');
+    if (mode === 'tab') {
+      btRenderResults(result);
+    } else {
+      btRenderWizardResults(result);
+    }
+  } catch (e) {
+    loader.classList.add('hidden');
+    btShowError(errorId, 'Backtest failed: ' + (e.message || e));
+  }
+}
+
+function _btCard(label, value, sub) {
+  return `<div class="card">
+    <div class="card-label">${safeText(label)}</div>
+    <div class="card-value">${value}</div>
+    <div class="card-sub">${safeText(sub || '')}</div>
+  </div>`;
+}
+
+function _fmtBtc(v, d = 6) { return (v >= 0 ? '+' : '') + v.toFixed(d) + ' BTC'; }
+function _fmtPct(v, d = 2) { return (v >= 0 ? '+' : '') + v.toFixed(d) + '%'; }
+
+function btRenderResults(res) {
+  const s = res.summary, r = res.ratios;
+  $('bt-summary-grid').innerHTML = [
+    _btCard('Total PnL', _fmtBtc(s.total_pnl_btc), _fmtPct(s.total_pnl_pct)),
+    _btCard('Win rate', s.win_rate.toFixed(1) + '%', `${s.wins}W / ${s.losses}L`),
+    _btCard('Total deals', String(s.total_deals), 'closed'),
+    _btCard('Avg duration', s.avg_duration_hours.toFixed(1) + 'h', 'per deal'),
+    _btCard('Total fees', s.total_fees_btc.toFixed(6) + ' BTC', 'taker'),
+    _btCard('Max drawdown', s.max_drawdown_pct.toFixed(2) + '%', 'equity peak'),
+    _btCard('Buy & hold', _fmtBtc(s.buy_and_hold_pnl_btc), _fmtPct(s.buy_and_hold_pnl_pct)),
+  ].join('');
+
+  const pf = r.profit_factor === Infinity ? '∞' :
+             (typeof r.profit_factor === 'number' ? r.profit_factor.toFixed(2) : r.profit_factor);
+  $('bt-ratios-grid').innerHTML = [
+    _btCard('Profit factor', pf, 'gross win / loss'),
+    _btCard('Sharpe', String(r.sharpe), 'annualised'),
+    _btCard('Sortino', String(r.sortino), 'downside'),
+    _btCard('Win streak', String(r.max_consecutive_wins), 'max'),
+    _btCard('Loss streak', String(r.max_consecutive_losses), 'max'),
+    _btCard('Best deal', _fmtBtc(r.best_deal_pnl_btc), ''),
+    _btCard('Worst deal', _fmtBtc(r.worst_deal_pnl_btc), ''),
+  ].join('');
+
+  // Equity curve chart
+  const eqEl = $('bt-equity-chart');
+  if (_btEquityChart) { try { _btEquityChart.remove(); } catch (e) {} _btEquityChart = null; }
+  eqEl.innerHTML = '';
+  if (typeof LightweightCharts !== 'undefined') {
+    _btEquityChart = LightweightCharts.createChart(eqEl, {
+      ..._chartLayoutOpts(),
+      width: eqEl.clientWidth || 800,
+      height: 300,
+    });
+    const eqSeries = _btEquityChart.addLineSeries({
+      color: _cssVar('--accent', '#26a69a'), lineWidth: 2,
+    });
+    eqSeries.setData(res.equity_curve.map(p => ({ time: p.time, value: p.balance })));
+    const bhSeries = _btEquityChart.addLineSeries({
+      color: _cssVar('--muted', '#888'), lineWidth: 1, lineStyle: 2,
+    });
+    bhSeries.setData(res.buy_hold_curve.map(p => ({ time: p.time, value: p.balance })));
+    _btEquityChart.timeScale().fitContent();
+  }
+
+  // Monthly PnL histogram
+  const mEl = $('bt-monthly-chart');
+  if (_btMonthlyChart) { try { _btMonthlyChart.remove(); } catch (e) {} _btMonthlyChart = null; }
+  mEl.innerHTML = '';
+  if (typeof LightweightCharts !== 'undefined' && res.monthly_pnl.length) {
+    _btMonthlyChart = LightweightCharts.createChart(mEl, {
+      ..._chartLayoutOpts(),
+      width: mEl.clientWidth || 800,
+      height: 200,
+    });
+    const hist = _btMonthlyChart.addHistogramSeries({});
+    const green = _cssVar('--accent', '#26a69a');
+    const red = _cssVar('--red', '#ef5350');
+    hist.setData(res.monthly_pnl.map(m => {
+      // Month key to an arbitrary first-of-month UTC time
+      const [y, mo] = m.month.split('-').map(Number);
+      return {
+        time: Math.floor(Date.UTC(y, mo - 1, 1) / 1000),
+        value: m.pnl_btc,
+        color: m.pnl_btc >= 0 ? green : red,
+      };
+    }));
+    _btMonthlyChart.timeScale().fitContent();
+  }
+
+  // Deal table
+  btRenderDealTable(res.deals);
+
+  // PnL histogram — pure CSS bars
+  const hEl = $('bt-pnl-hist');
+  const maxCount = Math.max(1, ...res.pnl_histogram.map(b => b.count));
+  hEl.innerHTML = res.pnl_histogram.map(b => {
+    const h = (b.count / maxCount) * 100;
+    const cls = b.bucket_pct < 0 ? 'bt-pnl-bar bt-pnl-bar-neg' : 'bt-pnl-bar';
+    return `<div class="${cls}" data-h="${h.toFixed(1)}" title="${b.bucket_pct}%: ${b.count}"></div>`;
+  }).join('');
+  // Set heights via inline style (CSP allows direct style property).
+  Array.from(hEl.querySelectorAll('.bt-pnl-bar')).forEach(el => {
+    el.style.height = el.dataset.h + '%';
+  });
+
+  // DCA levels
+  const dEl = $('bt-dca-levels');
+  if (!res.dca_levels.length) {
+    dEl.innerHTML = '<div class="empty-grid">No DCA fills</div>';
+  } else {
+    dEl.innerHTML = res.dca_levels.map(l =>
+      `<div class="bt-dca-row"><span>$${fmtPrice(l.price)}</span><span>×${l.count}</span></div>`
+    ).join('');
+  }
+}
+
+function btRenderWizardResults(res) {
+  const s = res.summary, r = res.ratios;
+  $('wbt-summary-grid').innerHTML = [
+    _btCard('Total PnL', _fmtBtc(s.total_pnl_btc), _fmtPct(s.total_pnl_pct)),
+    _btCard('Win rate', s.win_rate.toFixed(1) + '%', `${s.wins}W / ${s.losses}L`),
+    _btCard('Deals', String(s.total_deals), 'closed'),
+    _btCard('Max DD', s.max_drawdown_pct.toFixed(2) + '%', ''),
+  ].join('');
+  const pf = r.profit_factor === Infinity ? '∞' :
+             (typeof r.profit_factor === 'number' ? r.profit_factor.toFixed(2) : r.profit_factor);
+  $('wbt-ratios-grid').innerHTML = [
+    _btCard('Profit factor', pf, ''),
+    _btCard('Sharpe', String(r.sharpe), ''),
+    _btCard('Best deal', _fmtBtc(r.best_deal_pnl_btc), ''),
+    _btCard('Worst deal', _fmtBtc(r.worst_deal_pnl_btc), ''),
+  ].join('');
+
+  const eqEl = $('wbt-equity-chart');
+  if (_wbtEquityChart) { try { _wbtEquityChart.remove(); } catch (e) {} _wbtEquityChart = null; }
+  eqEl.innerHTML = '';
+  if (typeof LightweightCharts !== 'undefined') {
+    _wbtEquityChart = LightweightCharts.createChart(eqEl, {
+      ..._chartLayoutOpts(),
+      width: eqEl.clientWidth || 600,
+      height: 240,
+    });
+    const series = _wbtEquityChart.addLineSeries({
+      color: _cssVar('--accent', '#26a69a'), lineWidth: 2,
+    });
+    series.setData(res.equity_curve.map(p => ({ time: p.time, value: p.balance })));
+    const bh = _wbtEquityChart.addLineSeries({
+      color: _cssVar('--muted', '#888'), lineWidth: 1, lineStyle: 2,
+    });
+    bh.setData(res.buy_hold_curve.map(p => ({ time: p.time, value: p.balance })));
+    _wbtEquityChart.timeScale().fitContent();
+  }
+}
+
+let _btDealSort = { key: 'id', dir: 'asc' };
+
+function btRenderDealTable(deals) {
+  const cols = loadColumns(BT_DEAL_LS_KEY, BT_DEAL_COLUMNS).filter(c => c.visible);
+  const thead = $('bt-deals-thead');
+  thead.innerHTML = cols.map(c =>
+    `<th data-bt-sort="${c.key}">${safeText(c.label)}${_btDealSort.key === c.key ? (_btDealSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>`
+  ).join('');
+  thead.querySelectorAll('th').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.btSort;
+      if (_btDealSort.key === k) _btDealSort.dir = _btDealSort.dir === 'asc' ? 'desc' : 'asc';
+      else { _btDealSort.key = k; _btDealSort.dir = 'asc'; }
+      btRenderDealTable(deals);
+    });
+  });
+  const sorted = deals.slice();
+  const k = _btDealSort.key;
+  const sortVal = d => {
+    switch (k) {
+      case 'id':       return d.id;
+      case 'opened':   return d.opened_at;
+      case 'closed':   return d.closed_at;
+      case 'duration': return d.closed_at - d.opened_at;
+      case 'entry':    return d.entry_price;
+      case 'avg':      return d.avg_entry_price;
+      case 'close':    return d.close_price;
+      case 'dcas':     return d.dca_count;
+      case 'pnl_btc':  return d.pnl_btc;
+      case 'pnl_pct':  return d.pnl_pct;
+      case 'reason':   return d.reason;
+      default:         return 0;
+    }
+  };
+  sorted.sort((a, b) => {
+    const va = sortVal(a), vb = sortVal(b);
+    if (va < vb) return _btDealSort.dir === 'asc' ? -1 : 1;
+    if (va > vb) return _btDealSort.dir === 'asc' ? 1 : -1;
+    return 0;
+  });
+  const fmtTime = t => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
+  const fmtDur = s => {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return `${h}h${m}m`;
+  };
+  const tbody = $('bt-deals-tbody');
+  if (!sorted.length) {
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="${cols.length}">No deals</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = sorted.map(d => {
+    const cells = {
+      id:       `<td>${d.id}</td>`,
+      opened:   `<td class="muted-cell">${safeText(fmtTime(d.opened_at))}</td>`,
+      closed:   `<td class="muted-cell">${safeText(fmtTime(d.closed_at))}</td>`,
+      duration: `<td>${safeText(fmtDur(d.closed_at - d.opened_at))}</td>`,
+      entry:    `<td>${fmtPrice(d.entry_price)}</td>`,
+      avg:      `<td>${fmtPrice(d.avg_entry_price)}</td>`,
+      close:    `<td>${fmtPrice(d.close_price)}</td>`,
+      dcas:     `<td>${d.dca_count}</td>`,
+      pnl_btc:  `<td class="bt-pnl-cell">${d.pnl_btc >= 0 ? '+' : ''}${d.pnl_btc.toFixed(6)}</td>`,
+      pnl_pct:  `<td class="bt-pnl-cell">${d.pnl_pct >= 0 ? '+' : ''}${d.pnl_pct.toFixed(2)}%</td>`,
+      reason:   `<td class="muted-cell">${safeText(d.reason)}</td>`,
+    };
+    const cls = d.pnl_btc > 0 ? 'bt-deal-win' : (d.pnl_btc < 0 ? 'bt-deal-loss' : '');
+    return `<tr class="${cls}">${cols.map(c => cells[c.key] || '<td></td>').join('')}</tr>`;
+  }).join('');
+}

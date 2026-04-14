@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -1164,6 +1165,177 @@ async def api_chart(pair: str, timeframe: str, limit: int = 200):
     # client walking the limit parameter.
     while len(_chart_cache) > _CHART_CACHE_MAX:
         _chart_cache.popitem(last=False)
+    return payload
+
+
+# ── Candle range endpoint (for client-side backtester) ───────────────────────
+#
+# Separate cache from /api/chart: different TTL needs and different key shape
+# (start/end ISO timestamps). 5-minute TTL, 64-entry cap. ccxt's fetch_ohlcv
+# caps at 1000 bars per call, so we paginate transparently here, dedupe on
+# ms-timestamp and return the same JSON shape as /api/chart.
+_candles_cache: "OrderedDict[tuple, tuple[float, list]]" = OrderedDict()
+_CANDLES_CACHE_TTL = 300.0
+_CANDLES_CACHE_MAX = 64
+_CANDLES_MAX_BARS  = 5000
+
+_TF_SECONDS = {
+    "15m": 15 * 60,
+    "1h":  60 * 60,
+    "4h":  4 * 60 * 60,
+    "1d":  24 * 60 * 60,
+}
+
+
+def _parse_iso_utc(s: str) -> datetime:
+    """Parse an ISO 8601 date string into an aware UTC datetime.
+    Accepts trailing 'Z' (Python < 3.11 doesn't parse it natively)."""
+    if not isinstance(s, str) or not s:
+        raise ValueError("empty timestamp")
+    raw = s.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+async def _fetch_ohlcv_range(
+    client, symbol: str, timeframe: str, start_ms: int, end_ms: int
+) -> list:
+    """Paginated fetch_ohlcv. Loops ccxt in 1000-bar chunks until the
+    requested [start_ms, end_ms] range is covered, dedupes on timestamp
+    and returns a timestamp-sorted list of raw OHLCV rows."""
+    tf_ms = _TF_SECONDS[timeframe] * 1000
+    bars: dict[int, list] = {}
+    since = start_ms
+    empty_pages = 0
+    # Hard safety cap so a misbehaving exchange never pulls us into a
+    # runaway loop — _CANDLES_MAX_BARS / 1000 pages is the most we'd
+    # ever legitimately need for a clamped range.
+    max_pages = (_CANDLES_MAX_BARS // 1000) + 4
+    for _ in range(max_pages):
+        if since > end_ms:
+            break
+        page = await asyncio.to_thread(
+            client.client.fetch_ohlcv,
+            client._symbol(symbol),
+            timeframe,
+            since,
+            1000,
+        )
+        if not page:
+            empty_pages += 1
+            if empty_pages >= 2:
+                break
+            since += tf_ms * 1000
+            continue
+        empty_pages = 0
+        last_ts = since
+        for row in page:
+            ts = int(row[0])
+            if ts < start_ms or ts > end_ms:
+                continue
+            bars[ts] = row
+            if ts > last_ts:
+                last_ts = ts
+        if len(page) < 1000:
+            break
+        # Advance strictly past the last returned bar; ccxt returns
+        # inclusive pages so +1ms would loop on the same candle.
+        since = last_ts + tf_ms
+    return [bars[k] for k in sorted(bars.keys())]
+
+
+@app.get("/api/candles/{pair}/{timeframe}")
+@limiter.limit("20/minute")
+async def api_candles(
+    request: Request,
+    pair: str,
+    timeframe: str,
+    start: str,
+    end: str,
+    limit: int = 5000,
+):
+    """Public OHLCV range endpoint backing the client-side backtester.
+
+    Paginates ccxt under the hood (1000-bar max per request) until the
+    full [start, end] range is covered, dedupes on timestamp, returns
+    the same {time, open, high, low, close, volume} shape as
+    /api/chart. Cached for 5 minutes per (pair, tf, start, end, limit).
+    """
+    if timeframe not in _CHART_TIMEFRAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"timeframe must be one of {', '.join(_CHART_TIMEFRAMES)}",
+        )
+    if limit < 100:
+        limit = 100
+    if limit > _CANDLES_MAX_BARS:
+        limit = _CANDLES_MAX_BARS
+
+    try:
+        start_dt = _parse_iso_utc(start)
+        end_dt = _parse_iso_utc(end)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"invalid timestamp: {e}")
+    if start_dt >= end_dt:
+        raise HTTPException(status_code=400, detail="start must be before end")
+
+    tf_s = _TF_SECONDS[timeframe]
+    span_s = (end_dt - start_dt).total_seconds()
+    bar_count = int(span_s / tf_s)
+    # Clamp the range to at most _CANDLES_MAX_BARS candles by trimming
+    # `start` forward — the backtester only needs the tail of the
+    # requested window if the operator asked for too much history.
+    if bar_count > limit:
+        trim_bars = bar_count - limit
+        start_dt = start_dt.fromtimestamp(
+            start_dt.timestamp() + trim_bars * tf_s, tz=timezone.utc
+        )
+
+    normalized = _normalize_chart_pair(pair)
+    start_iso = start_dt.isoformat()
+    end_iso = end_dt.isoformat()
+    key = (normalized, timeframe, start_iso, end_iso, limit)
+    now = time.time()
+
+    cached = _candles_cache.get(key)
+    if cached:
+        if cached[0] > now:
+            _candles_cache.move_to_end(key)
+            return cached[1]
+        _candles_cache.pop(key, None)
+
+    start_ms = int(start_dt.timestamp() * 1000)
+    end_ms = int(end_dt.timestamp() * 1000)
+
+    try:
+        from exchanges.public_exchange import PublicExchange
+        async with _chart_lock:
+            client = PublicExchange("bitget")
+            raw = await _fetch_ohlcv_range(
+                client, normalized, timeframe, start_ms, end_ms
+            )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Exchange error: {e}")
+
+    payload = [
+        {
+            "time":   int(c[0] // 1000),
+            "open":   float(c[1]),
+            "high":   float(c[2]),
+            "low":    float(c[3]),
+            "close":  float(c[4]),
+            "volume": float(c[5]) if len(c) > 5 and c[5] is not None else 0.0,
+        }
+        for c in raw
+    ]
+    _candles_cache[key] = (now + _CANDLES_CACHE_TTL, payload)
+    _candles_cache.move_to_end(key)
+    while len(_candles_cache) > _CANDLES_CACHE_MAX:
+        _candles_cache.popitem(last=False)
     return payload
 
 
