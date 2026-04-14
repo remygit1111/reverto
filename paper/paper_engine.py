@@ -33,7 +33,17 @@ _TF_SECONDS = {
 
 def _deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
     """Convert a PaperDeal to a JSON-serialisable dict."""
-    pnl_btc, pnl_pct = deal.calculate_pnl(current_price) if current_price else (0.0, 0.0)
+    # For closed deals the realised PnL has already been stamped onto the
+    # deal at close_deal() time; reuse it instead of re-deriving from a
+    # current_price the caller may not have. For open deals we still need
+    # an unrealised PnL based on the live tick price.
+    if not deal.is_open:
+        pnl_btc = deal.pnl_btc
+        pnl_pct = deal.pnl_pct
+    elif current_price:
+        pnl_btc, pnl_pct = deal.calculate_pnl(current_price)
+    else:
+        pnl_btc, pnl_pct = 0.0, 0.0
     return {
         "id":              deal.id,
         "symbol":          deal.symbol,
@@ -528,6 +538,9 @@ class PaperEngine:
 
     def _check_dca(self, deal: PaperDeal, price: float):
         """Check if a DCA order should be placed."""
+        # max_orders=0 means "base order only, never DCA".
+        if self.config.dca.max_orders <= 1:
+            return
         if deal.dca_count >= self.config.dca.max_orders - 1:
             return
 
