@@ -1297,6 +1297,19 @@ function goDeals(fromPop = false) {
   if (!fromPop) _pushHistory('deals', '#deals');
 }
 
+function goBacktests(fromPop = false) {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-backtests-btn');
+  showPage('backtests');
+  // Idle the overview poller while the history view is active — the
+  // backtest_runs table isn't tied to live ticker data, and the
+  // timer would otherwise keep refetching /api/bots on every tick.
+  clearInterval(overviewInterval);
+  overviewInterval = null;
+  btLoadHistory();
+  if (!fromPop) _pushHistory('backtests', '#backtests');
+}
+
 function goNewBot() {
   _resetHeaderForTopLevel();
   _setActiveTab('nav-bots-btn');  // new bot lives logically under Bots
@@ -2316,10 +2329,11 @@ function _routeFromHash() {
     if (slug) { openBot(slug, true); return; }
   }
   switch (h) {
-    case 'bots':     goBots(true); break;
-    case 'deals':    goDeals(true); break;
-    case 'overview': goOverview(true); break;
-    default:         goOverview(true); break;
+    case 'bots':      goBots(true); break;
+    case 'deals':     goDeals(true); break;
+    case 'backtests': goBacktests(true); break;
+    case 'overview':  goOverview(true); break;
+    default:          goOverview(true); break;
   }
 }
 
@@ -4790,10 +4804,8 @@ function setupEventListeners() {
   // view via the main Bots tab or the browser back button (popstate).
 
   $('new-bot-btn').addEventListener('click', goNewBot);
-  const btHistBtn = $('bt-history-btn');
-  if (btHistBtn) btHistBtn.addEventListener('click', btOpenHistoryPanel);
-  const btHistClose = $('bt-history-close-btn');
-  if (btHistClose) btHistClose.addEventListener('click', btCloseHistoryPanel);
+  const navBtBtn = $('nav-backtests-btn');
+  if (navBtBtn) navBtBtn.addEventListener('click', () => goBacktests());
 
   document.querySelectorAll('.detail-subnav .tab').forEach(btn => {
     btn.addEventListener('click', () => showDTab(btn.dataset.dtab, btn));
@@ -5033,6 +5045,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'bot':      if (s.slug) openBot(s.slug, true); else goOverview(true); break;
       case 'bots':     goBots(true); break;
       case 'deals':    goDeals(true); break;
+      case 'backtests': goBacktests(true); break;
       case 'overview':
       default:         goOverview(true); break;
     }
@@ -5937,10 +5950,9 @@ function _btColouredPct(v) {
   return `<span class="${cls}">${sign}${v.toFixed(2)}%</span>`;
 }
 
-async function btOpenHistoryPanel() {
-  $('bot-grid').classList.add('hidden');
-  $('bt-history-panel').classList.remove('hidden');
+async function btLoadHistory() {
   const body = $('bt-history-body');
+  if (!body) return;
   body.innerHTML = '<tr><td colspan="13" class="empty-config-msg">Loading…</td></tr>';
   try {
     const r = await fetch('/api/backtest/runs?limit=200');
@@ -5954,11 +5966,6 @@ async function btOpenHistoryPanel() {
     return;
   }
   _btRenderHistoryTable();
-}
-
-function btCloseHistoryPanel() {
-  $('bt-history-panel').classList.add('hidden');
-  $('bot-grid').classList.remove('hidden');
 }
 
 function _btRenderHistoryTable() {
@@ -6006,7 +6013,6 @@ function _btRenderHistoryTable() {
     tr.addEventListener('click', () => {
       const slug = tr.dataset.slug;
       if (!slug) return;
-      btCloseHistoryPanel();
       openBot(slug);
       // Jump straight into the Backtest tab on the next tick so the
       // detail layout has settled by the time we switch.
