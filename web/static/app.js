@@ -5473,10 +5473,17 @@ class RevertoBacktest {
         await new Promise(r => setTimeout(r, 0));
       }
     }
+    // Leave any still-open deal exactly as-is at end-of-data instead
+    // of force-closing it on the final candle. The old behaviour
+    // pretended the operator would have sold at the last close,
+    // which inflated (or tanked) PnL based on one arbitrary bar.
+    // The summary now surfaces the leftover position separately so
+    // the UI can warn that it was NOT included in the PnL figure.
+    let openDealsAtEnd = 0;
+    let openDealsSizeBtc = 0;
     if (this.open_deal) {
-      const last = this.candles[this.candles.length - 1];
-      this._closeDeal(this.open_deal, last.close, 'forced', last.time);
-      _btStatCloses++;
+      openDealsAtEnd = 1;
+      openDealsSizeBtc = this._totalSize(this.open_deal);
     }
     console.info(
       '[BT] run summary: candles=%d warmup=%d opens=%d closes=%d ' +
@@ -5485,10 +5492,10 @@ class RevertoBacktest {
       _btStatSameCandleReopens, _btStatEntrySignalTrue, _btStatEntryBlocked,
     );
     if (onProgress) onProgress(100, 'Calculating statistics…');
-    return this._buildResults();
+    return this._buildResults({ openDealsAtEnd, openDealsSizeBtc });
   }
 
-  _buildResults() {
+  _buildResults(extras = {}) {
     const deals = this.closed_deals;
     const wins = deals.filter(d => d.pnl_btc > 0).length;
     const losses = deals.filter(d => d.pnl_btc < 0).length;
@@ -5496,8 +5503,12 @@ class RevertoBacktest {
     const totalPnlPct = this.initial_balance_btc > 0
       ? (totalPnlBtc / this.initial_balance_btc) * 100 : 0;
     const winRate = deals.length ? (wins / deals.length) * 100 : 0;
-    const avgDurationHours = deals.length
-      ? deals.reduce((s, d) => s + (d.closed_at - d.opened_at), 0) / deals.length / 3600
+    const durationsHours = deals.map(d => (d.closed_at - d.opened_at) / 3600);
+    const avgDurationHours = durationsHours.length
+      ? durationsHours.reduce((s, v) => s + v, 0) / durationsHours.length
+      : 0;
+    const maxDurationHours = durationsHours.length
+      ? Math.max(...durationsHours)
       : 0;
     // Max drawdown from the equity curve
     let peak = this.initial_balance_btc, maxDd = 0;
@@ -5557,6 +5568,51 @@ class RevertoBacktest {
     const bestDeal = deals.reduce((m, d) => (d.pnl_btc > (m ? m.pnl_btc : -Infinity) ? d : m), null);
     const worstDeal = deals.reduce((m, d) => (d.pnl_btc < (m ? m.pnl_btc : Infinity) ? d : m), null);
 
+    // ── Extended ratios ────────────────────────────────────────────────
+    // Expectancy, avg W/L, omega, calmar, recovery — all derived from
+    // the closed-deals list so they're consistent with the other
+    // summary numbers above. Each one has an "undefined if we don't
+    // have the inputs" branch so the UI can render an em-dash instead
+    // of a divide-by-zero NaN.
+    const winBtcs  = deals.filter(d => d.pnl_btc > 0).map(d => d.pnl_btc);
+    const lossBtcs = deals.filter(d => d.pnl_btc < 0).map(d => d.pnl_btc);
+    const avgWinBtc  = winBtcs.length
+      ? winBtcs.reduce((s, v) => s + v, 0) / winBtcs.length : 0;
+    const avgLossBtc = lossBtcs.length
+      ? Math.abs(lossBtcs.reduce((s, v) => s + v, 0) / lossBtcs.length) : 0;
+    const lossRate = deals.length ? (lossBtcs.length / deals.length) : 0;
+    const winRateFrac = deals.length ? (winBtcs.length / deals.length) : 0;
+    const expectancyBtc = deals.length
+      ? winRateFrac * avgWinBtc - lossRate * avgLossBtc
+      : 0;
+    const avgWinLossRatio = avgLossBtc > 0
+      ? avgWinBtc / avgLossBtc
+      : (avgWinBtc > 0 ? Infinity : 0);
+    const posReturnSum = pctReturns.filter(v => v > 0).reduce((s, v) => s + v, 0);
+    const negReturnSum = Math.abs(pctReturns.filter(v => v < 0).reduce((s, v) => s + v, 0));
+    const omegaRatio = negReturnSum > 0
+      ? posReturnSum / negReturnSum
+      : (posReturnSum > 0 ? Infinity : 0);
+    // Calmar = annualised return / max drawdown. Annualise the total
+    // PnL% by the true backtest span in years so a short run doesn't
+    // read as a monster ratio just because there aren't many deals
+    // yet.
+    let calmarRatio = 0;
+    if (this.candles.length >= 2) {
+      const spanSec = this.candles[this.candles.length - 1].time - this.candles[0].time;
+      const spanYears = spanSec / (365.25 * 86400);
+      if (spanYears > 0) {
+        const annualPct = totalPnlPct / spanYears;
+        if (maxDd > 0) calmarRatio = annualPct / maxDd;
+        else calmarRatio = annualPct > 0 ? Infinity : 0;
+      }
+    }
+    // Recovery factor = total PnL / max drawdown (in BTC terms).
+    const maxDrawdownBtc = this.initial_balance_btc * maxDd / 100;
+    const recoveryFactor = maxDrawdownBtc > 0
+      ? totalPnlBtc / maxDrawdownBtc
+      : (totalPnlBtc > 0 ? Infinity : 0);
+
     // Monthly PnL
     const monthlyMap = new Map();
     for (const d of deals) {
@@ -5604,14 +5660,23 @@ class RevertoBacktest {
         total_deals: deals.length,
         wins, losses,
         avg_duration_hours: avgDurationHours,
+        max_duration_hours: maxDurationHours,
         total_fees_btc: deals.reduce((s, d) => s + (d.total_fees_btc || 0), 0),
         max_drawdown_pct: maxDd,
+        max_drawdown_btc: maxDrawdownBtc,
         buy_and_hold_pnl_btc: buyHoldPnlBtc,
         buy_and_hold_pnl_pct: buyHoldPnlPct,
+        open_deals_at_end: extras.openDealsAtEnd || 0,
+        open_deals_size_btc: extras.openDealsSizeBtc || 0,
       },
       ratios: {
         profit_factor: profitFactor,
         sharpe, sortino,
+        calmar_ratio: calmarRatio,
+        recovery_factor: recoveryFactor,
+        expectancy_btc: expectancyBtc,
+        avg_win_loss_ratio: avgWinLossRatio,
+        omega_ratio: omegaRatio,
         max_consecutive_wins: maxWinStreak,
         max_consecutive_losses: maxLossStreak,
         best_deal_pnl_btc: bestDeal ? bestDeal.pnl_btc : 0,
@@ -5882,25 +5947,50 @@ function _btCard(label, value, sub) {
 
 function _fmtBtc(v, d = 6) { return (v >= 0 ? '+' : '') + v.toFixed(d) + ' BTC'; }
 function _fmtPct(v, d = 2) { return (v >= 0 ? '+' : '') + v.toFixed(d) + '%'; }
+function _fmtRatio(v, d = 2) {
+  if (v === Infinity) return '∞';
+  if (!Number.isFinite(v)) return '—';
+  return v.toFixed(d);
+}
+
+function btRenderOpenDealsNote(noteId, s) {
+  const el = $(noteId);
+  if (!el) return;
+  if (s.open_deals_at_end > 0) {
+    el.textContent =
+      `ℹ ${s.open_deals_at_end} deal${s.open_deals_at_end === 1 ? '' : 's'} ` +
+      `still open at end of backtest period ` +
+      `(${s.open_deals_size_btc.toFixed(6)} BTC, not included in PnL)`;
+    el.classList.remove('hidden');
+  } else {
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+}
 
 function btRenderResults(res) {
   const s = res.summary, r = res.ratios;
+  btRenderOpenDealsNote('bt-open-deals-note', s);
   $('bt-summary-grid').innerHTML = [
     _btCard('Total PnL', _fmtBtc(s.total_pnl_btc), _fmtPct(s.total_pnl_pct)),
     _btCard('Win rate', s.win_rate.toFixed(1) + '%', `${s.wins}W / ${s.losses}L`),
     _btCard('Total deals', String(s.total_deals), 'closed'),
     _btCard('Avg duration', s.avg_duration_hours.toFixed(1) + 'h', 'per deal'),
+    _btCard('Max duration', (s.max_duration_hours || 0).toFixed(1) + 'h', 'longest deal'),
     _btCard('Total fees', s.total_fees_btc.toFixed(8) + ' BTC', 'taker'),
     _btCard('Max drawdown', s.max_drawdown_pct.toFixed(2) + '%', 'equity peak'),
     _btCard('Buy & hold', _fmtBtc(s.buy_and_hold_pnl_btc), _fmtPct(s.buy_and_hold_pnl_pct)),
   ].join('');
 
-  const pf = r.profit_factor === Infinity ? '∞' :
-             (typeof r.profit_factor === 'number' ? r.profit_factor.toFixed(2) : r.profit_factor);
   $('bt-ratios-grid').innerHTML = [
-    _btCard('Profit factor', pf, 'gross win / loss'),
+    _btCard('Profit factor', _fmtRatio(r.profit_factor), 'gross win / loss'),
     _btCard('Sharpe', String(r.sharpe), 'annualised'),
     _btCard('Sortino', String(r.sortino), 'downside'),
+    _btCard('Calmar', _fmtRatio(r.calmar_ratio), 'annual / max DD'),
+    _btCard('Recovery', _fmtRatio(r.recovery_factor), 'PnL / max DD'),
+    _btCard('Expectancy', _fmtBtc(r.expectancy_btc || 0, 8), 'per deal'),
+    _btCard('Avg W/L ratio', _fmtRatio(r.avg_win_loss_ratio), 'avg win / avg loss'),
+    _btCard('Omega', _fmtRatio(r.omega_ratio), 'upside / downside'),
     _btCard('Win streak', String(r.max_consecutive_wins), 'max'),
     _btCard('Loss streak', String(r.max_consecutive_losses), 'max'),
     _btCard('Best deal', _fmtBtc(r.best_deal_pnl_btc), ''),
@@ -5982,6 +6072,7 @@ function btRenderResults(res) {
 
 function btRenderWizardResults(res) {
   const s = res.summary, r = res.ratios;
+  btRenderOpenDealsNote('wbt-open-deals-note', s);
   $('wbt-summary-grid').innerHTML = [
     _btCard('Total PnL', _fmtBtc(s.total_pnl_btc), _fmtPct(s.total_pnl_pct)),
     _btCard('Win rate', s.win_rate.toFixed(1) + '%', `${s.wins}W / ${s.losses}L`),
