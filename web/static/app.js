@@ -5775,6 +5775,23 @@ function btHumanSpan(days) {
   return `${(days / 365).toFixed(1)} years`;
 }
 
+// Human-readable duration for a deal lifespan expressed in hours.
+// Under 24h: "Xh Ym"; 24h or more: "Xd Yh Zm" so a 36.033h deal
+// reads as "1d 12h 2m" instead of "36h". Shared by the summary
+// cards (avg/max) and the deals-list Duration column.
+function btFormatDuration(hours) {
+  if (hours == null || !Number.isFinite(hours) || hours < 0) return '—';
+  if (hours < 24) {
+    const h = Math.floor(hours);
+    const m = Math.round((hours - h) * 60);
+    return `${h}h ${m}m`;
+  }
+  const days = Math.floor(hours / 24);
+  const remH = Math.floor(hours % 24);
+  const mins = Math.round((hours % 1) * 60);
+  return `${days}d ${remH}h ${mins}m`;
+}
+
 function btHumanDuration(sec) {
   if (sec < 1) return '<1s';
   if (sec < 60) return `${Math.round(sec)}s`;
@@ -6206,8 +6223,8 @@ function btRenderResults(res) {
     _btCard('Total PnL', _fmtBtc(s.total_pnl_btc), _fmtPct(s.total_pnl_pct)),
     _btCard('Win rate', s.win_rate.toFixed(1) + '%', `${s.wins}W / ${s.losses}L`),
     _btCard('Total deals', String(s.total_deals), 'closed'),
-    _btCard('Avg duration', s.avg_duration_hours.toFixed(1) + 'h', 'per deal'),
-    _btCard('Max duration', (s.max_duration_hours || 0).toFixed(1) + 'h', 'longest deal'),
+    _btCard('Avg duration', btFormatDuration(s.avg_duration_hours), 'per deal'),
+    _btCard('Max duration', btFormatDuration(s.max_duration_hours || 0), 'longest deal'),
     _btCard('Total fees', s.total_fees_btc.toFixed(8) + ' BTC', 'taker'),
     _btCard('Max drawdown', s.max_drawdown_pct.toFixed(2) + '%', 'equity peak'),
     _btCard('Buy & hold', _fmtBtc(s.buy_and_hold_pnl_btc), _fmtPct(s.buy_and_hold_pnl_pct)),
@@ -6381,11 +6398,7 @@ function btRenderDealTable(deals) {
     return 0;
   });
   const fmtTime = t => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
-  const fmtDur = s => {
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    return `${h}h${m}m`;
-  };
+  const fmtDur = s => btFormatDuration(s / 3600);
   const tbody = $('bt-deals-tbody');
   if (!sorted.length) {
     tbody.innerHTML = `<tr class="empty-row"><td colspan="${cols.length}">No deals</td></tr>`;
