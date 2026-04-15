@@ -1186,8 +1186,8 @@ _CANDLES_CACHE_TTL = 300.0
 _CANDLES_CACHE_TTL_LARGE = 1800.0  # 30 min for limit > 5000
 _CANDLES_CACHE_LARGE_THRESHOLD = 5000
 _CANDLES_CACHE_MAX = 64
-_CANDLES_MAX_BARS  = 50000
-_CANDLES_PAGE_SLEEP_S = 0.1  # pause between paginated ccxt calls
+_CANDLES_MAX_BARS  = 300000
+_CANDLES_PAGE_SLEEP_S = 0.15  # pause between paginated ccxt calls
 
 _TF_SECONDS = {
     "15m": 15 * 60,
@@ -1251,6 +1251,11 @@ async def _fetch_ohlcv_range(
             1000,
         )
         pages_fetched += 1
+        if pages_fetched % 10 == 0:
+            logger.info(
+                "Fetching page %d/%d for %s %s",
+                pages_fetched, expected_pages, symbol, timeframe,
+            )
         if not page:
             empty_pages += 1
             if empty_pages >= 2:
