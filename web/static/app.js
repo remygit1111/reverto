@@ -5097,7 +5097,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 // configured indicator. See _precomputeSignalArrays for details.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BT_TF_SECONDS = { '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
 const BT_DEAL_LS_KEY = 'reverto.bt_deal_columns';
 const BT_DEAL_COLUMNS = [
   { key: 'id',        label: '#'        },
