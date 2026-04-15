@@ -1894,6 +1894,38 @@ html.compact .modal-card { padding: 19px; }
   font-weight: 600;
   transition: color 0.2s ease;
 }
+.bt-history-panel { margin-top: 12px; }
+.bt-history-panel.hidden { display: none; }
+.bt-history-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.bt-history-table {
+  width: 100%; border-collapse: collapse;
+  font-family: var(--mono); font-size: 12px;
+}
+.bt-history-table thead th {
+  text-align: left; color: var(--muted);
+  font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; user-select: none;
+  white-space: nowrap;
+}
+.bt-history-table thead th:hover { color: var(--accent); }
+.bt-history-table thead th .bt-sort-dir {
+  display: inline-block; margin-left: 4px; color: var(--accent);
+}
+.bt-history-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.bt-history-table tbody tr { cursor: pointer; transition: background 0.15s; }
+.bt-history-table tbody tr:hover { background: var(--surface2); }
+.bt-history-num-pos { color: var(--accent); }
+.bt-history-num-neg { color: var(--red); }
 
 .bt-loader {
   display: flex; flex-direction: column; align-items: center;
