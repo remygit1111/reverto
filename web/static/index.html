@@ -217,8 +217,9 @@
 <!-- ── Main nav ────────────────────────────────────────────────────────────── -->
 <nav id="main-nav">
   <button class="tab active" id="nav-overview-btn">Overview</button>
-  <button class="tab" id="nav-bots-btn">Bots</button>
   <button class="tab" id="nav-deals-btn">Active Deals</button>
+  <button class="tab" id="nav-bots-btn">Bots</button>
+  <button class="tab" id="nav-backtests-btn">Backtest History</button>
 </nav>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
@@ -286,26 +287,28 @@
 <div id="view-bots" class="page">
   <div class="bots-toolbar">
     <button class="btn-primary" id="new-bot-btn">＋ New Bot</button>
-    <button class="btn-primary" id="bt-history-btn">📊 Backtest History</button>
   </div>
   <div class="bot-grid" id="bot-grid">
     <div class="empty-config-msg">Loading bots...</div>
   </div>
-  <div id="bt-history-panel" class="bt-history-panel hidden">
-    <div class="bt-history-header">
-      <div class="section-title">Backtest history</div>
-      <button class="hbtn hbtn-theme" id="bt-history-close-btn" type="button">← Back to bots</button>
-    </div>
-    <div class="card card-no-pad">
-      <table class="bt-history-table">
-        <thead>
-          <tr id="bt-history-head"></tr>
-        </thead>
-        <tbody id="bt-history-body">
-          <tr><td colspan="12" class="empty-config-msg">Loading…</td></tr>
-        </tbody>
-      </table>
-    </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Backtest History                                                    -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="view-backtests" class="page">
+  <div class="bt-history-header">
+    <div class="section-title">Backtest history</div>
+  </div>
+  <div class="card card-no-pad">
+    <table class="bt-history-table">
+      <thead>
+        <tr id="bt-history-head"></tr>
+      </thead>
+      <tbody id="bt-history-body">
+        <tr><td colspan="13" class="empty-config-msg">Loading…</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -906,6 +909,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=55"></script>
+<script src="/static/app.js?v=56"></script>
 </body>
 </html>
