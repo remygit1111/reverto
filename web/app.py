@@ -1216,51 +1216,93 @@ def _parse_iso_utc(s: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+async def _fetch_ohlcv_page_with_retry(
+    client, symbol: str, timeframe: str, since_ms: int, limit: int
+) -> list:
+    """Single ccxt fetch_ohlcv call with exponential-backoff retry.
+
+    Bitget occasionally returns error code 40017 ("Parameter verification
+    failed startTime || endTime") on large ranges or transient hiccups —
+    retry up to 3 times with 0.5s / 1.0s / 2.0s backoff before giving
+    up. The caller treats a final failure as "no more data from this
+    cursor" so one bad page doesn't throw the whole fetch away.
+    """
+    last_err = None
+    for attempt in range(3):
+        try:
+            return await asyncio.to_thread(
+                client.client.fetch_ohlcv,
+                client._symbol(symbol),
+                timeframe,
+                since_ms,
+                limit,
+            )
+        except Exception as e:  # noqa: BLE001 — surface every ccxt error
+            last_err = e
+            wait = 0.5 * (2 ** attempt)
+            logger.warning(
+                "fetch_ohlcv attempt %d/3 failed for %s %s since=%d: %s "
+                "(retrying in %.1fs)",
+                attempt + 1, symbol, timeframe, since_ms, e, wait,
+            )
+            await asyncio.sleep(wait)
+    logger.error(
+        "fetch_ohlcv exhausted retries for %s %s since=%d: %s",
+        symbol, timeframe, since_ms, last_err,
+    )
+    return []
+
+
 async def _fetch_ohlcv_range(
     client, symbol: str, timeframe: str, start_ms: int, end_ms: int
 ) -> list:
-    """Paginated fetch_ohlcv. Loops ccxt in 1000-bar chunks until the
-    requested [start_ms, end_ms] range is covered, dedupes on timestamp
-    and returns a timestamp-sorted list of raw OHLCV rows."""
+    """Paginated fetch_ohlcv driven purely by `since`.
+
+    ccxt / Bitget's inverse-swap endpoint is unreliable when both
+    startTime and endTime are passed on large windows (error 40017
+    "Parameter verification failed"). Walking forward with `since`
+    only — letting the exchange pick its own page size, then bumping
+    `since` past the newest returned bar — is the most portable
+    pattern and what every other ccxt-based backtester does. Stops
+    as soon as the newest returned bar reaches end_ms or two
+    consecutive empty pages come back.
+    """
     tf_ms = _TF_SECONDS[timeframe] * 1000
     bars: dict[int, list] = {}
     since = start_ms
     empty_pages = 0
     pages_fetched = 0
-    # Hard safety cap so a misbehaving exchange never pulls us into a
-    # runaway loop — _CANDLES_MAX_BARS / 1000 pages is the most we'd
-    # ever legitimately need for a clamped range.
-    max_pages = (_CANDLES_MAX_BARS // 1000) + 4
-    expected_pages = max(1, ((end_ms - start_ms) // tf_ms + 999) // 1000)
+    max_pages = (_CANDLES_MAX_BARS // 200) + 16
+    expected_pages = max(1, ((end_ms - start_ms) // tf_ms + 199) // 200)
     logger.info(
-        "Fetching %d pages for %s %s (max %d)",
-        expected_pages, symbol, timeframe, max_pages,
+        "Fetching ~%d pages for %s %s (max %d, range %d→%d)",
+        expected_pages, symbol, timeframe, max_pages, start_ms, end_ms,
     )
     for _ in range(max_pages):
-        if since > end_ms:
+        if since >= end_ms:
             break
-        # Throttle between successive ccxt calls so a large backtest
-        # range (50 pages) can't trip Bitget's public rate limiter.
         if pages_fetched > 0:
             await asyncio.sleep(_CANDLES_PAGE_SLEEP_S)
-        page = await asyncio.to_thread(
-            client.client.fetch_ohlcv,
-            client._symbol(symbol),
-            timeframe,
-            since,
-            1000,
+        page = await _fetch_ohlcv_page_with_retry(
+            client, symbol, timeframe, since, 1000,
         )
         pages_fetched += 1
         if pages_fetched % 10 == 0:
             logger.info(
-                "Fetching page %d/%d for %s %s",
-                pages_fetched, expected_pages, symbol, timeframe,
+                "Fetching page %d/~%d for %s %s (bars=%d)",
+                pages_fetched, expected_pages, symbol, timeframe, len(bars),
             )
         if not page:
             empty_pages += 1
             if empty_pages >= 2:
+                logger.info(
+                    "Two empty pages in a row for %s %s — stopping with %d bars",
+                    symbol, timeframe, len(bars),
+                )
                 break
-            since += tf_ms * 1000
+            # Jump ahead by ~200 bars worth of ms so a persistent
+            # no-data hole doesn't force us to crawl bar-by-bar.
+            since += tf_ms * 200
             continue
         empty_pages = 0
         page_max_ts = since
@@ -1274,15 +1316,14 @@ async def _fetch_ohlcv_range(
         # Advance strictly past the newest bar the exchange actually
         # returned — tracked on every row, not just the in-range ones,
         # so an all-out-of-range page still moves the cursor forward.
-        # We used to `break` on len(page) < 1000, but Bitget's inverse
-        # swap historical OHLCV caps each page well below 1000, so the
-        # very first page came back "partial" and silently truncated
-        # the fetch at ~200 bars. Keep walking until we either run
-        # past end_ms or hit two consecutive empty pages.
         if page_max_ts > since:
             since = page_max_ts + tf_ms
         else:
-            since += tf_ms
+            since += tf_ms * 200
+    logger.info(
+        "Fetch complete for %s %s: %d bars over %d pages",
+        symbol, timeframe, len(bars), pages_fetched,
+    )
     return [bars[k] for k in sorted(bars.keys())]
 
 
