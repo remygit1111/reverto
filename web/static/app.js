@@ -5736,7 +5736,7 @@ function btRenderResults(res) {
     _btCard('Win rate', s.win_rate.toFixed(1) + '%', `${s.wins}W / ${s.losses}L`),
     _btCard('Total deals', String(s.total_deals), 'closed'),
     _btCard('Avg duration', s.avg_duration_hours.toFixed(1) + 'h', 'per deal'),
-    _btCard('Total fees', s.total_fees_btc.toFixed(6) + ' BTC', 'taker'),
+    _btCard('Total fees', s.total_fees_btc.toFixed(8) + ' BTC', 'taker'),
     _btCard('Max drawdown', s.max_drawdown_pct.toFixed(2) + '%', 'equity peak'),
     _btCard('Buy & hold', _fmtBtc(s.buy_and_hold_pnl_btc), _fmtPct(s.buy_and_hold_pnl_pct)),
   ].join('');
