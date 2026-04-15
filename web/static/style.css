@@ -1856,6 +1856,12 @@ html.compact .modal-card { padding: 19px; }
   min-width: 120px;
 }
 .bt-input:focus { outline: 1px solid var(--accent); }
+.bt-tf-info {
+  margin-top: 2px;
+  color: var(--muted); font-size: 10px;
+  font-family: var(--mono); text-transform: none;
+  letter-spacing: 0;
+}
 .bt-error {
   background: rgba(255, 77, 109, .12);
   color: var(--red); border: 1px solid var(--red);

@@ -5065,6 +5065,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (wbtClose) wbtClose.addEventListener('click', () => {
     $('wizard-backtest-modal').classList.remove('show');
   });
+
+  // Live "N days of data" hint next to the timeframe selector — refresh
+  // on every tf / start / end change so the operator can see the
+  // coverage of their chosen range before they run the backtest.
+  const refreshTabInfo = () =>
+    btUpdateTfInfo('bt-tf', 'bt-start', 'bt-end', 'bt-tf-info');
+  const refreshWizInfo = () =>
+    btUpdateTfInfo('wbt-tf', 'wbt-start', 'wbt-end', 'wbt-tf-info');
+  ['bt-tf', 'bt-start', 'bt-end'].forEach(id => {
+    const el = $(id);
+    if (el) el.addEventListener('change', refreshTabInfo);
+  });
+  ['wbt-tf', 'wbt-start', 'wbt-end'].forEach(id => {
+    const el = $(id);
+    if (el) el.addEventListener('change', refreshWizInfo);
+  });
+  refreshTabInfo();
+  refreshWizInfo();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5588,8 +5606,49 @@ function btClearError(elId) {
   if (el) el.classList.add('hidden');
 }
 
-async function btFetchCandles(pair, tf, startIso, endIso) {
-  const params = new URLSearchParams({ start: startIso, end: endIso, limit: '5000' });
+// Per-timeframe default candle counts. Picked so the operator always
+// gets a meaningful span of historical data even without touching the
+// date picker: fine-grained bars cover months, coarse bars cover years.
+const BT_TF_DEFAULT_LIMIT = {
+  '15m': 10000, '30m': 8000,  '1h':  8760,
+  '2h':  8760,  '4h':  8760,  '12h': 5000,
+  '1d':  3650,  '3d':  2000,  '1w':  1000,
+};
+const BT_TF_SECONDS = {
+  '15m': 900,   '30m': 1800,  '1h':  3600,
+  '2h':  7200,  '4h':  14400, '12h': 43200,
+  '1d':  86400, '3d':  259200,'1w':  604800,
+};
+
+function btDefaultLimit(tf) { return BT_TF_DEFAULT_LIMIT[tf] || 5000; }
+
+function btUpdateTfInfo(tfSelectId, startId, endId, infoId) {
+  const tf = $(tfSelectId) && $(tfSelectId).value;
+  const info = $(infoId);
+  if (!tf || !info) return;
+  const tfSec = BT_TF_SECONDS[tf];
+  const defLimit = btDefaultLimit(tf);
+  if (!tfSec) { info.textContent = ''; return; }
+  const startStr = $(startId) && $(startId).value;
+  const endStr = $(endId) && $(endId).value;
+  let candleCount = defLimit;
+  if (startStr && endStr) {
+    const sMs = new Date(startStr + 'T00:00:00Z').getTime();
+    const eMs = new Date(endStr + 'T23:59:59Z').getTime();
+    if (eMs > sMs) {
+      const rangeCandles = Math.floor((eMs - sMs) / 1000 / tfSec);
+      candleCount = Math.min(rangeCandles, defLimit);
+    }
+  }
+  const days = Math.round(candleCount * tfSec / 86400);
+  info.textContent = `${tf} · ~${days.toLocaleString()} days of data`;
+}
+
+async function btFetchCandles(pair, tf, startIso, endIso, limit) {
+  const effectiveLimit = limit || btDefaultLimit(tf);
+  const params = new URLSearchParams({
+    start: startIso, end: endIso, limit: String(effectiveLimit),
+  });
   // FastAPI path params don't survive %2F: the router still splits on
   // it and "BTC/USD" routes to pair="BTC" + timeframe="USD/...".
   // Send the slash-less form and let the backend's
@@ -5630,7 +5689,7 @@ async function btRunFromTab() {
   const endIso = new Date(endStr + 'T23:59:59Z').toISOString();
 
   await btRunPipeline({
-    cfg, pair, tf, startIso, endIso, balance,
+    cfg, pair, tf, startIso, endIso, balance, limit: btDefaultLimit(tf),
     loaderId: 'bt-loader', progressBarId: 'bt-progress-bar',
     statusId: 'bt-status', resultsId: 'bt-results',
     errorId: 'bt-error', mode: 'tab',
@@ -5652,7 +5711,7 @@ async function btRunFromWizard() {
   const startIso = new Date(startStr + 'T00:00:00Z').toISOString();
   const endIso = new Date(endStr + 'T23:59:59Z').toISOString();
   await btRunPipeline({
-    cfg, pair, tf, startIso, endIso, balance,
+    cfg, pair, tf, startIso, endIso, balance, limit: btDefaultLimit(tf),
     loaderId: 'wbt-loader', progressBarId: 'wbt-progress-bar',
     statusId: 'wbt-status', resultsId: 'wbt-results',
     errorId: 'wbt-error', mode: 'wizard',
@@ -5675,7 +5734,7 @@ let _wbtEquityChart = null;
 
 async function btRunPipeline(opts) {
   const {
-    cfg, pair, tf, startIso, endIso, balance,
+    cfg, pair, tf, startIso, endIso, balance, limit,
     loaderId, progressBarId, statusId, resultsId, errorId, mode,
   } = opts;
   const loader = $(loaderId);
@@ -5694,7 +5753,7 @@ async function btRunPipeline(opts) {
   status.textContent = 'Fetching candles from Bitget…';
 
   try {
-    const candles = await btFetchCandles(pair, tf, startIso, endIso);
+    const candles = await btFetchCandles(pair, tf, startIso, endIso, limit);
     if (!candles || candles.length < 50) {
       throw new Error(`Not enough candles (${candles ? candles.length : 0}) for backtest`);
     }
