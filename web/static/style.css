@@ -1881,6 +1881,13 @@ html.compact .modal-card { padding: 19px; }
   font-size: 12px; font-family: var(--mono);
 }
 .bt-warning.hidden { display: none; }
+.bt-info {
+  background: rgba(38, 166, 154, .10);
+  color: var(--accent); border: 1px solid var(--accent);
+  padding: 8px 12px; border-radius: 4px; margin-bottom: 12px;
+  font-size: 12px; font-family: var(--mono);
+}
+.bt-info.hidden { display: none; }
 
 .bt-loader {
   display: flex; flex-direction: column; align-items: center;
