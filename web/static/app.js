@@ -1151,6 +1151,9 @@ async function deleteBot(slug, name) {
     alert(`Delete failed: ${detail || res.status}`);
     return;
   }
+  // Drop any cached backtest results for the deleted bot so a
+  // future bot that reuses the slug starts with a clean slate.
+  delete _btResultsBySlug[slug];
   // If we're currently inside this bot's detail view, bounce back to Bots.
   if (currentSlug === slug) goBots();
   else fetchOverview();
@@ -2297,6 +2300,11 @@ function openBot(slug, fromPop = false) {
   showPage('detail');
   connectWS(slug);
   fetchDetail(slug);
+  // Swap the backtest results pane for whatever was last rendered
+  // for this slug (if anything). Without this, results from the
+  // previously-open bot bleed through into the new bot's Backtest
+  // tab until the operator runs it again.
+  btRestoreResultsForSlug(slug);
   detailInterval = setInterval(() => fetchDetail(slug), 5000);
   if (!fromPop) _pushHistory('bot', `#bot/${slug}`, { slug });
 }
@@ -5885,6 +5893,30 @@ let _btEquityChart = null;
 let _btMonthlyChart = null;
 let _wbtEquityChart = null;
 
+// Per-slug backtest result cache so jumping between bots doesn't
+// leak bot A's stats into bot B's Backtest tab. The last run for
+// each slug is re-rendered whenever openBot lands on that slug.
+const _btResultsBySlug = {};
+
+function btRestoreResultsForSlug(slug) {
+  const resultsEl = $('bt-results');
+  if (!resultsEl) return;
+  const cached = slug && _btResultsBySlug[slug];
+  if (cached) {
+    resultsEl.classList.remove('hidden');
+    btRenderResults(cached);
+  } else {
+    resultsEl.classList.add('hidden');
+    const grid = $('bt-summary-grid'); if (grid) grid.innerHTML = '';
+    const ratios = $('bt-ratios-grid'); if (ratios) ratios.innerHTML = '';
+    const note = $('bt-open-deals-note');
+    if (note) { note.textContent = ''; note.classList.add('hidden'); }
+    if (_btEquityChart) { try { _btEquityChart.remove(); } catch (e) {} _btEquityChart = null; }
+    if (_btMonthlyChart) { try { _btMonthlyChart.remove(); } catch (e) {} _btMonthlyChart = null; }
+    const eqEl = $('bt-equity-chart'); if (eqEl) eqEl.innerHTML = '';
+  }
+}
+
 // Flatten res.summary + res.ratios into a single dict so the POST
 // body matches the backtest_runs column names save_backtest_run
 // expects. Infinity / non-finite values become null so JSON stays
@@ -5985,6 +6017,7 @@ async function btRunPipeline(opts) {
     loader.classList.add('hidden');
     results.classList.remove('hidden');
     if (mode === 'tab') {
+      if (currentSlug) _btResultsBySlug[currentSlug] = result;
       btRenderResults(result);
     } else {
       btRenderWizardResults(result);
