@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=30">
+<link rel="stylesheet" href="/static/style.css?v=31">
 </head>
 <body>
 
@@ -151,8 +151,14 @@
       <label class="bt-label">Start
         <input type="date" id="wbt-start" class="bt-input">
       </label>
+      <label class="bt-label">Start time
+        <input type="time" id="wbt-start-time" class="bt-input bt-input-time" value="00:00">
+      </label>
       <label class="bt-label">End
         <input type="date" id="wbt-end" class="bt-input">
+      </label>
+      <label class="bt-label">End time
+        <input type="time" id="wbt-end-time" class="bt-input bt-input-time" value="23:59">
       </label>
       <label class="bt-label">Timeframe
         <select id="wbt-tf" class="bt-input">
@@ -768,8 +774,14 @@
         <label class="bt-label">Start date
           <input type="date" id="bt-start" class="bt-input">
         </label>
+        <label class="bt-label">Start time
+          <input type="time" id="bt-start-time" class="bt-input bt-input-time" value="00:00">
+        </label>
         <label class="bt-label">End date
           <input type="date" id="bt-end" class="bt-input">
+        </label>
+        <label class="bt-label">End time
+          <input type="time" id="bt-end-time" class="bt-input bt-input-time" value="23:59">
         </label>
         <label class="bt-label">Timeframe
           <select id="bt-tf" class="bt-input">
@@ -877,6 +889,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=51"></script>
+<script src="/static/app.js?v=52"></script>
 </body>
 </html>

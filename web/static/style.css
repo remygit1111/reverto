@@ -1867,6 +1867,7 @@ html.compact .modal-card { padding: 19px; }
   min-width: 120px;
 }
 .bt-input:focus { outline: 1px solid var(--accent); }
+.bt-input-time { min-width: 90px; }
 .bt-error {
   background: rgba(255, 77, 109, .12);
   color: var(--red); border: 1px solid var(--red);
