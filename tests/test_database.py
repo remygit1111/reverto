@@ -162,3 +162,63 @@ def test_compute_stats_basic():
     assert stats["best_deal"] == pytest.approx(0.004)
     assert stats["worst_deal"] == pytest.approx(-0.001)
     assert stats["total_fees_btc"] == pytest.approx(3 * 0.0000006, rel=1e-6)
+
+
+# ── Backtest runs ─────────────────────────────────────────────────────────────
+
+def _sample_summary():
+    return {
+        "total_pnl_btc":  0.002,
+        "total_pnl_pct":  2.0,
+        "total_deals":    12,
+        "wins":           8,
+        "losses":         4,
+        "win_rate":       66.67,
+        "avg_duration_hours": 4.2,
+        "max_duration_hours": 11.1,
+        "total_fees_btc": 0.000072,
+        "max_drawdown_pct": 3.5,
+        "profit_factor":  1.8,
+        "sharpe_ratio":   1.2,
+        "sortino_ratio":  1.5,
+        "calmar_ratio":   float("inf"),  # must be coerced to NULL
+        "recovery_factor": 2.4,
+        "expectancy_btc": 0.00003,
+        "avg_win_loss_ratio": 1.9,
+        "omega_ratio":    float("nan"),  # must be coerced to NULL
+        "buy_hold_pnl_pct": 1.1,
+        "max_consecutive_wins": 5,
+        "max_consecutive_losses": 2,
+    }
+
+
+def test_save_and_fetch_backtest_runs():
+    params = {
+        "start_date": "2024-01-01T00:00:00Z",
+        "end_date":   "2024-06-30T23:59:00Z",
+        "timeframe":  "1h",
+        "initial_balance_btc": 0.1,
+    }
+    row_id = deal_store.save_backtest_run("btc", "BTC bot", params, _sample_summary())
+    assert row_id > 0
+
+    # Second run so we can assert ordering
+    deal_store.save_backtest_run("btc", "BTC bot", params, _sample_summary())
+    deal_store.save_backtest_run("eth", "ETH bot", params, _sample_summary())
+
+    btc_runs = deal_store.get_backtest_runs("btc")
+    assert len(btc_runs) == 2
+    # id desc ordering
+    assert btc_runs[0]["id"] > btc_runs[1]["id"]
+    assert btc_runs[0]["bot_name"] == "BTC bot"
+    # NaN / Inf round-tripped as NULL
+    assert btc_runs[0]["calmar_ratio"] is None
+    assert btc_runs[0]["omega_ratio"] is None
+    # Regular numbers stored verbatim
+    assert btc_runs[0]["profit_factor"] == pytest.approx(1.8)
+    assert btc_runs[0]["total_deals"] == 12
+
+    all_runs = deal_store.get_all_backtest_runs()
+    assert len(all_runs) == 3
+    # Mixed-slug query returns rows from both bots
+    assert {r["bot_slug"] for r in all_runs} == {"btc", "eth"}

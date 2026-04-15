@@ -387,6 +387,112 @@ def delete_annotation(ann_id: int) -> bool:
             return cur.rowcount > 0
 
 
+# ── Backtest runs ────────────────────────────────────────────────────────────
+
+_BACKTEST_COLS = (
+    "bot_slug", "bot_name", "start_date", "end_date", "timeframe",
+    "initial_balance_btc", "final_balance_btc",
+    "total_pnl_btc", "total_pnl_pct",
+    "total_deals", "winning_deals", "losing_deals",
+    "win_rate", "avg_duration_hours", "max_duration_hours",
+    "total_fees_btc", "max_drawdown_pct",
+    "profit_factor", "sharpe_ratio", "sortino_ratio",
+    "calmar_ratio", "recovery_factor", "expectancy_btc",
+    "avg_win_loss_ratio", "omega_ratio",
+    "buy_hold_pnl_pct",
+    "max_consecutive_wins", "max_consecutive_losses",
+)
+
+
+def _to_float(v) -> Optional[float]:
+    """Accept int / float / numeric-string; drop Infinity and NaN so the
+    stored row can be read back without JSON serialization headaches."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):  # NaN / ±Inf
+        return None
+    return f
+
+
+def save_backtest_run(
+    bot_slug: str, bot_name: str, params: dict, summary: dict
+) -> int:
+    """Persist one completed backtest run and return its row id.
+
+    `params` carries the user-facing inputs (start/end/timeframe/
+    balance) and `summary` carries the engine output (the summary
+    and ratios blocks from RevertoBacktest._buildResults, flattened).
+    Infinity / NaN ratios become NULL so sqlite is happy.
+    """
+    s = summary or {}
+    row = {
+        "bot_slug": bot_slug,
+        "bot_name": bot_name,
+        "start_date": params.get("start_date", ""),
+        "end_date": params.get("end_date", ""),
+        "timeframe": params.get("timeframe", ""),
+        "initial_balance_btc": _to_float(params.get("initial_balance_btc")) or 0.0,
+        "final_balance_btc":   _to_float(s.get("final_balance_btc")),
+        "total_pnl_btc":       _to_float(s.get("total_pnl_btc")),
+        "total_pnl_pct":       _to_float(s.get("total_pnl_pct")),
+        "total_deals":         int(s.get("total_deals") or 0),
+        "winning_deals":       int(s.get("wins") or 0),
+        "losing_deals":        int(s.get("losses") or 0),
+        "win_rate":            _to_float(s.get("win_rate")),
+        "avg_duration_hours":  _to_float(s.get("avg_duration_hours")),
+        "max_duration_hours":  _to_float(s.get("max_duration_hours")),
+        "total_fees_btc":      _to_float(s.get("total_fees_btc")),
+        "max_drawdown_pct":    _to_float(s.get("max_drawdown_pct")),
+        "profit_factor":       _to_float(s.get("profit_factor")),
+        "sharpe_ratio":        _to_float(s.get("sharpe_ratio")),
+        "sortino_ratio":       _to_float(s.get("sortino_ratio")),
+        "calmar_ratio":        _to_float(s.get("calmar_ratio")),
+        "recovery_factor":     _to_float(s.get("recovery_factor")),
+        "expectancy_btc":      _to_float(s.get("expectancy_btc")),
+        "avg_win_loss_ratio":  _to_float(s.get("avg_win_loss_ratio")),
+        "omega_ratio":         _to_float(s.get("omega_ratio")),
+        "buy_hold_pnl_pct":    _to_float(s.get("buy_hold_pnl_pct")),
+        "max_consecutive_wins":   int(s.get("max_consecutive_wins") or 0),
+        "max_consecutive_losses": int(s.get("max_consecutive_losses") or 0),
+    }
+    placeholders = ", ".join("?" for _ in _BACKTEST_COLS)
+    columns = ", ".join(_BACKTEST_COLS)
+    values = tuple(row[c] for c in _BACKTEST_COLS)
+    with _write_lock:
+        conn = get_db()
+        with conn:
+            cur = conn.execute(
+                f"INSERT INTO backtest_runs ({columns}) VALUES ({placeholders})",
+                values,
+            )
+            return int(cur.lastrowid)
+
+
+def get_backtest_runs(bot_slug: str, limit: int = 50) -> list[dict]:
+    """Return the N most recent backtest runs for a single bot."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM backtest_runs WHERE bot_slug = ? "
+        "ORDER BY id DESC LIMIT ?",
+        (bot_slug, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_backtest_runs(limit: int = 100) -> list[dict]:
+    """Return the N most recent backtest runs across every bot."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def delete_annotations_for(bot_slug: str, timeframe: Optional[str] = None) -> int:
     """Bulk-delete annotations for a bot, optionally scoped to a timeframe.
 

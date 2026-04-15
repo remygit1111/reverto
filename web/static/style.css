@@ -1889,6 +1889,11 @@ html.compact .modal-card { padding: 19px; }
   font-size: 12px; font-family: var(--mono);
 }
 .bt-info.hidden { display: none; }
+.bt-status-saved {
+  color: var(--accent) !important;
+  font-weight: 600;
+  transition: color 0.2s ease;
+}
 
 .bt-loader {
   display: flex; flex-direction: column; align-items: center;

@@ -5885,6 +5885,52 @@ let _btEquityChart = null;
 let _btMonthlyChart = null;
 let _wbtEquityChart = null;
 
+// Flatten res.summary + res.ratios into a single dict so the POST
+// body matches the backtest_runs column names save_backtest_run
+// expects. Infinity / non-finite values become null so JSON stays
+// well-formed.
+function _btFlattenForSave(res) {
+  const out = {};
+  const clean = v => (typeof v === 'number' && Number.isFinite(v) ? v : (v === '∞' || v === Infinity ? null : v));
+  for (const [k, v] of Object.entries(res.summary || {})) out[k] = clean(v);
+  for (const [k, v] of Object.entries(res.ratios || {})) {
+    // Map JS-side camelSuffixed ratio keys onto the SQL column names
+    // save_backtest_run uses so the row lines up without a second
+    // rename step.
+    if (k === 'sharpe') out.sharpe_ratio = clean(v);
+    else if (k === 'sortino') out.sortino_ratio = clean(v);
+    else out[k] = clean(v);
+  }
+  return out;
+}
+
+async function _btSaveRun(cfg, params, res) {
+  if (!cfg || !res || !res.summary) return null;
+  try {
+    const r = await fetch('/api/backtest/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slug: cfg.slug || params.slug || '',
+        name: cfg.name || params.name || 'Backtest',
+        params,
+        summary: _btFlattenForSave(res),
+      }),
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j.id || null;
+  } catch (e) { return null; }
+}
+
+function _btFlashSaved(statusId) {
+  const el = $(statusId);
+  if (!el) return;
+  el.textContent = '✓ Saved';
+  el.classList.add('bt-status-saved');
+  setTimeout(() => el.classList.remove('bt-status-saved'), 2000);
+}
+
 async function btRunPipeline(opts) {
   const {
     cfg, pair, tf, startIso, endIso, balance, limit,
@@ -5943,6 +5989,19 @@ async function btRunPipeline(opts) {
     } else {
       btRenderWizardResults(result);
     }
+    // Auto-persist every successful run so the Backtest History view
+    // has a stable timeline to show. Fire-and-forget — a backend
+    // hiccup shouldn't hide the just-computed numbers.
+    _btSaveRun(
+      { ...cfg, slug: (cfg && cfg.slug) || currentSlug || '' },
+      {
+        start_date: startIso,
+        end_date: endIso,
+        timeframe: tf,
+        initial_balance_btc: balance,
+      },
+      result,
+    ).then(id => { if (id != null) _btFlashSaved(statusId); });
   } catch (e) {
     clearInterval(fetchInterval);
     loader.classList.add('hidden');

@@ -104,6 +104,44 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     "ON indicator_snapshots(bot_slug)",
     "CREATE INDEX IF NOT EXISTS idx_chart_annotations_bot_slug "
     "ON chart_annotations(bot_slug)",
+    """
+    CREATE TABLE IF NOT EXISTS backtest_runs (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        bot_slug    TEXT NOT NULL,
+        bot_name    TEXT NOT NULL,
+        start_date  TEXT NOT NULL,
+        end_date    TEXT NOT NULL,
+        timeframe   TEXT NOT NULL,
+        initial_balance_btc REAL NOT NULL,
+        final_balance_btc   REAL,
+        total_pnl_btc       REAL,
+        total_pnl_pct       REAL,
+        total_deals         INTEGER,
+        winning_deals       INTEGER,
+        losing_deals        INTEGER,
+        win_rate            REAL,
+        avg_duration_hours  REAL,
+        max_duration_hours  REAL,
+        total_fees_btc      REAL,
+        max_drawdown_pct    REAL,
+        profit_factor       REAL,
+        sharpe_ratio        REAL,
+        sortino_ratio       REAL,
+        calmar_ratio        REAL,
+        recovery_factor     REAL,
+        expectancy_btc      REAL,
+        avg_win_loss_ratio  REAL,
+        omega_ratio         REAL,
+        buy_hold_pnl_pct    REAL,
+        max_consecutive_wins   INTEGER,
+        max_consecutive_losses INTEGER,
+        created_at  TEXT DEFAULT (datetime('now'))
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_backtest_runs_bot_slug "
+    "ON backtest_runs(bot_slug)",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at "
+    "ON backtest_runs(created_at DESC)",
 )
 
 
