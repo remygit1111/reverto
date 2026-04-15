@@ -5070,9 +5070,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // on every tf / start / end change so the operator can see the
   // coverage of their chosen range before they run the backtest.
   const refreshTabInfo = () =>
-    btUpdateTfInfo('bt-tf', 'bt-start', 'bt-end', 'bt-tf-info', 'bt-warning');
+    btUpdateTfWarning('bt-tf', 'bt-start', 'bt-end', 'bt-warning');
   const refreshWizInfo = () =>
-    btUpdateTfInfo('wbt-tf', 'wbt-start', 'wbt-end', 'wbt-tf-info', 'wbt-warning');
+    btUpdateTfWarning('wbt-tf', 'wbt-start', 'wbt-end', 'wbt-warning');
   ['bt-tf', 'bt-start', 'bt-end'].forEach(id => {
     const el = $(id);
     if (el) el.addEventListener('change', refreshTabInfo);
@@ -5462,11 +5462,14 @@ class RevertoBacktest {
         time: candle.time,
         balance: this.balance_btc + this._unrealizedPnl(candle.close),
       });
-      if (i % 200 === 0 && onProgress) {
-        const pct = Math.round((i / total) * 100);
-        onProgress(pct, `Running backtest… ${i.toLocaleString()} / ${total.toLocaleString()} candles`);
-        // Yield to the event loop every 200 candles so the UI can
-        // repaint the progress bar and stay responsive.
+      if (i % 50 === 0 && onProgress) {
+        const pct = total > 0 ? (i / total) * 100 : 0;
+        onProgress(
+          pct,
+          `Simulating trades… candle ${i.toLocaleString()} / ${total.toLocaleString()}`,
+        );
+        // Yield to the event loop every 50 candles so the browser can
+        // repaint the progress bar and stay responsive on long runs.
         await new Promise(r => setTimeout(r, 0));
       }
     }
@@ -5690,33 +5693,25 @@ function btHumanDuration(sec) {
   return s ? `${m}m ${s}s` : `${m}m`;
 }
 
-function btUpdateTfInfo(tfSelectId, startId, endId, infoId, warnId) {
+function btUpdateTfWarning(tfSelectId, startId, endId, warnId) {
   const tf = $(tfSelectId) && $(tfSelectId).value;
-  const info = $(infoId);
-  if (!tf || !info) return;
+  const warn = $(warnId);
+  if (!tf || !warn) return;
   const tfSec = BT_TF_SECONDS[tf];
-  if (!tfSec) { info.textContent = ''; return; }
+  if (!tfSec) { warn.classList.add('hidden'); warn.textContent = ''; return; }
   const startStr = $(startId) && $(startId).value;
   const endStr = $(endId) && $(endId).value;
   const candleCount = btCandleCountForRange(tf, startStr, endStr)
     || btDefaultLimit(tf);
-  const days = Math.round(candleCount * tfSec / 86400);
-  info.textContent = `${tf} · ~${candleCount.toLocaleString()} candles · ~${btHumanSpan(days)}`;
-
-  if (warnId) {
-    const warn = $(warnId);
-    if (warn) {
-      const est = btEstimatedSeconds(candleCount);
-      if (est > 30) {
-        warn.textContent =
-          `⚠ This backtest will fetch ~${candleCount.toLocaleString()} ` +
-          `candles (est. ${btHumanDuration(est)}). This may take a few minutes.`;
-        warn.classList.remove('hidden');
-      } else {
-        warn.textContent = '';
-        warn.classList.add('hidden');
-      }
-    }
+  const est = btEstimatedSeconds(candleCount);
+  if (est > 30) {
+    warn.textContent =
+      `⚠ This backtest will fetch ~${candleCount.toLocaleString()} ` +
+      `candles (est. ${btHumanDuration(est)}). This may take a few minutes.`;
+    warn.classList.remove('hidden');
+  } else {
+    warn.textContent = '';
+    warn.classList.add('hidden');
   }
 }
 

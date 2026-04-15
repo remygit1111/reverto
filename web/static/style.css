@@ -1696,7 +1696,14 @@ table thead th.drop-after {
 }
 .skel-candle {
   opacity: 0;
-  animation: skel-cascade 0.55s ease-out forwards;
+  /* One-shot cascade fade-in, then an infinite gentle pulse so the
+     skeleton keeps moving while the backtest is busy crunching. The
+     cascade's `forwards` fill mode hands its final 0.85 opacity to
+     the pulse, which then modulates the candle group between 0.55
+     and 0.9 on a 2.4s loop — matches the whole-svg pulse below. */
+  animation:
+    skel-cascade 0.55s ease-out forwards,
+    skel-candle-pulse 2.4s ease-in-out 0.9s infinite;
 }
 .skel-up   .skel-body { fill: var(--accent); }
 .skel-up   .skel-wick { stroke: var(--accent); }
@@ -1727,6 +1734,10 @@ table thead th.drop-after {
 @keyframes skel-pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.65; }
+}
+@keyframes skel-candle-pulse {
+  0%, 100% { opacity: 0.9; }
+  50%      { opacity: 0.55; }
 }
 
 /* Deal timeline: rows in the bot detail Deals tab are clickable and jump
@@ -1848,7 +1859,6 @@ html.compact .modal-card { padding: 19px; }
   color: var(--muted); font-size: 11px;
   text-transform: uppercase; letter-spacing: .05em;
   font-family: var(--mono);
-  position: relative;
 }
 .bt-input {
   background: var(--surface2); color: var(--text);
@@ -1857,17 +1867,6 @@ html.compact .modal-card { padding: 19px; }
   min-width: 120px;
 }
 .bt-input:focus { outline: 1px solid var(--accent); }
-.bt-tf-info {
-  position: absolute;
-  top: 100%; left: 0;
-  margin-top: 4px;
-  color: var(--muted); font-size: 10px;
-  font-family: var(--mono); text-transform: none;
-  letter-spacing: 0;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.bt-config-row { row-gap: 24px; }
 .bt-error {
   background: rgba(255, 77, 109, .12);
   color: var(--red); border: 1px solid var(--red);
