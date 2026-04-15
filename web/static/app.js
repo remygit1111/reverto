@@ -5073,11 +5073,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     btUpdateTfWarning('bt-tf', 'bt-start', 'bt-end', 'bt-warning');
   const refreshWizInfo = () =>
     btUpdateTfWarning('wbt-tf', 'wbt-start', 'wbt-end', 'wbt-warning');
-  ['bt-tf', 'bt-start', 'bt-end'].forEach(id => {
+  ['bt-tf', 'bt-start', 'bt-end', 'bt-start-time', 'bt-end-time'].forEach(id => {
     const el = $(id);
     if (el) el.addEventListener('change', refreshTabInfo);
   });
-  ['wbt-tf', 'wbt-start', 'wbt-end'].forEach(id => {
+  ['wbt-tf', 'wbt-start', 'wbt-end', 'wbt-start-time', 'wbt-end-time'].forEach(id => {
     const el = $(id);
     if (el) el.addEventListener('change', refreshWizInfo);
   });
@@ -5800,10 +5800,21 @@ async function btFetchCandles(pair, tf, startIso, endIso, limit) {
   return r.json();
 }
 
+function _btComposeIso(dateStr, timeStr, fallback) {
+  // Combine a YYYY-MM-DD date picker value and a HH:MM time picker
+  // value into a UTC ISO timestamp. Empty time falls back to the
+  // caller-supplied default so the operator still gets the full day
+  // if they ignore the time field.
+  const t = (timeStr && /^\d\d:\d\d/.test(timeStr)) ? timeStr : fallback;
+  return new Date(`${dateStr}T${t}:00Z`).toISOString();
+}
+
 async function btRunFromTab() {
   btClearError('bt-error');
   const startStr = $('bt-start').value;
   const endStr = $('bt-end').value;
+  const startTimeStr = ($('bt-start-time') && $('bt-start-time').value) || '00:00';
+  const endTimeStr   = ($('bt-end-time')   && $('bt-end-time').value)   || '23:59';
   const tf = $('bt-tf').value;
   const balance = parseFloat($('bt-balance').value);
   if (!startStr || !endStr) { btShowError('bt-error', 'Pick start and end dates'); return; }
@@ -5821,8 +5832,8 @@ async function btRunFromTab() {
   if (!cfg) { btShowError('bt-error', 'No bot config available'); return; }
   const pair = cfg.pair || 'BTC/USD';
 
-  const startIso = new Date(startStr + 'T00:00:00Z').toISOString();
-  const endIso = new Date(endStr + 'T23:59:59Z').toISOString();
+  const startIso = _btComposeIso(startStr, startTimeStr, '00:00');
+  const endIso   = _btComposeIso(endStr,   endTimeStr,   '23:59');
 
   const rangeLimit = btCandleCountForRange(tf, startStr, endStr)
     || btDefaultLimit(tf);
@@ -5841,13 +5852,15 @@ async function btRunFromWizard() {
   const cfg = body.bot;
   const startStr = $('wbt-start').value;
   const endStr = $('wbt-end').value;
+  const startTimeStr = ($('wbt-start-time') && $('wbt-start-time').value) || '00:00';
+  const endTimeStr   = ($('wbt-end-time')   && $('wbt-end-time').value)   || '23:59';
   const tf = $('wbt-tf').value;
   const balance = parseFloat($('wbt-balance').value);
   if (!startStr || !endStr) { btShowError('wbt-error', 'Pick start and end dates'); return; }
   if (!(balance > 0)) { btShowError('wbt-error', 'Balance must be > 0'); return; }
   const pair = cfg.pair || 'BTC/USD';
-  const startIso = new Date(startStr + 'T00:00:00Z').toISOString();
-  const endIso = new Date(endStr + 'T23:59:59Z').toISOString();
+  const startIso = _btComposeIso(startStr, startTimeStr, '00:00');
+  const endIso   = _btComposeIso(endStr,   endTimeStr,   '23:59');
   const rangeLimit = btCandleCountForRange(tf, startStr, endStr)
     || btDefaultLimit(tf);
   await btRunPipeline({
