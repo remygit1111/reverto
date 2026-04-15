@@ -1263,19 +1263,26 @@ async def _fetch_ohlcv_range(
             since += tf_ms * 1000
             continue
         empty_pages = 0
-        last_ts = since
+        page_max_ts = since
         for row in page:
             ts = int(row[0])
+            if ts > page_max_ts:
+                page_max_ts = ts
             if ts < start_ms or ts > end_ms:
                 continue
             bars[ts] = row
-            if ts > last_ts:
-                last_ts = ts
-        if len(page) < 1000:
-            break
-        # Advance strictly past the last returned bar; ccxt returns
-        # inclusive pages so +1ms would loop on the same candle.
-        since = last_ts + tf_ms
+        # Advance strictly past the newest bar the exchange actually
+        # returned — tracked on every row, not just the in-range ones,
+        # so an all-out-of-range page still moves the cursor forward.
+        # We used to `break` on len(page) < 1000, but Bitget's inverse
+        # swap historical OHLCV caps each page well below 1000, so the
+        # very first page came back "partial" and silently truncated
+        # the fetch at ~200 bars. Keep walking until we either run
+        # past end_ms or hit two consecutive empty pages.
+        if page_max_ts > since:
+            since = page_max_ts + tf_ms
+        else:
+            since += tf_ms
     return [bars[k] for k in sorted(bars.keys())]
 
 
