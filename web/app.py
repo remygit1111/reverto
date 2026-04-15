@@ -1082,13 +1082,20 @@ _chart_cache: "OrderedDict[tuple, tuple[float, list]]" = OrderedDict()
 # to see the latest wick); 1d bars are essentially static.
 _CHART_CACHE_TTL = {
     "15m": 30.0,
+    "30m": 60.0,
     "1h":  120.0,
+    "2h":  180.0,
     "4h":  300.0,
+    "12h": 450.0,
     "1d":  600.0,
+    "3d":  900.0,
+    "1w":  1800.0,
 }
 _CHART_CACHE_TTL_DEFAULT = 60.0
 _CHART_CACHE_MAX = 256
-_CHART_TIMEFRAMES = ("15m", "1h", "4h", "1d")
+_CHART_TIMEFRAMES = (
+    "15m", "30m", "1h", "2h", "4h", "12h", "1d", "3d", "1w",
+)
 _chart_lock = asyncio.Lock()
 
 
@@ -1176,14 +1183,22 @@ async def api_chart(pair: str, timeframe: str, limit: int = 200):
 # ms-timestamp and return the same JSON shape as /api/chart.
 _candles_cache: "OrderedDict[tuple, tuple[float, list]]" = OrderedDict()
 _CANDLES_CACHE_TTL = 300.0
+_CANDLES_CACHE_TTL_LARGE = 1800.0  # 30 min for limit > 5000
+_CANDLES_CACHE_LARGE_THRESHOLD = 5000
 _CANDLES_CACHE_MAX = 64
-_CANDLES_MAX_BARS  = 5000
+_CANDLES_MAX_BARS  = 50000
+_CANDLES_PAGE_SLEEP_S = 0.1  # pause between paginated ccxt calls
 
 _TF_SECONDS = {
     "15m": 15 * 60,
+    "30m": 30 * 60,
     "1h":  60 * 60,
+    "2h":  2 * 60 * 60,
     "4h":  4 * 60 * 60,
+    "12h": 12 * 60 * 60,
     "1d":  24 * 60 * 60,
+    "3d":  3 * 24 * 60 * 60,
+    "1w":  7 * 24 * 60 * 60,
 }
 
 
@@ -1211,13 +1226,23 @@ async def _fetch_ohlcv_range(
     bars: dict[int, list] = {}
     since = start_ms
     empty_pages = 0
+    pages_fetched = 0
     # Hard safety cap so a misbehaving exchange never pulls us into a
     # runaway loop — _CANDLES_MAX_BARS / 1000 pages is the most we'd
     # ever legitimately need for a clamped range.
     max_pages = (_CANDLES_MAX_BARS // 1000) + 4
+    expected_pages = max(1, ((end_ms - start_ms) // tf_ms + 999) // 1000)
+    logger.info(
+        "Fetching %d pages for %s %s (max %d)",
+        expected_pages, symbol, timeframe, max_pages,
+    )
     for _ in range(max_pages):
         if since > end_ms:
             break
+        # Throttle between successive ccxt calls so a large backtest
+        # range (50 pages) can't trip Bitget's public rate limiter.
+        if pages_fetched > 0:
+            await asyncio.sleep(_CANDLES_PAGE_SLEEP_S)
         page = await asyncio.to_thread(
             client.client.fetch_ohlcv,
             client._symbol(symbol),
@@ -1225,6 +1250,7 @@ async def _fetch_ohlcv_range(
             since,
             1000,
         )
+        pages_fetched += 1
         if not page:
             empty_pages += 1
             if empty_pages >= 2:
@@ -1332,7 +1358,12 @@ async def api_candles(
         }
         for c in raw
     ]
-    _candles_cache[key] = (now + _CANDLES_CACHE_TTL, payload)
+    ttl = (
+        _CANDLES_CACHE_TTL_LARGE
+        if limit > _CANDLES_CACHE_LARGE_THRESHOLD
+        else _CANDLES_CACHE_TTL
+    )
+    _candles_cache[key] = (now + ttl, payload)
     _candles_cache.move_to_end(key)
     while len(_candles_cache) > _CANDLES_CACHE_MAX:
         _candles_cache.popitem(last=False)
