@@ -5131,6 +5131,9 @@ class RevertoBacktest {
       orders: [{ price, size: this._base_size, type: 'base' }],
       dca_count: 0,
       peak_price: 0,
+      entry_fee_btc: fee,
+      dca_fees_btc: 0,
+      exit_fee_btc: 0,
     };
   }
 
@@ -5185,6 +5188,7 @@ class RevertoBacktest {
       const fee = this._calcFee(dcaSize);
       this.balance_btc -= fee;
       this.fees_paid_btc += fee;
+      deal.dca_fees_btc += fee;
       deal.orders.push({ price: candle.close, size: dcaSize, type: 'dca' });
       deal.dca_count += 1;
       if (window._BT_DEBUG) {
@@ -5196,15 +5200,19 @@ class RevertoBacktest {
   _closeDeal(deal, price, reason, time) {
     const avg = this._avgEntry(deal);
     const size = this._totalSize(deal);
-    const pnlBtc = size * (price - avg) / avg * this._lev;
+    const grossPnlBtc = size * (price - avg) / avg * this._lev;
+    const exitFee = this._calcFee(size);
+    deal.exit_fee_btc = exitFee;
+    const dealFees = deal.entry_fee_btc + deal.dca_fees_btc + exitFee;
+    const netPnlBtc = grossPnlBtc - dealFees;
     const margin = size / this._lev;
-    const pnlPct = margin > 0 ? (pnlBtc / margin) * 100 : 0;
-    const fee = this._calcFee(size);
-    this.balance_btc += pnlBtc - fee;
-    this.fees_paid_btc += fee;
+    const pnlPct = margin > 0 ? (netPnlBtc / margin) * 100 : 0;
+    this.balance_btc += grossPnlBtc - exitFee;
+    this.fees_paid_btc += exitFee;
     if (window._BT_DEBUG && this.closed_deals.length < 10) {
       console.log('[BT] close deal #', deal.id, 'reason', reason,
-        'price', price, 'pnl', pnlBtc.toFixed(8));
+        'price', price, 'gross', grossPnlBtc.toFixed(8),
+        'fees', dealFees.toFixed(8), 'net', netPnlBtc.toFixed(8));
     }
     this.closed_deals.push({
       id: deal.id,
@@ -5215,8 +5223,13 @@ class RevertoBacktest {
       close_price: price,
       dca_count: deal.dca_count,
       orders: deal.orders,
-      pnl_btc: pnlBtc,
+      gross_pnl_btc: grossPnlBtc,
+      pnl_btc: netPnlBtc,
       pnl_pct: pnlPct,
+      entry_fee_btc: deal.entry_fee_btc,
+      dca_fees_btc: deal.dca_fees_btc,
+      exit_fee_btc: exitFee,
+      total_fees_btc: dealFees,
       reason,
       total_size: size,
     });
