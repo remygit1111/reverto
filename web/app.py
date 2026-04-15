@@ -1967,6 +1967,60 @@ async def api_db_annotations_delete(
     return {"ok": True}
 
 
+# ── Backtest run persistence ─────────────────────────────────────────────────
+
+class BacktestSaveBody(BaseModel):
+    slug: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=256)
+    params: dict = Field(default_factory=dict)
+    summary: dict = Field(default_factory=dict)
+
+
+@app.post("/api/backtest/save")
+@limiter.limit("60/minute")
+async def api_backtest_save(
+    body: BacktestSaveBody,
+    request: Request,
+    actor: str = Depends(_request_actor),
+):
+    """Persist one completed backtest run.
+
+    Called automatically by the frontend after a successful run so
+    the Backtest History view has something to show. The body mirrors
+    RevertoBacktest._buildResults flattened into a summary dict, plus
+    the user-facing params (start/end/timeframe/initial_balance).
+    """
+    run_id = await asyncio.to_thread(
+        deal_store.save_backtest_run,
+        body.slug, body.name, body.params, body.summary,
+    )
+    return {"ok": True, "id": run_id}
+
+
+@app.get("/api/backtest/runs")
+@limiter.limit("60/minute")
+async def api_backtest_runs(
+    request: Request,
+    slug: Optional[str] = None,
+    limit: int = 100,
+    actor: str = Depends(_request_actor),
+):
+    """Return recent backtest runs, optionally filtered by bot slug."""
+    if limit < 1:
+        limit = 1
+    if limit > 500:
+        limit = 500
+    if slug:
+        runs = await asyncio.to_thread(
+            deal_store.get_backtest_runs, slug, limit,
+        )
+    else:
+        runs = await asyncio.to_thread(
+            deal_store.get_all_backtest_runs, limit,
+        )
+    return {"runs": runs}
+
+
 @app.on_event("startup")
 async def on_startup():
     logger.info("=== Portal started ===")
