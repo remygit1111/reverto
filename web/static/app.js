@@ -4790,6 +4790,10 @@ function setupEventListeners() {
   // view via the main Bots tab or the browser back button (popstate).
 
   $('new-bot-btn').addEventListener('click', goNewBot);
+  const btHistBtn = $('bt-history-btn');
+  if (btHistBtn) btHistBtn.addEventListener('click', btOpenHistoryPanel);
+  const btHistClose = $('bt-history-close-btn');
+  if (btHistClose) btHistClose.addEventListener('click', btCloseHistoryPanel);
 
   document.querySelectorAll('.detail-subnav .tab').forEach(btn => {
     btn.addEventListener('click', () => showDTab(btn.dataset.dtab, btn));
@@ -5897,6 +5901,122 @@ let _wbtEquityChart = null;
 // leak bot A's stats into bot B's Backtest tab. The last run for
 // each slug is re-rendered whenever openBot lands on that slug.
 const _btResultsBySlug = {};
+
+// Backtest History sub-view state — an in-memory sort handle plus
+// the last-fetched rows, so clicking a header just re-renders from
+// cache instead of hitting the network again.
+const BT_HISTORY_COLUMNS = [
+  { key: 'bot_name',            label: 'Bot',       fmt: v => safeText(String(v || '—')) },
+  { key: 'created_at',          label: 'Run',       fmt: v => safeText((v || '').slice(0, 16).replace('T', ' ')) },
+  { key: 'start_date',          label: 'Start',     fmt: v => safeText((v || '').slice(0, 10)) },
+  { key: 'end_date',            label: 'End',       fmt: v => safeText((v || '').slice(0, 10)) },
+  { key: 'timeframe',           label: 'TF',        fmt: v => safeText(String(v || '—')) },
+  { key: 'total_deals',         label: 'Deals',     fmt: v => String(v ?? 0) },
+  { key: 'win_rate',            label: 'Win %',     fmt: v => (v != null ? v.toFixed(1) + '%' : '—') },
+  { key: 'total_pnl_btc',       label: 'PnL BTC',   fmt: v => _btColouredBtc(v) },
+  { key: 'total_pnl_pct',       label: 'PnL %',     fmt: v => _btColouredPct(v) },
+  { key: 'profit_factor',       label: 'PF',        fmt: v => _fmtRatio(v) },
+  { key: 'sharpe_ratio',        label: 'Sharpe',    fmt: v => _fmtRatio(v) },
+  { key: 'max_drawdown_pct',    label: 'Max DD',    fmt: v => (v != null ? v.toFixed(2) + '%' : '—') },
+  { key: 'buy_hold_pnl_pct',    label: 'B&H %',     fmt: v => _btColouredPct(v) },
+];
+let _btHistoryRows = [];
+let _btHistorySortKey = 'created_at';
+let _btHistorySortDir = 'desc';
+
+function _btColouredBtc(v) {
+  if (v == null) return '—';
+  const cls = v >= 0 ? 'bt-history-num-pos' : 'bt-history-num-neg';
+  const sign = v >= 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${v.toFixed(6)}</span>`;
+}
+function _btColouredPct(v) {
+  if (v == null) return '—';
+  const cls = v >= 0 ? 'bt-history-num-pos' : 'bt-history-num-neg';
+  const sign = v >= 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${v.toFixed(2)}%</span>`;
+}
+
+async function btOpenHistoryPanel() {
+  $('bot-grid').classList.add('hidden');
+  $('bt-history-panel').classList.remove('hidden');
+  const body = $('bt-history-body');
+  body.innerHTML = '<tr><td colspan="13" class="empty-config-msg">Loading…</td></tr>';
+  try {
+    const r = await fetch('/api/backtest/runs?limit=200');
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    _btHistoryRows = Array.isArray(j.runs) ? j.runs : [];
+  } catch (e) {
+    body.innerHTML =
+      `<tr><td colspan="13" class="empty-config-msg">Failed to load: ${safeText(e.message || e)}</td></tr>`;
+    return;
+  }
+  _btRenderHistoryTable();
+}
+
+function btCloseHistoryPanel() {
+  $('bt-history-panel').classList.add('hidden');
+  $('bot-grid').classList.remove('hidden');
+}
+
+function _btRenderHistoryTable() {
+  const head = $('bt-history-head');
+  head.innerHTML = BT_HISTORY_COLUMNS.map(col => {
+    const dir = col.key === _btHistorySortKey
+      ? `<span class="bt-sort-dir">${_btHistorySortDir === 'asc' ? '▲' : '▼'}</span>`
+      : '';
+    return `<th data-key="${col.key}">${safeText(col.label)}${dir}</th>`;
+  }).join('');
+  head.querySelectorAll('th').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.key;
+      if (_btHistorySortKey === k) {
+        _btHistorySortDir = _btHistorySortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        _btHistorySortKey = k;
+        _btHistorySortDir = 'desc';
+      }
+      _btRenderHistoryTable();
+    });
+  });
+
+  const sorted = _btHistoryRows.slice().sort((a, b) => {
+    const av = a[_btHistorySortKey];
+    const bv = b[_btHistorySortKey];
+    const an = typeof av === 'number';
+    const bn = typeof bv === 'number';
+    let cmp;
+    if (an && bn) cmp = av - bv;
+    else cmp = String(av ?? '').localeCompare(String(bv ?? ''));
+    return _btHistorySortDir === 'asc' ? cmp : -cmp;
+  });
+
+  const body = $('bt-history-body');
+  if (!sorted.length) {
+    body.innerHTML = '<tr><td colspan="13" class="empty-config-msg">No backtest runs yet. Run a backtest on any bot to populate this view.</td></tr>';
+    return;
+  }
+  body.innerHTML = sorted.map(run => {
+    const cells = BT_HISTORY_COLUMNS.map(col => `<td>${col.fmt(run[col.key])}</td>`).join('');
+    return `<tr data-slug="${safeText(run.bot_slug || '')}">${cells}</tr>`;
+  }).join('');
+  body.querySelectorAll('tr[data-slug]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const slug = tr.dataset.slug;
+      if (!slug) return;
+      btCloseHistoryPanel();
+      openBot(slug);
+      // Jump straight into the Backtest tab on the next tick so the
+      // detail layout has settled by the time we switch.
+      setTimeout(() => {
+        const tabBtn = document.querySelector('.detail-subnav .tab[data-dtab="backtest"]');
+        if (tabBtn) showDTab('backtest', tabBtn);
+      }, 60);
+    });
+  });
+}
 
 function btRestoreResultsForSlug(slug) {
   const resultsEl = $('bt-results');
