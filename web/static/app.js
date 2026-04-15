@@ -5115,6 +5115,11 @@ class RevertoBacktest {
     this._mult    = (config.dca && config.dca.multiplier)         || 1.0;
     this._taker_fee = (config.dca && config.dca.taker_fee) || 0.0006;
     this._lev = (config.leverage && config.leverage.enabled && config.leverage.size) || 1;
+    if (window._BT_DEBUG) {
+      console.log('[FEE] taker_fee config:', this._taker_fee,
+        'base_size:', this._base_size,
+        'raw config.dca.taker_fee:', config.dca && config.dca.taker_fee);
+    }
   }
 
   _calcFee(size) { return size * this._taker_fee; }
@@ -5124,6 +5129,10 @@ class RevertoBacktest {
     const fee = this._calcFee(this._base_size);
     this.balance_btc -= fee;
     this.fees_paid_btc += fee;
+    if (window._BT_DEBUG) {
+      console.log('[FEE] entry fee:', fee, 'size:', this._base_size,
+        'deal:', this._deal_counter);
+    }
     this.open_deal = {
       id: this._deal_counter,
       opened_at: time,
@@ -5189,6 +5198,10 @@ class RevertoBacktest {
       this.balance_btc -= fee;
       this.fees_paid_btc += fee;
       deal.dca_fees_btc += fee;
+      if (window._BT_DEBUG) {
+        console.log('[FEE] dca fee:', fee, 'size:', dcaSize,
+          'deal:', deal.id, 'running dca_fees:', deal.dca_fees_btc);
+      }
       deal.orders.push({ price: candle.close, size: dcaSize, type: 'dca' });
       deal.dca_count += 1;
       if (window._BT_DEBUG) {
@@ -5204,6 +5217,11 @@ class RevertoBacktest {
     const exitFee = this._calcFee(size);
     deal.exit_fee_btc = exitFee;
     const dealFees = deal.entry_fee_btc + deal.dca_fees_btc + exitFee;
+    if (window._BT_DEBUG) {
+      console.log('[FEE] exit fee:', exitFee, 'total_size:', size, 'deal:', deal.id);
+      console.log('[FEE] deal total fees:', dealFees,
+        '= entry', deal.entry_fee_btc, '+ dca', deal.dca_fees_btc, '+ exit', exitFee);
+    }
     const netPnlBtc = grossPnlBtc - dealFees;
     const margin = size / this._lev;
     const pnlPct = margin > 0 ? (netPnlBtc / margin) * 100 : 0;
@@ -5534,7 +5552,7 @@ class RevertoBacktest {
         total_deals: deals.length,
         wins, losses,
         avg_duration_hours: avgDurationHours,
-        total_fees_btc: this.fees_paid_btc,
+        total_fees_btc: deals.reduce((s, d) => s + (d.total_fees_btc || 0), 0),
         max_drawdown_pct: maxDd,
         buy_and_hold_pnl_btc: buyHoldPnlBtc,
         buy_and_hold_pnl_pct: buyHoldPnlPct,
