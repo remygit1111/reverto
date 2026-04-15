@@ -1848,6 +1848,7 @@ html.compact .modal-card { padding: 19px; }
   color: var(--muted); font-size: 11px;
   text-transform: uppercase; letter-spacing: .05em;
   font-family: var(--mono);
+  position: relative;
 }
 .bt-input {
   background: var(--surface2); color: var(--text);
@@ -1857,11 +1858,16 @@ html.compact .modal-card { padding: 19px; }
 }
 .bt-input:focus { outline: 1px solid var(--accent); }
 .bt-tf-info {
-  margin-top: 2px;
+  position: absolute;
+  top: 100%; left: 0;
+  margin-top: 4px;
   color: var(--muted); font-size: 10px;
   font-family: var(--mono); text-transform: none;
   letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
 }
+.bt-config-row { row-gap: 24px; }
 .bt-error {
   background: rgba(255, 77, 109, .12);
   color: var(--red); border: 1px solid var(--red);
