@@ -5070,9 +5070,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // on every tf / start / end change so the operator can see the
   // coverage of their chosen range before they run the backtest.
   const refreshTabInfo = () =>
-    btUpdateTfInfo('bt-tf', 'bt-start', 'bt-end', 'bt-tf-info');
+    btUpdateTfInfo('bt-tf', 'bt-start', 'bt-end', 'bt-tf-info', 'bt-warning');
   const refreshWizInfo = () =>
-    btUpdateTfInfo('wbt-tf', 'wbt-start', 'wbt-end', 'wbt-tf-info');
+    btUpdateTfInfo('wbt-tf', 'wbt-start', 'wbt-end', 'wbt-tf-info', 'wbt-warning');
   ['bt-tf', 'bt-start', 'bt-end'].forEach(id => {
     const el = $(id);
     if (el) el.addEventListener('change', refreshTabInfo);
@@ -5621,26 +5621,71 @@ const BT_TF_SECONDS = {
 
 function btDefaultLimit(tf) { return BT_TF_DEFAULT_LIMIT[tf] || 5000; }
 
-function btUpdateTfInfo(tfSelectId, startId, endId, infoId) {
+// Upper bound on a single backtest fetch. Matches the backend
+// _CANDLES_MAX_BARS cap; exceeding it just wastes a round-trip since
+// the server would clamp anyway.
+const BT_MAX_CANDLES = 300000;
+
+function btCandleCountForRange(tf, startStr, endStr) {
+  const tfSec = BT_TF_SECONDS[tf];
+  if (!tfSec || !startStr || !endStr) return 0;
+  const sMs = new Date(startStr + 'T00:00:00Z').getTime();
+  const eMs = new Date(endStr + 'T23:59:59Z').getTime();
+  if (!(eMs > sMs)) return 0;
+  return Math.min(BT_MAX_CANDLES, Math.floor((eMs - sMs) / 1000 / tfSec));
+}
+
+function btEstimatedSeconds(candleCount) {
+  // Fetch: ~0.15s per 1000-candle ccxt page (matches backend sleep).
+  // Simulation: ~1ms per candle of JS engine work, clamped loosely.
+  const fetchSec = Math.ceil(candleCount / 1000) * 0.15;
+  const simSec   = candleCount / 5000;
+  return fetchSec + simSec;
+}
+
+function btHumanSpan(days) {
+  if (days < 1) return 'less than a day';
+  if (days < 60) return `${days.toLocaleString()} day${days === 1 ? '' : 's'}`;
+  if (days < 730) return `${Math.round(days / 30)} months`;
+  return `${(days / 365).toFixed(1)} years`;
+}
+
+function btHumanDuration(sec) {
+  if (sec < 1) return '<1s';
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec - m * 60);
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+function btUpdateTfInfo(tfSelectId, startId, endId, infoId, warnId) {
   const tf = $(tfSelectId) && $(tfSelectId).value;
   const info = $(infoId);
   if (!tf || !info) return;
   const tfSec = BT_TF_SECONDS[tf];
-  const defLimit = btDefaultLimit(tf);
   if (!tfSec) { info.textContent = ''; return; }
   const startStr = $(startId) && $(startId).value;
   const endStr = $(endId) && $(endId).value;
-  let candleCount = defLimit;
-  if (startStr && endStr) {
-    const sMs = new Date(startStr + 'T00:00:00Z').getTime();
-    const eMs = new Date(endStr + 'T23:59:59Z').getTime();
-    if (eMs > sMs) {
-      const rangeCandles = Math.floor((eMs - sMs) / 1000 / tfSec);
-      candleCount = Math.min(rangeCandles, defLimit);
+  const candleCount = btCandleCountForRange(tf, startStr, endStr)
+    || btDefaultLimit(tf);
+  const days = Math.round(candleCount * tfSec / 86400);
+  info.textContent = `${tf} · ~${candleCount.toLocaleString()} candles · ~${btHumanSpan(days)}`;
+
+  if (warnId) {
+    const warn = $(warnId);
+    if (warn) {
+      const est = btEstimatedSeconds(candleCount);
+      if (est > 30) {
+        warn.textContent =
+          `⚠ This backtest will fetch ~${candleCount.toLocaleString()} ` +
+          `candles (est. ${btHumanDuration(est)}). This may take a few minutes.`;
+        warn.classList.remove('hidden');
+      } else {
+        warn.textContent = '';
+        warn.classList.add('hidden');
+      }
     }
   }
-  const days = Math.round(candleCount * tfSec / 86400);
-  info.textContent = `${tf} · ~${days.toLocaleString()} days of data`;
 }
 
 async function btFetchCandles(pair, tf, startIso, endIso, limit) {
@@ -5687,8 +5732,10 @@ async function btRunFromTab() {
   const startIso = new Date(startStr + 'T00:00:00Z').toISOString();
   const endIso = new Date(endStr + 'T23:59:59Z').toISOString();
 
+  const rangeLimit = btCandleCountForRange(tf, startStr, endStr)
+    || btDefaultLimit(tf);
   await btRunPipeline({
-    cfg, pair, tf, startIso, endIso, balance, limit: btDefaultLimit(tf),
+    cfg, pair, tf, startIso, endIso, balance, limit: rangeLimit,
     loaderId: 'bt-loader', progressBarId: 'bt-progress-bar',
     statusId: 'bt-status', resultsId: 'bt-results',
     errorId: 'bt-error', mode: 'tab',
@@ -5709,8 +5756,10 @@ async function btRunFromWizard() {
   const pair = cfg.pair || 'BTC/USD';
   const startIso = new Date(startStr + 'T00:00:00Z').toISOString();
   const endIso = new Date(endStr + 'T23:59:59Z').toISOString();
+  const rangeLimit = btCandleCountForRange(tf, startStr, endStr)
+    || btDefaultLimit(tf);
   await btRunPipeline({
-    cfg, pair, tf, startIso, endIso, balance, limit: btDefaultLimit(tf),
+    cfg, pair, tf, startIso, endIso, balance, limit: rangeLimit,
     loaderId: 'wbt-loader', progressBarId: 'wbt-progress-bar',
     statusId: 'wbt-status', resultsId: 'wbt-results',
     errorId: 'wbt-error', mode: 'wizard',
@@ -5749,17 +5798,36 @@ async function btRunPipeline(opts) {
   // Instead, set the bar width via JS by toggling a CSS var on an
   // ancestor. Simpler: recreate the bar element with a fresh 0 width.
   bar.style.width = '0%';   // eslint-disable-line -- CSP allows style *property* writes
-  status.textContent = 'Fetching candles from Bitget…';
+  const estSec = btEstimatedSeconds(limit || 0);
+  status.textContent =
+    `Fetching ~${(limit || 0).toLocaleString()} candles from Bitget ` +
+    `(est. ${btHumanDuration(estSec)})…`;
+
+  // Fake-progress the fetch phase: we don't get streamed page events
+  // from the backend, so tick the bar forward in small increments while
+  // the fetch is in flight. 0–50% belongs to the fetch, 50–100% to
+  // the simulation — that split keeps the bar moving on both ends
+  // instead of stalling at 0 while the operator waits on Bitget.
+  let fetchTicker = 0;
+  const fetchInterval = setInterval(() => {
+    fetchTicker = Math.min(fetchTicker + 1, 48);
+    bar.style.width = fetchTicker + '%';
+  }, Math.max(200, (estSec * 1000) / 50));
 
   try {
     const candles = await btFetchCandles(pair, tf, startIso, endIso, limit);
+    clearInterval(fetchInterval);
+    bar.style.width = '50%';
     if (!candles || candles.length < 50) {
       throw new Error(`Not enough candles (${candles ? candles.length : 0}) for backtest`);
     }
     status.textContent = `Fetched ${candles.length.toLocaleString()} candles, starting simulation…`;
     const engine = new RevertoBacktest(cfg, candles);
     const result = await engine.run(balance, (pct, msg) => {
-      bar.style.width = pct + '%';
+      // Remap engine 0–100% into 50–100% so the fetch phase owns
+      // the first half of the progress bar and the simulation the
+      // second half.
+      bar.style.width = (50 + pct / 2) + '%';
       status.textContent = msg;
     });
     bar.style.width = '100%';
@@ -5771,6 +5839,7 @@ async function btRunPipeline(opts) {
       btRenderWizardResults(result);
     }
   } catch (e) {
+    clearInterval(fetchInterval);
     loader.classList.add('hidden');
     btShowError(errorId, 'Backtest failed: ' + (e.message || e));
   }
