@@ -5384,6 +5384,15 @@ class RevertoBacktest {
     this.initial_balance_btc = initialBalance;
     const total = this.candles.length;
     const sigArrays = this._precomputeSignalArrays();
+    // Instrumentation counters — always on. The operator (and future
+    // debugging sessions) can spot a broken re-entry loop or an
+    // overly-restrictive signal filter at a glance instead of having
+    // to enable window._BT_DEBUG and comb through per-deal logs.
+    let _btStatOpens = 0;
+    let _btStatCloses = 0;
+    let _btStatSameCandleReopens = 0;
+    let _btStatEntrySignalTrue = 0;
+    let _btStatEntryBlocked = 0;
     // One-shot config dump on debug. Surfaces exactly what the engine
     // received so the operator can spot config-shape bugs (wrong key
     // names, missing entry block, etc.) without re-running.
@@ -5406,11 +5415,22 @@ class RevertoBacktest {
     const warmup = Math.min(78, Math.floor(total / 4));
     for (let i = 0; i < total; i++) {
       const candle = this.candles[i];
+      const hadOpenDealAtStart = !!this.open_deal;
       if (this.open_deal) {
         const closed = this._checkTp(this.open_deal, candle)
                     || this._checkSl(this.open_deal, candle);
+        if (closed) _btStatCloses++;
         if (!closed && this.open_deal) this._checkDca(this.open_deal, candle);
       }
+      // Entry check — runs on every candle after warmup where no deal
+      // is currently open. Critically, this ALSO fires on the same
+      // candle where a deal just closed (hadOpenDealAtStart && !open_deal)
+      // so a TP/SL close is immediately followed by a new entry at
+      // this.candles[i].close. Python's _process_candle does the same:
+      // monitor open deals, then entry-check if none remain. The
+      // re-entry path is load-bearing for tight-TP strategies like
+      // ASAP with take_profit.target_pct ≤ 1% — without it a 6-year
+      // run shrinks from ~hundreds of deals down to a handful.
       if (!this.open_deal && i >= warmup) {
         // Look-ahead guard: Python's BacktestEngine evaluates indicators
         // on candles strictly BEFORE the current driving candle (see
@@ -5426,11 +5446,16 @@ class RevertoBacktest {
           for (const a of sigArrays) { if (!a[sigIdx]) { entry = false; break; } }
         }
         if (entry) {
+          _btStatEntrySignalTrue++;
+          if (hadOpenDealAtStart) _btStatSameCandleReopens++;
           if (window._BT_DEBUG && this.closed_deals.length < 10) {
             console.log('[BT] open deal #', this._deal_counter + 1,
               'at candle', i, 'price', candle.close);
           }
           this._openDeal(candle.close, candle.time, i);
+          _btStatOpens++;
+        } else if (i >= warmup) {
+          _btStatEntryBlocked++;
         }
       }
       this.equity_curve.push({
@@ -5448,7 +5473,14 @@ class RevertoBacktest {
     if (this.open_deal) {
       const last = this.candles[this.candles.length - 1];
       this._closeDeal(this.open_deal, last.close, 'forced', last.time);
+      _btStatCloses++;
     }
+    console.info(
+      '[BT] run summary: candles=%d warmup=%d opens=%d closes=%d ' +
+      'same-candle-reopens=%d entry-signal-true=%d entry-blocked=%d',
+      total, warmup, _btStatOpens, _btStatCloses,
+      _btStatSameCandleReopens, _btStatEntrySignalTrue, _btStatEntryBlocked,
+    );
     if (onProgress) onProgress(100, 'Calculating statistics…');
     return this._buildResults();
   }
