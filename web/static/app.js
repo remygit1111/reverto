@@ -5365,7 +5365,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.addEventListener('input', swUpdateEstimate);
     el.addEventListener('change', swUpdateEstimate);
   });
-  // (schedule sweep uses simple toggles — no mode listeners needed)
+  // Schedule sweep: show/hide day checkboxes and hour range on toggle
+  const swDaysChk = $('sw-sched-days-enabled');
+  if (swDaysChk) swDaysChk.addEventListener('change', () => {
+    const p = $('sw-day-picks'); if (p) p.classList.toggle('hidden', !swDaysChk.checked);
+    swUpdateEstimate();
+  });
+  const swHoursChk = $('sw-sched-hours-enabled');
+  if (swHoursChk) swHoursChk.addEventListener('change', () => {
+    const p = $('sw-hour-range'); if (p) p.classList.toggle('hidden', !swHoursChk.checked);
+    swUpdateEstimate();
+  });
   // Default dates — last 30 days
   const btEnd = new Date();
   const btStart = new Date(btEnd.getTime() - 30 * 86400 * 1000);
@@ -6252,12 +6262,20 @@ function swUpdateEstimate() {
   const daysOn = $('sw-sched-days-enabled') && $('sw-sched-days-enabled').checked;
   const hoursOn = $('sw-sched-hours-enabled') && $('sw-sched-hours-enabled').checked;
   if (daysOn) {
-    schedIter *= 7;
-    const p = $('sw-sched-days-preview'); if (p) p.textContent = '7 iterations (one per day)';
+    const checked = document.querySelectorAll('.sw-day-chk:checked');
+    const n = checked.length;
+    schedIter *= Math.max(1, n);
+    const names = Array.from(checked).map(c => _SW_DAY_NAMES[parseInt(c.value, 10)].slice(0, 3));
+    const p = $('sw-sched-days-preview');
+    if (p) p.textContent = `${n} iteration${n !== 1 ? 's' : ''} (${names.join(', ')})`;
   } else { const p = $('sw-sched-days-preview'); if (p) p.textContent = ''; }
   if (hoursOn) {
-    schedIter *= 24;
-    const p = $('sw-sched-hours-preview'); if (p) p.textContent = '24 iterations (one per hour)';
+    const from = Math.max(0, Math.min(23, parseInt($('sw-hour-from').value, 10) || 0));
+    const to   = Math.max(from, Math.min(23, parseInt($('sw-hour-to').value, 10) || 23));
+    const n = to - from + 1;
+    schedIter *= n;
+    const p = $('sw-sched-hours-preview');
+    if (p) p.textContent = `${n} iteration${n !== 1 ? 's' : ''} (${String(from).padStart(2,'0')}:00 - ${String(to).padStart(2,'0')}:00)`;
   } else { const p = $('sw-sched-hours-preview'); if (p) p.textContent = ''; }
   if (schedIter > 1) total = total > 0 ? total * schedIter : schedIter;
   if (total === 0) total = 1;
@@ -6299,15 +6317,27 @@ function _swGenerateScheduleConfigs(baseCfg) {
   const daysOn  = $('sw-sched-days-enabled')  && $('sw-sched-days-enabled').checked;
   const hoursOn = $('sw-sched-hours-enabled') && $('sw-sched-hours-enabled').checked;
 
-  const daysSets = daysOn
-    ? [0,1,2,3,4,5,6].map(d => ({ days: [d], label: _SW_DAY_NAMES[d].slice(0, 3) }))
-    : [{ days: null, label: null }];
+  const daysSets = [];
+  if (daysOn) {
+    document.querySelectorAll('.sw-day-chk:checked').forEach(c => {
+      const d = parseInt(c.value, 10);
+      daysSets.push({ days: [d], label: _SW_DAY_NAMES[d].slice(0, 3) });
+    });
+    if (!daysSets.length) daysSets.push({ days: null, label: null });
+  } else {
+    daysSets.push({ days: null, label: null });
+  }
 
-  const hoursSets = hoursOn
-    ? Array.from({ length: 24 }, (_, h) => ({
-        hour: h, label: String(h).padStart(2, '0') + ':00',
-      }))
-    : [{ hour: null, label: null }];
+  const hoursSets = [];
+  if (hoursOn) {
+    const from = Math.max(0, Math.min(23, parseInt($('sw-hour-from').value, 10) || 0));
+    const to   = Math.max(from, Math.min(23, parseInt($('sw-hour-to').value, 10) || 23));
+    for (let h = from; h <= to; h++) {
+      hoursSets.push({ hour: h, label: String(h).padStart(2, '0') + ':00' });
+    }
+  } else {
+    hoursSets.push({ hour: null, label: null });
+  }
 
   for (const ds of daysSets) {
     for (const hs of hoursSets) {

@@ -2161,3 +2161,9 @@ html.compact .modal-card { padding: 19px; }
   border-top: 1px solid var(--border);
   margin: 12px 0;
 }
+.sw-day-picks {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  margin: 8px 0 4px 0;
+}
+.sw-day-picks.hidden, .sw-hour-range.hidden { display: none; }
+.sw-hour-range { margin: 8px 0 4px 0; }
