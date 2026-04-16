@@ -3718,18 +3718,31 @@ function _renderIndicatorOverlays(candles) {
           'startI:', startI, 'endI:', endI,
           'SKIP:', startI >= candles.length);
         if (startI >= candles.length) continue;
+        const isBroken = lv.breakIdx !== null;
         const s = _chartMain.addLineSeries({
-          color, lineWidth: 2, lineStyle: 0,
+          color: isBroken ? '#ff0000' : color,
+          lineWidth: isBroken ? 4 : 2,
+          lineStyle: 0,
+          visible: true,
           priceLineVisible: false,
           lastValueVisible: false,
           crosshairMarkerVisible: false,
+          autoscaleInfoProvider: () => ({
+            priceRange: { minValue: lv.price - 1, maxValue: lv.price + 1 },
+          }),
         });
         const data = [];
         for (let j = startI; j <= endI; j++) {
           data.push({ time: candles[j].time, value: lv.price });
         }
         s.setData(data);
-        if (lv.breakIdx === null) {
+        console.log('[SR SETDATA]', lv.price,
+          'broken:', isBroken,
+          'dataLen:', data.length,
+          'data[0]:', data[0],
+          'data[-1]:', data[data.length - 1],
+          'visible:', s.options?.()?.visible);
+        if (!isBroken) {
           s.createPriceLine({
             price: lv.price, color, lineWidth: 0, lineStyle: 0,
             axisLabelVisible: true, title: label,
