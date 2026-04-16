@@ -461,6 +461,7 @@ tr:hover td { background: rgba(128,128,128,.04); }
   border-radius: 8px;
   overflow: hidden;
   transition: border-color .15s;
+  cursor: pointer;
 }
 .bot-card:hover { border-color: var(--accent); }
 

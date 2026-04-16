@@ -1149,6 +1149,12 @@ function renderBotCard(b) {
 // Click delegation — slug komt uit data-slug (escaped via safeText), nooit
 // in een onclick-string, dus kan niet uit het attribuut breken.
 document.addEventListener('click', e => {
+  // Bot card click — open detail unless a button was clicked
+  const card = e.target.closest('.bot-card');
+  if (card && !e.target.closest('[data-action]') && !e.target.closest('.deal-btn')) {
+    const slug = card.dataset.slug;
+    if (slug) { openBot(slug); return; }
+  }
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const action = el.dataset.action;
