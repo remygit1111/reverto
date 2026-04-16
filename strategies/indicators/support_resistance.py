@@ -1,7 +1,56 @@
 # strategies/indicators/support_resistance.py
-# Wick-based pivot Support & Resistance — matches TradingView's
-# ta.pivothigh / ta.pivotlow behavior. Every confirmed pivot is a
-# distinct level; no clustering. Broken levels are excluded.
+# PineScript fixnan(pivothigh/pivotlow) style S&R.
+# Per candle: one active resistance, one active support.
+# The value "steps" when a new pivot is confirmed.
+
+
+def calculate_sr_series(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    left_bars: int = 15,
+    right_bars: int = 15,
+) -> tuple[list[float | None], list[float | None]]:
+    """Return per-candle (resistance_series, support_series).
+
+    Equivalent to PineScript's fixnan(ta.pivothigh)[1] / fixnan(ta.pivotlow)[1].
+    A pivot high at bar p is confirmed at bar p + right_bars.
+    The value carries forward (fixnan) until a new pivot replaces it.
+    """
+    n = len(closes)
+    if len(highs) != n or len(lows) != n:
+        raise ValueError(
+            f"highs/lows/closes must have equal length, "
+            f"got {len(highs)}/{len(lows)}/{n}"
+        )
+
+    resistance_series: list[float | None] = [None] * n
+    support_series: list[float | None] = [None] * n
+
+    cur_res: float | None = None
+    cur_sup: float | None = None
+
+    for i in range(n):
+        p = i - right_bars
+        if p >= left_bars:
+            window_h = highs[p - left_bars: p + right_bars + 1]
+            if len(window_h) == left_bars + right_bars + 1:
+                h = highs[p]
+                if (h > max(highs[p - left_bars:p])
+                        and h > max(highs[p + 1:p + right_bars + 1])):
+                    cur_res = h
+
+            window_l = lows[p - left_bars: p + right_bars + 1]
+            if len(window_l) == left_bars + right_bars + 1:
+                lo = lows[p]
+                if (lo < min(lows[p - left_bars:p])
+                        and lo < min(lows[p + 1:p + right_bars + 1])):
+                    cur_sup = lo
+
+        resistance_series[i] = cur_res
+        support_series[i] = cur_sup
+
+    return resistance_series, support_series
 
 
 def find_support_resistance(
@@ -13,68 +62,15 @@ def find_support_resistance(
 ) -> tuple[list[float], list[float]]:
     """Return (active_support, active_resistance) lists.
 
-    A pivot high (resistance) is confirmed at bar i when
-    highs[i] > all highs in [i-left_bars, i) AND > all highs in (i, i+right_bars].
-    Support is symmetric on lows.
-
-    A level is "broken" once any close after the confirmation bar
-    exceeds it (resistance) or falls below it (support). Only
-    active (unbroken) levels are returned.
+    Back-compat wrapper: returns a single-element list with the
+    current (last) fixnan value, or empty if no pivot found yet.
     """
-    n = len(closes)
-    if len(highs) != n or len(lows) != n:
-        raise ValueError(
-            f"highs/lows/closes must have equal length, "
-            f"got {len(highs)}/{len(lows)}/{n}"
-        )
-    min_required = left_bars + right_bars + 1
-    if n < min_required:
-        raise ValueError(
-            f"S&R requires at least {min_required} bars "
-            f"(left_bars={left_bars} + right_bars={right_bars} + 1), "
-            f"got {n}"
-        )
-
-    res_pivots: list[tuple[int, float]] = []
-    sup_pivots: list[tuple[int, float]] = []
-
-    for i in range(left_bars, n - right_bars):
-        h = highs[i]
-        if h > max(highs[i - left_bars:i]) and h > max(highs[i + 1:i + right_bars + 1]):
-            res_pivots.append((i, h))
-        lo = lows[i]
-        if lo < min(lows[i - left_bars:i]) and lo < min(lows[i + 1:i + right_bars + 1]):
-            sup_pivots.append((i, lo))
-
-    active_res = [
-        price for (idx, price) in res_pivots
-        if not any(closes[j] > price for j in range(idx + 1, n))
-    ]
-    active_sup = [
-        price for (idx, price) in sup_pivots
-        if not any(closes[j] < price for j in range(idx + 1, n))
-    ]
-
+    res_series, sup_series = calculate_sr_series(
+        highs, lows, closes, left_bars, right_bars,
+    )
+    active_sup = [sup_series[-1]] if sup_series[-1] is not None else []
+    active_res = [res_series[-1]] if res_series[-1] is not None else []
     return active_sup, active_res
-
-
-def _merge_nearby(levels: list[dict], merge_pct: float) -> list[dict]:
-    """Merge pivots within merge_pct of each other (most recent wins)."""
-    if merge_pct <= 0:
-        return levels
-    out: list[dict] = []
-    for lv in levels:
-        merged = False
-        for i, existing in enumerate(out):
-            if existing["price"] > 0:
-                diff = abs(lv["price"] - existing["price"]) / existing["price"] * 100
-                if diff <= merge_pct:
-                    out[i] = lv
-                    merged = True
-                    break
-        if not merged:
-            out.append(lv)
-    return out
 
 
 def find_support_resistance_detailed(
@@ -84,16 +80,11 @@ def find_support_resistance_detailed(
     left_bars: int = 15,
     right_bars: int = 15,
     max_levels: int = 3,
-    merge_pct: float = 0.3,
 ) -> tuple[list[dict], list[dict]]:
     """Return (support_levels, resistance_levels) with pivot metadata.
 
     Each level is a dict: {"price": float, "pivot_index": int,
-    "break_index": int | None}. break_index is the first bar where
-    a close breaches the level, or None if still active.
-
-    Nearby levels within merge_pct are collapsed (most recent wins).
-    At most max_levels per side are returned (most recent first).
+    "break_index": int | None}. Kept for test back-compat.
     """
     n = len(closes)
     if len(highs) != n or len(lows) != n:
@@ -129,10 +120,7 @@ def find_support_resistance_detailed(
         for i, p in sup_pivots
     ]
 
-    res_out = _merge_nearby(res_out, merge_pct)[-max_levels:]
-    sup_out = _merge_nearby(sup_out, merge_pct)[-max_levels:]
-
-    return sup_out, res_out
+    return sup_out[-max_levels:], res_out[-max_levels:]
 
 
 def check_support_resistance_signal(
@@ -145,46 +133,67 @@ def check_support_resistance_signal(
     condition: str = "price_crossing_down",
     value: str = "resistance",
 ) -> bool:
-    """Evaluate an S&R condition against unbroken pivot levels.
+    """Evaluate an S&R condition using fixnan pivot series."""
+    n = len(closes)
+    min_required = left_bars + right_bars + 1
+    if n < min_required:
+        raise ValueError(
+            f"S&R requires at least {min_required} bars "
+            f"(left_bars={left_bars} + right_bars={right_bars} + 1), "
+            f"got {n}"
+        )
 
-    Conditions:
-      near_support / near_resistance — price within proximity_pct
-      below_support / above_resistance — price beyond nearest level
-      price_crossing_up / price_crossing_down — prev ≶ level ≤≥ price
-      price_greater_than / price_lower_than — simple comparison
-    """
-    support, resistance = find_support_resistance(
+    res_series, sup_series = calculate_sr_series(
         highs, lows, closes, left_bars, right_bars,
     )
 
+    resistance = res_series[-1]
+    support = sup_series[-1]
     price = closes[-1]
-    prev = closes[-2] if len(closes) >= 2 else price
-    levels = support if value == "support" else resistance
+    prev = closes[-2] if n >= 2 else price
 
     if condition == "price_crossing_up":
-        return any(prev < lvl <= price for lvl in levels)
+        level = support if value == "support" else resistance
+        if level is None:
+            return False
+        return prev < level <= price
+
     if condition == "price_crossing_down":
-        return any(prev > lvl >= price for lvl in levels)
+        level = support if value == "support" else resistance
+        if level is None:
+            return False
+        return prev > level >= price
+
     if condition == "price_greater_than":
-        return any(price > lvl for lvl in levels)
+        level = support if value == "support" else resistance
+        if level is None:
+            return False
+        return price > level
+
     if condition == "price_lower_than":
-        return any(price < lvl for lvl in levels)
+        level = support if value == "support" else resistance
+        if level is None:
+            return False
+        return price < level
 
     if condition == "near_support":
-        return any(
-            abs(price - lvl) / lvl * 100 <= proximity_pct
-            for lvl in support
-        ) if support else False
+        if support is None:
+            return False
+        return abs(price - support) / support * 100 <= proximity_pct
+
     if condition == "near_resistance":
-        return any(
-            abs(price - lvl) / lvl * 100 <= proximity_pct
-            for lvl in resistance
-        ) if resistance else False
+        if resistance is None:
+            return False
+        return abs(price - resistance) / resistance * 100 <= proximity_pct
+
     if condition == "below_support":
-        return bool(support) and price < min(
-            support, key=lambda lv: abs(price - lv))
+        if support is None:
+            return False
+        return price < support
+
     if condition == "above_resistance":
-        return bool(resistance) and price > min(
-            resistance, key=lambda lv: abs(price - lv))
+        if resistance is None:
+            return False
+        return price > resistance
 
     return False

@@ -3684,100 +3684,40 @@ function _renderIndicatorOverlays(candles) {
     _chartSeries.macdSignal.setData(m.signal);
     _chartSeries.macdHist.setData(m.histogram);
   }
-  // SUPPORT_RESISTANCE — horizontal line segments from pivot to break
-  // Cleanup previous render
-  console.log('[SR CLEANUP] removing', _srLineSeries.length, 'old series');
+  // SUPPORT_RESISTANCE — fixnan stepped lines
   for (const s of _srLineSeries) {
-    try {
-      if (_chartMain) _chartMain.removeSeries(s);
-    } catch (e) {
-      console.warn('[SR CLEANUP ERROR]', e.message);
-    }
+    try { if (_chartMain) _chartMain.removeSeries(s); } catch (e) {}
   }
   _srLineSeries = [];
-  console.log('[SR CLEANUP] done, _srLineSeries reset');
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
-    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15, srCfg.max_levels || 3);
-    console.log('[SR v122] rendering', (sr.resistanceDetailed || []).length,
-      'resistance,', (sr.supportDetailed || []).length, 'support');
-    console.log('[SR v122] resistance:', JSON.stringify((sr.resistanceDetailed || []).map(l =>
-      ({price: l.price, pivotIdx: l.pivotIdx, breakIdx: l.breakIdx}))));
-    console.log('[SR v122] support:', JSON.stringify((sr.supportDetailed || []).map(l =>
-      ({price: l.price, pivotIdx: l.pivotIdx, breakIdx: l.breakIdx}))));
-    const renderSR = (detailed, color, label) => {
-      console.log('[SR CANDLES]',
-        'length:', candles?.length,
-        'first:', candles?.[0]?.time,
-        'last:', candles?.[candles.length - 1]?.time);
-      window._srLastCandles = candles;
-      for (const lv of detailed) {
-        const startI = Math.max(0, lv.pivotIdx);
-        const endI = lv.breakIdx !== null
-          ? Math.min(lv.breakIdx, candles.length - 1)
-          : candles.length - 1;
-        console.log('[SR LEVEL CHECK]', lv.price,
-          'pivotIdx:', lv.pivotIdx,
-          'breakIdx:', lv.breakIdx,
-          'candles.length:', candles?.length,
-          'pivotIdx < candles.length:', lv.pivotIdx < candles?.length,
-          'startI:', startI, 'endI:', endI,
-          'SKIP:', startI >= candles.length);
-        if (startI >= candles.length) continue;
-        const isBroken = lv.breakIdx !== null;
-        const s = _chartMain.addLineSeries({
-          color: isBroken ? '#ff0000' : color,
-          lineWidth: isBroken ? 4 : 2,
-          lineStyle: 0,
-          visible: true,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-          autoscaleInfoProvider: () => ({
-            priceRange: { minValue: lv.price - 1, maxValue: lv.price + 1 },
-          }),
-        });
-        const data = [];
-        for (let j = startI; j <= endI; j++) {
-          data.push({ time: candles[j].time, value: lv.price });
-        }
-        s.setData(data);
-        console.log('[SR SETDATA]', lv.price,
-          'broken:', isBroken,
-          'dataLen:', data.length,
-          'data[0]:', data[0],
-          'data[-1]:', data[data.length - 1],
-          'visible:', s.options?.()?.visible);
-        if (!isBroken) {
-          s.createPriceLine({
-            price: lv.price, color, lineWidth: 0, lineStyle: 0,
-            axisLabelVisible: true, title: label,
-          });
-        }
-        _srLineSeries.push(s);
+    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15);
+    const buildData = (series) => {
+      const data = [];
+      for (let i = 0; i < candles.length; i++) {
+        if (series[i] !== null) data.push({ time: candles[i].time, value: series[i] });
       }
+      return data;
     };
-    renderSR(sr.supportDetailed || [], '#1e88e5', 'S');
-    renderSR(sr.resistanceDetailed || [], '#e53935', 'R');
-    // Confirmation markers at pivot_index + right_bars
-    const rb = srCfg.right_bars || 15;
-    const confirmMarkers = [];
-    for (const lv of [...(sr.supportDetailed || []), ...(sr.resistanceDetailed || [])]) {
-      const ci = lv.pivotIdx + rb;
-      if (ci < candles.length) {
-        confirmMarkers.push({
-          time: candles[ci].time,
-          position: 'inBar',
-          color: 'rgba(255,255,255,0.3)',
-          shape: 'circle',
-          size: 0.5,
-        });
-      }
+    const resData = buildData(sr.resSeries);
+    const supData = buildData(sr.supSeries);
+    if (resData.length > 0) {
+      const s = _chartMain.addLineSeries({
+        color: '#e53935', lineWidth: 2, lineStyle: 2,
+        priceLineVisible: false, lastValueVisible: true,
+        crosshairMarkerVisible: false, title: 'R',
+      });
+      s.setData(resData);
+      _srLineSeries.push(s);
     }
-    if (confirmMarkers.length && _chartCandles) {
-      const existing = _chartIndicatorMarkers || [];
-      _chartIndicatorMarkers = [...existing, ...confirmMarkers];
-      _setCombinedMarkers();
+    if (supData.length > 0) {
+      const s = _chartMain.addLineSeries({
+        color: '#1e88e5', lineWidth: 2, lineStyle: 2,
+        priceLineVisible: false, lastValueVisible: true,
+        crosshairMarkerVisible: false, title: 'S',
+      });
+      s.setData(supData);
+      _srLineSeries.push(s);
     }
   }
   // QFL — base price lines
@@ -4944,31 +4884,26 @@ function renderWizardOverlays() {
         }
       } else if (t === 'SUPPORT_RESISTANCE') {
         if (typeof calcSR === 'function' && _wizardCandleCache && _wizardChart) {
-          const sr = calcSR(_wizardCandleCache, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15, Number(ind.max_levels) || 3);
+          const wCandles = _wizardCandleCache;
+          const sr = calcSR(wCandles, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15);
           if (sr) {
-            const wCandles = _wizardCandleCache;
-            const renderWizSR = (detailed, color, label) => {
-              for (const lv of detailed) {
-                const startI = Math.max(0, lv.pivotIdx);
-                const endI = lv.breakIdx !== null
-                  ? Math.min(lv.breakIdx, wCandles.length - 1)
-                  : wCandles.length - 1;
-                if (startI >= wCandles.length) continue;
+            const addWizSR = (series, color, label) => {
+              const data = [];
+              for (let i = 0; i < wCandles.length; i++) {
+                if (series[i] !== null) data.push({ time: wCandles[i].time, value: series[i] });
+              }
+              if (data.length > 0) {
                 const ws = _wizardChart.addLineSeries({
-                  color, lineWidth: 2, lineStyle: 0,
-                  priceLineVisible: false, lastValueVisible: false,
+                  color, lineWidth: 2, lineStyle: 2,
+                  priceLineVisible: false, lastValueVisible: true,
                   title: label, crosshairMarkerVisible: false,
                 });
-                const data = [];
-                for (let j = startI; j <= endI; j++) {
-                  data.push({ time: wCandles[j].time, value: lv.price });
-                }
                 ws.setData(data);
                 _wizardSrLineSeries.push(ws);
               }
             };
-            renderWizSR(sr.supportDetailed || [], '#1e88e5', 'S');
-            renderWizSR(sr.resistanceDetailed || [], '#e53935', 'R');
+            addWizSR(sr.resSeries, '#e53935', 'R');
+            addWizSR(sr.supSeries, '#1e88e5', 'S');
           }
         }
       }
@@ -5146,66 +5081,40 @@ function calcSupertrendLines(candles, atrPeriod, multiplier) {
   };
 }
 
-function calcSR(candles, leftBars, rightBars, maxLevels, mergePct) {
-  const ml = maxLevels || 3;
-  const mp = mergePct != null ? mergePct : 0.3;
+function calcSR(candles, leftBars, rightBars) {
   const n = candles.length;
-  const hi = candles.map(c => c.high || c.close);
-  const lo = candles.map(c => c.low || c.close);
-  const cl = candles.map(c => c.close);
-  const resPivots = [], supPivots = [];
-  for (let i = leftBars; i < n - rightBars; i++) {
-    if (hi[i] > Math.max(...hi.slice(i - leftBars, i)) &&
-        hi[i] > Math.max(...hi.slice(i + 1, i + rightBars + 1)))
-      resPivots.push({ idx: i, price: hi[i] });
-    if (lo[i] < Math.min(...lo.slice(i - leftBars, i)) &&
-        lo[i] < Math.min(...lo.slice(i + 1, i + rightBars + 1)))
-      supPivots.push({ idx: i, price: lo[i] });
-  }
-  function breakIdx(pivotIdx, price, above) {
-    for (let j = pivotIdx + 1; j < n; j++) {
-      if (above && cl[j] > price) return j;
-      if (!above && cl[j] < price) return j;
-    }
-    return null;
-  }
-  function mergeNearby(levels) {
-    if (mp <= 0) return levels;
-    const out = [];
-    for (const lv of levels) {
-      let merged = false;
-      for (let k = 0; k < out.length; k++) {
-        if (out[k].price > 0 && Math.abs(lv.price - out[k].price) / out[k].price * 100 <= mp) {
-          out[k] = lv; merged = true; break;
-        }
+  const resSeries = new Array(n).fill(null);
+  const supSeries = new Array(n).fill(null);
+  let curRes = null, curSup = null;
+  for (let i = 0; i < n; i++) {
+    const p = i - rightBars;
+    if (p >= leftBars) {
+      const ph = candles[p].high != null ? candles[p].high : candles[p].close;
+      const pl = candles[p].low != null ? candles[p].low : candles[p].close;
+      let leftMaxH = -Infinity, rightMaxH = -Infinity;
+      let leftMinL = Infinity, rightMinL = Infinity;
+      for (let k = p - leftBars; k < p; k++) {
+        const h = candles[k].high != null ? candles[k].high : candles[k].close;
+        const l = candles[k].low != null ? candles[k].low : candles[k].close;
+        if (h > leftMaxH) leftMaxH = h;
+        if (l < leftMinL) leftMinL = l;
       }
-      if (!merged) out.push(lv);
+      for (let k = p + 1; k <= p + rightBars; k++) {
+        const h = candles[k].high != null ? candles[k].high : candles[k].close;
+        const l = candles[k].low != null ? candles[k].low : candles[k].close;
+        if (h > rightMaxH) rightMaxH = h;
+        if (l < rightMinL) rightMinL = l;
+      }
+      if (ph > leftMaxH && ph > rightMaxH) curRes = ph;
+      if (pl < leftMinL && pl < rightMinL) curSup = pl;
     }
-    return out;
+    resSeries[i] = curRes;
+    supSeries[i] = curSup;
   }
-  let resDetailed = resPivots.map(p => ({
-    price: p.price, pivotIdx: p.idx, breakIdx: breakIdx(p.idx, p.price, true),
-  }));
-  let supDetailed = supPivots.map(p => ({
-    price: p.price, pivotIdx: p.idx, breakIdx: breakIdx(p.idx, p.price, false),
-  }));
-  resDetailed = mergeNearby(resDetailed).slice(-ml);
-  supDetailed = mergeNearby(supDetailed).slice(-ml);
-  const activeRes = resDetailed.filter(p => p.breakIdx === null).map(p => p.price);
-  const activeSup = supDetailed.filter(p => p.breakIdx === null).map(p => p.price);
   if (window._BT_DEBUG) {
-    const fmt = (arr) => arr.map(lv => ({
-      price: lv.price, pivotIdx: lv.pivotIdx, breakIdx: lv.breakIdx,
-      pivotTime: candles[lv.pivotIdx] && candles[lv.pivotIdx].time,
-      breakTime: lv.breakIdx != null && candles[lv.breakIdx] ? candles[lv.breakIdx].time : 'ACTIVE',
-    }));
-    console.log('[S&R DEBUG] resistance:', fmt(resDetailed));
-    console.log('[S&R DEBUG] support:', fmt(supDetailed));
+    console.log('[S&R DEBUG] resSeries last:', resSeries[n - 1], 'supSeries last:', supSeries[n - 1]);
   }
-  return {
-    support: activeSup, resistance: activeRes,
-    supportDetailed: supDetailed, resistanceDetailed: resDetailed,
-  };
+  return { resSeries, supSeries };
 }
 
 function calcQFL(closes, lookback, crackPct, baseCandles, maxBases) {
@@ -6107,18 +6016,20 @@ class RevertoBacktest {
         const cond = ind.condition || 'price_crossing_down';
         const val = ind.value || 'resistance';
         const sr = calcSR(this.candles, lb, rb);
-        const levels = val === 'support' ? sr.support : sr.resistance;
         const closes = this.candles.map(c => c.close);
         for (let i = 1; i < n; i++) {
           const c = closes[i], p = closes[i - 1];
-          if (cond === 'price_crossing_up' && levels.some(lv => p < lv && lv <= c)) arr[i] = true;
-          else if (cond === 'price_crossing_down' && levels.some(lv => p > lv && lv >= c)) arr[i] = true;
-          else if (cond === 'price_greater_than' && levels.some(lv => c > lv)) arr[i] = true;
-          else if (cond === 'price_lower_than' && levels.some(lv => c < lv)) arr[i] = true;
-          else if (cond === 'near_support' && sr.support.some(s => s > 0 && Math.abs(c - s) / s * 100 <= proxPct)) arr[i] = true;
-          else if (cond === 'near_resistance' && sr.resistance.some(r => r > 0 && Math.abs(c - r) / r * 100 <= proxPct)) arr[i] = true;
-          else if (cond === 'below_support' && sr.support.length && c < Math.min(...sr.support)) arr[i] = true;
-          else if (cond === 'above_resistance' && sr.resistance.length && c > Math.max(...sr.resistance)) arr[i] = true;
+          const res = sr.resSeries[i], sup = sr.supSeries[i];
+          const lv = val === 'support' ? sup : res;
+          if (lv === null) continue;
+          if (cond === 'price_crossing_up' && p < lv && lv <= c) arr[i] = true;
+          else if (cond === 'price_crossing_down' && p > lv && lv >= c) arr[i] = true;
+          else if (cond === 'price_greater_than' && c > lv) arr[i] = true;
+          else if (cond === 'price_lower_than' && c < lv) arr[i] = true;
+          else if (cond === 'near_support' && sup !== null && Math.abs(c - sup) / sup * 100 <= proxPct) arr[i] = true;
+          else if (cond === 'near_resistance' && res !== null && Math.abs(c - res) / res * 100 <= proxPct) arr[i] = true;
+          else if (cond === 'below_support' && sup !== null && c < sup) arr[i] = true;
+          else if (cond === 'above_resistance' && res !== null && c > res) arr[i] = true;
         }
       } else if (type === 'QFL') {
         const lb = ind.lookback != null ? ind.lookback : 3;
