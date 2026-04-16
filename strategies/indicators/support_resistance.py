@@ -58,18 +58,42 @@ def find_support_resistance(
     return active_sup, active_res
 
 
+def _merge_nearby(levels: list[dict], merge_pct: float) -> list[dict]:
+    """Merge pivots within merge_pct of each other (most recent wins)."""
+    if merge_pct <= 0:
+        return levels
+    out: list[dict] = []
+    for lv in levels:
+        merged = False
+        for i, existing in enumerate(out):
+            if existing["price"] > 0:
+                diff = abs(lv["price"] - existing["price"]) / existing["price"] * 100
+                if diff <= merge_pct:
+                    out[i] = lv
+                    merged = True
+                    break
+        if not merged:
+            out.append(lv)
+    return out
+
+
 def find_support_resistance_detailed(
     highs: list[float],
     lows: list[float],
     closes: list[float],
     left_bars: int = 15,
     right_bars: int = 15,
+    max_levels: int = 5,
+    merge_pct: float = 0.3,
 ) -> tuple[list[dict], list[dict]]:
     """Return (support_levels, resistance_levels) with pivot metadata.
 
     Each level is a dict: {"price": float, "pivot_index": int,
     "break_index": int | None}. break_index is the first bar where
     a close breaches the level, or None if still active.
+
+    Nearby levels within merge_pct are collapsed (most recent wins).
+    At most max_levels per side are returned (most recent first).
     """
     n = len(closes)
     if len(highs) != n or len(lows) != n:
@@ -104,6 +128,10 @@ def find_support_resistance_detailed(
         {"price": p, "pivot_index": i, "break_index": _break_idx(i, p, False)}
         for i, p in sup_pivots
     ]
+
+    res_out = _merge_nearby(res_out, merge_pct)[-max_levels:]
+    sup_out = _merge_nearby(sup_out, merge_pct)[-max_levels:]
+
     return sup_out, res_out
 
 
