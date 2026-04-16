@@ -49,6 +49,7 @@ class DCAConfig(BaseModel):
     max_orders: int = Field(default=5, ge=0, le=50)
     order_spacing_pct: float = 2.5
     multiplier: float = 1.0
+    step_scale: float = 1.0
     taker_fee: float = 0.0006  # Bitget BTCUSD inverse taker fee, 0.06%
 
 
@@ -111,7 +112,7 @@ class StopLossConfig(BaseModel):
     model_config = _STRICT
     # Literal type ensures invalid values like "traling" raise a validation error
     # rather than silently falling through to fixed stop behaviour
-    type: Literal["fixed", "trailing"] = "fixed"
+    type: Literal["none", "fixed", "trailing"] = "fixed"
     pct: float = 5.0
 
 

@@ -53,7 +53,7 @@ def _cfg():
     cfg.dca.order_spacing_pct = 2.5
     cfg.dca.multiplier = 1.0
     cfg.dca.base_order_size = 0.001
-    cfg.dca.taker_fee = 0.0006
+    cfg.dca.taker_fee = 0.0006; cfg.dca.step_scale = 1.0
     cfg.entry.indicators = []
     cfg.schedule.trading_windows = []
     cfg.schedule.blackout_dates = []

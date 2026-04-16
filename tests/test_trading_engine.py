@@ -37,7 +37,7 @@ def _engine(sl_type="fixed", sl_pct=6.0, tp_pct=3.0, max_orders=5,
     cfg.stop_loss.type = sl_type; cfg.stop_loss.pct = sl_pct
     cfg.dca.max_orders = max_orders; cfg.dca.order_spacing_pct = spacing
     cfg.dca.multiplier = mult; cfg.dca.base_order_size = base_size
-    cfg.dca.taker_fee = 0.0006
+    cfg.dca.taker_fee = 0.0006; cfg.dca.step_scale = 1.0
     cfg.entry.indicators = []
     cfg.schedule.trading_windows = []; cfg.schedule.blackout_dates = []
     cfg.schedule.timezone = "Europe/Amsterdam"

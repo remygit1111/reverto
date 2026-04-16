@@ -885,7 +885,7 @@ class PaperEngine:
 
     def _check_sl(self, deal: PaperDeal, price: float):
         """
-        Check if stop loss has been triggered (fixed or trailing).
+        Check if stop loss has been triggered (fixed, trailing, or none).
         _peak_price is stored on PaperDeal so it persists across ticks
         and is included in the state JSON for restart recovery.
 
@@ -897,6 +897,9 @@ class PaperEngine:
         the next sampled tick — a measurable bias that made paper and
         backtest results diverge.
         """
+        if self.config.stop_loss.type == "none":
+            return
+
         sl_pct = self.config.stop_loss.pct
         wick_high, wick_low = self._wick_high_low(price)
 
@@ -954,7 +957,10 @@ class PaperEngine:
             return
 
         last_order_price = deal.orders[-1].price
-        next_dca_price   = last_order_price * (1 - self.config.dca.order_spacing_pct / 100)
+        step = self.config.dca.order_spacing_pct * (
+            self.config.dca.step_scale ** deal.dca_count
+        )
+        next_dca_price   = last_order_price * (1 - step / 100)
 
         if price <= next_dca_price:
             multiplier = self.config.dca.multiplier ** deal.dca_count

@@ -496,11 +496,12 @@
           <div class="form-row">
             <label>Type</label>
             <select id="nb-sl-type">
-              <option value="fixed">Fixed</option>
+              <option value="none">None</option>
+              <option value="fixed" selected>Fixed</option>
               <option value="trailing">Trailing</option>
             </select>
           </div>
-          <div class="form-row">
+          <div class="form-row" id="nb-sl-pct-row">
             <label>Percentage %</label>
             <input id="nb-sl-pct" type="number" step="0.1" min="0" value="5.0">
           </div>
@@ -921,6 +922,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=60"></script>
+<script src="/static/app.js?v=61"></script>
 </body>
 </html>
