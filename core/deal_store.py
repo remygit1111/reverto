@@ -493,6 +493,17 @@ def get_all_backtest_runs(limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def delete_backtest_run(run_id: int) -> bool:
+    """Delete a single backtest run by ID. Returns True if a row was deleted."""
+    with _write_lock:
+        conn = get_db()
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM backtest_runs WHERE id = ?", (run_id,),
+            )
+            return cur.rowcount > 0
+
+
 def delete_annotations_for(bot_slug: str, timeframe: Optional[str] = None) -> int:
     """Bulk-delete annotations for a bot, optionally scoped to a timeframe.
 
