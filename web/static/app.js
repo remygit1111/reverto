@@ -2097,6 +2097,8 @@ function nbIndicatorFieldsHtml(ind, i) {
   if (ind.type === 'SUPPORT_RESISTANCE') {
     const lbars = ind.left_bars != null ? ind.left_bars : 15;
     const rbars = ind.right_bars != null ? ind.right_bars : 15;
+    const maxLv = ind.max_levels != null ? ind.max_levels : 5;
+    const keepT = ind.keep_true != null ? ind.keep_true : 0;
     const prox = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
     const val = ind.value || 'resistance';
     const SR_CONDS = [
@@ -2115,6 +2117,15 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Right bars</label>
         <input type="number" min="1" value="${rbars}" data-nb-ind="${i}" data-nb-field="right_bars">
+      </div>
+      <div class="form-row">
+        <label>Max levels</label>
+        <input type="number" min="1" max="20" value="${maxLv}" data-nb-ind="${i}" data-nb-field="max_levels">
+      </div>
+      <div class="form-row">
+        <label>Keep true</label>
+        <input type="number" min="0" value="${keepT}" data-nb-ind="${i}" data-nb-field="keep_true">
+        <div class="form-hint">Bars to keep signal active after trigger</div>
       </div>
       <div class="form-row">
         <label>Level</label>
@@ -2569,6 +2580,8 @@ function nbBuildBotConfig() {
         } else if (i.type === 'SUPPORT_RESISTANCE') {
           out.left_bars = i.left_bars != null ? i.left_bars : 15;
           out.right_bars = i.right_bars != null ? i.right_bars : 15;
+          if (i.max_levels != null) out.max_levels = i.max_levels;
+          if (i.keep_true != null) out.keep_true = i.keep_true;
           out.proximity_pct = i.proximity_pct != null ? i.proximity_pct : 1.0;
           out.condition = i.condition || 'price_crossing_down';
           if (i.value) out.value = i.value;
@@ -3677,7 +3690,7 @@ function _renderIndicatorOverlays(candles) {
   _srLineSeries = [];
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
-    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15);
+    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15, srCfg.max_levels || 5);
     const lastTime = candles[candles.length - 1].time;
     const renderLevels = (detailed, color, label) => {
       for (const lv of detailed) {
@@ -4866,7 +4879,7 @@ function renderWizardOverlays() {
         }
       } else if (t === 'SUPPORT_RESISTANCE') {
         if (typeof calcSR === 'function' && _wizardCandleCache && _wizardChart) {
-          const sr = calcSR(_wizardCandleCache, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15);
+          const sr = calcSR(_wizardCandleCache, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15, Number(ind.max_levels) || 5);
           if (sr) {
             const wCandles = _wizardCandleCache;
             const renderWizSR = (detailed, color, label) => {
@@ -5066,10 +5079,9 @@ function calcSupertrendLines(candles, atrPeriod, multiplier) {
   };
 }
 
-function calcSR(candles, leftBars, rightBars) {
-  // Wick-based pivot S&R — matches support_resistance.py.
-  // Returns {support: [prices], resistance: [prices]} with broken
-  // levels filtered out.
+function calcSR(candles, leftBars, rightBars, maxLevels, mergePct) {
+  const ml = maxLevels || 5;
+  const mp = mergePct != null ? mergePct : 0.3;
   const n = candles.length;
   const hi = candles.map(c => c.high || c.close);
   const lo = candles.map(c => c.low || c.close);
@@ -5090,15 +5102,28 @@ function calcSR(candles, leftBars, rightBars) {
     }
     return null;
   }
-  const resDetailed = resPivots.map(p => ({
-    price: p.price, pivotIdx: p.idx,
-    breakIdx: breakIdx(p.idx, p.price, true),
+  function mergeNearby(levels) {
+    if (mp <= 0) return levels;
+    const out = [];
+    for (const lv of levels) {
+      let merged = false;
+      for (let k = 0; k < out.length; k++) {
+        if (out[k].price > 0 && Math.abs(lv.price - out[k].price) / out[k].price * 100 <= mp) {
+          out[k] = lv; merged = true; break;
+        }
+      }
+      if (!merged) out.push(lv);
+    }
+    return out;
+  }
+  let resDetailed = resPivots.map(p => ({
+    price: p.price, pivotIdx: p.idx, breakIdx: breakIdx(p.idx, p.price, true),
   }));
-  const supDetailed = supPivots.map(p => ({
-    price: p.price, pivotIdx: p.idx,
-    breakIdx: breakIdx(p.idx, p.price, false),
+  let supDetailed = supPivots.map(p => ({
+    price: p.price, pivotIdx: p.idx, breakIdx: breakIdx(p.idx, p.price, false),
   }));
-  // Simple API: active prices only (for backtest engine conditions)
+  resDetailed = mergeNearby(resDetailed).slice(-ml);
+  supDetailed = mergeNearby(supDetailed).slice(-ml);
   const activeRes = resDetailed.filter(p => p.breakIdx === null).map(p => p.price);
   const activeSup = supDetailed.filter(p => p.breakIdx === null).map(p => p.price);
   return {
