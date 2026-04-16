@@ -2026,6 +2026,12 @@ html.compact .modal-card { padding: 19px; }
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 12px;
 }
+.bt-history-actions {
+  display: flex; align-items: center; gap: 8px;
+}
+.bt-history-scroll {
+  overflow-x: auto;
+}
 .bt-history-gear-wrap { position: relative; }
 .bt-history-gear-wrap .cog-menu {
   right: 0; left: auto; min-width: 320px;
@@ -2052,7 +2058,7 @@ html.compact .modal-card { padding: 19px; }
 }
 .bt-hist-col-actions button:hover { color: var(--accent); border-color: var(--accent); }
 .bt-history-table {
-  width: 100%; border-collapse: collapse;
+  width: 100%; min-width: 800px; border-collapse: collapse;
   font-family: var(--mono); font-size: 12px;
 }
 .bt-history-table thead th {
@@ -2213,6 +2219,15 @@ html.compact .modal-card { padding: 19px; }
   transition: opacity 0.12s;
 }
 .sw-svg-best-bar:hover { opacity: 1; }
+.sw-svg-neg-bar {
+  fill: var(--red); opacity: 0.55;
+  transition: opacity 0.12s;
+}
+.sw-svg-neg-bar:hover { opacity: 1; }
+.sw-svg-baseline {
+  stroke: var(--muted); stroke-width: 1; opacity: 0.4;
+  stroke-dasharray: 4 3;
+}
 .sw-chart-title {
   font-family: var(--mono); font-size: 11px; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.05em;

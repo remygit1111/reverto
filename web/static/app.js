@@ -6582,7 +6582,9 @@ async function swRunSweep() {
 
   const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
   $('sw-loader').classList.add('hidden');
-  $('sw-run-btn').disabled = false;
+  $('sw-run-btn').classList.remove('hidden');
+  $('sw-stop-btn').classList.add('hidden');
+  _swStopped = false;
   $('sw-results-header').textContent =
     `Sweep complete — ${configs.length} iterations in ${elapsed}s`;
   $('sw-results').classList.remove('hidden');
@@ -6746,20 +6748,27 @@ function _swBestIdx(vals) {
 function _swBarV(title, rows, key = 'total_pnl_btc') {
   const cap = key === 'profit_factor' ? 10 : null;
   const vals = rows.map(r => _swSafe(r[key], cap));
-  const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
   const best = _swBestIdx(vals);
   const n = rows.length;
   const gap = 2, barW = Math.max(4, Math.floor((600 - gap * n) / n));
   const svgW = n * (barW + gap);
   const step = _swLabelStep(n);
   const lblH = 14;
-  let rects = '', labels = '';
+  const maxPos = Math.max(0, ...vals);
+  const maxNeg = Math.max(0, ...vals.map(v => Math.abs(Math.min(0, v))));
+  const hasNeg = maxNeg > 0;
+  const totalRange = Math.max(1e-12, maxPos + maxNeg);
+  const baseY = hasNeg ? Math.round(maxPos / totalRange * _SW_VBAR_H) : _SW_VBAR_H;
+  let rects = '', labels = '', baseline = '';
+  if (hasNeg) {
+    baseline = `<line x1="0" y1="${baseY}" x2="${svgW}" y2="${baseY}" class="sw-svg-baseline"/>`;
+  }
   rows.forEach((r, i) => {
     const v = vals[i];
-    const h = Math.max(2, Math.round(Math.abs(v) / mx * _SW_VBAR_H));
+    const h = Math.max(2, Math.round(Math.abs(v) / totalRange * _SW_VBAR_H));
     const x = i * (barW + gap);
-    const y = _SW_VBAR_H - h;
-    const cls = i === best ? 'sw-svg-best-bar' : 'sw-svg-bar';
+    const y = v >= 0 ? baseY - h : baseY;
+    const cls = i === best ? 'sw-svg-best-bar' : (v < 0 ? 'sw-svg-neg-bar' : 'sw-svg-bar');
     rects += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" class="${cls}" rx="2"><title>${safeText(_swTooltip(r))}</title></rect>`;
     if (i % step === 0) {
       labels += `<text x="${x + barW / 2}" y="${_SW_VBAR_H + lblH}" text-anchor="middle" class="sw-svg-label">${safeText(_swShortLabel(r.label))}</text>`;
@@ -6767,7 +6776,7 @@ function _swBarV(title, rows, key = 'total_pnl_btc') {
   });
   return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>` +
     `<svg class="sw-svg-chart" viewBox="0 0 ${svgW} ${_SW_VBAR_H + lblH + 4}" preserveAspectRatio="none" xmlns="${_SW_SVG_NS}">` +
-    `${rects}${labels}</svg></div>`;
+    `${baseline}${rects}${labels}</svg></div>`;
 }
 
 function _swBarH(title, rows) {
@@ -6966,11 +6975,12 @@ function _btRenderHistoryTable() {
   }
 
   const head = $('bt-history-head');
-  head.innerHTML = visCols.map(col => {
-    const dir = col.key === _btHistorySortKey
-      ? `<span class="bt-sort-dir">${_btHistorySortDir === 'asc' ? '▲' : '▼'}</span>` : '';
-    return `<th data-key="${col.key}">${safeText(col.label)}${dir}</th>`;
-  }).join('');
+  head.innerHTML = `<th><input type="checkbox" id="bt-hist-sel-all"></th>` +
+    visCols.map(col => {
+      const dir = col.key === _btHistorySortKey
+        ? `<span class="bt-sort-dir">${_btHistorySortDir === 'asc' ? '▲' : '▼'}</span>` : '';
+      return `<th data-key="${col.key}">${safeText(col.label)}${dir}</th>`;
+    }).join('') + '<th></th>';
   head.querySelectorAll('th').forEach(th => {
     th.addEventListener('click', () => {
       const k = th.dataset.key;
@@ -6994,9 +7004,10 @@ function _btRenderHistoryTable() {
     return;
   }
   body.innerHTML = sorted.map(run => {
+    const chk = `<td><input type="checkbox" class="bt-hist-chk" data-run-id="${run.id}"></td>`;
     const cells = visCols.map(col => `<td>${col.fmt(run[col.key])}</td>`).join('');
     const delBtn = `<td class="deal-actions-cell"><button class="deal-btn deal-btn-cancel bt-hist-del" data-run-id="${run.id}" title="Delete run">🗑</button></td>`;
-    return `<tr data-slug="${safeText(run.bot_slug || '')}">${cells}${delBtn}</tr>`;
+    return `<tr data-slug="${safeText(run.bot_slug || '')}">${chk}${cells}${delBtn}</tr>`;
   }).join('');
   body.querySelectorAll('tr[data-slug]').forEach(tr => {
     tr.addEventListener('click', (e) => {
@@ -7024,6 +7035,37 @@ function _btRenderHistoryTable() {
         _dealToast('Backtest run deleted');
       } catch (e) { _dealToast('Network error', 'toast-warn'); }
     });
+  });
+  // Select-all checkbox + bulk delete button
+  const _updateBulkBtn = () => {
+    const checked = body.querySelectorAll('.bt-hist-chk:checked');
+    const btn = $('bt-hist-bulk-del');
+    if (btn) {
+      btn.textContent = `Delete selected (${checked.length})`;
+      btn.classList.toggle('hidden', checked.length === 0);
+    }
+  };
+  const selAll = $('bt-hist-sel-all');
+  if (selAll) selAll.addEventListener('change', () => {
+    body.querySelectorAll('.bt-hist-chk').forEach(c => { c.checked = selAll.checked; });
+    _updateBulkBtn();
+  });
+  body.querySelectorAll('.bt-hist-chk').forEach(c => c.addEventListener('change', _updateBulkBtn));
+  const bulkBtn = $('bt-hist-bulk-del');
+  if (bulkBtn) bulkBtn.addEventListener('click', async () => {
+    const ids = Array.from(body.querySelectorAll('.bt-hist-chk:checked')).map(c => c.dataset.runId);
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} backtest run${ids.length > 1 ? 's' : ''}?`)) return;
+    let ok = 0;
+    for (const id of ids) {
+      try {
+        const r = await fetch(`/api/backtest/runs/${id}`, { method: 'DELETE' });
+        if (r.ok) ok++;
+      } catch (e) {}
+    }
+    _btHistoryRows = _btHistoryRows.filter(r => !ids.includes(String(r.id)));
+    _btRenderHistoryTable();
+    _dealToast(`Deleted ${ok} backtest run${ok > 1 ? 's' : ''}`);
   });
 }
 
