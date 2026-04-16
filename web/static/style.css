@@ -572,33 +572,6 @@ tr:hover td { background: rgba(128,128,128,.04); }
 
 .detail-content { padding: 20px; }
 
-.indicator-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-.indicator-card {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 12px;
-}
-.indicator-label {
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 4px;
-}
-.indicator-value {
-  font-family: var(--mono);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-}
-
 .empty-grid {
   font-family: var(--mono);
   font-size: 11px;
@@ -1313,11 +1286,6 @@ tr:hover td { background: rgba(128,128,128,.04); }
     gap: 8px;
   }
 
-  /* Indicator grid — 2 columns */
-  .indicator-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
 
   /* Wizard sections and tables */
   .wizard { padding: 12px 10px 40px; }
