@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=43">
+<link rel="stylesheet" href="/static/style.css?v=44">
 </head>
 <body>
 
@@ -315,69 +315,12 @@
 
     <!-- Schedule tab -->
     <div class="sweep-pane hidden" id="sweep-pane-sched">
-      <label class="checkbox-label"><input type="checkbox" id="sw-sched-days-enabled" class="checkbox-accent"> Sweep days of week</label>
-      <div class="form-grid" id="sw-sched-days-fields">
-        <div class="form-row form-row-wide">
-          <label>Mode</label>
-          <select id="sw-sched-days-mode" class="modal-input">
-            <option value="each">Test each day separately (7 runs)</option>
-            <option value="presets">Test preset combinations (4 runs)</option>
-            <option value="custom">Custom day selection (1 run)</option>
-          </select>
-        </div>
-        <div class="form-row form-row-wide" id="sw-sched-days-custom" style="display:none">
-          <label>Days</label>
-          <div class="sw-day-checks">
-            <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="1" checked> Mon</label>
-            <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="2" checked> Tue</label>
-            <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="3" checked> Wed</label>
-            <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="4" checked> Thu</label>
-            <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="5" checked> Fri</label>
-            <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="6"> Sat</label>
-            <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="0"> Sun</label>
-          </div>
-        </div>
-      </div>
+      <label class="checkbox-label"><input type="checkbox" id="sw-sched-days-enabled" class="checkbox-accent"> Test each day of the week separately (7 runs)</label>
       <div class="form-hint" id="sw-sched-days-preview"></div>
 
       <div class="sweep-divider"></div>
 
-      <label class="checkbox-label"><input type="checkbox" id="sw-sched-hours-enabled" class="checkbox-accent"> Sweep trading hours</label>
-      <div class="form-grid" id="sw-sched-hours-fields">
-        <div class="form-row form-row-wide">
-          <label>Mode</label>
-          <select id="sw-sched-hours-mode" class="modal-input">
-            <option value="each_start">Sweep start hour (24 runs)</option>
-            <option value="window">Sweep window size</option>
-            <option value="custom">Custom window + step</option>
-          </select>
-        </div>
-        <div class="form-row" id="sw-hours-window-row">
-          <label>Window (hours)</label>
-          <select id="sw-sched-hours-window" class="modal-input">
-            <option value="4">4h</option>
-            <option value="6">6h</option>
-            <option value="8" selected>8h</option>
-            <option value="12">12h</option>
-          </select>
-        </div>
-        <div class="form-row" id="sw-hours-step-row" style="display:none">
-          <label>Step (hours)</label>
-          <select id="sw-sched-hours-step" class="modal-input">
-            <option value="1">1h</option>
-            <option value="2" selected>2h</option>
-            <option value="4">4h</option>
-          </select>
-        </div>
-        <div class="form-row" id="sw-hours-start-row" style="display:none">
-          <label>Start hour</label>
-          <input id="sw-sched-hours-start" type="number" min="0" max="23" value="0" class="modal-input">
-        </div>
-        <div class="form-row" id="sw-hours-end-row" style="display:none">
-          <label>End hour</label>
-          <input id="sw-sched-hours-end" type="number" min="0" max="23" value="8" class="modal-input">
-        </div>
-      </div>
+      <label class="checkbox-label"><input type="checkbox" id="sw-sched-hours-enabled" class="checkbox-accent"> Test each hour of the day separately (24 runs)</label>
       <div class="form-hint" id="sw-sched-hours-preview"></div>
 
       <div class="sweep-divider"></div>
@@ -1173,6 +1116,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=75"></script>
+<script src="/static/app.js?v=76"></script>
 </body>
 </html>
