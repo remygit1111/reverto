@@ -1166,6 +1166,7 @@ async function deleteBot(slug, name) {
   // Drop any cached backtest results for the deleted bot so a
   // future bot that reuses the slug starts with a clean slate.
   delete _btResultsBySlug[slug];
+  _dealOvRemoveForSlug(slug);
   // If we're currently inside this bot's detail view, bounce back to Bots.
   if (currentSlug === slug) goBots();
   else fetchOverview();
@@ -1259,6 +1260,35 @@ function _dealToast(msg, cls = 'toast-success') {
 
 let _dealEditState = null;
 const _dealOverrideCache = {};
+const _DEAL_OV_PREFIX = 'reverto_deal_override_';
+
+function _dealOvStore(dealId, payload) {
+  _dealOverrideCache[dealId] = payload;
+  try { localStorage.setItem(_DEAL_OV_PREFIX + dealId, JSON.stringify(payload)); } catch (e) {}
+}
+function _dealOvLoad(dealId) {
+  if (_dealOverrideCache[dealId]) return _dealOverrideCache[dealId];
+  try {
+    const raw = localStorage.getItem(_DEAL_OV_PREFIX + dealId);
+    if (raw) { const parsed = JSON.parse(raw); _dealOverrideCache[dealId] = parsed; return parsed; }
+  } catch (e) {}
+  return null;
+}
+function _dealOvRemove(dealId) {
+  delete _dealOverrideCache[dealId];
+  try { localStorage.removeItem(_DEAL_OV_PREFIX + dealId); } catch (e) {}
+}
+function _dealOvRemoveForSlug(slug) {
+  const toRemove = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(_DEAL_OV_PREFIX)) toRemove.push(k);
+    }
+  } catch (e) {}
+  toRemove.forEach(k => { try { localStorage.removeItem(k); } catch (e) {} });
+  for (const k of Object.keys(_dealOverrideCache)) delete _dealOverrideCache[k];
+}
 
 function _deUpdateDcaDisabled() {
   const fields = $('de-dca-fields');
@@ -1287,8 +1317,8 @@ async function dealOpenEditModal(slug, dealId) {
   let dcaStep = bcDca.step_scale != null ? bcDca.step_scale : 1.0;
   let dcaMax = bcDca.max_orders ? Math.max(0, bcDca.max_orders - 1) : 4;
 
-  // Check local cache first (survives within the same page session)
-  const cached = _dealOverrideCache[dealId];
+  // Check local cache first (survives page refresh via localStorage)
+  const cached = _dealOvLoad(dealId);
   if (cached) {
     if (cached.tp_enabled != null) tpEnabled = cached.tp_enabled;
     if (cached.tp_target_pct != null) tpPct = cached.tp_target_pct;
@@ -1354,7 +1384,7 @@ async function dealSaveEdit() {
     });
     if (r.status === 401) { _handle401(); return; }
     if (!r.ok) { _dealToast('Save failed', 'toast-warn'); return; }
-    _dealOverrideCache[dealId] = payload;
+    _dealOvStore(dealId, payload);
     _dealToast('Deal settings saved');
   } catch (e) { _dealToast('Network error', 'toast-warn'); }
   $('deal-edit-modal').classList.remove('show');
@@ -1372,6 +1402,7 @@ async function dealAction(slug, dealId, action) {
     const r = await fetch(`/api/bots/${slug}/deals/${dealId}?action=${action}`, { method: 'DELETE' });
     if (r.status === 401) { _handle401(); return; }
     if (!r.ok) { _dealToast(`${verb} failed`, 'toast-warn'); return; }
+    _dealOvRemove(dealId);
     _dealToast(action === 'cancel' ? 'Deal cancelled' : 'Deal closed');
   } catch (e) { _dealToast('Network error', 'toast-warn'); }
   if (currentSlug) fetchDetail(currentSlug);
