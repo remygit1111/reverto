@@ -3672,11 +3672,11 @@ function _renderIndicatorOverlays(candles) {
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg) {
     const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15);
-    sr.support.slice(-3).forEach(lvl => {
-      _chartCandles.createPriceLine({ price: lvl, color: _cssVar('--accent', '#26a69a'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'S' });
+    sr.support.forEach(lvl => {
+      _chartCandles.createPriceLine({ price: lvl, color: '#1e88e5', lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: 'S' });
     });
-    sr.resistance.slice(-3).forEach(lvl => {
-      _chartCandles.createPriceLine({ price: lvl, color: _cssVar('--red', '#ef5350'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'R' });
+    sr.resistance.forEach(lvl => {
+      _chartCandles.createPriceLine({ price: lvl, color: '#e53935', lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: 'R' });
     });
   }
   // QFL — base price lines
@@ -4840,8 +4840,8 @@ function renderWizardOverlays() {
         if (typeof calcSR === 'function' && _wizardCandleCache) {
           const sr = calcSR(_wizardCandleCache, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15);
           if (sr) {
-            for (const lvl of (sr.support || [])) _addWizardPriceLine(lvl, accent, 'S');
-            for (const lvl of (sr.resistance || [])) _addWizardPriceLine(lvl, red, 'R');
+            for (const lvl of (sr.support || [])) _addWizardPriceLine(lvl, '#1e88e5', 'S', 0);
+            for (const lvl of (sr.resistance || [])) _addWizardPriceLine(lvl, '#e53935', 'R', 0);
           }
         }
       }
