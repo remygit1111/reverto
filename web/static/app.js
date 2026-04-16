@@ -6709,7 +6709,8 @@ function _swRenderChart() {
 }
 
 function _swSafe(v, cap) {
-  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  if (typeof v !== 'number') return 0;
+  if (!Number.isFinite(v)) return cap != null ? cap : 0;
   return cap != null ? Math.min(v, cap) : v;
 }
 
@@ -6983,7 +6984,7 @@ function _btRenderHistoryTable() {
       const dir = col.key === _btHistorySortKey
         ? `<span class="bt-sort-dir">${_btHistorySortDir === 'asc' ? '▲' : '▼'}</span>` : '';
       return `<th data-key="${col.key}">${safeText(col.label)}${dir}</th>`;
-    }).join('') + '<th></th>';
+    }).join('');
   head.querySelectorAll('th[data-key]').forEach(th => {
     th.addEventListener('click', () => {
       const k = th.dataset.key;
@@ -7009,12 +7010,10 @@ function _btRenderHistoryTable() {
   body.innerHTML = sorted.map(run => {
     const chk = `<td><input type="checkbox" class="bt-hist-chk" data-run-id="${run.id}"></td>`;
     const cells = visCols.map(col => `<td>${col.fmt(run[col.key])}</td>`).join('');
-    const delBtn = `<td class="deal-actions-cell"><button class="deal-btn deal-btn-cancel bt-hist-del" data-run-id="${run.id}" title="Delete run">🗑</button></td>`;
-    return `<tr data-slug="${safeText(run.bot_slug || '')}">${chk}${cells}${delBtn}</tr>`;
+    return `<tr data-slug="${safeText(run.bot_slug || '')}">${chk}${cells}</tr>`;
   }).join('');
   body.querySelectorAll('tr[data-slug]').forEach(tr => {
     tr.addEventListener('click', (e) => {
-      if (e.target.closest('.bt-hist-del')) return;
       if (e.target.closest('.bt-hist-chk') || e.target.classList.contains('bt-hist-chk')) return;
       const slug = tr.dataset.slug;
       if (!slug) return;
@@ -7023,21 +7022,6 @@ function _btRenderHistoryTable() {
         const tabBtn = document.querySelector('.detail-subnav .tab[data-dtab="backtest"]');
         if (tabBtn) showDTab('backtest', tabBtn);
       }, 60);
-    });
-  });
-  body.querySelectorAll('.bt-hist-del').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const id = btn.dataset.runId;
-      if (!confirm('Delete this backtest run?')) return;
-      try {
-        const r = await fetch(`/api/backtest/runs/${id}`, { method: 'DELETE' });
-        if (r.status === 401) { _handle401(); return; }
-        if (!r.ok) { _dealToast('Delete failed', 'toast-warn'); return; }
-        _btHistoryRows = _btHistoryRows.filter(r => r.id !== parseInt(id, 10));
-        _btRenderHistoryTable();
-        _dealToast('Backtest run deleted');
-      } catch (e) { _dealToast('Network error', 'toast-warn'); }
     });
   });
   // Select-all checkbox + bulk delete button
