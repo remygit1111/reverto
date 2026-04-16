@@ -50,7 +50,7 @@ def test_init_db_creates_tables():
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
     }
-    for t in ("deals", "orders", "indicator_snapshots", "chart_annotations"):
+    for t in ("deals", "orders", "chart_annotations", "backtest_runs"):
         assert t in names
 
 

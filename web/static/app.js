@@ -83,6 +83,7 @@ function _handle401() {
   if (overviewInterval) { clearInterval(overviewInterval); overviewInterval = null; }
   if (detailInterval)   { clearInterval(detailInterval);   detailInterval   = null; }
   if (_priceInterval)   { clearInterval(_priceInterval);   _priceInterval   = null; }
+  try { localStorage.removeItem('reverto_api_key'); } catch (e) {}
   if (ws) { try { ws.close(); } catch (e) {} ws = null; }
   try { disconnectStateWS(); } catch (e) {}
   document.querySelectorAll('.page').forEach(p => {
@@ -126,6 +127,7 @@ async function handleLoginSubmit(e) {
 
 async function handleLogout() {
   try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
+  try { localStorage.removeItem('reverto_api_key'); } catch (e) {}
   location.reload();
 }
 
@@ -6210,7 +6212,23 @@ let _wbtEquityChart = null;
 // Per-slug backtest result cache so jumping between bots doesn't
 // leak bot A's stats into bot B's Backtest tab. The last run for
 // each slug is re-rendered whenever openBot lands on that slug.
+// Capped at 20 entries via LRU eviction tracked in _btResultsOrder.
 const _btResultsBySlug = {};
+const _btResultsOrder = [];
+const _BT_RESULTS_MAX = 20;
+
+function _btResultsSet(slug, result) {
+  if (_btResultsBySlug[slug]) {
+    const idx = _btResultsOrder.indexOf(slug);
+    if (idx !== -1) _btResultsOrder.splice(idx, 1);
+  }
+  _btResultsBySlug[slug] = result;
+  _btResultsOrder.push(slug);
+  while (_btResultsOrder.length > _BT_RESULTS_MAX) {
+    const old = _btResultsOrder.shift();
+    delete _btResultsBySlug[old];
+  }
+}
 
 // Backtest History sub-view state — an in-memory sort handle plus
 // the last-fetched rows, so clicking a header just re-renders from
@@ -6445,7 +6463,7 @@ async function btRunPipeline(opts) {
     loader.classList.add('hidden');
     results.classList.remove('hidden');
     if (mode === 'tab') {
-      if (currentSlug) _btResultsBySlug[currentSlug] = result;
+      if (currentSlug) _btResultsSet(currentSlug, result);
       btRenderResults(result);
     } else {
       btRenderWizardResults(result);
