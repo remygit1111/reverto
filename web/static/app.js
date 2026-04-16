@@ -6686,16 +6686,14 @@ function _swRenderChart() {
   area.innerHTML = html.join('');
 }
 
-function _swSanitizeVals(rows, key) {
-  return rows.map(r => {
-    const v = r[key];
-    return (typeof v === 'number' && Number.isFinite(v)) ? v : 0;
-  });
+function _swSafe(v) {
+  return (typeof v === 'number' && Number.isFinite(v)) ? v : 0;
 }
 
 function _swBarV(title, rows, key = 'total_pnl_btc') {
-  const vals = _swSanitizeVals(rows, key);
+  const vals = rows.map(r => _swSafe(r[key]));
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
+  console.log('[SW_CHART] _swBarV', title, { count: rows.length, mx, sample: vals.slice(0, 5) });
   return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${
     rows.map((r, i) => {
       const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
@@ -6708,8 +6706,9 @@ function _swBarV(title, rows, key = 'total_pnl_btc') {
 }
 
 function _swBarH(title, rows) {
-  const vals = _swSanitizeVals(rows, 'total_pnl_btc');
+  const vals = rows.map(r => _swSafe(r.total_pnl_btc));
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
+  console.log('[SW_CHART] _swBarH', title, { count: rows.length, mx, vals });
   return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>${
     rows.map((r, i) => {
       const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
@@ -6728,10 +6727,11 @@ function _swAggBarH(title, rows, re, grpIdx) {
     const m = r.label.match(re); if (!m) continue;
     const k = m[grpIdx];
     if (!agg[k]) agg[k] = { sum: 0, n: 0 };
-    agg[k].sum += r.total_pnl_btc || 0; agg[k].n++;
+    agg[k].sum += _swSafe(r.total_pnl_btc); agg[k].n++;
   }
   const sorted = dayOrder.filter(d => agg[d]);
   const aggRows = sorted.map(k => ({ label: k, total_pnl_btc: agg[k].sum / agg[k].n }));
+  console.log('[SW_CHART] _swAggBarH', title, { groups: sorted, aggRows });
   return _swBarH(title, aggRows);
 }
 
@@ -6739,12 +6739,13 @@ function _swAggBarV(title, rows, re, grpIdx) {
   const agg = {};
   for (const r of rows) {
     const m = r.label.match(re); if (!m) continue;
-    const k = m[grpIdx] + ':00';
+    const k = String(parseInt(m[grpIdx], 10)).padStart(2, '0') + ':00';
     if (!agg[k]) agg[k] = { sum: 0, n: 0 };
-    agg[k].sum += r.total_pnl_btc || 0; agg[k].n++;
+    agg[k].sum += _swSafe(r.total_pnl_btc); agg[k].n++;
   }
   const sorted = Object.keys(agg).sort();
   const aggRows = sorted.map(k => ({ label: k, total_pnl_btc: agg[k].sum / agg[k].n }));
+  console.log('[SW_CHART] _swAggBarV', title, { groups: sorted.length, sample: aggRows.slice(0, 3) });
   return _swBarV(title, aggRows);
 }
 
