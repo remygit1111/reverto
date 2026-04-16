@@ -131,12 +131,13 @@ def check_supertrend_signal(
         return curr_trend == 1
     if condition == "bearish":
         return curr_trend == -1
-    if condition == "bullish_flip":
+    if condition in ("bullish_flip", "from_down_to_up"):
         return prev_trend == -1 and curr_trend == 1
-    if condition == "bearish_flip":
+    if condition in ("bearish_flip", "from_up_to_down"):
         return prev_trend == 1 and curr_trend == -1
 
     raise ValueError(
         f"Unknown Supertrend condition: {condition!r}. Choose from "
-        "bullish / bearish / bullish_flip / bearish_flip."
+        "bullish / bearish / bullish_flip / bearish_flip / "
+        "from_down_to_up / from_up_to_down."
     )

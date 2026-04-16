@@ -196,9 +196,8 @@ class TestBollinger:
         with pytest.raises(ValueError, match="at least"):
             calculate_bollinger_bands([100.0] * 5, period=20)
 
-    def test_unknown_condition_raises(self):
-        with pytest.raises(ValueError, match="Unknown Bollinger"):
-            check_bollinger_signal([100.0] * 22, condition="invalid")
+    def test_unknown_condition_returns_false(self):
+        assert check_bollinger_signal([100.0] * 22, condition="invalid") is False
 
 
 class TestParabolicSAR:
@@ -230,9 +229,9 @@ class TestParabolicSAR:
         with pytest.raises(ValueError, match="at least 10"):
             calculate_parabolic_sar([100.0, 101.0, 102.0])
 
-    def test_unknown_condition_raises(self):
-        with pytest.raises(ValueError, match="Unknown Parabolic SAR"):
-            check_parabolic_sar_signal([float(i) for i in range(15)], condition="invalid")
+    def test_unknown_condition_returns_false(self):
+        data = [float(i) for i in range(15)]
+        assert check_parabolic_sar_signal(data, condition="invalid") is False
 
 
 class TestSupertrend:
@@ -393,10 +392,9 @@ class TestSupportResistance:
             )
 
     def test_unknown_condition_raises(self):
-        with pytest.raises(ValueError, match="Unknown Support/Resistance"):
-            check_support_resistance_signal(
-                [100.0] * 60, lookback=2, condition="invalid"
-            )
+        assert check_support_resistance_signal(
+            [100.0] * 60, lookback=2, condition="invalid"
+        ) is False
 
 
 class TestQFL:

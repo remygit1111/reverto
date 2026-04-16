@@ -109,8 +109,8 @@ class BacktestEngine:
             if i < warmup:
                 continue  # wacht tot indicators betrouwbaar zijn
 
-            closes_per_tf, highs_per_tf, lows_per_tf = self._ohlc_up_to(candle.timestamp)
-            self._process_candle(candle, closes_per_tf, highs_per_tf, lows_per_tf)
+            ohlc = self._ohlc_up_to(candle.timestamp)
+            self._process_candle(candle, *ohlc)
             self._candles_processed += 1
 
         # Sluit alle nog openstaande deals op de slotprijs van de laatste candle
@@ -134,6 +134,7 @@ class BacktestEngine:
         closes: dict[str, list[float]] = {}
         highs:  dict[str, list[float]] = {}
         lows:   dict[str, list[float]] = {}
+        opens:  dict[str, list[float]] = {}
         for tf, candles in self.candles_per_tf.items():
             ptr = self._tf_pointers[tf]
             while ptr < len(candles) and candles[ptr].timestamp < cur_ts:
@@ -143,7 +144,8 @@ class BacktestEngine:
             closes[tf] = [c.close for c in window]
             highs[tf]  = [c.high  for c in window]
             lows[tf]   = [c.low   for c in window]
-        return closes, highs, lows
+            opens[tf]  = [c.open  for c in window]
+        return closes, highs, lows, opens
 
     # ------------------------------------------------------------------
     # Candle verwerking
@@ -155,6 +157,7 @@ class BacktestEngine:
         closes_per_tf: dict[str, list[float]],
         highs_per_tf: dict[str, list[float]],
         lows_per_tf:  dict[str, list[float]],
+        opens_per_tf: dict[str, list[float]] | None = None,
     ):
         """Verwerk één driving candle: check entry en monitor open deals."""
         close = candle.close
@@ -174,6 +177,7 @@ class BacktestEngine:
                     closes_per_tf, self.bot_timeframe,
                     highs_per_tf=highs_per_tf,
                     lows_per_tf=lows_per_tf,
+                    opens_per_tf=opens_per_tf,
                 ):
                     self._open_deal(close, candle.dt)
             except Exception as e:

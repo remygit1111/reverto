@@ -164,17 +164,17 @@ class TestClosesUpTo:
         )
 
         # cur_ts=1500 → 1h[0]=1000 closed, 4h[0]=1000 closed
-        closes, _, _ = engine._ohlc_up_to(1500)
+        closes, _, _, _ = engine._ohlc_up_to(1500)
         assert closes["1h"] == [100.0]
         assert closes["4h"] == [200.0]
 
         # cur_ts=2500 → 1h[0,1] closed (ts 1000,2000), 4h[0] closed
-        closes, _, _ = engine._ohlc_up_to(2500)
+        closes, _, _, _ = engine._ohlc_up_to(2500)
         assert closes["1h"] == [100.0, 101.0]
         assert closes["4h"] == [200.0]
 
         # cur_ts=3500 → 1h[0..2] closed, 4h[0,1] closed (ts 1000,3000)
-        closes, highs, lows = engine._ohlc_up_to(3500)
+        closes, highs, lows, _ = engine._ohlc_up_to(3500)
         assert closes["1h"] == [100.0, 101.0, 102.0]
         assert closes["4h"] == [200.0, 201.0]
         # Highs/lows dicts are also populated — smoke check only

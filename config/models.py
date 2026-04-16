@@ -62,32 +62,40 @@ class IndicatorConfig(BaseModel):
     fast: Optional[int] = None
     slow: Optional[int] = None
     signal: Optional[str] = None
-    # Per-indicator timeframe override. None = use bot-level timeframe.
-    # Must be one of the supported candle intervals so we can match it
-    # against the engine's fetched data.
-    timeframe: Optional[Literal["15m", "1h", "4h", "1d"]] = None
+    timeframe: Optional[Literal["15m", "30m", "1h", "2h", "4h", "12h", "1d"]] = None
     condition: Optional[str] = None
-    # MACD period knobs — optional, default to the classic 12/26/9.
-    # Kept as separate fields (rather than reusing fast/slow) because
-    # EMA Cross already uses those for its own pair.
+    # RSI
+    price_source: Optional[str] = None  # close/open/high/low/hl2/hlc3/ohlc4
+    # MACD
     macd_fast: Optional[int] = None
     macd_slow: Optional[int] = None
     macd_signal: Optional[int] = None
-    # Bollinger Bands — std dev multiplier (default 2.0)
+    oscillator_ma_type: Optional[str] = None  # EMA/SMA
+    signal_ma_type: Optional[str] = None      # EMA/SMA
+    # Bollinger Bands / Supertrend
     multiplier: Optional[float] = None
-    # Parabolic SAR — acceleration factor floor and ceiling
+    ma_type: Optional[str] = None   # SMA/EMA/WMA (Bollinger)
+    value: Optional[str] = None     # lower/upper/middle (BB) or support/resistance (S&R)
+    # Parabolic SAR
     initial_af: Optional[float] = None
     max_af: Optional[float] = None
-    # Supertrend — ATR period (multiplier shared with Bollinger field)
+    # Supertrend
     atr_period: Optional[int] = None
-    # Market Structure / Support-Resistance / QFL — swing lookback window
+    # Market Structure
     lookback: Optional[int] = None
-    # Support & Resistance — cluster merge + proximity sensitivities (%)
+    trigger_type: Optional[str] = None  # market_based
+    # Support & Resistance
+    left_bars: Optional[int] = None
+    right_bars: Optional[int] = None
     tolerance_pct: Optional[float] = None
     proximity_pct: Optional[float] = None
-    # QFL Base Scanner — rebound threshold / window / retention / break %
+    # QFL Base Scanner
     crack_pct: Optional[float] = None
     base_candles: Optional[int] = None
+    base_periods: Optional[int] = None
+    pump_periods: Optional[int] = None
+    pump_from_base_pct: Optional[float] = None
+    base_crack_pct: Optional[float] = None
     max_bases: Optional[int] = None
     below_pct: Optional[float] = None
 

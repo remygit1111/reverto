@@ -79,6 +79,7 @@ class IndicatorEngine:
         bot_timeframe: str,
         highs_per_tf: dict[str, list[float]] | None = None,
         lows_per_tf: dict[str, list[float]] | None = None,
+        opens_per_tf: dict[str, list[float]] | None = None,
     ) -> bool:
         """
         Check all configured entry indicators.
@@ -113,7 +114,8 @@ class IndicatorEngine:
                 return False  # fail-closed
             highs = (highs_per_tf or {}).get(tf)
             lows  = (lows_per_tf  or {}).get(tf)
-            result = self._evaluate_indicator(indicator, closes, highs, lows)
+            opens = (opens_per_tf or {}).get(tf)
+            result = self._evaluate_indicator(indicator, closes, highs, lows, opens)
             results.append(result)
             logger.info(
                 f"Indicator {indicator.type}@{tf} → "
@@ -196,21 +198,42 @@ class IndicatorEngine:
     # Per-indicator dispatch
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_price_source(
+        source: str | None,
+        closes: list[float],
+        highs: list[float] | None,
+        lows: list[float] | None,
+        opens: list[float] | None,
+    ) -> list[float]:
+        if not source or source == "close":
+            return closes
+        if source == "high" and highs:
+            return highs
+        if source == "low" and lows:
+            return lows
+        if source == "open" and opens:
+            return opens
+        if source == "hl2" and highs and lows:
+            return [(h + lo) / 2 for h, lo in zip(highs, lows)]
+        if source == "hlc3" and highs and lows:
+            return [(h + lo + c) / 3 for h, lo, c in zip(highs, lows, closes)]
+        if source == "ohlc4" and opens and highs and lows:
+            return [(o + h + lo + c) / 4 for o, h, lo, c in zip(opens, highs, lows, closes)]
+        return closes
+
     def _evaluate_indicator(
         self,
         indicator: IndicatorConfig,
         closes: list[float],
         highs: list[float] | None = None,
         lows: list[float] | None = None,
+        opens: list[float] | None = None,
     ) -> bool:
         """
         Route indicator config to the correct check function.
         Returns False on unknown indicator type to prevent unvalidated
         entries from slipping through.
-
-        highs/lows are only consumed by OHLC-native indicators like
-        Supertrend; when such an indicator is configured without h/l
-        data we log a warning and fail-closed (return False).
         """
         itype = indicator.type.upper()
 
@@ -220,8 +243,10 @@ class IndicatorEngine:
             # _evaluate_indicator stays consistent.
             return True
         if itype == "RSI":
+            src = self._resolve_price_source(
+                indicator.price_source, closes, highs, lows, opens)
             return check_rsi_signal(
-                closes,
+                src,
                 period=indicator.period or 14,
                 threshold=indicator.threshold or "below_35",
             )
@@ -243,6 +268,8 @@ class IndicatorEngine:
                 period=indicator.period or 20,
                 multiplier=indicator.multiplier or 2.0,
                 condition=indicator.condition or "price_below_lower",
+                ma_type=indicator.ma_type or "SMA",
+                value=indicator.value or "lower",
             )
         elif itype == "PARABOLIC_SAR":
             return check_parabolic_sar_signal(
@@ -276,6 +303,11 @@ class IndicatorEngine:
                 tolerance_pct=indicator.tolerance_pct or 0.5,
                 proximity_pct=indicator.proximity_pct or 1.0,
                 condition=indicator.condition or "near_support",
+                left_bars=indicator.left_bars,
+                right_bars=indicator.right_bars,
+                value=indicator.value or "resistance",
+                highs=highs,
+                lows=lows,
             )
         elif itype == "QFL":
             return check_qfl_signal(
@@ -286,6 +318,10 @@ class IndicatorEngine:
                 max_bases=indicator.max_bases or 5,
                 below_pct=indicator.below_pct if indicator.below_pct is not None else 0.0,
                 condition=indicator.condition or "below_base",
+                base_periods=indicator.base_periods,
+                pump_periods=indicator.pump_periods,
+                pump_from_base_pct=indicator.pump_from_base_pct,
+                base_crack_pct=indicator.base_crack_pct,
             )
         else:
             logger.warning(
