@@ -361,16 +361,15 @@ class TestSupportResistance:
                                            left_bars=3, right_bars=3)
         assert len(res) >= 1 or len(sup) >= 1
 
-    def test_broken_pivot_excluded(self):
+    def test_fixnan_carries_last_pivot(self):
         highs, lows, closes = self._with_levels(final=120.0)
-        # Close at 120 breaks the resistance at 110
+        # fixnan: resistance stays at 110 even after close exceeds it
         _, res = find_support_resistance(highs, lows, closes,
                                          left_bars=3, right_bars=3)
-        assert all(r != 110.0 for r in res)
+        assert res == [110.0]
 
     def test_stair_step_levels(self):
-        # Two pivot highs at nearly the same price — both should
-        # be kept as distinct levels (no clustering).
+        # Two pivot highs — fixnan keeps only the most recent.
         n = 60
         highs = [100.0] * n
         lows = [100.0] * n
@@ -380,7 +379,8 @@ class TestSupportResistance:
         for j in range(27, 34): highs[j] = max(highs[j], 105.0)
         sup, res = find_support_resistance(highs, lows, closes,
                                            left_bars=3, right_bars=3)
-        assert len(res) == 2
+        assert len(res) == 1
+        assert res[0] == 110.5
 
     def test_insufficient_data_raises(self):
         with pytest.raises(ValueError, match="at least"):
