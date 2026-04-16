@@ -578,3 +578,60 @@ class TestSRDetailed:
             highs, lows, closes, left_bars=3, right_bars=3)
         assert len(res) >= 1
         assert res[0]["break_index"] is None
+
+
+class TestSRBreakDetection:
+    def test_resistance_broken_by_close(self):
+        from strategies.indicators.support_resistance import (
+            find_support_resistance_detailed,
+        )
+        n = 50
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        # Pivot high at bar 10 with price 110
+        for j in range(7, 14):
+            highs[j] = 105.0
+        highs[10] = 110.0; closes[10] = 109.0
+        # Close above 110 at bar 30
+        closes[30] = 111.0
+        _, res = find_support_resistance_detailed(
+            highs, lows, closes, left_bars=3, right_bars=3)
+        assert len(res) >= 1
+        assert res[0]["break_index"] == 30
+
+    def test_support_broken_by_close(self):
+        from strategies.indicators.support_resistance import (
+            find_support_resistance_detailed,
+        )
+        n = 50
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        # Pivot low at bar 15 with price 90
+        for j in range(12, 19):
+            lows[j] = 95.0
+        lows[15] = 90.0; closes[15] = 91.0
+        # Close below 90 at bar 35
+        closes[35] = 89.0
+        sup, _ = find_support_resistance_detailed(
+            highs, lows, closes, left_bars=3, right_bars=3)
+        assert len(sup) >= 1
+        assert sup[0]["break_index"] == 35
+
+    def test_unbroken_remains_active(self):
+        from strategies.indicators.support_resistance import (
+            find_support_resistance_detailed,
+        )
+        n = 50
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        highs[10] = 110.0
+        for j in range(7, 14):
+            highs[j] = max(highs[j], 105.0)
+        # Never breach 110 — all closes stay at 100
+        _, res = find_support_resistance_detailed(
+            highs, lows, closes, left_bars=3, right_bars=3)
+        assert len(res) >= 1
+        assert res[0]["break_index"] is None

@@ -83,7 +83,7 @@ def find_support_resistance_detailed(
     closes: list[float],
     left_bars: int = 15,
     right_bars: int = 15,
-    max_levels: int = 5,
+    max_levels: int = 3,
     merge_pct: float = 0.3,
 ) -> tuple[list[dict], list[dict]]:
     """Return (support_levels, resistance_levels) with pivot metadata.
