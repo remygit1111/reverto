@@ -383,3 +383,110 @@ class TestCandlesRange:
             params={"start": "not-a-date", "end": "2025-01-02"},
         )
         assert r.status_code == 400
+
+
+# ── Deal management endpoints ─────────────────────────────────────────────────
+
+class TestDealEndpoints:
+    """PATCH and DELETE /api/bots/{slug}/deals/{deal_id} — validates deal_id
+    format and writes sentinel files for valid requests."""
+
+    def test_patch_invalid_deal_id_is_422(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        # Lowercase, spaces, special chars — all must be rejected
+        for bad_id in ["evil-inject", "paper-001", "PAPER-0001;rm", "X" * 20]:
+            r = auth_client.patch(
+                f"/api/bots/test/deals/{bad_id}",
+                json={"tp_enabled": True},
+            )
+            assert r.status_code == 422, f"Expected 422 for deal_id={bad_id!r}, got {r.status_code}"
+
+    def test_patch_valid_deal_id_is_200(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.patch(
+            "/api/bots/test/deals/PAPER-0001",
+            json={"tp_enabled": True, "tp_target_pct": 3.5},
+        )
+        assert r.status_code == 200
+        assert r.json().get("ok") is True
+        # Clean up sentinel
+        sentinel = webapp.LOG_DIR / "test.deal_edit_PAPER-0001"
+        if sentinel.exists():
+            sentinel.unlink()
+
+    def test_delete_cancel_valid(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            "/api/bots/test/deals/PAPER-0002",
+            params={"action": "cancel"},
+        )
+        assert r.status_code == 200
+        assert r.json().get("action") == "cancel"
+        sentinel = webapp.LOG_DIR / "test.deal_cancel_PAPER-0002"
+        if sentinel.exists():
+            sentinel.unlink()
+
+    def test_delete_close_valid(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            "/api/bots/test/deals/PAPER-0003",
+            params={"action": "close"},
+        )
+        assert r.status_code == 200
+        assert r.json().get("action") == "close"
+        sentinel = webapp.LOG_DIR / "test.deal_close_PAPER-0003"
+        if sentinel.exists():
+            sentinel.unlink()
+
+    def test_delete_invalid_deal_id_is_422(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            "/api/bots/test/deals/evil-inject",
+            params={"action": "close"},
+        )
+        assert r.status_code == 422
+
+    def test_delete_invalid_action_is_400(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            "/api/bots/test/deals/PAPER-0001",
+            params={"action": "nuke"},
+        )
+        assert r.status_code == 400
+
+
+# ── Annotation POST endpoint ─────────────────────────────────────────────────
+
+class TestAnnotationPost:
+    def test_save_annotation_valid(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post("/api/db/annotations", json={
+            "bot_slug": "test", "type": "hline", "timeframe": "1h",
+            "x1": 1700000000, "y1": 80000.0,
+        })
+        assert r.status_code == 200
+        assert "id" in r.json()
+
+    def test_save_annotation_missing_slug_is_422(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post("/api/db/annotations", json={
+            "type": "hline", "timeframe": "1h", "x1": 1700000000,
+        })
+        assert r.status_code == 422
+
+    def test_save_annotation_x1_out_of_range(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post("/api/db/annotations", json={
+            "bot_slug": "test", "type": "hline", "timeframe": "1h",
+            "x1": 3_000_000_000, "y1": 80000.0,
+        })
+        assert r.status_code == 422

@@ -144,6 +144,25 @@ class TestTrailingStopLoss:
         assert d.id not in e.state.open_deals           # gesloten
 
 
+class TestStopLossNone:
+    """SL type 'none' must skip the SL check entirely."""
+
+    def test_sl_none_no_trigger(self):
+        e = _engine(sl_type='none', sl_pct=5.0)
+        d = _deal(80000.0)
+        e.state.open_deal(d)
+        e._check_sl(d, 40000.0)
+        assert d.id in e.state.open_deals
+
+    def test_sl_none_deal_stays_open(self):
+        e = _engine(sl_type='none', sl_pct=0.1)
+        d = _deal(80000.0)
+        e.state.open_deal(d)
+        for price in [79000, 70000, 50000, 10000]:
+            e._check_sl(d, float(price))
+        assert d.id in e.state.open_deals
+
+
 class TestDCA:
     def test_dca_triggers(self):
         e = _engine(spacing=2.5, max_orders=5); d = _deal(80000.0)
