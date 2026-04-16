@@ -6345,7 +6345,7 @@ function _swGenerateScheduleConfigs(baseCfg) {
   if (daysEnabled) {
     const mode = $('sw-sched-days-mode').value;
     if (mode === 'each') {
-      for (let d = 0; d < 7; d++) daysSets.push({ days: [d], label: _SW_DAY_NAMES[d] });
+      for (let d = 0; d < 7; d++) daysSets.push({ days: [d], label: _SW_DAY_NAMES[d].slice(0, 3) });
     } else if (mode === 'presets') {
       daysSets.push({ days: [1,2,3,4,5],     label: 'Weekdays' });
       daysSets.push({ days: [0,6],            label: 'Weekend' });
@@ -6364,25 +6364,27 @@ function _swGenerateScheduleConfigs(baseCfg) {
   const hoursSets = [];
   if (hoursEnabled) {
     const mode = $('sw-sched-hours-mode').value;
+    const hFmt = h => String(h % 24).padStart(2, '0') + ':00';
     if (mode === 'each_start') {
-      const w = parseInt($('sw-sched-hours-window').value, 10) || 8;
+      const w = Math.max(1, parseInt($('sw-sched-hours-window').value, 10) || 8);
       for (let h = 0; h < 24; h++) {
-        hoursSets.push({ startHour: h, endHour: (h + w) % 24, label: `${String(h).padStart(2,'0')}:00-${String((h+w)%24).padStart(2,'0')}:00` });
+        const end = Math.min(h + w, 24);
+        hoursSets.push({ startHour: h, endHour: end % 24, label: `${hFmt(h)}-${hFmt(end)}` });
       }
     } else if (mode === 'window') {
-      const w = parseInt($('sw-sched-hours-window').value, 10) || 8;
+      const w = Math.max(1, parseInt($('sw-sched-hours-window').value, 10) || 8);
       for (let h = 0; h < 24; h += w) {
         const end = Math.min(h + w, 24);
-        hoursSets.push({ startHour: h, endHour: end % 24, label: `${String(h).padStart(2,'0')}:00-${String(end%24).padStart(2,'0')}:00` });
+        hoursSets.push({ startHour: h, endHour: end % 24, label: `${hFmt(h)}-${hFmt(end)}` });
       }
     } else {
-      const step = parseInt($('sw-sched-hours-step').value, 10) || 2;
-      const wEnd = parseInt($('sw-sched-hours-end').value, 10) || 8;
+      const step = Math.max(1, parseInt($('sw-sched-hours-step').value, 10) || 2);
       const wStart = parseInt($('sw-sched-hours-start').value, 10) || 0;
+      const wEnd = parseInt($('sw-sched-hours-end').value, 10) || 8;
       const windowH = ((wEnd - wStart + 24) % 24) || 24;
       for (let h = 0; h < 24; h += step) {
-        const end = (h + windowH) % 24;
-        hoursSets.push({ startHour: h, endHour: end, label: `${String(h).padStart(2,'0')}:00-${String(end).padStart(2,'0')}:00` });
+        const end = Math.min(h + windowH, 24);
+        hoursSets.push({ startHour: h, endHour: end % 24, label: `${hFmt(h)}-${hFmt(end)}` });
       }
     }
   } else {
@@ -6547,7 +6549,7 @@ async function swRunSweep() {
     const pct = Math.round(((i + 1) / configs.length) * 100);
     $('sw-progress-bar').style.width = pct + '%';
     $('sw-status').textContent = `Running iteration ${i + 1}/${configs.length} (${label})…`;
-    if (iterCandles.length < 20) {
+    if (iterCandles.length < 78) {
       _swRows.push({ label, config: c, total_deals: 0, win_rate: 0, total_pnl_btc: 0,
         total_pnl_pct: 0, profit_factor: null, sharpe: '—', max_dd: 0, avg_dur: 0,
         candles_used: iterCandles.length, _result: null });
