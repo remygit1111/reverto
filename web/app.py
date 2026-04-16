@@ -348,6 +348,7 @@ def _audit(action: str, slug: str = "-", key_hint: str = "-") -> None:
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
+_DEAL_ID_RE = re.compile(r"^[A-Z]+-\d{1,6}$")
 
 
 def slugify(name: str) -> str:
@@ -1906,6 +1907,7 @@ async def api_deal_get(
     slug: str, deal_id: str, request: Request,
     actor: str = Depends(_request_actor),
 ):
+    _validate_deal_id(deal_id)
     # Prefer the live state file for open deals — it carries per-deal
     # overrides (_tp_override, _sl_override, _dca_enabled) that the
     # DB row doesn't track. Fall back to the DB for closed deals.
@@ -1923,6 +1925,14 @@ async def api_deal_get(
     return {"deal": deal, "orders": orders}
 
 
+def _validate_deal_id(deal_id: str) -> None:
+    if not _DEAL_ID_RE.match(deal_id):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid deal_id format (expected e.g. PAPER-0001)",
+        )
+
+
 @app.patch("/api/bots/{slug}/deals/{deal_id}")
 @limiter.limit("10/minute")
 async def api_deal_edit(
@@ -1930,6 +1940,7 @@ async def api_deal_edit(
     request: Request,
     actor: str = Depends(_request_actor),
 ):
+    _validate_deal_id(deal_id)
     import json as _json
     settings: dict = {}
     tp_override = {}
@@ -1967,6 +1978,7 @@ async def api_deal_action(
     action: str = "close",
     actor: str = Depends(_request_actor),
 ):
+    _validate_deal_id(deal_id)
     if action not in ("cancel", "close"):
         raise HTTPException(status_code=400, detail="action must be cancel or close")
     sentinel = LOG_DIR / f"{slug}.deal_{action}_{deal_id}"
