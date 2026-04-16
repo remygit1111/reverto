@@ -2191,29 +2191,17 @@ html.compact .modal-card { padding: 19px; }
   border: 1px solid var(--border);
 }
 .sw-chart-container.hidden { display: none; }
-.sw-bar-chart {
-  display: flex; align-items: flex-end; gap: 3px;
-  height: 200px; padding-top: 8px;
+.sw-svg-chart {
+  width: 100%; max-height: 220px; display: block;
 }
-.sw-bar-col {
-  flex: 1; display: flex; flex-direction: column;
-  align-items: center; min-width: 0;
+.sw-svg-hchart {
+  max-height: none; height: auto;
 }
-.sw-bar {
-  width: 100%; height: var(--bar-pct, 2%);
-  min-height: 2px; border-radius: 2px 2px 0 0;
-  transition: height 0.2s;
+.sw-svg-label {
+  font-family: var(--mono); font-size: 10px; fill: var(--muted);
 }
-.sw-bar-pos { background: var(--accent); }
-.sw-bar-neg { background: var(--red); }
-.sw-bar-label {
-  font-family: var(--mono); font-size: 9px; color: var(--muted);
-  margin-top: 4px; text-align: center; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; max-width: 100%;
-}
-.sw-bar-value {
-  font-family: var(--mono); font-size: 9px; color: var(--text);
-  margin-bottom: 2px; text-align: center;
+.sw-svg-value {
+  font-family: var(--mono); font-size: 10px; fill: var(--text);
 }
 .sw-chart-title {
   font-family: var(--mono); font-size: 11px; color: var(--muted);
@@ -2221,26 +2209,6 @@ html.compact .modal-card { padding: 19px; }
   margin-bottom: 8px;
 }
 .sw-chart-row { margin-bottom: 20px; }
-.sw-hbar-row {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 4px;
-}
-.sw-hbar-label {
-  width: 40px; flex-shrink: 0; text-align: right;
-  font-family: var(--mono); font-size: 11px; color: var(--muted);
-}
-.sw-hbar-track {
-  flex: 1; height: 22px; background: var(--surface2);
-  border-radius: 3px; overflow: hidden;
-}
-.sw-hbar-track .sw-bar {
-  width: var(--bar-pct, 2%); height: 100%;
-  border-radius: 3px; min-width: 2px;
-}
-.sw-hbar-value {
-  width: 110px; flex-shrink: 0;
-  font-family: var(--mono); font-size: 10px; color: var(--text);
-}
 
 .sweep-divider {
   border-top: 1px solid var(--border);
