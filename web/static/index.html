@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=39">
+<link rel="stylesheet" href="/static/style.css?v=40">
 </head>
 <body>
 
@@ -162,15 +162,13 @@
     </section>
     <section class="profile-section">
       <div class="profile-section-title">Stop Loss</div>
-      <div class="form-grid">
-        <div class="form-row">
-          <label class="checkbox-label"><input type="checkbox" id="de-sl-enabled" class="checkbox-accent" checked> Enabled</label>
-        </div>
-        <div class="form-row">
+      <div class="de-stack">
+        <label class="checkbox-label"><input type="checkbox" id="de-sl-enabled" class="checkbox-accent" checked> Enabled</label>
+        <div class="form-row form-row-wide">
           <label>Type</label>
           <select id="de-sl-type" class="modal-input"><option value="fixed">Fixed</option><option value="trailing">Trailing</option></select>
         </div>
-        <div class="form-row">
+        <div class="form-row form-row-wide">
           <label>Percentage %</label>
           <input id="de-sl-pct" type="number" step="0.1" min="0" value="5.0" class="modal-input">
         </div>
@@ -179,10 +177,8 @@
     </section>
     <section class="profile-section">
       <div class="profile-section-title">DCA</div>
-      <div class="form-grid">
-        <div class="form-row">
-          <label class="checkbox-label"><input type="checkbox" id="de-dca-enabled" class="checkbox-accent" checked> Enabled</label>
-        </div>
+      <label class="checkbox-label"><input type="checkbox" id="de-dca-enabled" class="checkbox-accent" checked> Enabled</label>
+      <div class="form-grid" id="de-dca-fields">
         <div class="form-row">
           <label>Order spacing %</label>
           <input id="de-dca-spacing" type="number" step="0.1" min="0" value="2.5" class="modal-input">
@@ -190,6 +186,10 @@
         <div class="form-row">
           <label>Volume scale</label>
           <input id="de-dca-mult" type="number" step="0.1" min="0.1" value="1.0" class="modal-input">
+        </div>
+        <div class="form-row">
+          <label>Step scale</label>
+          <input id="de-dca-step" type="number" step="0.1" min="0.1" value="1.0" class="modal-input">
         </div>
         <div class="form-row">
           <label>Max DCA orders</label>
@@ -1011,6 +1011,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=66"></script>
+<script src="/static/app.js?v=67"></script>
 </body>
 </html>

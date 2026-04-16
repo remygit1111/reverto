@@ -1917,10 +1917,13 @@ html.compact .modal-card { padding: 19px; }
   width: 32px; height: 28px;
   background: none; border: 1px solid var(--border);
   border-radius: 4px; padding: 0;
-  cursor: pointer; font-size: 13px; color: var(--muted);
+  cursor: pointer; font-size: 13px; line-height: 1;
+  color: var(--muted);
   transition: color 0.15s, border-color 0.15s;
 }
 .deal-btn:hover { color: var(--text); border-color: var(--text); }
+.de-stack { display: flex; flex-direction: column; gap: 8px; }
+.de-disabled { opacity: 0.4; pointer-events: none; }
 .deal-btn-cancel:hover { color: var(--red); border-color: var(--red); }
 .deal-btn-close:hover { color: var(--amber); border-color: var(--amber); }
 .deal-btn-edit:hover { color: var(--accent); border-color: var(--accent); }

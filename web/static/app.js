@@ -1258,56 +1258,68 @@ function _dealToast(msg, cls = 'toast-success') {
 }
 
 let _dealEditState = null;
+const _dealOverrideCache = {};
+
+function _deUpdateDcaDisabled() {
+  const fields = $('de-dca-fields');
+  if (fields) {
+    fields.classList.toggle('de-disabled', !$('de-dca-enabled').checked);
+  }
+}
 
 async function dealOpenEditModal(slug, dealId) {
   _dealEditState = { slug, dealId };
   $('deal-edit-title').textContent = `Edit Deal #${dealId}`;
 
-  // Default values — overwritten by live deal data if available
-  let tpEnabled = true, tpPct = 3.0;
-  let slEnabled = true, slType = 'fixed', slPct = 5.0;
-  let dcaEnabled = true, dcaSpacing = 2.5, dcaMult = 1.0, dcaMax = 4;
+  // Start from bot config defaults
+  const bc = (_detailConfigCache && _detailConfigCache.bot) || {};
+  const bcTp = bc.take_profit || {};
+  const bcSl = bc.stop_loss || {};
+  const bcDca = bc.dca || {};
+  let tpEnabled = bcTp.enabled !== false;
+  let tpPct = bcTp.target_pct || 3.0;
+  let slEnabled = bcSl.type !== 'none';
+  let slType = (bcSl.type && bcSl.type !== 'none') ? bcSl.type : 'fixed';
+  let slPct = bcSl.pct || 5.0;
+  let dcaEnabled = bcDca.enabled !== false;
+  let dcaSpacing = bcDca.order_spacing_pct || 2.5;
+  let dcaMult = bcDca.multiplier || 1.0;
+  let dcaStep = bcDca.step_scale != null ? bcDca.step_scale : 1.0;
+  let dcaMax = bcDca.max_orders ? Math.max(0, bcDca.max_orders - 1) : 4;
 
+  // Check local cache first (survives within the same page session)
+  const cached = _dealOverrideCache[dealId];
+  if (cached) {
+    if (cached.tp_enabled != null) tpEnabled = cached.tp_enabled;
+    if (cached.tp_target_pct != null) tpPct = cached.tp_target_pct;
+    if (cached.sl_enabled != null) slEnabled = cached.sl_enabled;
+    if (cached.sl_type) slType = cached.sl_type;
+    if (cached.sl_pct != null) slPct = cached.sl_pct;
+    if (cached.dca_enabled != null) dcaEnabled = cached.dca_enabled;
+  }
+
+  // Fetch live deal state (includes per-deal overrides from engine)
   try {
     const r = await fetch(`/api/bots/${slug}/deals/${dealId}`);
     if (r.ok) {
       const j = await r.json();
       const d = j.deal || {};
-      // Per-deal overrides take priority, then bot config
+      if (window._BT_DEBUG) console.log('[DEAL_EDIT] GET response:', d);
       const tpOv = d._tp_override;
       if (tpOv) {
-        tpEnabled = tpOv.enabled !== false;
+        if (tpOv.enabled != null) tpEnabled = tpOv.enabled;
         if (tpOv.target_pct != null) tpPct = tpOv.target_pct;
       }
       const slOv = d._sl_override;
       if (slOv) {
-        slEnabled = slOv.enabled !== false;
+        if (slOv.enabled != null) slEnabled = slOv.enabled;
         if (slOv.type) slType = slOv.type;
         if (slOv.pct != null) slPct = slOv.pct;
       }
       if (d._dca_enabled === false) dcaEnabled = false;
+      else if (d._dca_enabled === true) dcaEnabled = true;
     }
-  } catch (e) { /* use defaults */ }
-
-  // Also try to fill from bot config for fields not overridden
-  if (_detailConfigCache && _detailConfigCache.bot) {
-    const bc = _detailConfigCache.bot;
-    if (bc.take_profit) {
-      if (tpPct === 3.0 && bc.take_profit.target_pct) tpPct = bc.take_profit.target_pct;
-      if (bc.take_profit.enabled === false) tpEnabled = false;
-    }
-    if (bc.stop_loss) {
-      if (slPct === 5.0 && bc.stop_loss.pct) slPct = bc.stop_loss.pct;
-      if (bc.stop_loss.type && bc.stop_loss.type !== 'none') slType = bc.stop_loss.type;
-      if (bc.stop_loss.type === 'none') slEnabled = false;
-    }
-    if (bc.dca) {
-      if (bc.dca.order_spacing_pct) dcaSpacing = bc.dca.order_spacing_pct;
-      if (bc.dca.multiplier) dcaMult = bc.dca.multiplier;
-      if (bc.dca.max_orders) dcaMax = Math.max(0, bc.dca.max_orders - 1);
-      if (bc.dca.enabled === false) dcaEnabled = false;
-    }
-  }
+  } catch (e) { /* use defaults + cache */ }
 
   $('de-tp-enabled').checked = tpEnabled;
   $('de-tp-pct').value = tpPct;
@@ -1317,28 +1329,32 @@ async function dealOpenEditModal(slug, dealId) {
   $('de-dca-enabled').checked = dcaEnabled;
   $('de-dca-spacing').value = dcaSpacing;
   $('de-dca-mult').value = dcaMult;
+  $('de-dca-step').value = dcaStep;
   $('de-dca-max').value = dcaMax;
+  _deUpdateDcaDisabled();
   $('deal-edit-modal').classList.add('show');
 }
 
 async function dealSaveEdit() {
   if (!_dealEditState) return;
   const { slug, dealId } = _dealEditState;
+  const payload = {
+    tp_enabled: $('de-tp-enabled').checked,
+    tp_target_pct: parseFloat($('de-tp-pct').value),
+    sl_enabled: $('de-sl-enabled').checked,
+    sl_type: $('de-sl-type').value,
+    sl_pct: parseFloat($('de-sl-pct').value),
+    dca_enabled: $('de-dca-enabled').checked,
+  };
   try {
     const r = await fetch(`/api/bots/${slug}/deals/${dealId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tp_enabled: $('de-tp-enabled').checked,
-        tp_target_pct: parseFloat($('de-tp-pct').value),
-        sl_enabled: $('de-sl-enabled').checked,
-        sl_type: $('de-sl-type').value,
-        sl_pct: parseFloat($('de-sl-pct').value),
-        dca_enabled: $('de-dca-enabled').checked,
-      }),
+      body: JSON.stringify(payload),
     });
     if (r.status === 401) { _handle401(); return; }
     if (!r.ok) { _dealToast('Save failed', 'toast-warn'); return; }
+    _dealOverrideCache[dealId] = payload;
     _dealToast('Deal settings saved');
   } catch (e) { _dealToast('Network error', 'toast-warn'); }
   $('deal-edit-modal').classList.remove('show');
@@ -4994,6 +5010,8 @@ function setupEventListeners() {
   });
   const deSave = $('deal-edit-save-btn');
   if (deSave) deSave.addEventListener('click', dealSaveEdit);
+  const deDcaChk = $('de-dca-enabled');
+  if (deDcaChk) deDcaChk.addEventListener('change', _deUpdateDcaDisabled);
   const navBtBtn = $('nav-backtests-btn');
   if (navBtBtn) navBtBtn.addEventListener('click', () => goBacktests());
 
