@@ -2200,7 +2200,8 @@ html.compact .modal-card { padding: 19px; }
   align-items: center; min-width: 0;
 }
 .sw-bar {
-  width: 100%; min-height: 2px; border-radius: 2px 2px 0 0;
+  width: 100%; height: var(--bar-pct, 2%);
+  min-height: 2px; border-radius: 2px 2px 0 0;
   transition: height 0.2s;
 }
 .sw-bar-pos { background: var(--accent); }
@@ -2233,7 +2234,8 @@ html.compact .modal-card { padding: 19px; }
   border-radius: 3px; overflow: hidden;
 }
 .sw-hbar-track .sw-bar {
-  width: auto; height: 100%; border-radius: 3px; min-width: 2px;
+  width: var(--bar-pct, 2%); height: 100%;
+  border-radius: 3px; min-width: 2px;
 }
 .sw-hbar-value {
   width: 110px; flex-shrink: 0;
