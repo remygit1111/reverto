@@ -6571,6 +6571,12 @@ async function swRunSweep() {
   $('sw-results-header').textContent =
     `Sweep complete — ${configs.length} iterations in ${elapsed}s`;
   $('sw-results').classList.remove('hidden');
+  // Reset to Table tab active
+  document.querySelectorAll('.sweep-result-tabs .sweep-tab').forEach(t => t.classList.remove('active'));
+  const tableTab = document.querySelector('.sweep-result-tabs .sweep-tab[data-sw-view="table"]');
+  if (tableTab) tableTab.classList.add('active');
+  const swTbl = $('sw-view-table'); if (swTbl) swTbl.classList.remove('hidden');
+  const swCht = $('sw-view-chart'); if (swCht) swCht.classList.add('hidden');
   _swRenderResultsTable();
   _swRenderChart();
 
@@ -6658,88 +6664,99 @@ function _swRenderChart() {
   const area = $('sw-chart-area');
   if (!area || !_swRows.length) return;
 
-  function barChart(title, rows, valueKey) {
-    const values = rows.map(r => r[valueKey] || 0);
-    const maxAbs = Math.max(1e-12, ...values.map(v => Math.abs(v)));
-    const showEvery = rows.length > 30 ? Math.ceil(rows.length / 15) : 1;
-    const bars = rows.map((r, i) => {
-      const v = values[i];
-      const pct = Math.round(Math.abs(v) / maxAbs * 100);
-      const cls = v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg';
-      const lbl = i % showEvery === 0 ? (r.label || '') : '';
-      const fmtV = typeof v === 'number' ? (Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4)) : '—';
-      return `<div class="sw-bar-col" title="${safeText(r.label || '')}: ${fmtV}">` +
-        `<div class="sw-bar ${cls}" style="height:${Math.max(2, pct)}%"></div>` +
-        `<div class="sw-bar-label">${safeText(lbl)}</div>` +
-        `</div>`;
-    }).join('');
-    return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${bars}</div></div>`;
-  }
+  // Classify sweep type from labels
+  const dayRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/;
+  const hourRe = /^\d{2}:00$/;
+  const dayHourRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (\d{2}):00$/;
+  const isDayOnly  = _swRows.every(r => dayRe.test(r.label));
+  const isHourOnly = _swRows.every(r => hourRe.test(r.label));
+  const isDayHour  = _swRows.length > 7 && _swRows.some(r => dayHourRe.test(r.label));
 
-  // Detect schedule day×hour sweep (labels like "Mon 14:00")
-  const hasDayHour = _swRows.length > 30 && _swRows.some(r => /^[A-Z][a-z]{2} \d{2}:/.test(r.label));
-
-  if (hasDayHour) {
-    area.innerHTML = _swRenderHeatmap();
-    return;
-  }
-
-  const charts = [];
-  charts.push(barChart('PnL BTC per iteration', _swRows, 'total_pnl_btc'));
-  charts.push(barChart('Profit Factor per iteration', _swRows, 'profit_factor'));
-  area.innerHTML = charts.join('');
+  if (isDayHour) { area.innerHTML = _swBuildHeatmap(); return; }
+  if (isDayOnly)  { area.innerHTML = _swBuildHBar('PnL BTC per day', _swRows); return; }
+  if (isHourOnly) { area.innerHTML = _swBuildVBar('PnL BTC per hour', _swRows); return; }
+  // Default: vertical bar chart for TP/SL/DCA sweeps
+  area.innerHTML =
+    _swBuildVBar('PnL BTC per iteration', _swRows) +
+    _swBuildVBar('Profit Factor per iteration', _swRows, 'profit_factor');
 }
 
-function _swRenderHeatmap() {
-  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+// Vertical bar chart (good for ≤ 30 items)
+function _swBuildVBar(title, rows, key = 'total_pnl_btc') {
+  const vals = rows.map(r => typeof r[key] === 'number' ? r[key] : 0);
+  const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
+  const bars = rows.map((r, i) => {
+    const v = vals[i];
+    const pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
+    const cls = v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg';
+    const fv = Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4);
+    return `<div class="sw-bar-col" title="${safeText(r.label)}: ${fv}">` +
+      `<div class="sw-bar ${cls}" style="height:${pct}%"></div>` +
+      `<div class="sw-bar-label">${safeText(r.label)}</div></div>`;
+  }).join('');
+  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${bars}</div></div>`;
+}
+
+// Horizontal bar chart (good for labeled categories like days)
+function _swBuildHBar(title, rows) {
+  const vals = rows.map(r => r.total_pnl_btc || 0);
+  const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
+  const bars = rows.map((r, i) => {
+    const v = vals[i];
+    const pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
+    const cls = v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg';
+    const fv = v >= 0 ? '+' + v.toFixed(8) : v.toFixed(8);
+    return `<div class="sw-hbar-row">` +
+      `<div class="sw-hbar-label">${safeText(r.label)}</div>` +
+      `<div class="sw-hbar-track"><div class="sw-bar ${cls}" style="width:${pct}%"></div></div>` +
+      `<div class="sw-hbar-value">${fv}</div></div>`;
+  }).join('');
+  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>${bars}</div>`;
+}
+
+// Day × hour heatmap
+function _swBuildHeatmap() {
+  const dayOrder = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const dayMap = {}; dayOrder.forEach((d, i) => { dayMap[d] = i; });
   const grid = {};
   let minV = Infinity, maxV = -Infinity;
+  const dayHourRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (\d{2}):00$/;
   for (const r of _swRows) {
-    const m = r.label.match(/^([A-Z][a-z]{2})\s+(\d{2}):/);
+    const m = r.label.match(dayHourRe);
     if (!m) continue;
-    const day = m[1], hour = parseInt(m[2], 10);
+    const di = dayMap[m[1]], h = parseInt(m[2], 10);
     const v = r.total_pnl_btc || 0;
-    grid[`${day}_${hour}`] = v;
+    grid[`${di}_${h}`] = v;
     if (v < minV) minV = v;
     if (v > maxV) maxV = v;
   }
-  const range = Math.max(1e-12, Math.max(Math.abs(minV), Math.abs(maxV)));
-  const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  const hours = Array.from({length: 24}, (_, i) => i);
+  const range = Math.max(1e-12, Math.abs(maxV), Math.abs(minV));
 
-  function cellColor(v) {
+  function cc(v) {
     if (v >= 0) {
       const t = Math.min(1, v / range);
-      const g = Math.round(166 + t * 50);
-      return `rgba(38, ${g}, 154, ${0.15 + t * 0.7})`;
+      return `rgba(38,${Math.round(166 + t * 50)},154,${(0.15 + t * 0.7).toFixed(2)})`;
     }
     const t = Math.min(1, Math.abs(v) / range);
-    return `rgba(255, 77, 109, ${0.15 + t * 0.7})`;
+    return `rgba(255,77,109,${(0.15 + t * 0.7).toFixed(2)})`;
   }
 
   let cells = '';
-  for (const h of hours) {
-    for (const d of days) {
-      const v = grid[`${d}_${h}`] ?? 0;
-      const tip = `${d} ${String(h).padStart(2,'0')}:00: ${v >= 0 ? '+' : ''}${v.toFixed(8)} BTC`;
-      cells += `<div class="sw-hm-cell" style="background:${cellColor(v)}" title="${safeText(tip)}"></div>`;
+  for (let h = 0; h < 24; h++) {
+    for (let di = 0; di < 7; di++) {
+      const v = grid[`${di}_${h}`] ?? 0;
+      const tip = `${dayOrder[di]} ${String(h).padStart(2,'0')}:00: ${v >= 0 ? '+' : ''}${v.toFixed(8)} BTC`;
+      cells += `<div class="sw-hm-cell" style="background:${cc(v)}" title="${safeText(tip)}"></div>`;
     }
   }
 
-  const dayHeaders = days.map(d => `<div class="sw-hm-hdr">${d}</div>`).join('');
-  const hourLabels = hours.map(h => `<div class="sw-hm-ylbl">${String(h).padStart(2,'0')}</div>`).join('');
+  const dh = dayOrder.map(d => `<div class="sw-hm-hdr">${d}</div>`).join('');
+  const hl = Array.from({length:24},(_,h)=>`<div class="sw-hm-ylbl">${String(h).padStart(2,'0')}</div>`).join('');
 
-  return `<div class="sw-chart-row">` +
-    `<div class="sw-chart-title">PnL Heatmap — Days × Hours</div>` +
-    `<div class="sw-heatmap-wrap">` +
-      `<div class="sw-hm-ylabel">${hourLabels}</div>` +
-      `<div class="sw-hm-main">` +
-        `<div class="sw-hm-xheader">${dayHeaders}</div>` +
-        `<div class="sw-hm-grid">${cells}</div>` +
-      `</div>` +
-    `</div>` +
-    `<div class="sw-hm-legend"><span class="sw-hm-leg-neg">Loss</span> ← 0 → <span class="sw-hm-leg-pos">Profit</span></div>` +
-  `</div>`;
+  return `<div class="sw-chart-row"><div class="sw-chart-title">PnL Heatmap — Days × Hours</div>` +
+    `<div class="sw-heatmap-wrap"><div class="sw-hm-ylabel">${hl}</div>` +
+    `<div class="sw-hm-main"><div class="sw-hm-xheader">${dh}</div><div class="sw-hm-grid">${cells}</div></div></div>` +
+    `<div class="sw-hm-legend"><span class="sw-hm-leg-neg">Loss</span> ← 0 → <span class="sw-hm-leg-pos">Profit</span></div></div>`;
 }
 
 function btOpenWizardModal() {

@@ -2220,6 +2220,25 @@ html.compact .modal-card { padding: 19px; }
   margin-bottom: 8px;
 }
 .sw-chart-row { margin-bottom: 20px; }
+.sw-hbar-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 4px;
+}
+.sw-hbar-label {
+  width: 40px; flex-shrink: 0; text-align: right;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.sw-hbar-track {
+  flex: 1; height: 22px; background: var(--surface2);
+  border-radius: 3px; overflow: hidden;
+}
+.sw-hbar-track .sw-bar {
+  height: 100%; border-radius: 3px; min-width: 2px;
+}
+.sw-hbar-value {
+  width: 110px; flex-shrink: 0;
+  font-family: var(--mono); font-size: 10px; color: var(--text);
+}
 
 /* Heatmap for day × hour schedule sweep */
 .sw-heatmap-wrap {
