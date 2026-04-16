@@ -3233,6 +3233,7 @@ let _chartResizeObs = null;
 let _chartPendingDeal = null;
 let _chartDealMarkers = [];
 let _chartDealPriceLines = [];
+let _srLineSeries = [];
 // Indicator-driven markers (parabolic SAR + market structure) live here
 // so _setCombinedMarkers() can merge them with deal markers in a single
 // setMarkers() call — Lightweight Charts replaces the full array on each
@@ -3467,6 +3468,7 @@ function teardownChartTab() {
   // deliberately survives so showDealOnChart → showDTab → loadChartTab →
   // teardown → init can still re-apply the deal overlay after init.
   _chartDealPriceLines = [];
+  _srLineSeries = [];
   _chartDealMarkers = [];
   _chartIndicatorMarkers = [];
   // Annotations toolbar teardown — leaving the chart tab and coming back
@@ -3668,16 +3670,38 @@ function _renderIndicatorOverlays(candles) {
     _chartSeries.macdSignal.setData(m.signal);
     _chartSeries.macdHist.setData(m.histogram);
   }
-  // SUPPORT_RESISTANCE — static price lines
+  // SUPPORT_RESISTANCE — horizontal line segments from pivot to break
+  // Cleanup previous render
+  _srLineSeries.forEach(s => { try { _chartMain.removeSeries(s); } catch (e) {} });
+  _srLineSeries = [];
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
-  if (srCfg) {
+  if (srCfg && _chartMain) {
     const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15);
-    sr.support.forEach(lvl => {
-      _chartCandles.createPriceLine({ price: lvl, color: '#1e88e5', lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: 'S' });
-    });
-    sr.resistance.forEach(lvl => {
-      _chartCandles.createPriceLine({ price: lvl, color: '#e53935', lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: 'R' });
-    });
+    const lastTime = candles[candles.length - 1].time;
+    const renderLevels = (detailed, color, label) => {
+      for (const lv of detailed) {
+        const startI = lv.pivotIdx;
+        const endI = lv.breakIdx != null ? lv.breakIdx : candles.length - 1;
+        if (startI >= candles.length || endI < startI) continue;
+        const s = _chartMain.addLineSeries({
+          color, lineWidth: 2, lineStyle: 0,
+          priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        const data = [];
+        for (let j = startI; j <= endI && j < candles.length; j++) {
+          data.push({ time: candles[j].time, value: lv.price });
+        }
+        s.setData(data);
+        s.createPriceLine({
+          price: lv.price, color, lineWidth: 1, lineStyle: 0,
+          axisLabelVisible: true, title: label,
+        });
+        _srLineSeries.push(s);
+      }
+    };
+    renderLevels(sr.supportDetailed || [], '#1e88e5', 'S');
+    renderLevels(sr.resistanceDetailed || [], '#e53935', 'R');
   }
   // QFL — base price lines
   const qflCfg = _findIndicator('QFL');
@@ -5036,13 +5060,28 @@ function calcSR(candles, leftBars, rightBars) {
         lo[i] < Math.min(...lo.slice(i + 1, i + rightBars + 1)))
       supPivots.push({ idx: i, price: lo[i] });
   }
-  const activeRes = resPivots
-    .filter(p => !cl.slice(p.idx + 1).some(c => c > p.price))
-    .map(p => p.price);
-  const activeSup = supPivots
-    .filter(p => !cl.slice(p.idx + 1).some(c => c < p.price))
-    .map(p => p.price);
-  return { support: activeSup, resistance: activeRes };
+  function breakIdx(pivotIdx, price, above) {
+    for (let j = pivotIdx + 1; j < n; j++) {
+      if (above && cl[j] > price) return j;
+      if (!above && cl[j] < price) return j;
+    }
+    return null;
+  }
+  const resDetailed = resPivots.map(p => ({
+    price: p.price, pivotIdx: p.idx,
+    breakIdx: breakIdx(p.idx, p.price, true),
+  }));
+  const supDetailed = supPivots.map(p => ({
+    price: p.price, pivotIdx: p.idx,
+    breakIdx: breakIdx(p.idx, p.price, false),
+  }));
+  // Simple API: active prices only (for backtest engine conditions)
+  const activeRes = resDetailed.filter(p => p.breakIdx === null).map(p => p.price);
+  const activeSup = supDetailed.filter(p => p.breakIdx === null).map(p => p.price);
+  return {
+    support: activeSup, resistance: activeRes,
+    supportDetailed: supDetailed, resistanceDetailed: resDetailed,
+  };
 }
 
 function calcQFL(closes, lookback, crackPct, baseCandles, maxBases) {
