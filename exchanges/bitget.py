@@ -3,8 +3,11 @@
 # Handles inverse perpetual BTC/USD contracts.
 
 import ccxt
+import logging
 from typing import Optional
 from exchanges.base_exchange import BaseExchange, Position, Order, Ticker
+
+logger = logging.getLogger(__name__)
 
 
 class BitgetExchange(BaseExchange):
@@ -88,7 +91,8 @@ class BitgetExchange(BaseExchange):
         try:
             self.client.cancel_order(order_id, self._symbol(symbol))
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("Bitget cancel_order failed for %s: %s", order_id, e)
             return False
 
     def get_open_orders(self, symbol: str) -> list[Order]:
@@ -99,7 +103,8 @@ class BitgetExchange(BaseExchange):
         try:
             self.client.set_leverage(leverage, self._symbol(symbol))
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("Bitget set_leverage failed for %s: %s", symbol, e)
             return False
 
     def _parse_order(self, raw: dict, symbol: str) -> Order:
