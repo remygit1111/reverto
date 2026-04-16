@@ -2097,7 +2097,6 @@ function nbIndicatorFieldsHtml(ind, i) {
   if (ind.type === 'SUPPORT_RESISTANCE') {
     const lbars = ind.left_bars != null ? ind.left_bars : 15;
     const rbars = ind.right_bars != null ? ind.right_bars : 15;
-    const tol = ind.tolerance_pct != null ? ind.tolerance_pct : 0.5;
     const prox = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
     const val = ind.value || 'resistance';
     const SR_CONDS = [
@@ -2123,10 +2122,6 @@ function nbIndicatorFieldsHtml(ind, i) {
           <option value="support" ${val === 'support' ? 'selected' : ''}>Support</option>
           <option value="resistance" ${val === 'resistance' ? 'selected' : ''}>Resistance</option>
         </select>
-      </div>
-      <div class="form-row">
-        <label>Tolerance %</label>
-        <input type="number" min="0" step="0.1" value="${tol}" data-nb-ind="${i}" data-nb-field="tolerance_pct">
       </div>
       <div class="form-row">
         <label>Proximity %</label>
@@ -2572,9 +2567,8 @@ function nbBuildBotConfig() {
           out.condition = i.condition || 'bullish_bos';
           if (i.value) out.value = i.value;
         } else if (i.type === 'SUPPORT_RESISTANCE') {
-          if (i.left_bars != null) out.left_bars = i.left_bars;
-          if (i.right_bars != null) out.right_bars = i.right_bars;
-          out.tolerance_pct = i.tolerance_pct != null ? i.tolerance_pct : 0.5;
+          out.left_bars = i.left_bars != null ? i.left_bars : 15;
+          out.right_bars = i.right_bars != null ? i.right_bars : 15;
           out.proximity_pct = i.proximity_pct != null ? i.proximity_pct : 1.0;
           out.condition = i.condition || 'price_crossing_down';
           if (i.value) out.value = i.value;
@@ -3677,10 +3671,7 @@ function _renderIndicatorOverlays(candles) {
   // SUPPORT_RESISTANCE — static price lines
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg) {
-    const lookback = srCfg.lookback || 3;
-    const tol = srCfg.tolerance_pct || 0.5;
-    const closes = candles.map(c => c.close);
-    const sr = calcSR(closes, lookback, tol);
+    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15);
     sr.support.slice(-3).forEach(lvl => {
       _chartCandles.createPriceLine({ price: lvl, color: _cssVar('--accent', '#26a69a'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'S' });
     });
@@ -4846,10 +4837,8 @@ function renderWizardOverlays() {
           if (st && st.bear) _addWizardLineSeries(st.bear, red,    2);
         }
       } else if (t === 'SUPPORT_RESISTANCE') {
-        const lookback  = Number(ind.lookback) || 3;
-        const tolerance = Number(ind.tolerance_pct) || 0.5;
-        if (typeof calcSR === 'function') {
-          const sr = calcSR(highs, lows, closes, lookback, tolerance);
+        if (typeof calcSR === 'function' && _wizardCandleCache) {
+          const sr = calcSR(_wizardCandleCache, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15);
           if (sr) {
             for (const lvl of (sr.support || [])) _addWizardPriceLine(lvl, accent, 'S');
             for (const lvl of (sr.resistance || [])) _addWizardPriceLine(lvl, red, 'R');
@@ -5030,31 +5019,30 @@ function calcSupertrendLines(candles, atrPeriod, multiplier) {
   };
 }
 
-function calcSR(closes, lookback, tolerancePct) {
-  // Mirrors strategies/indicators/support_resistance.py. Returns
-  // {support: [levels], resistance: [levels]} clustered.
-  const highs = [], lows = [];
-  for (let i = lookback; i < closes.length - lookback; i++) {
-    const pivot = closes[i];
-    const left  = closes.slice(i - lookback, i);
-    const right = closes.slice(i + 1, i + 1 + lookback);
-    if (left.every(x => pivot > x) && right.every(x => pivot > x)) highs.push(pivot);
-    else if (left.every(x => pivot < x) && right.every(x => pivot < x)) lows.push(pivot);
+function calcSR(candles, leftBars, rightBars) {
+  // Wick-based pivot S&R — matches support_resistance.py.
+  // Returns {support: [prices], resistance: [prices]} with broken
+  // levels filtered out.
+  const n = candles.length;
+  const hi = candles.map(c => c.high || c.close);
+  const lo = candles.map(c => c.low || c.close);
+  const cl = candles.map(c => c.close);
+  const resPivots = [], supPivots = [];
+  for (let i = leftBars; i < n - rightBars; i++) {
+    if (hi[i] > Math.max(...hi.slice(i - leftBars, i)) &&
+        hi[i] > Math.max(...hi.slice(i + 1, i + rightBars + 1)))
+      resPivots.push({ idx: i, price: hi[i] });
+    if (lo[i] < Math.min(...lo.slice(i - leftBars, i)) &&
+        lo[i] < Math.min(...lo.slice(i + 1, i + rightBars + 1)))
+      supPivots.push({ idx: i, price: lo[i] });
   }
-  const cluster = (levels) => {
-    const out = [];
-    for (const lvl of levels) {
-      let merged = false;
-      for (let i = 0; i < out.length; i++) {
-        if (out[i] === 0) continue;
-        const diffPct = Math.abs(lvl - out[i]) / out[i] * 100;
-        if (diffPct <= tolerancePct) { out[i] = lvl; merged = true; break; }
-      }
-      if (!merged) out.push(lvl);
-    }
-    return out;
-  };
-  return { support: cluster(lows), resistance: cluster(highs) };
+  const activeRes = resPivots
+    .filter(p => !cl.slice(p.idx + 1).some(c => c > p.price))
+    .map(p => p.price);
+  const activeSup = supPivots
+    .filter(p => !cl.slice(p.idx + 1).some(c => c < p.price))
+    .map(p => p.price);
+  return { support: activeSup, resistance: activeRes };
 }
 
 function calcQFL(closes, lookback, crackPct, baseCandles, maxBases) {
@@ -5950,23 +5938,22 @@ class RevertoBacktest {
           else if (cond === 'lower_high' && lastHi.length >= 2 && lastHi[lastHi.length-1].v < lastHi[lastHi.length-2].v) arr[i] = true;
         }
       } else if (type === 'SUPPORT_RESISTANCE') {
-        const lb = ind.left_bars || ind.lookback || 3;
-        const rb = ind.right_bars || ind.lookback || 3;
-        const tolPct = ind.tolerance_pct != null ? ind.tolerance_pct : 0.5;
+        const lb = ind.left_bars || 15;
+        const rb = ind.right_bars || 15;
         const proxPct = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
-        const cond = ind.condition || 'near_support';
+        const cond = ind.condition || 'price_crossing_down';
         const val = ind.value || 'resistance';
-        const closes = this.candles.map(c => c.close);
-        const sr = calcSR(closes, Math.min(lb, rb), tolPct);
+        const sr = calcSR(this.candles, lb, rb);
         const levels = val === 'support' ? sr.support : sr.resistance;
+        const closes = this.candles.map(c => c.close);
         for (let i = 1; i < n; i++) {
           const c = closes[i], p = closes[i - 1];
-          if (cond === 'price_crossing_up' && levels.some(lv => p < lv && c > lv)) arr[i] = true;
-          else if (cond === 'price_crossing_down' && levels.some(lv => p > lv && c < lv)) arr[i] = true;
+          if (cond === 'price_crossing_up' && levels.some(lv => p < lv && lv <= c)) arr[i] = true;
+          else if (cond === 'price_crossing_down' && levels.some(lv => p > lv && lv >= c)) arr[i] = true;
           else if (cond === 'price_greater_than' && levels.some(lv => c > lv)) arr[i] = true;
           else if (cond === 'price_lower_than' && levels.some(lv => c < lv)) arr[i] = true;
-          else if (cond === 'near_support' && sr.support.some(s => Math.abs(c - s) / s * 100 <= proxPct)) arr[i] = true;
-          else if (cond === 'near_resistance' && sr.resistance.some(r => Math.abs(c - r) / r * 100 <= proxPct)) arr[i] = true;
+          else if (cond === 'near_support' && sr.support.some(s => s > 0 && Math.abs(c - s) / s * 100 <= proxPct)) arr[i] = true;
+          else if (cond === 'near_resistance' && sr.resistance.some(r => r > 0 && Math.abs(c - r) / r * 100 <= proxPct)) arr[i] = true;
           else if (cond === 'below_support' && sr.support.length && c < Math.min(...sr.support)) arr[i] = true;
           else if (cond === 'above_resistance' && sr.resistance.length && c > Math.max(...sr.resistance)) arr[i] = true;
         }

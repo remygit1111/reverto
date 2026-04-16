@@ -1,0 +1,36 @@
+bot:
+  name: SR test
+  mode: paper
+  exchange: bitget
+  pair: BTC/USD
+  contract_type: inverse_perpetual
+  leverage:
+    enabled: false
+    size: 1
+  dca:
+    enabled: true
+    base_order_size: 0.001
+    max_orders: 5
+    order_spacing_pct: 2.5
+    multiplier: 1
+    step_scale: 1
+  entry:
+    indicators:
+    - type: SUPPORT_RESISTANCE
+      left_bars: 15
+      right_bars: 15
+      proximity_pct: 1
+      condition: price_crossing_down
+      value: resistance
+  take_profit:
+    enabled: true
+    target_pct: 3
+  stop_loss:
+    type: none
+    pct: 5
+  use_wick_simulation: true
+  schedule:
+    enabled: false
+    timezone: Europe/Amsterdam
+    trading_windows: []
+    blackout_dates: []
