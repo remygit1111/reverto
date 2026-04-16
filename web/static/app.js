@@ -6658,17 +6658,17 @@ function _swRenderChart() {
   const area = $('sw-chart-area');
   if (!area || !_swRows.length) return;
 
-  function barChart(title, rows, valueKey, labelKey) {
+  function barChart(title, rows, valueKey) {
     const values = rows.map(r => r[valueKey] || 0);
     const maxAbs = Math.max(1e-12, ...values.map(v => Math.abs(v)));
+    const showEvery = rows.length > 30 ? Math.ceil(rows.length / 15) : 1;
     const bars = rows.map((r, i) => {
       const v = values[i];
       const pct = Math.round(Math.abs(v) / maxAbs * 100);
       const cls = v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg';
-      const lbl = r[labelKey] || r.label || '';
+      const lbl = i % showEvery === 0 ? (r.label || '') : '';
       const fmtV = typeof v === 'number' ? (Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4)) : '—';
-      return `<div class="sw-bar-col">` +
-        `<div class="sw-bar-value">${fmtV}</div>` +
+      return `<div class="sw-bar-col" title="${safeText(r.label || '')}: ${fmtV}">` +
         `<div class="sw-bar ${cls}" style="height:${Math.max(2, pct)}%"></div>` +
         `<div class="sw-bar-label">${safeText(lbl)}</div>` +
         `</div>`;
@@ -6676,11 +6676,70 @@ function _swRenderChart() {
     return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${bars}</div></div>`;
   }
 
+  // Detect schedule day×hour sweep (labels like "Mon 14:00")
+  const hasDayHour = _swRows.length > 30 && _swRows.some(r => /^[A-Z][a-z]{2} \d{2}:/.test(r.label));
+
+  if (hasDayHour) {
+    area.innerHTML = _swRenderHeatmap();
+    return;
+  }
+
   const charts = [];
-  charts.push(barChart('PnL BTC per iteration', _swRows, 'total_pnl_btc', 'label'));
-  charts.push(barChart('Profit Factor per iteration', _swRows, 'profit_factor', 'label'));
-  charts.push(barChart('Win Rate % per iteration', _swRows, 'win_rate', 'label'));
+  charts.push(barChart('PnL BTC per iteration', _swRows, 'total_pnl_btc'));
+  charts.push(barChart('Profit Factor per iteration', _swRows, 'profit_factor'));
   area.innerHTML = charts.join('');
+}
+
+function _swRenderHeatmap() {
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const grid = {};
+  let minV = Infinity, maxV = -Infinity;
+  for (const r of _swRows) {
+    const m = r.label.match(/^([A-Z][a-z]{2})\s+(\d{2}):/);
+    if (!m) continue;
+    const day = m[1], hour = parseInt(m[2], 10);
+    const v = r.total_pnl_btc || 0;
+    grid[`${day}_${hour}`] = v;
+    if (v < minV) minV = v;
+    if (v > maxV) maxV = v;
+  }
+  const range = Math.max(1e-12, Math.max(Math.abs(minV), Math.abs(maxV)));
+  const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const hours = Array.from({length: 24}, (_, i) => i);
+
+  function cellColor(v) {
+    if (v >= 0) {
+      const t = Math.min(1, v / range);
+      const g = Math.round(166 + t * 50);
+      return `rgba(38, ${g}, 154, ${0.15 + t * 0.7})`;
+    }
+    const t = Math.min(1, Math.abs(v) / range);
+    return `rgba(255, 77, 109, ${0.15 + t * 0.7})`;
+  }
+
+  let cells = '';
+  for (const h of hours) {
+    for (const d of days) {
+      const v = grid[`${d}_${h}`] ?? 0;
+      const tip = `${d} ${String(h).padStart(2,'0')}:00: ${v >= 0 ? '+' : ''}${v.toFixed(8)} BTC`;
+      cells += `<div class="sw-hm-cell" style="background:${cellColor(v)}" title="${safeText(tip)}"></div>`;
+    }
+  }
+
+  const dayHeaders = days.map(d => `<div class="sw-hm-hdr">${d}</div>`).join('');
+  const hourLabels = hours.map(h => `<div class="sw-hm-ylbl">${String(h).padStart(2,'0')}</div>`).join('');
+
+  return `<div class="sw-chart-row">` +
+    `<div class="sw-chart-title">PnL Heatmap — Days × Hours</div>` +
+    `<div class="sw-heatmap-wrap">` +
+      `<div class="sw-hm-ylabel">${hourLabels}</div>` +
+      `<div class="sw-hm-main">` +
+        `<div class="sw-hm-xheader">${dayHeaders}</div>` +
+        `<div class="sw-hm-grid">${cells}</div>` +
+      `</div>` +
+    `</div>` +
+    `<div class="sw-hm-legend"><span class="sw-hm-leg-neg">Loss</span> ← 0 → <span class="sw-hm-leg-pos">Profit</span></div>` +
+  `</div>`;
 }
 
 function btOpenWizardModal() {
@@ -6800,17 +6859,29 @@ function _btRenderHistoryTable() {
   // Gear toggle for column visibility
   const gearEl = $('bt-history-gear-menu');
   if (gearEl) {
-    gearEl.innerHTML = BT_HISTORY_COLUMNS.map(col => {
+    const allOn = visCols.length === BT_HISTORY_COLUMNS.length;
+    const toggleLabel = allOn ? 'Deselect All' : 'Select All';
+    const checks = BT_HISTORY_COLUMNS.map(col => {
       const checked = visCols.some(v => v.key === col.key) ? ' checked' : '';
-      return `<label class="cog-option"><input type="checkbox" data-hist-col="${col.key}"${checked}> ${safeText(col.label)}</label>`;
+      return `<label><input type="checkbox" data-hist-col="${col.key}"${checked}> ${safeText(col.label)}</label>`;
     }).join('');
+    gearEl.innerHTML =
+      `<div class="bt-hist-col-actions"><button id="bt-hist-toggle-all">${toggleLabel}</button></div>` +
+      `<div class="bt-hist-col-grid">${checks}</div>`;
+    const saveAndRerender = () => {
+      const keys = [];
+      gearEl.querySelectorAll('input[data-hist-col]:checked').forEach(c => keys.push(c.dataset.histCol));
+      _btHistSaveColPref(keys);
+      _btRenderHistoryTable();
+    };
     gearEl.querySelectorAll('input[data-hist-col]').forEach(chk => {
-      chk.addEventListener('change', () => {
-        const keys = [];
-        gearEl.querySelectorAll('input[data-hist-col]:checked').forEach(c => keys.push(c.dataset.histCol));
-        _btHistSaveColPref(keys);
-        _btRenderHistoryTable();
-      });
+      chk.addEventListener('change', saveAndRerender);
+    });
+    const toggleBtn = $('bt-hist-toggle-all');
+    if (toggleBtn) toggleBtn.addEventListener('click', () => {
+      const nowAll = gearEl.querySelectorAll('input[data-hist-col]:checked').length === BT_HISTORY_COLUMNS.length;
+      gearEl.querySelectorAll('input[data-hist-col]').forEach(c => { c.checked = !nowAll; });
+      saveAndRerender();
     });
   }
 
