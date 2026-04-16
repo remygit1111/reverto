@@ -5792,10 +5792,10 @@ class RevertoBacktest {
               if (newSar < price) { trend = 1; sar = ep; ep = price; af = iaf; }
               else { sar = newSar; if (price < ep) { ep = price; af = Math.min(af + iaf, maf); } }
             }
-            if (cond === 'bullish' && trend === 1) arr[i] = true;
-            else if (cond === 'bearish' && trend === -1) arr[i] = true;
-            else if (cond === 'bullish_flip' && prevTrend === -1 && trend === 1) arr[i] = true;
-            else if (cond === 'bearish_flip' && prevTrend === 1 && trend === -1) arr[i] = true;
+            if ((cond === 'bullish' || cond === 'price_greater_than') && trend === 1) arr[i] = true;
+            else if ((cond === 'bearish' || cond === 'price_lower_than') && trend === -1) arr[i] = true;
+            else if ((cond === 'bullish_flip' || cond === 'price_crossing_up') && prevTrend === -1 && trend === 1) arr[i] = true;
+            else if ((cond === 'bearish_flip' || cond === 'price_crossing_down') && prevTrend === 1 && trend === -1) arr[i] = true;
           }
         }
       } else if (type === 'SUPERTREND') {
@@ -5823,8 +5823,8 @@ class RevertoBacktest {
             }
             if (cond === 'bullish' && trend === 1) arr[i] = true;
             else if (cond === 'bearish' && trend === -1) arr[i] = true;
-            else if (cond === 'bullish_flip' && pT === -1 && trend === 1) arr[i] = true;
-            else if (cond === 'bearish_flip' && pT === 1 && trend === -1) arr[i] = true;
+            else if ((cond === 'bullish_flip' || cond === 'from_down_to_up') && pT === -1 && trend === 1) arr[i] = true;
+            else if ((cond === 'bearish_flip' || cond === 'from_up_to_down') && pT === 1 && trend === -1) arr[i] = true;
             pFU = fU; pFL = fL; pT = trend;
           }
         }
@@ -5848,15 +5848,22 @@ class RevertoBacktest {
           else if (cond === 'lower_high' && lastHi.length >= 2 && lastHi[lastHi.length-1].v < lastHi[lastHi.length-2].v) arr[i] = true;
         }
       } else if (type === 'SUPPORT_RESISTANCE') {
-        const lb = ind.lookback != null ? ind.lookback : 3;
+        const lb = ind.left_bars || ind.lookback || 3;
+        const rb = ind.right_bars || ind.lookback || 3;
         const tolPct = ind.tolerance_pct != null ? ind.tolerance_pct : 0.5;
         const proxPct = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
         const cond = ind.condition || 'near_support';
+        const val = ind.value || 'resistance';
         const closes = this.candles.map(c => c.close);
-        const sr = calcSR(closes, lb, tolPct);
-        for (let i = 0; i < n; i++) {
-          const c = closes[i];
-          if (cond === 'near_support' && sr.support.some(s => Math.abs(c - s) / s * 100 <= proxPct)) arr[i] = true;
+        const sr = calcSR(closes, Math.min(lb, rb), tolPct);
+        const levels = val === 'support' ? sr.support : sr.resistance;
+        for (let i = 1; i < n; i++) {
+          const c = closes[i], p = closes[i - 1];
+          if (cond === 'price_crossing_up' && levels.some(lv => p < lv && c > lv)) arr[i] = true;
+          else if (cond === 'price_crossing_down' && levels.some(lv => p > lv && c < lv)) arr[i] = true;
+          else if (cond === 'price_greater_than' && levels.some(lv => c > lv)) arr[i] = true;
+          else if (cond === 'price_lower_than' && levels.some(lv => c < lv)) arr[i] = true;
+          else if (cond === 'near_support' && sr.support.some(s => Math.abs(c - s) / s * 100 <= proxPct)) arr[i] = true;
           else if (cond === 'near_resistance' && sr.resistance.some(r => Math.abs(c - r) / r * 100 <= proxPct)) arr[i] = true;
           else if (cond === 'below_support' && sr.support.length && c < Math.min(...sr.support)) arr[i] = true;
           else if (cond === 'above_resistance' && sr.resistance.length && c > Math.max(...sr.resistance)) arr[i] = true;
