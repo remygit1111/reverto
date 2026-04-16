@@ -5684,7 +5684,7 @@ class RevertoBacktest {
       const type = ind.type;
       if (type === 'RSI') {
         const period = ind.period || 14;
-        const thr = (ind.threshold || 'below_30').toString();
+        const thr = (ind.threshold || 'below_35').toString();
         const m = thr.match(/^([a-z_]+)_(\d+)/i);
         const cond  = m ? m[1] : 'below';
         const value = m ? parseInt(m[2], 10) : 30;
@@ -5717,8 +5717,8 @@ class RevertoBacktest {
           arr[i] = hit;
         }
       } else if (type === 'EMA_CROSS') {
-        const fast = ind.fast || 12;
-        const slow = ind.slow || 26;
+        const fast = ind.fast || 9;
+        const slow = ind.slow || 21;
         const fastLine = calcEMALine(this.candles, fast);
         const slowLine = calcEMALine(this.candles, slow);
         const fastMap = new Map(fastLine.map(p => [p.time, p.value]));
@@ -5740,20 +5740,37 @@ class RevertoBacktest {
         const fast   = ind.macd_fast   || 12;
         const slow   = ind.macd_slow   || 26;
         const signal = ind.macd_signal || 9;
-        const { histogram } = calcMACDLines(this.candles, fast, slow, signal);
-        const histMap = new Map(histogram.map(p => [p.time, p.value]));
+        const cond   = ind.condition || 'histogram_positive';
+        const macdData = calcMACDLines(this.candles, fast, slow, signal);
+        const histMap = new Map(macdData.histogram.map(p => [p.time, p.value]));
+        const macdMap = new Map(macdData.macd.map(p => [p.time, p.value]));
+        const sigMap  = new Map(macdData.signal.map(p => [p.time, p.value]));
         for (let i = 0; i < n; i++) {
-          const v = histMap.get(this.candles[i].time);
-          if (v != null && v > 0) arr[i] = true;
+          const t = this.candles[i].time;
+          const h = histMap.get(t), m = macdMap.get(t), s = sigMap.get(t);
+          if (cond === 'histogram_positive' && h != null && h > 0) arr[i] = true;
+          else if (cond === 'histogram_negative' && h != null && h < 0) arr[i] = true;
+          else if (cond === 'macd_above_signal' && m != null && s != null && m > s) arr[i] = true;
+          else if (cond === 'macd_below_signal' && m != null && s != null && m < s) arr[i] = true;
         }
       } else if (type === 'BOLLINGER') {
         const period = ind.period || 20;
         const mult = ind.multiplier != null ? ind.multiplier : 2.0;
+        const cond = ind.condition || 'price_below_lower';
         const bb = calcBollingerLines(this.candles, period, mult);
-        const lowerMap = new Map(bb.lower.map(p => [p.time, p.value]));
+        const upperMap  = new Map(bb.upper.map(p => [p.time, p.value]));
+        const middleMap = new Map(bb.middle.map(p => [p.time, p.value]));
+        const lowerMap  = new Map(bb.lower.map(p => [p.time, p.value]));
         for (let i = 0; i < n; i++) {
-          const v = lowerMap.get(this.candles[i].time);
-          if (v != null && this.candles[i].close < v) arr[i] = true;
+          const t = this.candles[i].time, c = this.candles[i].close;
+          const lo = lowerMap.get(t), mid = middleMap.get(t), up = upperMap.get(t);
+          if (cond === 'price_below_lower'  && lo != null && c < lo) arr[i] = true;
+          else if (cond === 'price_above_upper'  && up != null && c > up) arr[i] = true;
+          else if (cond === 'price_above_middle' && mid != null && c > mid) arr[i] = true;
+          else if (cond === 'price_below_middle' && mid != null && c < mid) arr[i] = true;
+          else if (cond === 'squeeze' && lo != null && up != null && mid != null && mid > 0) {
+            if ((up - lo) / mid < 0.02) arr[i] = true;
+          }
         }
       } else {
         // SUPERTREND, PARABOLIC_SAR, MARKET_STRUCTURE,
