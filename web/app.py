@@ -1906,6 +1906,15 @@ async def api_deal_get(
     slug: str, deal_id: str, request: Request,
     actor: str = Depends(_request_actor),
 ):
+    # Prefer the live state file for open deals — it carries per-deal
+    # overrides (_tp_override, _sl_override, _dca_enabled) that the
+    # DB row doesn't track. Fall back to the DB for closed deals.
+    bot = await registry.get(slug)
+    if bot:
+        state = bot.read_state()
+        for d in state.get("open_deals", []):
+            if d.get("id") == deal_id:
+                return {"deal": d, "orders": d.get("orders", [])}
     rows = await asyncio.to_thread(deal_store.get_deals, bot_slug=slug)
     deal = next((d for d in rows if d["id"] == deal_id), None)
     if not deal:
