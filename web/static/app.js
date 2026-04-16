@@ -5146,6 +5146,15 @@ function calcSR(candles, leftBars, rightBars, maxLevels, mergePct) {
   supDetailed = mergeNearby(supDetailed).slice(-ml);
   const activeRes = resDetailed.filter(p => p.breakIdx === null).map(p => p.price);
   const activeSup = supDetailed.filter(p => p.breakIdx === null).map(p => p.price);
+  if (window._BT_DEBUG) {
+    const fmt = (arr) => arr.map(lv => ({
+      price: lv.price, pivotIdx: lv.pivotIdx, breakIdx: lv.breakIdx,
+      pivotTime: candles[lv.pivotIdx] && candles[lv.pivotIdx].time,
+      breakTime: lv.breakIdx != null && candles[lv.breakIdx] ? candles[lv.breakIdx].time : 'ACTIVE',
+    }));
+    console.log('[S&R DEBUG] resistance:', fmt(resDetailed));
+    console.log('[S&R DEBUG] support:', fmt(supDetailed));
+  }
   return {
     support: activeSup, resistance: activeRes,
     supportDetailed: supDetailed, resistanceDetailed: resDetailed,
