@@ -5772,11 +5772,111 @@ class RevertoBacktest {
             if ((up - lo) / mid < 0.02) arr[i] = true;
           }
         }
+      } else if (type === 'PARABOLIC_SAR') {
+        const iaf = ind.initial_af != null ? ind.initial_af : 0.02;
+        const maf = ind.max_af != null ? ind.max_af : 0.20;
+        const cond = ind.condition || 'bullish';
+        const closes = this.candles.map(c => c.close);
+        if (closes.length >= 10) {
+          let trend, ep, sar, af = iaf;
+          if (closes[1] >= closes[0]) { trend = 1; ep = closes[1]; sar = closes[0]; }
+          else { trend = -1; ep = closes[1]; sar = closes[0]; }
+          for (let i = 2; i < n; i++) {
+            const prevTrend = trend;
+            const price = closes[i];
+            const newSar = sar + af * (ep - sar);
+            if (trend === 1) {
+              if (newSar > price) { trend = -1; sar = ep; ep = price; af = iaf; }
+              else { sar = newSar; if (price > ep) { ep = price; af = Math.min(af + iaf, maf); } }
+            } else {
+              if (newSar < price) { trend = 1; sar = ep; ep = price; af = iaf; }
+              else { sar = newSar; if (price < ep) { ep = price; af = Math.min(af + iaf, maf); } }
+            }
+            if (cond === 'bullish' && trend === 1) arr[i] = true;
+            else if (cond === 'bearish' && trend === -1) arr[i] = true;
+            else if (cond === 'bullish_flip' && prevTrend === -1 && trend === 1) arr[i] = true;
+            else if (cond === 'bearish_flip' && prevTrend === 1 && trend === -1) arr[i] = true;
+          }
+        }
+      } else if (type === 'SUPERTREND') {
+        const atrP = ind.atr_period != null ? ind.atr_period : 10;
+        const mult = ind.multiplier != null ? ind.multiplier : 3.0;
+        const cond = ind.condition || 'bullish';
+        const highs = this.candles.map(c => c.high), lows = this.candles.map(c => c.low);
+        const closes = this.candles.map(c => c.close);
+        if (n > atrP + 1) {
+          const tr = new Array(n).fill(0);
+          for (let i = 1; i < n; i++) tr[i] = Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1]));
+          const atr = new Array(n).fill(0);
+          let s = 0; for (let i = 1; i <= atrP; i++) s += tr[i]; atr[atrP] = s / atrP;
+          for (let i = atrP+1; i < n; i++) atr[i] = (atr[i-1]*(atrP-1)+tr[i])/atrP;
+          let pFU = 0, pFL = 0, pT = 1;
+          for (let i = atrP; i < n; i++) {
+            const mid = (highs[i]+lows[i])/2;
+            const bU = mid + mult*atr[i], bL = mid - mult*atr[i];
+            let fU, fL, trend;
+            if (i === atrP) { fU = bU; fL = bL; trend = closes[i] > bU ? 1 : -1; }
+            else {
+              fU = (bU < pFU || closes[i-1] > pFU) ? bU : pFU;
+              fL = (bL > pFL || closes[i-1] < pFL) ? bL : pFL;
+              trend = pT === 1 ? (closes[i] < fL ? -1 : 1) : (closes[i] > fU ? 1 : -1);
+            }
+            if (cond === 'bullish' && trend === 1) arr[i] = true;
+            else if (cond === 'bearish' && trend === -1) arr[i] = true;
+            else if (cond === 'bullish_flip' && pT === -1 && trend === 1) arr[i] = true;
+            else if (cond === 'bearish_flip' && pT === 1 && trend === -1) arr[i] = true;
+            pFU = fU; pFL = fL; pT = trend;
+          }
+        }
+      } else if (type === 'MARKET_STRUCTURE') {
+        const lb = ind.lookback != null ? ind.lookback : 3;
+        const cond = ind.condition || 'bullish_bos';
+        const closes = this.candles.map(c => c.close);
+        const swHi = [], swLo = [];
+        for (let i = lb; i < n - lb; i++) {
+          const p = closes[i];
+          const left = closes.slice(i-lb, i), right = closes.slice(i+1, i+1+lb);
+          if (left.every(x => p > x) && right.every(x => p > x)) swHi.push({ i, v: p });
+          else if (left.every(x => p < x) && right.every(x => p < x)) swLo.push({ i, v: p });
+        }
+        for (let i = 0; i < n; i++) {
+          const lastHi = swHi.filter(s => s.i < i);
+          const lastLo = swLo.filter(s => s.i < i);
+          if (cond === 'bullish_bos' && lastHi.length && closes[i] > lastHi[lastHi.length-1].v) arr[i] = true;
+          else if (cond === 'bearish_bos' && lastLo.length && closes[i] < lastLo[lastLo.length-1].v) arr[i] = true;
+          else if (cond === 'higher_low' && lastLo.length >= 2 && lastLo[lastLo.length-1].v > lastLo[lastLo.length-2].v) arr[i] = true;
+          else if (cond === 'lower_high' && lastHi.length >= 2 && lastHi[lastHi.length-1].v < lastHi[lastHi.length-2].v) arr[i] = true;
+        }
+      } else if (type === 'SUPPORT_RESISTANCE') {
+        const lb = ind.lookback != null ? ind.lookback : 3;
+        const tolPct = ind.tolerance_pct != null ? ind.tolerance_pct : 0.5;
+        const proxPct = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
+        const cond = ind.condition || 'near_support';
+        const closes = this.candles.map(c => c.close);
+        const sr = calcSR(closes, lb, tolPct);
+        for (let i = 0; i < n; i++) {
+          const c = closes[i];
+          if (cond === 'near_support' && sr.support.some(s => Math.abs(c - s) / s * 100 <= proxPct)) arr[i] = true;
+          else if (cond === 'near_resistance' && sr.resistance.some(r => Math.abs(c - r) / r * 100 <= proxPct)) arr[i] = true;
+          else if (cond === 'below_support' && sr.support.length && c < Math.min(...sr.support)) arr[i] = true;
+          else if (cond === 'above_resistance' && sr.resistance.length && c > Math.max(...sr.resistance)) arr[i] = true;
+        }
+      } else if (type === 'QFL') {
+        const lb = ind.lookback != null ? ind.lookback : 3;
+        const crackPct = ind.crack_pct != null ? ind.crack_pct : 3.0;
+        const baseN = ind.base_candles != null ? ind.base_candles : 5;
+        const maxBases = ind.max_bases != null ? ind.max_bases : 5;
+        const belowPct = ind.below_pct != null ? ind.below_pct : 0.0;
+        const cond = ind.condition || 'below_base';
+        const closes = this.candles.map(c => c.close);
+        const bases = calcQFL(closes, lb, crackPct, baseN, maxBases);
+        for (let i = 0; i < n; i++) {
+          const c = closes[i];
+          if (cond === 'below_base' && bases.some(b => c <= b * (1 - belowPct / 100))) arr[i] = true;
+          else if (cond === 'near_base' && bases.some(b => c >= b && c <= b * 1.01)) arr[i] = true;
+          else if (cond === 'base_retest' && bases.some(b => Math.abs(c - b) / b * 100 < 0.1 && c >= b)) arr[i] = true;
+        }
       } else {
-        // SUPERTREND, PARABOLIC_SAR, MARKET_STRUCTURE,
-        // SUPPORT_RESISTANCE, QFL — simplified to always-true in the
-        // client-side engine. The Python backtester is authoritative
-        // for those; the wizard modal shows a note.
         for (let i = 0; i < n; i++) arr[i] = true;
       }
       result.push(arr);
