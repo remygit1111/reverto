@@ -5381,6 +5381,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && swModal && swModal.classList.contains('show')) _swClose();
   });
+  document.querySelectorAll('.sweep-result-tabs .sweep-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.sweep-result-tabs .sweep-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const v = tab.dataset.swView;
+      const tbl = $('sw-view-table');
+      const cht = $('sw-view-chart');
+      if (tbl) tbl.classList.toggle('hidden', v !== 'table');
+      if (cht) cht.classList.toggle('hidden', v !== 'chart');
+    });
+  });
   const swRunBtn = $('sw-run-btn');
   if (swRunBtn) swRunBtn.addEventListener('click', swRunSweep);
   // Sweep tab switching
@@ -6561,6 +6572,7 @@ async function swRunSweep() {
     `Sweep complete — ${configs.length} iterations in ${elapsed}s`;
   $('sw-results').classList.remove('hidden');
   _swRenderResultsTable();
+  _swRenderChart();
 
   // Auto-save the best run (highest PF, or highest PnL if PF is Infinity)
   if (_swRows.length) {
@@ -6640,6 +6652,35 @@ function _swRenderResultsTable() {
       }
     });
   });
+}
+
+function _swRenderChart() {
+  const area = $('sw-chart-area');
+  if (!area || !_swRows.length) return;
+
+  function barChart(title, rows, valueKey, labelKey) {
+    const values = rows.map(r => r[valueKey] || 0);
+    const maxAbs = Math.max(1e-12, ...values.map(v => Math.abs(v)));
+    const bars = rows.map((r, i) => {
+      const v = values[i];
+      const pct = Math.round(Math.abs(v) / maxAbs * 100);
+      const cls = v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg';
+      const lbl = r[labelKey] || r.label || '';
+      const fmtV = typeof v === 'number' ? (Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4)) : '—';
+      return `<div class="sw-bar-col">` +
+        `<div class="sw-bar-value">${fmtV}</div>` +
+        `<div class="sw-bar ${cls}" style="height:${Math.max(2, pct)}%"></div>` +
+        `<div class="sw-bar-label">${safeText(lbl)}</div>` +
+        `</div>`;
+    }).join('');
+    return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${bars}</div></div>`;
+  }
+
+  const charts = [];
+  charts.push(barChart('PnL BTC per iteration', _swRows, 'total_pnl_btc', 'label'));
+  charts.push(barChart('Profit Factor per iteration', _swRows, 'profit_factor', 'label'));
+  charts.push(barChart('Win Rate % per iteration', _swRows, 'win_rate', 'label'));
+  area.innerHTML = charts.join('');
 }
 
 function btOpenWizardModal() {
