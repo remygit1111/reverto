@@ -490,3 +490,36 @@ class TestAnnotationPost:
             "x1": 3_000_000_000, "y1": 80000.0,
         })
         assert r.status_code == 422
+
+
+# ── Delete backtest runs endpoint ─────────────────────────────────────────────
+
+class TestDeleteBacktestRuns:
+    def test_delete_valid_run(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        # Create a run first
+        r = auth_client.post("/api/backtest/save", json={
+            "slug": "test_del", "name": "Del Test",
+            "params": {"start_date": "2025-01-01", "end_date": "2025-06-01",
+                       "timeframe": "1h", "initial_balance_btc": 0.1},
+            "summary": {"total_pnl_btc": 0.001, "total_deals": 5},
+        })
+        assert r.status_code == 200
+        run_id = r.json()["id"]
+        # Delete it
+        r2 = auth_client.delete(f"/api/backtest/runs/{run_id}")
+        assert r2.status_code == 200
+        assert r2.json().get("ok") is True
+
+    def test_delete_nonexistent_run_is_404(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete("/api/backtest/runs/999999")
+        assert r.status_code == 404
+
+    def test_delete_without_auth_is_401(self):
+        client = TestClient(webapp.app)
+        client.cookies.clear()
+        r = client.delete("/api/backtest/runs/1")
+        assert r.status_code == 401

@@ -181,6 +181,9 @@ class PaperEngine:
         self.liq_guard        = LiquidationGuard(config, notifier)
         self.poll_interval    = poll_interval
         self._current_price: float = 0.0
+        # Written to state.json as "indicators" for diagnostic inspection.
+        # Not consumed by the portal UI (indicator section was removed) but
+        # useful for operators inspecting the JSON file directly.
         self._last_snapshot: dict  = {}
         self._fees_paid_btc: float = 0.0
 
