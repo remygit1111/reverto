@@ -3693,22 +3693,11 @@ function _renderIndicatorOverlays(candles) {
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
     const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15, srCfg.max_levels || 3);
-    const lastTime = candles[candles.length - 1].time;
-    const renderLevels = (detailed, color, label) => {
-      for (const lv of detailed) {
+    const renderActive = (detailed, color, label) => {
+      const active = detailed.filter(lv => lv.breakIdx === null);
+      for (const lv of active) {
         const startI = lv.pivotIdx;
-        const endI = lv.breakIdx != null ? lv.breakIdx : candles.length - 1;
-        if (startI >= candles.length || endI < startI) continue;
-        if (window._BT_DEBUG) {
-          console.log('[SR RENDER]', label, lv.price.toFixed(1),
-            'start:', startI, 'end:', endI,
-            'candles.length:', candles.length,
-            'breakIdx raw:', lv.breakIdx,
-            'startTime:', candles[startI]?.time,
-            'endTime:', candles[endI]?.time,
-            'lastTime:', candles[candles.length - 1]?.time,
-            'dataPoints:', endI - startI + 1);
-        }
+        if (startI >= candles.length) continue;
         const s = _chartMain.addLineSeries({
           color, lineWidth: 2, lineStyle: 0,
           priceLineVisible: false,
@@ -3716,25 +3705,23 @@ function _renderIndicatorOverlays(candles) {
           crosshairMarkerVisible: false,
         });
         const data = [];
-        for (let j = startI; j <= endI && j < candles.length; j++) {
+        for (let j = startI; j < candles.length; j++) {
           data.push({ time: candles[j].time, value: lv.price });
         }
         s.setData(data);
-        if (lv.breakIdx === null) {
-          s.createPriceLine({
-            price: lv.price, color, lineWidth: 0, lineStyle: 0,
-            axisLabelVisible: true, title: label,
-          });
-        }
+        s.createPriceLine({
+          price: lv.price, color, lineWidth: 0, lineStyle: 0,
+          axisLabelVisible: true, title: label,
+        });
         _srLineSeries.push(s);
       }
     };
-    renderLevels(sr.supportDetailed || [], '#1e88e5', 'S');
-    renderLevels(sr.resistanceDetailed || [], '#e53935', 'R');
+    renderActive(sr.supportDetailed || [], '#1e88e5', 'S');
+    renderActive(sr.resistanceDetailed || [], '#e53935', 'R');
     // Confirmation markers at pivot_index + right_bars
     const rb = srCfg.right_bars || 15;
     const confirmMarkers = [];
-    for (const lv of [...(sr.supportDetailed || []), ...(sr.resistanceDetailed || [])]) {
+    for (const lv of [...(sr.supportDetailed || []), ...(sr.resistanceDetailed || [])].filter(lv => lv.breakIdx === null)) {
       const ci = lv.pivotIdx + rb;
       if (ci < candles.length) {
         confirmMarkers.push({
@@ -4920,17 +4907,17 @@ function renderWizardOverlays() {
           if (sr) {
             const wCandles = _wizardCandleCache;
             const renderWizSR = (detailed, color, label) => {
-              for (const lv of detailed) {
+              const active = detailed.filter(lv => lv.breakIdx === null);
+              for (const lv of active) {
                 const startI = lv.pivotIdx;
-                const endI = lv.breakIdx != null ? lv.breakIdx : wCandles.length - 1;
-                if (startI >= wCandles.length || endI < startI) continue;
+                if (startI >= wCandles.length) continue;
                 const ws = _wizardChart.addLineSeries({
                   color, lineWidth: 2, lineStyle: 0,
                   priceLineVisible: false, lastValueVisible: false,
                   title: label, crosshairMarkerVisible: false,
                 });
                 const data = [];
-                for (let j = startI; j <= endI && j < wCandles.length; j++) {
+                for (let j = startI; j < wCandles.length; j++) {
                   data.push({ time: wCandles[j].time, value: lv.price });
                 }
                 ws.setData(data);
