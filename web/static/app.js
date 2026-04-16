@@ -6705,9 +6705,13 @@ function _swRenderChart() {
     html.push(_swBarV('PnL BTC per hour', _swRows));
   } else {
     html.push(_swBarV('PnL BTC per iteration', _swRows));
-    const allPfInf = _swRows.every(r => r.profit_factor === Infinity || r.profit_factor === null);
-    if (allPfInf) {
+    const pfVals = _swRows.map(r => r.profit_factor);
+    console.log('[SW_CHART] PF values for chart decision:', pfVals);
+    const allPfSame = pfVals.every(v => v === pfVals[0]) || pfVals.every(v => v === Infinity || v === null || v === 0);
+    if (allPfSame && (pfVals[0] === Infinity || pfVals[0] === null)) {
       html.push(`<div class="sw-chart-row"><div class="sw-chart-title">Profit Factor per iteration</div><div class="sweep-estimate">All iterations profitable — Profit Factor: ∞</div></div>`);
+    } else if (allPfSame) {
+      html.push(`<div class="sw-chart-row"><div class="sw-chart-title">Profit Factor per iteration</div><div class="sweep-estimate">All iterations have identical Profit Factor: ${_fmtRatio(pfVals[0])}</div></div>`);
     } else {
       html.push(_swBarV('Profit Factor per iteration', _swRows, 'profit_factor'));
     }
