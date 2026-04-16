@@ -1935,6 +1935,44 @@ html.compact .modal-card { padding: 19px; }
 .bt-section-risk     .bt-section-head { color: var(--red); }
 .bt-section-ratios   { border-left-color: #b07aff; }
 .bt-section-ratios   .bt-section-head { color: #b07aff; }
+
+/* ── Backtest card info tooltips ─────────────────────────────────── */
+.bt-tip-icon {
+  display: inline-block;
+  margin-left: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.6;
+  transition: opacity 0.15s;
+  vertical-align: middle;
+}
+.bt-tip-icon:hover { opacity: 1; color: var(--accent); }
+.card-label { position: relative; }
+.bt-tip-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  max-width: 280px;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  animation: btTipFadeIn 0.15s ease-out;
+}
+@keyframes btTipFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 .bt-history-panel { margin-top: 12px; }
 .bt-history-panel.hidden { display: none; }
 .bt-history-header {
