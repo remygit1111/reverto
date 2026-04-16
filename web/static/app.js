@@ -6711,26 +6711,23 @@ function _swBarV(title, rows, key = 'total_pnl_btc') {
   const svgW = n * (barW + gap);
   const labelStep = n > 14 ? 2 : 1;
   const lblH = 14;
-  let rects = '', labels = '', stars = '';
+  let rects = '', labels = '';
   rows.forEach((r, i) => {
     const v = vals[i];
     const h = Math.max(2, Math.round(Math.abs(v) / mx * _SW_VBAR_H));
     const x = i * (barW + gap);
     const y = _SW_VBAR_H - h;
-    const fill = i === best ? 'var(--amber)' : (v >= 0 ? 'var(--accent)' : 'var(--red)');
+    const fill = i === best ? 'var(--accent)' : 'var(--muted)';
     const fv = Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4);
     rects += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" fill="${fill}" rx="2"><title>${safeText(r.label)}: ${fv}</title></rect>`;
     if (i % labelStep === 0) {
       const short = r.label.replace(/:00$/, '');
       labels += `<text x="${x + barW / 2}" y="${_SW_VBAR_H + lblH}" text-anchor="middle" class="sw-svg-label">${safeText(short)}</text>`;
     }
-    if (i === best) {
-      stars += `<text x="${x + barW / 2}" y="${y - 3}" text-anchor="middle" class="sw-svg-best">★</text>`;
-    }
   });
   return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>` +
     `<svg class="sw-svg-chart" viewBox="0 0 ${svgW} ${_SW_VBAR_H + lblH + 4}" preserveAspectRatio="none" xmlns="${_SW_SVG_NS}">` +
-    `${rects}${stars}${labels}</svg></div>`;
+    `${rects}${labels}</svg></div>`;
 }
 
 function _swBarH(title, rows) {
@@ -6745,10 +6742,9 @@ function _swBarH(title, rows) {
     const v = vals[i];
     const w = Math.max(2, Math.round(Math.abs(v) / mx * barArea));
     const y = i * (rowH + gap);
-    const fill = i === best ? 'var(--amber)' : (v >= 0 ? 'var(--accent)' : 'var(--red)');
+    const fill = i === best ? 'var(--accent)' : 'var(--muted)';
     const fv = (v >= 0 ? '+' : '') + v.toFixed(8);
-    const star = i === best ? ' ★' : '';
-    elems += `<text x="${labelW - 4}" y="${y + rowH / 2 + 4}" text-anchor="end" class="sw-svg-label">${safeText(r.label)}${star}</text>`;
+    elems += `<text x="${labelW - 4}" y="${y + rowH / 2 + 4}" text-anchor="end" class="sw-svg-label">${safeText(r.label)}</text>`;
     elems += `<rect x="${labelW}" y="${y}" width="${w}" height="${rowH}" fill="${fill}" rx="3"><title>${safeText(r.label)}: ${fv}</title></rect>`;
     elems += `<text x="${labelW + w + 6}" y="${y + rowH / 2 + 4}" class="sw-svg-value">${fv}</text>`;
   });

@@ -2203,9 +2203,6 @@ html.compact .modal-card { padding: 19px; }
 .sw-svg-value {
   font-family: var(--mono); font-size: 10px; fill: var(--text);
 }
-.sw-svg-best {
-  font-size: 11px; fill: var(--amber);
-}
 .sw-chart-title {
   font-family: var(--mono); font-size: 11px; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.05em;
