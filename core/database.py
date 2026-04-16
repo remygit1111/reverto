@@ -53,6 +53,10 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS orders (
         id          TEXT PRIMARY KEY,
         deal_id     TEXT NOT NULL REFERENCES deals(id),
+        -- ON DELETE CASCADE intentionally omitted: save_deal() uses
+        -- INSERT OR REPLACE which internally DELETEs then re-INSERTs
+        -- the parent row, and CASCADE would wipe all child orders on
+        -- every DCA update. Application-level cleanup is used instead.
         bot_slug    TEXT NOT NULL,
         order_number INTEGER NOT NULL,
         order_type  TEXT NOT NULL,
@@ -63,25 +67,11 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         created_at  TEXT DEFAULT (datetime('now'))
     )
     """,
-    """
-    CREATE TABLE IF NOT EXISTS indicator_snapshots (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        bot_slug    TEXT NOT NULL,
-        timeframe   TEXT NOT NULL,
-        captured_at TEXT NOT NULL,
-        rsi         REAL,
-        ema_fast    REAL,
-        ema_slow    REAL,
-        macd        REAL,
-        macd_signal REAL,
-        macd_hist   REAL,
-        bb_upper    REAL,
-        bb_middle   REAL,
-        bb_lower    REAL,
-        supertrend  REAL,
-        created_at  TEXT DEFAULT (datetime('now'))
-    )
-    """,
+    # indicator_snapshots table removed — it was defined but never written
+    # to by any code path. Indicator data lives in state.json as a dict
+    # snapshot per tick (paper_engine._last_snapshot). If time-series
+    # indicator storage is needed in the future, re-add the table with an
+    # appropriate write path in the engine.
     """
     CREATE TABLE IF NOT EXISTS chart_annotations (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,8 +90,6 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_deals_bot_slug ON deals(bot_slug)",
     "CREATE INDEX IF NOT EXISTS idx_deals_status ON deals(status)",
     "CREATE INDEX IF NOT EXISTS idx_orders_deal_id ON orders(deal_id)",
-    "CREATE INDEX IF NOT EXISTS idx_indicator_snapshots_bot_slug "
-    "ON indicator_snapshots(bot_slug)",
     "CREATE INDEX IF NOT EXISTS idx_chart_annotations_bot_slug "
     "ON chart_annotations(bot_slug)",
     """
