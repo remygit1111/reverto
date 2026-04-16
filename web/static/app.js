@@ -6573,7 +6573,7 @@ async function swRunSweep() {
     const grossLossSum = Math.abs(lossDeals.reduce((a, d) => a + d.pnl_btc, 0));
     const avgWinSize = winDeals.length ? winDeals.reduce((a, d) => a + d.total_size, 0) / winDeals.length : 0;
     const avgLossSize = lossDeals.length ? lossDeals.reduce((a, d) => a + d.total_size, 0) / lossDeals.length : 0;
-    console.log(`[SWEEP] ${label} | deals=${s.total_deals} win=${winDeals.length} loss=${lossDeals.length} | ` +
+    if (window._BT_DEBUG) console.log(`[SWEEP] ${label} | deals=${s.total_deals} win=${winDeals.length} loss=${lossDeals.length} | ` +
       `winRate=${s.win_rate.toFixed(1)}% | PnL=${s.total_pnl_btc.toFixed(8)} | ` +
       `grossWin=${grossWinSum.toFixed(8)} grossLoss=${grossLossSum.toFixed(8)} | ` +
       `PF=${typeof r.profit_factor === 'number' ? r.profit_factor.toFixed(3) : r.profit_factor} | ` +
@@ -6859,7 +6859,7 @@ function _swAggBarH(title, rows, re, grpIdx) {
   }
   const sorted = dayOrder.filter(d => agg[d]);
   const aggRows = sorted.map(k => ({ label: k, total_pnl_btc: agg[k].sum / agg[k].n }));
-  console.log('[SW_CHART] _swAggBarH', title, { groups: sorted, aggRows });
+  if (window._BT_DEBUG) console.log('[SW_CHART] _swAggBarH', title, { groups: sorted, aggRows });
   return _swBarH(title, aggRows);
 }
 
@@ -6873,7 +6873,7 @@ function _swAggBarV(title, rows, re, grpIdx) {
   }
   const sorted = Object.keys(agg).sort();
   const aggRows = sorted.map(k => ({ label: k, total_pnl_btc: agg[k].sum / agg[k].n }));
-  console.log('[SW_CHART] _swAggBarV', title, { groups: sorted.length, sample: aggRows.slice(0, 3) });
+  if (window._BT_DEBUG) console.log('[SW_CHART] _swAggBarV', title, { groups: sorted.length, sample: aggRows.slice(0, 3) });
   return _swBarV(title, aggRows);
 }
 
