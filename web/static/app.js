@@ -3693,6 +3693,12 @@ function _renderIndicatorOverlays(candles) {
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
     const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15, srCfg.max_levels || 3);
+    console.log('[SR] rendering', (sr.resistanceDetailed || []).length,
+      'resistance levels,', (sr.supportDetailed || []).length, 'support levels');
+    console.log('[SR] resistance:', (sr.resistanceDetailed || []).map(l =>
+      ({price: l.price, broken: l.breakIdx !== null})));
+    console.log('[SR] support:', (sr.supportDetailed || []).map(l =>
+      ({price: l.price, broken: l.breakIdx !== null})));
     const renderSR = (detailed, color, label) => {
       for (const lv of detailed) {
         const startI = Math.max(0, lv.pivotIdx);
