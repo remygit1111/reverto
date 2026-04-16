@@ -1908,11 +1908,16 @@ html.compact .modal-card { padding: 19px; }
 }
 
 /* ── Deal action buttons ─────────────────────────────────────────── */
-.deal-actions-cell { white-space: nowrap; }
+.deal-actions-cell {
+  white-space: nowrap;
+  display: flex; align-items: center; gap: 4px;
+}
 .deal-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 28px;
   background: none; border: 1px solid var(--border);
-  border-radius: 3px; padding: 2px 6px; margin-right: 3px;
-  cursor: pointer; font-size: 12px; color: var(--muted);
+  border-radius: 4px; padding: 0;
+  cursor: pointer; font-size: 13px; color: var(--muted);
   transition: color 0.15s, border-color 0.15s;
 }
 .deal-btn:hover { color: var(--text); border-color: var(--text); }

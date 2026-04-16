@@ -1259,15 +1259,65 @@ function _dealToast(msg, cls = 'toast-success') {
 
 let _dealEditState = null;
 
-function dealOpenEditModal(slug, dealId) {
+async function dealOpenEditModal(slug, dealId) {
   _dealEditState = { slug, dealId };
   $('deal-edit-title').textContent = `Edit Deal #${dealId}`;
-  $('de-tp-enabled').checked = true;
-  $('de-tp-pct').value = 3.0;
-  $('de-sl-enabled').checked = true;
-  $('de-sl-type').value = 'fixed';
-  $('de-sl-pct').value = 5.0;
-  $('de-dca-enabled').checked = true;
+
+  // Default values — overwritten by live deal data if available
+  let tpEnabled = true, tpPct = 3.0;
+  let slEnabled = true, slType = 'fixed', slPct = 5.0;
+  let dcaEnabled = true, dcaSpacing = 2.5, dcaMult = 1.0, dcaMax = 4;
+
+  try {
+    const r = await fetch(`/api/bots/${slug}/deals/${dealId}`);
+    if (r.ok) {
+      const j = await r.json();
+      const d = j.deal || {};
+      // Per-deal overrides take priority, then bot config
+      const tpOv = d._tp_override;
+      if (tpOv) {
+        tpEnabled = tpOv.enabled !== false;
+        if (tpOv.target_pct != null) tpPct = tpOv.target_pct;
+      }
+      const slOv = d._sl_override;
+      if (slOv) {
+        slEnabled = slOv.enabled !== false;
+        if (slOv.type) slType = slOv.type;
+        if (slOv.pct != null) slPct = slOv.pct;
+      }
+      if (d._dca_enabled === false) dcaEnabled = false;
+    }
+  } catch (e) { /* use defaults */ }
+
+  // Also try to fill from bot config for fields not overridden
+  if (_detailConfigCache && _detailConfigCache.bot) {
+    const bc = _detailConfigCache.bot;
+    if (bc.take_profit) {
+      if (tpPct === 3.0 && bc.take_profit.target_pct) tpPct = bc.take_profit.target_pct;
+      if (bc.take_profit.enabled === false) tpEnabled = false;
+    }
+    if (bc.stop_loss) {
+      if (slPct === 5.0 && bc.stop_loss.pct) slPct = bc.stop_loss.pct;
+      if (bc.stop_loss.type && bc.stop_loss.type !== 'none') slType = bc.stop_loss.type;
+      if (bc.stop_loss.type === 'none') slEnabled = false;
+    }
+    if (bc.dca) {
+      if (bc.dca.order_spacing_pct) dcaSpacing = bc.dca.order_spacing_pct;
+      if (bc.dca.multiplier) dcaMult = bc.dca.multiplier;
+      if (bc.dca.max_orders) dcaMax = Math.max(0, bc.dca.max_orders - 1);
+      if (bc.dca.enabled === false) dcaEnabled = false;
+    }
+  }
+
+  $('de-tp-enabled').checked = tpEnabled;
+  $('de-tp-pct').value = tpPct;
+  $('de-sl-enabled').checked = slEnabled;
+  $('de-sl-type').value = slType;
+  $('de-sl-pct').value = slPct;
+  $('de-dca-enabled').checked = dcaEnabled;
+  $('de-dca-spacing').value = dcaSpacing;
+  $('de-dca-mult').value = dcaMult;
+  $('de-dca-max').value = dcaMax;
   $('deal-edit-modal').classList.add('show');
 }
 
