@@ -3686,7 +3686,9 @@ function _renderIndicatorOverlays(candles) {
   }
   // SUPPORT_RESISTANCE — horizontal line segments from pivot to break
   // Cleanup previous render
-  _srLineSeries.forEach(s => { try { _chartMain.removeSeries(s); } catch (e) {} });
+  for (const s of _srLineSeries) {
+    try { if (_chartMain) _chartMain.removeSeries(s); } catch (e) {}
+  }
   _srLineSeries = [];
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
@@ -3718,6 +3720,12 @@ function _renderIndicatorOverlays(candles) {
           data.push({ time: candles[j].time, value: lv.price });
         }
         s.setData(data);
+        if (lv.breakIdx === null) {
+          s.createPriceLine({
+            price: lv.price, color, lineWidth: 0, lineStyle: 0,
+            axisLabelVisible: true, title: label,
+          });
+        }
         _srLineSeries.push(s);
       }
     };
