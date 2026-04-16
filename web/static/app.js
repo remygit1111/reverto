@@ -5360,10 +5360,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (pane) pane.classList.remove('hidden');
     });
   });
-  // Sweep estimate live update
+  // Sweep estimate live update + schedule mode toggles
   document.querySelectorAll('#sweep-modal input, #sweep-modal select').forEach(el => {
     el.addEventListener('input', swUpdateEstimate);
     el.addEventListener('change', swUpdateEstimate);
+  });
+  const swDaysMode = $('sw-sched-days-mode');
+  if (swDaysMode) swDaysMode.addEventListener('change', () => {
+    const cust = $('sw-sched-days-custom');
+    if (cust) cust.style.display = swDaysMode.value === 'custom' ? '' : 'none';
+  });
+  const swHoursMode = $('sw-sched-hours-mode');
+  if (swHoursMode) swHoursMode.addEventListener('change', () => {
+    const m = swHoursMode.value;
+    const wRow  = $('sw-hours-window-row');  if (wRow) wRow.style.display  = (m === 'each_start' || m === 'window') ? '' : 'none';
+    const sRow  = $('sw-hours-step-row');    if (sRow) sRow.style.display  = m === 'custom' ? '' : 'none';
+    const stRow = $('sw-hours-start-row');   if (stRow) stRow.style.display = m === 'custom' ? '' : 'none';
+    const enRow = $('sw-hours-end-row');     if (enRow) enRow.style.display = m === 'custom' ? '' : 'none';
   });
   // Default dates — last 30 days
   const btEnd = new Date();
@@ -6246,6 +6259,19 @@ function swUpdateEstimate() {
     total += n;
     const p = $('sw-dca-preview'); if (p) p.textContent = `${n} iterations`;
   } else { const p = $('sw-dca-preview'); if (p) p.textContent = ''; }
+  // Schedule iterations
+  let schedIter = 0;
+  if ($('sw-sched-days-enabled') && $('sw-sched-days-enabled').checked) {
+    const n = _swSchedDaysCount();
+    schedIter += n;
+    const p = $('sw-sched-days-preview'); if (p) p.textContent = `${n} day iterations`;
+  } else { const p = $('sw-sched-days-preview'); if (p) p.textContent = ''; }
+  if ($('sw-sched-hours-enabled') && $('sw-sched-hours-enabled').checked) {
+    const n = _swSchedHoursCount();
+    schedIter = schedIter > 0 ? schedIter * n : n;
+    const p = $('sw-sched-hours-preview'); if (p) p.textContent = `${n} hour iterations`;
+  } else { const p = $('sw-sched-hours-preview'); if (p) p.textContent = ''; }
+  if (schedIter > 0) total = total > 0 ? total * schedIter : schedIter;
   if (total === 0) total = 1;
   const candles = btCandleCountForRange(
     $('bt-tf') && $('bt-tf').value || '1h',
@@ -6264,6 +6290,117 @@ function swUpdateEstimate() {
       warn.classList.add('hidden');
     }
   }
+}
+
+const _SW_DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+function _swFilterCandles(candles, filter) {
+  if (!filter) return candles;
+  const useUtc = filter.tz === 'UTC';
+  return candles.filter(c => {
+    const d = new Date(c.time * 1000);
+    const day  = useUtc ? d.getUTCDay()   : d.getDay();
+    const hour = useUtc ? d.getUTCHours() : d.getHours();
+    if (filter.days && !filter.days.includes(day)) return false;
+    if (filter.startHour != null && filter.endHour != null) {
+      if (filter.startHour <= filter.endHour) {
+        if (hour < filter.startHour || hour >= filter.endHour) return false;
+      } else {
+        if (hour < filter.startHour && hour >= filter.endHour) return false;
+      }
+    }
+    return true;
+  });
+}
+
+function _swSchedDaysCount() {
+  const mode = $('sw-sched-days-mode') && $('sw-sched-days-mode').value;
+  if (mode === 'each') return 7;
+  if (mode === 'presets') return 4;
+  return 1;
+}
+
+function _swSchedHoursCount() {
+  const mode = $('sw-sched-hours-mode') && $('sw-sched-hours-mode').value;
+  if (mode === 'each_start') return 24;
+  if (mode === 'window') {
+    const w = parseInt($('sw-sched-hours-window').value, 10) || 8;
+    return Math.floor(24 / w);
+  }
+  if (mode === 'custom') {
+    const step = parseInt($('sw-sched-hours-step').value, 10) || 2;
+    return Math.floor(24 / step);
+  }
+  return 1;
+}
+
+function _swGenerateScheduleConfigs(baseCfg) {
+  const configs = [];
+  const tz = ($('sw-sched-tz') && $('sw-sched-tz').value) || 'local';
+
+  const daysEnabled  = $('sw-sched-days-enabled')  && $('sw-sched-days-enabled').checked;
+  const hoursEnabled = $('sw-sched-hours-enabled') && $('sw-sched-hours-enabled').checked;
+
+  const daysSets = [];
+  if (daysEnabled) {
+    const mode = $('sw-sched-days-mode').value;
+    if (mode === 'each') {
+      for (let d = 0; d < 7; d++) daysSets.push({ days: [d], label: _SW_DAY_NAMES[d] });
+    } else if (mode === 'presets') {
+      daysSets.push({ days: [1,2,3,4,5],     label: 'Weekdays' });
+      daysSets.push({ days: [0,6],            label: 'Weekend' });
+      daysSets.push({ days: [1,2,3,4,5,6],   label: 'Weekdays+Sat' });
+      daysSets.push({ days: [0,1,2,3,4,5,6], label: 'All days' });
+    } else {
+      const sel = [];
+      document.querySelectorAll('.sw-day-chk:checked').forEach(c => sel.push(parseInt(c.value, 10)));
+      const lbl = sel.map(d => _SW_DAY_NAMES[d].slice(0,3)).join('+') || 'None';
+      daysSets.push({ days: sel, label: lbl });
+    }
+  } else {
+    daysSets.push({ days: null, label: null });
+  }
+
+  const hoursSets = [];
+  if (hoursEnabled) {
+    const mode = $('sw-sched-hours-mode').value;
+    if (mode === 'each_start') {
+      const w = parseInt($('sw-sched-hours-window').value, 10) || 8;
+      for (let h = 0; h < 24; h++) {
+        hoursSets.push({ startHour: h, endHour: (h + w) % 24, label: `${String(h).padStart(2,'0')}:00-${String((h+w)%24).padStart(2,'0')}:00` });
+      }
+    } else if (mode === 'window') {
+      const w = parseInt($('sw-sched-hours-window').value, 10) || 8;
+      for (let h = 0; h < 24; h += w) {
+        const end = Math.min(h + w, 24);
+        hoursSets.push({ startHour: h, endHour: end % 24, label: `${String(h).padStart(2,'0')}:00-${String(end%24).padStart(2,'0')}:00` });
+      }
+    } else {
+      const step = parseInt($('sw-sched-hours-step').value, 10) || 2;
+      const wEnd = parseInt($('sw-sched-hours-end').value, 10) || 8;
+      const wStart = parseInt($('sw-sched-hours-start').value, 10) || 0;
+      const windowH = ((wEnd - wStart + 24) % 24) || 24;
+      for (let h = 0; h < 24; h += step) {
+        const end = (h + windowH) % 24;
+        hoursSets.push({ startHour: h, endHour: end, label: `${String(h).padStart(2,'0')}:00-${String(end).padStart(2,'0')}:00` });
+      }
+    }
+  } else {
+    hoursSets.push({ startHour: null, endHour: null, label: null });
+  }
+
+  for (const ds of daysSets) {
+    for (const hs of hoursSets) {
+      const parts = [ds.label, hs.label].filter(Boolean);
+      const label = parts.length ? parts.join(' ') : 'All candles';
+      const filter = { tz };
+      if (ds.days) filter.days = ds.days;
+      if (hs.startHour != null) { filter.startHour = hs.startHour; filter.endHour = hs.endHour; }
+      const c = JSON.parse(JSON.stringify(baseCfg));
+      configs.push({ label, config: c, scheduleFilter: filter });
+    }
+  }
+  return configs;
 }
 
 function _swGenerateConfigs(baseCfg) {
@@ -6307,6 +6444,27 @@ function _swGenerateConfigs(baseCfg) {
       configs.push({ label: `${labelMap[param] || param}: ${val}`, config: c });
     }
   }
+  // Schedule sweep: if enabled, cross-product param configs × schedule configs.
+  // If no param sweep is active, schedule configs run against the base config.
+  const schedEnabled = ($('sw-sched-days-enabled') && $('sw-sched-days-enabled').checked)
+                    || ($('sw-sched-hours-enabled') && $('sw-sched-hours-enabled').checked);
+  if (schedEnabled) {
+    const schedConfigs = _swGenerateScheduleConfigs(baseCfg);
+    if (configs.length) {
+      const cross = [];
+      for (const pc of configs) {
+        for (const sc of schedConfigs) {
+          cross.push({
+            label: `${pc.label} | ${sc.label}`,
+            config: JSON.parse(JSON.stringify(pc.config)),
+            scheduleFilter: sc.scheduleFilter,
+          });
+        }
+      }
+      return cross;
+    }
+    return schedConfigs;
+  }
   if (!configs.length) {
     configs.push({ label: 'Base config', config: JSON.parse(JSON.stringify(baseCfg)) });
   }
@@ -6322,6 +6480,7 @@ function swOpenModal() {
 
 const SW_RESULT_COLS = [
   { key: 'label',         label: 'Parameter',  fmt: v => safeText(String(v)) },
+  { key: 'candles_used',  label: 'Candles',    fmt: v => v != null ? v.toLocaleString() : '—' },
   { key: 'total_deals',   label: 'Deals',      fmt: v => String(v ?? 0) },
   { key: 'win_rate',      label: 'Win %',      fmt: v => v != null ? v.toFixed(1) + '%' : '—' },
   { key: 'total_pnl_btc', label: 'PnL BTC',    fmt: v => _btColouredBtc(v) },
@@ -6383,11 +6542,19 @@ async function swRunSweep() {
 
   _swRows = [];
   for (let i = 0; i < configs.length; i++) {
-    const { label, config: c } = configs[i];
+    const { label, config: c, scheduleFilter } = configs[i];
+    const iterCandles = scheduleFilter ? _swFilterCandles(candles, scheduleFilter) : candles;
     const pct = Math.round(((i + 1) / configs.length) * 100);
     $('sw-progress-bar').style.width = pct + '%';
     $('sw-status').textContent = `Running iteration ${i + 1}/${configs.length} (${label})…`;
-    const engine = new RevertoBacktest(c, candles);
+    if (iterCandles.length < 20) {
+      _swRows.push({ label, config: c, total_deals: 0, win_rate: 0, total_pnl_btc: 0,
+        total_pnl_pct: 0, profit_factor: null, sharpe: '—', max_dd: 0, avg_dur: 0,
+        candles_used: iterCandles.length, _result: null });
+      await new Promise(r => setTimeout(r, 0));
+      continue;
+    }
+    const engine = new RevertoBacktest(c, iterCandles);
     const result = await engine.run(balance);
     const s = result.summary;
     const r = result.ratios;
@@ -6402,6 +6569,7 @@ async function swRunSweep() {
       sharpe:        r.sharpe,
       max_dd:        s.max_drawdown_pct,
       avg_dur:       s.avg_duration_hours,
+      candles_used:  iterCandles.length,
       _result:       result,
     });
     await new Promise(r => setTimeout(r, 0));
