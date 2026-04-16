@@ -2686,19 +2686,6 @@ async function fetchDetail(slug) {
     $('d-exchange').textContent = (b.exchange || '—').toUpperCase();
     $('d-init').textContent = b.initial_balance_btc ? b.initial_balance_btc.toFixed(4) + ' BTC' : '—';
 
-    const ind = b.indicators || {};
-    const ig = $('indicator-grid');
-    const indKeys = Object.entries(ind);
-    if (!indKeys.length) {
-      ig.innerHTML = '<div class="empty-grid">No indicator data yet — waiting for first candle fetch</div>';
-    } else {
-      ig.innerHTML = indKeys.map(([k, v]) => `
-        <div class="indicator-card">
-          <div class="indicator-label">${safeText(k.replace(/_/g, ' '))}</div>
-          <div class="indicator-value">${typeof v === 'number' ? v.toFixed(4) : safeText(v)}</div>
-        </div>`).join('');
-    }
-
     renderDetailOpenDeals(b.open_deals || []);
 
     const cd = b.closed_deals || [];
