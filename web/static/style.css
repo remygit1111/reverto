@@ -1907,6 +1907,35 @@ html.compact .modal-card { padding: 19px; }
   transition: color 0.2s ease;
 }
 
+/* ── Deal action buttons ─────────────────────────────────────────── */
+.deal-actions-cell { white-space: nowrap; }
+.deal-btn {
+  background: none; border: 1px solid var(--border);
+  border-radius: 3px; padding: 2px 6px; margin-right: 3px;
+  cursor: pointer; font-size: 12px; color: var(--muted);
+  transition: color 0.15s, border-color 0.15s;
+}
+.deal-btn:hover { color: var(--text); border-color: var(--text); }
+.deal-btn-cancel:hover { color: var(--red); border-color: var(--red); }
+.deal-btn-close:hover { color: var(--amber); border-color: var(--amber); }
+.deal-btn-edit:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ── Toast notification ──────────────────────────────────────────── */
+.deal-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px;
+  padding: 10px 20px; font-family: var(--mono); font-size: 12px;
+  z-index: 100; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  animation: toastIn 0.2s ease-out;
+}
+.deal-toast.toast-success { border-color: var(--accent); color: var(--accent); }
+.deal-toast.toast-warn { border-color: var(--amber); color: var(--amber); }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
 /* ── Grouped backtest result sections ────────────────────────────────
    Returns / Activity / Risk / Ratios each get a coloured header and
    a matching border-left on the section wrapper so the operator can

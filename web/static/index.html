@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=37">
+<link rel="stylesheet" href="/static/style.css?v=38">
 </head>
 <body>
 
@@ -139,6 +139,41 @@
     <div class="modal-actions">
       <button type="button" id="settings-reset" class="hbtn hbtn-theme btn-danger">Reset to defaults</button>
       <button type="button" id="settings-close" class="hbtn hbtn-theme btn-accent">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Deal edit modal ────────────────────────────────────────────────────── -->
+<div id="deal-edit-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title" id="deal-edit-title">Edit Deal</div>
+    <section class="profile-section">
+      <div class="profile-section-title">Take Profit</div>
+      <div class="form-grid">
+        <div class="form-row"><label class="checkbox-label"><input type="checkbox" id="de-tp-enabled" class="checkbox-accent" checked> Enabled</label></div>
+        <div class="form-row"><label>Target %</label><input id="de-tp-pct" type="number" step="0.1" min="0" value="3.0" class="modal-input"></div>
+        <div class="form-row form-row-wide"><div class="form-hint" id="de-tp-preview"></div></div>
+      </div>
+    </section>
+    <section class="profile-section">
+      <div class="profile-section-title">Stop Loss</div>
+      <div class="form-grid">
+        <div class="form-row"><label class="checkbox-label"><input type="checkbox" id="de-sl-enabled" class="checkbox-accent" checked> Enabled</label></div>
+        <div class="form-row"><label>Type</label><select id="de-sl-type" class="modal-input"><option value="fixed">Fixed</option><option value="trailing">Trailing</option></select></div>
+        <div class="form-row"><label>Percentage %</label><input id="de-sl-pct" type="number" step="0.1" min="0" value="5.0" class="modal-input"></div>
+        <div class="form-row form-row-wide"><div class="form-hint" id="de-sl-preview"></div></div>
+      </div>
+    </section>
+    <section class="profile-section">
+      <div class="profile-section-title">DCA</div>
+      <div class="form-grid">
+        <div class="form-row"><label class="checkbox-label"><input type="checkbox" id="de-dca-enabled" class="checkbox-accent" checked> Enabled</label></div>
+        <div class="form-row form-row-wide"><div class="form-hint">Disabling DCA stops future DCA orders. Existing orders are not reversed.</div></div>
+      </div>
+    </section>
+    <div class="modal-actions">
+      <button type="button" class="hbtn hbtn-theme" id="deal-edit-cancel-btn">Cancel</button>
+      <button type="button" class="hbtn hbtn-theme btn-accent" id="deal-edit-save-btn">Save Changes</button>
     </div>
   </div>
 </div>
@@ -949,6 +984,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=64"></script>
+<script src="/static/app.js?v=65"></script>
 </body>
 </html>

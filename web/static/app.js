@@ -679,6 +679,12 @@ const ACTIVE_DEALS_COLUMNS = [
     cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>` },
   { key: 'age',        label: 'Age',
     cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+  { key: 'actions',    label: '',
+    cell: d => `<td class="deal-actions-cell">` +
+      `<button class="deal-btn deal-btn-edit" data-slug="${safeText(d.bot_slug)}" data-deal="${safeText(d.id)}" title="Edit">✎</button>` +
+      `<button class="deal-btn deal-btn-close" data-slug="${safeText(d.bot_slug)}" data-deal="${safeText(d.id)}" title="Close at market">■</button>` +
+      `<button class="deal-btn deal-btn-cancel" data-slug="${safeText(d.bot_slug)}" data-deal="${safeText(d.id)}" title="Cancel">✕</button>` +
+      `</td>` },
 ];
 const ACTIVE_DEALS_LS_KEY = 'reverto.active_deals_columns';
 
@@ -827,6 +833,12 @@ const DETAIL_OPEN_DEALS_COLUMNS = [
     cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>` },
   { key: 'age',       label: 'Age',
     cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+  { key: 'actions',  label: '',
+    cell: d => `<td class="deal-actions-cell">` +
+      `<button class="deal-btn deal-btn-edit" data-slug="${safeText(d.bot_slug || currentSlug || '')}" data-deal="${safeText(d.id)}" title="Edit">✎</button>` +
+      `<button class="deal-btn deal-btn-close" data-slug="${safeText(d.bot_slug || currentSlug || '')}" data-deal="${safeText(d.id)}" title="Close at market">■</button>` +
+      `<button class="deal-btn deal-btn-cancel" data-slug="${safeText(d.bot_slug || currentSlug || '')}" data-deal="${safeText(d.id)}" title="Cancel">✕</button>` +
+      `</td>` },
 ];
 const DETAIL_OPEN_DEALS_LS_KEY = 'reverto.detail_open_deals_columns';
 
@@ -1232,6 +1244,86 @@ async function manualStartDeal(slug, srcBtn = null) {
     if (currentSlug === slug) fetchDetail(slug);
   }
 }
+
+// ── Deal management (edit / cancel / close) ─────────────────────────────────
+
+function _dealToast(msg, cls = 'toast-success') {
+  const existing = document.querySelector('.deal-toast');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.className = `deal-toast ${cls}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+let _dealEditState = null;
+
+function dealOpenEditModal(slug, dealId) {
+  _dealEditState = { slug, dealId };
+  $('deal-edit-title').textContent = `Edit Deal #${dealId}`;
+  $('de-tp-enabled').checked = true;
+  $('de-tp-pct').value = 3.0;
+  $('de-sl-enabled').checked = true;
+  $('de-sl-type').value = 'fixed';
+  $('de-sl-pct').value = 5.0;
+  $('de-dca-enabled').checked = true;
+  $('deal-edit-modal').classList.add('show');
+}
+
+async function dealSaveEdit() {
+  if (!_dealEditState) return;
+  const { slug, dealId } = _dealEditState;
+  try {
+    const r = await fetch(`/api/bots/${slug}/deals/${dealId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tp_enabled: $('de-tp-enabled').checked,
+        tp_target_pct: parseFloat($('de-tp-pct').value),
+        sl_enabled: $('de-sl-enabled').checked,
+        sl_type: $('de-sl-type').value,
+        sl_pct: parseFloat($('de-sl-pct').value),
+        dca_enabled: $('de-dca-enabled').checked,
+      }),
+    });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) { _dealToast('Save failed', 'toast-warn'); return; }
+    _dealToast('Deal settings saved');
+  } catch (e) { _dealToast('Network error', 'toast-warn'); }
+  $('deal-edit-modal').classList.remove('show');
+  _dealEditState = null;
+  if (currentSlug) fetchDetail(currentSlug);
+}
+
+async function dealAction(slug, dealId, action) {
+  const verb = action === 'cancel' ? 'Cancel' : 'Close at market';
+  const msg = action === 'cancel'
+    ? `Cancel deal #${dealId}? The position remains open on the exchange.`
+    : `Close deal #${dealId} at market price?`;
+  if (!confirm(msg)) return;
+  try {
+    const r = await fetch(`/api/bots/${slug}/deals/${dealId}?action=${action}`, { method: 'DELETE' });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) { _dealToast(`${verb} failed`, 'toast-warn'); return; }
+    _dealToast(action === 'cancel' ? 'Deal cancelled' : 'Deal closed');
+  } catch (e) { _dealToast('Network error', 'toast-warn'); }
+  if (currentSlug) fetchDetail(currentSlug);
+  fetchOverview();
+}
+
+// Delegate clicks on deal action buttons anywhere in the page
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.deal-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const slug = btn.dataset.slug;
+  const deal = btn.dataset.deal;
+  if (!slug || !deal) return;
+  if (btn.classList.contains('deal-btn-edit')) dealOpenEditModal(slug, deal);
+  else if (btn.classList.contains('deal-btn-cancel')) dealAction(slug, deal, 'cancel');
+  else if (btn.classList.contains('deal-btn-close')) dealAction(slug, deal, 'close');
+});
 
 // ── Top-level tab navigation ─────────────────────────────────────────────────
 function _setActiveTab(btnId) {
@@ -4845,6 +4937,13 @@ function setupEventListeners() {
   // view via the main Bots tab or the browser back button (popstate).
 
   $('new-bot-btn').addEventListener('click', goNewBot);
+  const deCancel = $('deal-edit-cancel-btn');
+  if (deCancel) deCancel.addEventListener('click', () => {
+    $('deal-edit-modal').classList.remove('show');
+    _dealEditState = null;
+  });
+  const deSave = $('deal-edit-save-btn');
+  if (deSave) deSave.addEventListener('click', dealSaveEdit);
   const navBtBtn = $('nav-backtests-btn');
   if (navBtBtn) navBtBtn.addEventListener('click', () => goBacktests());
 
