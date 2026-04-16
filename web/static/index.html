@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=41">
+<link rel="stylesheet" href="/static/style.css?v=42">
 </head>
 <body>
 
@@ -254,6 +254,88 @@
     </div>
     <div class="modal-actions">
       <button type="button" id="wbt-close-btn" class="hbtn hbtn-theme">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Sweep modal ────────────────────────────────────────────────────────── -->
+<div id="sweep-modal" class="modal-overlay">
+  <div class="modal-card sweep-modal-card">
+    <div class="modal-title">🔄 Auto Optimize — Parameter Sweep</div>
+
+    <!-- Sweep parameter tabs -->
+    <div class="sweep-tabs">
+      <button class="sweep-tab active" data-sweep-tab="tp">📈 Take Profit</button>
+      <button class="sweep-tab" data-sweep-tab="sl">📉 Stop Loss</button>
+      <button class="sweep-tab" data-sweep-tab="dca">🔄 DCA</button>
+    </div>
+
+    <!-- TP tab -->
+    <div class="sweep-pane" id="sweep-pane-tp">
+      <label class="checkbox-label"><input type="checkbox" id="sw-tp-enabled" class="checkbox-accent" checked> Sweep Take Profit %</label>
+      <div class="form-grid" id="sw-tp-fields">
+        <div class="form-row"><label>Min %</label><input id="sw-tp-min" type="number" step="0.1" min="0.1" value="0.5" class="modal-input"></div>
+        <div class="form-row"><label>Max %</label><input id="sw-tp-max" type="number" step="0.1" min="0.1" value="5.0" class="modal-input"></div>
+        <div class="form-row"><label>Step</label><select id="sw-tp-step" class="modal-input"><option value="0.1">0.1</option><option value="0.5" selected>0.5</option><option value="1.0">1.0</option></select></div>
+      </div>
+      <div class="form-hint" id="sw-tp-preview"></div>
+    </div>
+
+    <!-- SL tab -->
+    <div class="sweep-pane hidden" id="sweep-pane-sl">
+      <label class="checkbox-label"><input type="checkbox" id="sw-sl-enabled" class="checkbox-accent"> Sweep Stop Loss %</label>
+      <div class="form-grid" id="sw-sl-fields">
+        <div class="form-row"><label>Type</label><select id="sw-sl-type" class="modal-input"><option value="fixed">Fixed</option><option value="trailing">Trailing</option></select></div>
+        <div class="form-row"><label>Min %</label><input id="sw-sl-min" type="number" step="0.1" min="0.1" value="1.0" class="modal-input"></div>
+        <div class="form-row"><label>Max %</label><input id="sw-sl-max" type="number" step="0.1" min="0.1" value="10.0" class="modal-input"></div>
+        <div class="form-row"><label>Step</label><select id="sw-sl-step" class="modal-input"><option value="0.1">0.1</option><option value="0.5" selected>0.5</option><option value="1.0">1.0</option></select></div>
+      </div>
+      <div class="form-hint" id="sw-sl-preview"></div>
+    </div>
+
+    <!-- DCA tab -->
+    <div class="sweep-pane hidden" id="sweep-pane-dca">
+      <label class="checkbox-label"><input type="checkbox" id="sw-dca-enabled" class="checkbox-accent"> Sweep DCA parameter</label>
+      <div class="form-grid" id="sw-dca-fields">
+        <div class="form-row"><label>Parameter</label>
+          <select id="sw-dca-param" class="modal-input">
+            <option value="order_spacing_pct">Order Spacing %</option>
+            <option value="multiplier">Volume Scale</option>
+            <option value="step_scale">Step Scale</option>
+            <option value="max_orders">Max DCA Orders</option>
+          </select>
+        </div>
+        <div class="form-row"><label>Min</label><input id="sw-dca-min" type="number" step="0.1" min="0" value="1.0" class="modal-input"></div>
+        <div class="form-row"><label>Max</label><input id="sw-dca-max" type="number" step="0.1" min="0" value="5.0" class="modal-input"></div>
+        <div class="form-row"><label>Step</label><select id="sw-dca-step" class="modal-input"><option value="0.1">0.1</option><option value="0.5" selected>0.5</option><option value="1.0">1.0</option></select></div>
+      </div>
+      <div class="form-hint" id="sw-dca-preview"></div>
+    </div>
+
+    <!-- Estimation -->
+    <div class="sweep-estimate" id="sw-estimate">Total iterations: 0 · est. ~0s</div>
+    <div id="sw-warn" class="bt-warning hidden"></div>
+
+    <!-- Progress -->
+    <div id="sw-loader" class="bt-loader hidden">
+      <div class="bt-progress"><div class="bt-progress-bar" id="sw-progress-bar"></div></div>
+      <div class="bt-status" id="sw-status">Preparing…</div>
+    </div>
+
+    <!-- Results table -->
+    <div id="sw-results" class="hidden">
+      <div class="sweep-results-header" id="sw-results-header"></div>
+      <div class="card card-no-pad">
+        <table class="bt-history-table">
+          <thead><tr id="sw-results-head"></tr></thead>
+          <tbody id="sw-results-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="hbtn hbtn-theme" id="sw-close-btn">Close</button>
+      <button type="button" class="hbtn hbtn-theme btn-accent" id="sw-run-btn">▶ Run Sweep</button>
     </div>
   </div>
 </div>
@@ -910,6 +992,7 @@
           <input type="number" id="bt-balance" class="bt-input" value="0.1" step="0.01" min="0.0001">
         </label>
         <button id="bt-run-btn" class="hbtn hbtn-theme btn-accent" type="button">▶ Run Backtest</button>
+        <button id="bt-sweep-btn" class="hbtn hbtn-theme" type="button">🔄 Auto Optimize</button>
       </div>
       <div id="bt-warning" class="bt-warning hidden"></div>
       <div id="bt-error" class="bt-error hidden"></div>
@@ -1011,6 +1094,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=72"></script>
+<script src="/static/app.js?v=73"></script>
 </body>
 </html>
