@@ -2203,6 +2203,9 @@ html.compact .modal-card { padding: 19px; }
   margin-bottom: 8px;
 }
 .sw-chart-row { margin-bottom: 20px; }
+.sw-mt8 { margin-top: 8px; }
+.sw-mt12 { margin-top: 12px; }
+.sw-pf-table { min-width: auto; }
 
 .sweep-divider {
   border-top: 1px solid var(--border);
