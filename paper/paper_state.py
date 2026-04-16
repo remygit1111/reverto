@@ -41,6 +41,12 @@ class PaperDeal:
     # 0.0 = not yet initialized; set to entry price on first tick.
     _peak_price: float = field(default=0.0, repr=False)
 
+    # Per-deal overrides written by the portal's PATCH /api/bots/{slug}/deals/{id}
+    # endpoint via a sentinel file. None = use bot-level config; a dict overrides.
+    _tp_override: Optional[dict] = field(default=None, repr=False)
+    _sl_override: Optional[dict] = field(default=None, repr=False)
+    _dca_enabled: bool = field(default=True, repr=False)
+
     @property
     def total_size(self) -> float:
         """Total position size across all orders."""

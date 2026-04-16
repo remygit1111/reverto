@@ -1889,6 +1889,83 @@ async def api_db_stats(request: Request, bot_slug: Optional[str] = None):
     return await asyncio.to_thread(deal_store.compute_stats, bot_slug)
 
 
+# ── Deal management ──────────────────────────────────────────────────────────
+
+class DealEditBody(BaseModel):
+    tp_enabled: Optional[bool] = None
+    tp_target_pct: Optional[float] = None
+    sl_enabled: Optional[bool] = None
+    sl_type: Optional[str] = None
+    sl_pct: Optional[float] = None
+    dca_enabled: Optional[bool] = None
+
+
+@app.get("/api/bots/{slug}/deals/{deal_id}")
+@limiter.limit("60/minute")
+async def api_deal_get(
+    slug: str, deal_id: str, request: Request,
+    actor: str = Depends(_request_actor),
+):
+    rows = await asyncio.to_thread(deal_store.get_deals, bot_slug=slug)
+    deal = next((d for d in rows if d["id"] == deal_id), None)
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    orders = await asyncio.to_thread(deal_store.get_deal_orders, deal_id)
+    return {"deal": deal, "orders": orders}
+
+
+@app.patch("/api/bots/{slug}/deals/{deal_id}")
+@limiter.limit("10/minute")
+async def api_deal_edit(
+    slug: str, deal_id: str, body: DealEditBody,
+    request: Request,
+    actor: str = Depends(_request_actor),
+):
+    import json as _json
+    settings: dict = {}
+    tp_override = {}
+    if body.tp_enabled is not None:
+        tp_override["enabled"] = body.tp_enabled
+    if body.tp_target_pct is not None:
+        tp_override["target_pct"] = body.tp_target_pct
+    if tp_override:
+        settings["tp_override"] = tp_override
+
+    sl_override = {}
+    if body.sl_enabled is not None:
+        sl_override["enabled"] = body.sl_enabled
+    if body.sl_type is not None:
+        sl_override["type"] = body.sl_type
+    if body.sl_pct is not None:
+        sl_override["pct"] = body.sl_pct
+    if sl_override:
+        settings["sl_override"] = sl_override
+
+    if body.dca_enabled is not None:
+        settings["dca_enabled"] = body.dca_enabled
+
+    sentinel = LOG_DIR / f"{slug}.deal_edit_{deal_id}"
+    sentinel.write_text(_json.dumps(settings), encoding="utf-8")
+    _audit("deal_edit", slug, actor)
+    return {"ok": True, "deal_id": deal_id}
+
+
+@app.delete("/api/bots/{slug}/deals/{deal_id}")
+@limiter.limit("10/minute")
+async def api_deal_action(
+    slug: str, deal_id: str,
+    request: Request,
+    action: str = "close",
+    actor: str = Depends(_request_actor),
+):
+    if action not in ("cancel", "close"):
+        raise HTTPException(status_code=400, detail="action must be cancel or close")
+    sentinel = LOG_DIR / f"{slug}.deal_{action}_{deal_id}"
+    sentinel.write_text("", encoding="utf-8")
+    _audit(f"deal_{action}", slug, actor)
+    return {"ok": True, "deal_id": deal_id, "action": action}
+
+
 class AnnotationBody(BaseModel):
     bot_slug: str
     type: str

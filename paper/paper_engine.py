@@ -72,6 +72,9 @@ def _deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
         "close_reason":    deal.close_reason,
         "is_open":         deal.is_open,
         "_peak_price":     deal._peak_price,  # persist trailing stop peak
+        "_tp_override":    deal._tp_override,
+        "_sl_override":    deal._sl_override,
+        "_dca_enabled":    deal._dca_enabled,
         # Full order list — required to reconstruct the deal on restart.
         # The dashboard only reads order_count, so adding this list is
         # backwards-compatible with the frontend.
@@ -130,6 +133,9 @@ def _dict_to_deal(d: dict) -> PaperDeal:
         pnl_pct=float(d.get("pnl_pct", 0.0)),
     )
     deal._peak_price = float(d.get("_peak_price", 0.0))
+    deal._tp_override = d.get("_tp_override")
+    deal._sl_override = d.get("_sl_override")
+    deal._dca_enabled = d.get("_dca_enabled", True)
     return deal
 
 
@@ -532,6 +538,7 @@ class PaperEngine:
             # Manual trigger: the portal writes a sentinel file to force
             # an immediate deal open, bypassing schedule + indicators.
             self._check_manual_trigger(price)
+            self._check_deal_sentinels(price)
 
             if is_open:
                 self._check_entry(price)
@@ -736,6 +743,78 @@ class PaperEngine:
             return False
         return True
 
+    def _check_deal_sentinels(self, price: float):
+        """Consume deal_edit / deal_cancel / deal_close sentinel files.
+
+        The portal writes these to logs/{slug}.deal_{action}_{deal_id}
+        and the engine picks them up on the next tick. This is the same
+        fire-and-forget pattern as the manual_trigger sentinel.
+        """
+        slug = self.config.name.lower().replace(" ", "_")
+        log_dir = Path("logs")
+        if not log_dir.exists():
+            return
+        for sentinel in log_dir.glob(f"{slug}.deal_*"):
+            try:
+                parts = sentinel.name.split(".", 1)[1].split("_", 2)
+                if len(parts) < 3:
+                    sentinel.unlink(missing_ok=True)
+                    continue
+                action = parts[1]   # edit / cancel / close
+                deal_id = parts[2]  # e.g. PAPER-0001
+                payload = sentinel.read_text(encoding="utf-8").strip()
+                sentinel.unlink(missing_ok=True)
+            except Exception as e:
+                logger.warning("Failed to read deal sentinel %s: %s", sentinel, e)
+                continue
+
+            deal = self.state.open_deals.get(deal_id)
+            if not deal:
+                logger.warning("Deal sentinel for %s but deal not open", deal_id)
+                continue
+
+            if action == "edit":
+                import json as _json
+                try:
+                    settings = _json.loads(payload) if payload else {}
+                except Exception:
+                    settings = {}
+                if "tp_override" in settings:
+                    deal._tp_override = settings["tp_override"]
+                if "sl_override" in settings:
+                    deal._sl_override = settings["sl_override"]
+                if "dca_enabled" in settings:
+                    deal._dca_enabled = bool(settings["dca_enabled"])
+                logger.info("Deal %s settings updated via portal", deal_id)
+
+            elif action == "cancel":
+                self.state.close_deal(deal_id, price, "cancelled")
+                self._db_close_deal(deal_id, price, "cancelled", 0.0, 0.0)
+                logger.info("Deal %s cancelled via portal", deal_id)
+                self._notify(
+                    self.notifier.notify_stop_loss,
+                    self.config.name, deal.symbol, price, 0.0, 0.0,
+                )
+
+            elif action == "close":
+                pnl_btc, pnl_pct = deal.calculate_pnl(price)
+                exit_size = deal.total_size
+                self.state.close_deal(deal_id, price, "manual")
+                fee = self._calc_fee(exit_size)
+                self.state.balance_btc -= fee
+                self._fees_paid_btc += fee
+                self._db_close_deal(deal_id, price, "manual", pnl_btc, pnl_pct)
+                logger.info(
+                    "Deal %s manually closed at $%.2f PnL: %+.6f BTC (fee %.8f)",
+                    deal_id, price, pnl_btc, fee,
+                )
+                self._notify(
+                    self.notifier.notify_take_profit,
+                    self.config.name, deal.symbol, price, pnl_btc, pnl_pct,
+                )
+            else:
+                logger.warning("Unknown deal sentinel action: %s", action)
+
     def _check_entry(self, price: float):
         """Check if conditions are met to start a new deal."""
         # Use snapshot to avoid holding the lock during the check
@@ -832,11 +911,18 @@ class PaperEngine:
         target (we don't simulate slippage past the line) so realised
         PnL stays consistent with the user's TP percentage.
         """
-        if not getattr(self.config.take_profit, 'enabled', True):
-            return
+        tp_ov = deal._tp_override
+        if tp_ov is not None:
+            if not tp_ov.get("enabled", True):
+                return
+            tp_pct = tp_ov.get("target_pct", self.config.take_profit.target_pct)
+        else:
+            if not getattr(self.config.take_profit, 'enabled', True):
+                return
+            tp_pct = self.config.take_profit.target_pct
 
         avg          = deal.avg_entry_price
-        target_price = avg * (1 + self.config.take_profit.target_pct / 100)
+        target_price = avg * (1 + tp_pct / 100)
 
         wick_high, _ = self._wick_high_low(price)
         wick_hit = wick_high >= target_price
@@ -903,13 +989,21 @@ class PaperEngine:
         the next sampled tick — a measurable bias that made paper and
         backtest results diverge.
         """
-        if self.config.stop_loss.type == "none":
-            return
+        sl_ov = deal._sl_override
+        if sl_ov is not None:
+            if not sl_ov.get("enabled", True):
+                return
+            sl_type = sl_ov.get("type", self.config.stop_loss.type)
+            sl_pct = sl_ov.get("pct", self.config.stop_loss.pct)
+        else:
+            if self.config.stop_loss.type == "none":
+                return
+            sl_type = self.config.stop_loss.type
+            sl_pct = self.config.stop_loss.pct
 
-        sl_pct = self.config.stop_loss.pct
         wick_high, wick_low = self._wick_high_low(price)
 
-        if self.config.stop_loss.type == "trailing":
+        if sl_type == "trailing":
             # Initialize peak on first tick after deal opens.
             if deal._peak_price == 0.0:
                 deal._peak_price = price
@@ -940,13 +1034,13 @@ class PaperEngine:
             self._db_close_deal(deal.id, fill_price, "sl", pnl_btc, pnl_pct)
             if wick_hit and not tick_hit:
                 logger.info(
-                    f"SL hit ({self.config.stop_loss.type}, wick): {deal.id} "
+                    f"SL hit ({sl_type}, wick): {deal.id} "
                     f"at ${fill_price:,.2f} (wick low: ${wick_low:,.2f}) "
                     f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
                 )
             else:
                 logger.info(
-                    f"SL hit ({self.config.stop_loss.type}): {deal.id} "
+                    f"SL hit ({sl_type}): {deal.id} "
                     f"at ${fill_price:,.2f} PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
                 )
             self._notify(
@@ -957,6 +1051,8 @@ class PaperEngine:
     def _check_dca(self, deal: PaperDeal, price: float):
         """Check if a DCA order should be placed."""
         if not getattr(self.config.dca, 'enabled', True):
+            return
+        if not deal._dca_enabled:
             return
         # max_orders=0 means "base order only, never DCA".
         if self.config.dca.max_orders <= 1:
