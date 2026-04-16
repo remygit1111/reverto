@@ -42,7 +42,11 @@ applyPersistedSettings();
 // The portal now uses session-cookie auth for browser users. The API key is
 // kept around purely as an alternative for scripts and CLI tools that don't
 // hold a session — set it via Profile → API Key. The SPA itself never sends
-// the X-API-Key header anymore.
+// Legacy — session cookies are now the primary auth mechanism.
+// getApiKey reads from localStorage for backwards compatibility with
+// operator scripts that use the X-API-Key header. New code should
+// NOT write to localStorage; the key is set via the Profile modal
+// which now only displays the server-side key without persisting it.
 function getApiKey() {
   return localStorage.getItem('reverto_api_key') || '';
 }
@@ -57,7 +61,9 @@ function closeApiKeyModal() {
 function saveApiKey() {
   const key = document.getElementById('api-key-input').value.trim();
   if (!key) { alert('Empty key — not saved'); return; }
-  localStorage.setItem('reverto_api_key', key);
+  // Legacy: no longer persisted to localStorage. The session cookie
+  // handles portal auth; the API key is only for external scripts
+  // which should set REVERTO_API_KEY in their own environment.
   closeApiKeyModal();
 }
 function clearApiKey() {
@@ -6490,11 +6496,14 @@ const SW_RESULT_COLS = [
   { key: 'avg_dur',       label: 'Avg Dur',     fmt: v => btFormatDuration(v) },
 ];
 let _swStopped = false;
+let _swIsRunning = false;
 let _swSortKey = 'profit_factor';
 let _swSortDir = 'desc';
 let _swRows = [];
 
 async function swRunSweep() {
+  if (_swIsRunning) return;
+  _swIsRunning = true;
   const startStr = $('bt-start').value;
   const endStr   = $('bt-end').value;
   const tf       = $('bt-tf').value;
@@ -6534,12 +6543,12 @@ async function swRunSweep() {
   } catch (e) {
     $('sw-status').textContent = 'Failed to fetch candles: ' + (e.message || e);
     $('sw-run-btn').classList.remove('hidden'); $('sw-stop-btn').classList.add('hidden');
-    return;
+    _swIsRunning = false; return;
   }
   if (!candles || candles.length < 50) {
     $('sw-status').textContent = `Not enough candles (${candles ? candles.length : 0})`;
     $('sw-run-btn').classList.remove('hidden'); $('sw-stop-btn').classList.add('hidden');
-    return;
+    _swIsRunning = false; return;
   }
 
   _swRows = [];
@@ -6592,6 +6601,7 @@ async function swRunSweep() {
   $('sw-run-btn').classList.remove('hidden');
   $('sw-stop-btn').classList.add('hidden');
   _swStopped = false;
+  _swIsRunning = false;
   $('sw-results-header').textContent =
     `Sweep complete — ${configs.length} iterations in ${elapsed}s`;
   $('sw-results').classList.remove('hidden');
