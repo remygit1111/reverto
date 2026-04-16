@@ -6758,11 +6758,13 @@ function _swBestIdx(vals) {
 }
 
 function _swBarV(title, rows, key = 'total_pnl_btc') {
-  const cap = key === 'profit_factor' ? 10 : null;
-  const vals = rows.map(r => _swSafe(r[key], cap));
+  let cap = null;
   if (key === 'profit_factor') {
-    console.log('[SW_CHART] PF raw→capped:', rows.map((r, i) => `${r.label}: ${r[key]} → ${vals[i]}`));
+    const finiteVals = rows.map(r => r[key]).filter(v => typeof v === 'number' && Number.isFinite(v));
+    const maxFinite = finiteVals.length ? Math.max(...finiteVals) : 1;
+    cap = Math.max(maxFinite * 1.5, 2);
   }
+  const vals = rows.map(r => _swSafe(r[key], cap));
   const best = _swBestIdx(vals);
   const n = rows.length;
   const gap = 2, barW = Math.max(4, Math.floor((600 - gap * n) / n));
