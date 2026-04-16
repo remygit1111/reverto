@@ -195,6 +195,9 @@ class BacktestEngine:
             return True
 
         # ── Stop Loss ─────────────────────────────────────────────────
+        if self.config.stop_loss.type == "none":
+            return False
+
         sl_pct = self.config.stop_loss.pct
 
         if self.config.stop_loss.type == "trailing":
@@ -220,7 +223,10 @@ class BacktestEngine:
             return
 
         last_price   = deal.orders[-1].price
-        next_dca     = last_price * (1 - self.config.dca.order_spacing_pct / 100)
+        step = self.config.dca.order_spacing_pct * (
+            self.config.dca.step_scale ** deal.dca_count
+        )
+        next_dca     = last_price * (1 - step / 100)
 
         if price <= next_dca:
             multiplier = self.config.dca.multiplier ** deal.dca_count

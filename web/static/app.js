@@ -1514,6 +1514,8 @@ function nbReadAll() {
   nbState.tp_max_age_hours = parseInt($('nb-tp-max-age-hours').value, 10);
   nbState.sl_type = $('nb-sl-type').value;
   nbState.sl_pct = parseFloat($('nb-sl-pct').value);
+  const slPctRow = $('nb-sl-pct-row');
+  if (slPctRow) slPctRow.classList.toggle('hidden', nbState.sl_type === 'none');
   const wickEl = $('nb-use-wick-sim');
   nbState.use_wick_simulation = wickEl ? Boolean(wickEl.checked) : true;
 
@@ -1554,8 +1556,8 @@ function nbValidateAll() {
 
   if (!nbState.tp_target_pct || nbState.tp_target_pct <= 0)
     errors.push('Take Profit: target % must be > 0');
-  if (!nbState.sl_pct || nbState.sl_pct <= 0)
-    errors.push('Stop Loss: percentage must be > 0');
+  if (nbState.sl_type !== 'none' && (!nbState.sl_pct || nbState.sl_pct <= 0))
+    errors.push('Stop Loss: percentage must be > 0 when using Fixed or Trailing SL');
 
   if (nbState.dca_max_orders == null || isNaN(nbState.dca_max_orders) ||
       nbState.dca_max_orders < 0 || nbState.dca_max_orders > 49)
@@ -1616,6 +1618,8 @@ function nbApplyStateToForm() {
   $('nb-tp-max-age-hours').disabled = !nbState.tp_max_age_enabled;
   $('nb-sl-type').value = nbState.sl_type;
   $('nb-sl-pct').value = nbState.sl_pct;
+  const slPctRow2 = $('nb-sl-pct-row');
+  if (slPctRow2) slPctRow2.classList.toggle('hidden', nbState.sl_type === 'none');
   const wickInput = $('nb-use-wick-sim');
   if (wickInput) wickInput.checked = Boolean(nbState.use_wick_simulation);
 
@@ -2149,7 +2153,7 @@ function nbRenderReview() {
       <div class="review-row"><span class="review-key">Take Profit</span><span>${nbState.tp_target_pct}%</span></div>
       <div class="review-row"><span class="review-key">TP confirmation</span><span>${safeText(nbState.tp_indicator_confirm) || 'none'}</span></div>
       <div class="review-row"><span class="review-key">Max age</span><span>${nbState.tp_max_age_enabled ? nbState.tp_max_age_hours + 'h' : 'none'}</span></div>
-      <div class="review-row"><span class="review-key">Stop Loss</span><span>${safeText(nbState.sl_type)} ${nbState.sl_pct}%</span></div>
+      <div class="review-row"><span class="review-key">Stop Loss</span><span>${nbState.sl_type === 'none' ? 'None (disabled)' : safeText(nbState.sl_type) + ' ' + nbState.sl_pct + '%'}</span></div>
     </div>
     <div class="review-section">
       <div class="review-section-title">DCA</div>
@@ -2183,6 +2187,7 @@ function nbBuildBotConfig() {
       max_orders: nbState.dca_max_orders + 1,
       order_spacing_pct: nbState.dca_spacing_pct,
       multiplier: nbState.dca_volume_scale,
+      step_scale: nbState.dca_step_scale,
     },
     entry: {
       indicators: nbState.indicators.map(i => {
@@ -4945,6 +4950,11 @@ function setupEventListeners() {
     $('nb-tp-max-age-hours').disabled = !e.target.checked;
     nbRecompute();
   });
+  $('nb-sl-type').addEventListener('change', () => {
+    const r = $('nb-sl-pct-row');
+    if (r) r.classList.toggle('hidden', $('nb-sl-type').value === 'none');
+    nbRecompute();
+  });
 
   // Live recompute: any input/change inside the wizard refreshes state,
   // DCA preview and review section. Indicator row controls are handled
@@ -5154,6 +5164,7 @@ class RevertoBacktest {
     this._base_size = (config.dca && config.dca.base_order_size) || 0.001;
     this._max_orders = (config.dca && config.dca.max_orders)      || 1;
     this._spacing = (config.dca && config.dca.order_spacing_pct)  || 2.5;
+    this._step_scale = (config.dca && config.dca.step_scale != null) ? config.dca.step_scale : 1.0;
     this._mult    = (config.dca && config.dca.multiplier)         || 1.0;
     this._taker_fee = (config.dca && config.dca.taker_fee) || 0.0006;
     this._lev = (config.leverage && config.leverage.enabled && config.leverage.size) || 1;
@@ -5208,6 +5219,7 @@ class RevertoBacktest {
   }
 
   _checkSl(deal, candle) {
+    if (this._sl_type === 'none') return false;
     const avg = this._avgEntry(deal);
     let slPrice;
     if (this._sl_type === 'trailing') {
@@ -5228,7 +5240,8 @@ class RevertoBacktest {
     if (this._max_orders <= 1) return;
     if (deal.dca_count >= this._max_orders - 1) return;
     const lastPrice = deal.orders[deal.orders.length - 1].price;
-    const nextDca = lastPrice * (1 - this._spacing / 100);
+    const step = this._spacing * Math.pow(this._step_scale, deal.dca_count);
+    const nextDca = lastPrice * (1 - step / 100);
     // Match Python backtest_engine._check_dca exactly: trigger on
     // candle.close (not candle.low), fill at candle.close (not the
     // line), and use dca_count as the multiplier exponent BEFORE
@@ -6087,12 +6100,15 @@ function _btFlattenForSave(res) {
 
 async function _btSaveRun(cfg, params, res) {
   if (!cfg || !res || !res.summary) return null;
+  const slug = cfg.slug || params.slug || currentSlug
+    || (cfg.name || 'backtest').toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 64)
+    || 'backtest';
   try {
     const r = await fetch('/api/backtest/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        slug: cfg.slug || params.slug || '',
+        slug,
         name: cfg.name || params.name || 'Backtest',
         params,
         summary: _btFlattenForSave(res),
