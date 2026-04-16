@@ -537,3 +537,44 @@ class TestSRLeftRightBars:
             condition="price_crossing_down", value="support",
             proximity_pct=2.0)
         assert isinstance(result, bool)
+
+
+class TestSRDetailed:
+    def test_detailed_returns_pivot_and_break_index(self):
+        from strategies.indicators.support_resistance import (
+            find_support_resistance_detailed,
+        )
+        n = 40
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        # Pivot high at bar 10
+        for j in range(7, 14):
+            highs[j] = 105.0
+        highs[10] = 112.0
+        closes[10] = 111.0
+        # Break resistance at bar 30
+        closes[30] = 113.0
+        sup, res = find_support_resistance_detailed(
+            highs, lows, closes, left_bars=3, right_bars=3)
+        assert len(res) >= 1
+        r = res[0]
+        assert r["pivot_index"] == 10
+        assert r["price"] == 112.0
+        assert r["break_index"] == 30
+
+    def test_unbroken_level_has_null_break(self):
+        from strategies.indicators.support_resistance import (
+            find_support_resistance_detailed,
+        )
+        n = 40
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        highs[10] = 112.0
+        for j in range(7, 14):
+            highs[j] = max(highs[j], 105.0)
+        sup, res = find_support_resistance_detailed(
+            highs, lows, closes, left_bars=3, right_bars=3)
+        assert len(res) >= 1
+        assert res[0]["break_index"] is None

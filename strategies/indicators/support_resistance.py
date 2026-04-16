@@ -58,6 +58,55 @@ def find_support_resistance(
     return active_sup, active_res
 
 
+def find_support_resistance_detailed(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    left_bars: int = 15,
+    right_bars: int = 15,
+) -> tuple[list[dict], list[dict]]:
+    """Return (support_levels, resistance_levels) with pivot metadata.
+
+    Each level is a dict: {"price": float, "pivot_index": int,
+    "break_index": int | None}. break_index is the first bar where
+    a close breaches the level, or None if still active.
+    """
+    n = len(closes)
+    if len(highs) != n or len(lows) != n:
+        raise ValueError("highs/lows/closes must have equal length")
+    min_required = left_bars + right_bars + 1
+    if n < min_required:
+        return [], []
+
+    res_pivots: list[tuple[int, float]] = []
+    sup_pivots: list[tuple[int, float]] = []
+    for i in range(left_bars, n - right_bars):
+        h = highs[i]
+        if h > max(highs[i - left_bars:i]) and h > max(highs[i + 1:i + right_bars + 1]):
+            res_pivots.append((i, h))
+        lo = lows[i]
+        if lo < min(lows[i - left_bars:i]) and lo < min(lows[i + 1:i + right_bars + 1]):
+            sup_pivots.append((i, lo))
+
+    def _break_idx(idx: int, price: float, above: bool) -> int | None:
+        for j in range(idx + 1, n):
+            if above and closes[j] > price:
+                return j
+            if not above and closes[j] < price:
+                return j
+        return None
+
+    res_out = [
+        {"price": p, "pivot_index": i, "break_index": _break_idx(i, p, True)}
+        for i, p in res_pivots
+    ]
+    sup_out = [
+        {"price": p, "pivot_index": i, "break_index": _break_idx(i, p, False)}
+        for i, p in sup_pivots
+    ]
+    return sup_out, res_out
+
+
 def check_support_resistance_signal(
     highs: list[float],
     lows: list[float],
