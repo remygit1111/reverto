@@ -2097,7 +2097,7 @@ function nbIndicatorFieldsHtml(ind, i) {
   if (ind.type === 'SUPPORT_RESISTANCE') {
     const lbars = ind.left_bars != null ? ind.left_bars : 15;
     const rbars = ind.right_bars != null ? ind.right_bars : 15;
-    const maxLv = ind.max_levels != null ? ind.max_levels : 5;
+    const maxLv = ind.max_levels != null ? ind.max_levels : 3;
     const keepT = ind.keep_true != null ? ind.keep_true : 0;
     const prox = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
     const val = ind.value || 'resistance';
@@ -3690,7 +3690,7 @@ function _renderIndicatorOverlays(candles) {
   _srLineSeries = [];
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
-    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15, srCfg.max_levels || 5);
+    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15, srCfg.max_levels || 3);
     const lastTime = candles[candles.length - 1].time;
     const renderLevels = (detailed, color, label) => {
       for (const lv of detailed) {
@@ -3714,6 +3714,26 @@ function _renderIndicatorOverlays(candles) {
     };
     renderLevels(sr.supportDetailed || [], '#1e88e5', 'S');
     renderLevels(sr.resistanceDetailed || [], '#e53935', 'R');
+    // Confirmation markers at pivot_index + right_bars
+    const rb = srCfg.right_bars || 15;
+    const confirmMarkers = [];
+    for (const lv of [...(sr.supportDetailed || []), ...(sr.resistanceDetailed || [])]) {
+      const ci = lv.pivotIdx + rb;
+      if (ci < candles.length) {
+        confirmMarkers.push({
+          time: candles[ci].time,
+          position: 'inBar',
+          color: 'rgba(255,255,255,0.3)',
+          shape: 'circle',
+          size: 0.5,
+        });
+      }
+    }
+    if (confirmMarkers.length && _chartCandles) {
+      const existing = _chartIndicatorMarkers || [];
+      _chartIndicatorMarkers = [...existing, ...confirmMarkers];
+      _setCombinedMarkers();
+    }
   }
   // QFL — base price lines
   const qflCfg = _findIndicator('QFL');
@@ -4879,7 +4899,7 @@ function renderWizardOverlays() {
         }
       } else if (t === 'SUPPORT_RESISTANCE') {
         if (typeof calcSR === 'function' && _wizardCandleCache && _wizardChart) {
-          const sr = calcSR(_wizardCandleCache, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15, Number(ind.max_levels) || 5);
+          const sr = calcSR(_wizardCandleCache, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15, Number(ind.max_levels) || 3);
           if (sr) {
             const wCandles = _wizardCandleCache;
             const renderWizSR = (detailed, color, label) => {
@@ -5080,7 +5100,7 @@ function calcSupertrendLines(candles, atrPeriod, multiplier) {
 }
 
 function calcSR(candles, leftBars, rightBars, maxLevels, mergePct) {
-  const ml = maxLevels || 5;
+  const ml = maxLevels || 3;
   const mp = mergePct != null ? mergePct : 0.3;
   const n = candles.length;
   const hi = candles.map(c => c.high || c.close);
