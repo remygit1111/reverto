@@ -6556,6 +6556,20 @@ async function swRunSweep() {
     const result = await engine.run(balance);
     const s = result.summary;
     const r = result.ratios;
+    // Diagnostic: gross win/loss breakdown for sweep analysis
+    const deals = result.deals || [];
+    const winDeals = deals.filter(d => d.pnl_btc > 0);
+    const lossDeals = deals.filter(d => d.pnl_btc < 0);
+    const grossWinSum = winDeals.reduce((a, d) => a + d.pnl_btc, 0);
+    const grossLossSum = Math.abs(lossDeals.reduce((a, d) => a + d.pnl_btc, 0));
+    const avgWinSize = winDeals.length ? winDeals.reduce((a, d) => a + d.total_size, 0) / winDeals.length : 0;
+    const avgLossSize = lossDeals.length ? lossDeals.reduce((a, d) => a + d.total_size, 0) / lossDeals.length : 0;
+    console.log(`[SWEEP] ${label} | deals=${s.total_deals} win=${winDeals.length} loss=${lossDeals.length} | ` +
+      `winRate=${s.win_rate.toFixed(1)}% | PnL=${s.total_pnl_btc.toFixed(8)} | ` +
+      `grossWin=${grossWinSum.toFixed(8)} grossLoss=${grossLossSum.toFixed(8)} | ` +
+      `PF=${typeof r.profit_factor === 'number' ? r.profit_factor.toFixed(3) : r.profit_factor} | ` +
+      `avgWinSize=${avgWinSize.toFixed(6)} avgLossSize=${avgLossSize.toFixed(6)} | ` +
+      `fees=${s.total_fees_btc.toFixed(8)} maxDD=${s.max_drawdown_pct.toFixed(2)}%`);
     _swRows.push({
       label,
       config: c,
