@@ -5409,6 +5409,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.addEventListener('input', swUpdateEstimate);
     el.addEventListener('change', swUpdateEstimate);
   });
+  // DCA param selector: hide step dropdown for max_orders (always step=1)
+  const swDcaParam = $('sw-dca-param');
+  if (swDcaParam) swDcaParam.addEventListener('change', () => {
+    const stepRow = $('sw-dca-step') && $('sw-dca-step').closest('.form-row');
+    if (stepRow) stepRow.classList.toggle('hidden', swDcaParam.value === 'max_orders');
+  });
   // Schedule sweep: show/hide day checkboxes and hour range on toggle
   const swDaysChk = $('sw-sched-days-enabled');
   if (swDaysChk) swDaysChk.addEventListener('change', () => {
@@ -6428,7 +6434,7 @@ function _swGenerateConfigs(baseCfg) {
     const param = $('sw-dca-param').value;
     const min = parseFloat($('sw-dca-min').value);
     const max = parseFloat($('sw-dca-max').value);
-    const step = parseFloat($('sw-dca-step').value);
+    const step = param === 'max_orders' ? 1 : parseFloat($('sw-dca-step').value);
     const labelMap = {
       order_spacing_pct: 'Spacing', multiplier: 'VolScale',
       step_scale: 'StepScale', max_orders: 'MaxDCA',
@@ -6686,8 +6692,27 @@ function _swRenderChart() {
   area.innerHTML = html.join('');
 }
 
-function _swSafe(v) {
-  return (typeof v === 'number' && Number.isFinite(v)) ? v : 0;
+function _swSafe(v, cap) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return cap != null ? Math.min(v, cap) : v;
+}
+
+function _swLabelStep(n) {
+  if (n > 20) return 4;
+  if (n > 10) return 2;
+  return 1;
+}
+
+function _swShortLabel(lbl) {
+  return lbl.replace(/:00$/, '').replace(/%$/, '');
+}
+
+function _swTooltip(r) {
+  const pnl = _swSafe(r.total_pnl_btc);
+  const fv = (pnl >= 0 ? '+' : '') + pnl.toFixed(8) + ' BTC';
+  const deals = r.total_deals ?? 0;
+  const wr = r.win_rate != null ? r.win_rate.toFixed(1) + '%' : '—';
+  return `${r.label} | PnL: ${fv} | Deals: ${deals} | Win: ${wr}`;
 }
 
 // SVG-based bar charts — CSP-safe because SVG rect width/height are
@@ -6703,13 +6728,14 @@ function _swBestIdx(vals) {
 }
 
 function _swBarV(title, rows, key = 'total_pnl_btc') {
-  const vals = rows.map(r => _swSafe(r[key]));
+  const cap = key === 'profit_factor' ? 10 : null;
+  const vals = rows.map(r => _swSafe(r[key], cap));
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
   const best = _swBestIdx(vals);
   const n = rows.length;
   const gap = 2, barW = Math.max(4, Math.floor((600 - gap * n) / n));
   const svgW = n * (barW + gap);
-  const labelStep = n > 14 ? 2 : 1;
+  const step = _swLabelStep(n);
   const lblH = 14;
   let rects = '', labels = '';
   rows.forEach((r, i) => {
@@ -6717,12 +6743,10 @@ function _swBarV(title, rows, key = 'total_pnl_btc') {
     const h = Math.max(2, Math.round(Math.abs(v) / mx * _SW_VBAR_H));
     const x = i * (barW + gap);
     const y = _SW_VBAR_H - h;
-    const fill = i === best ? 'var(--accent)' : 'var(--muted)';
-    const fv = Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4);
-    rects += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" fill="${fill}" rx="2"><title>${safeText(r.label)}: ${fv}</title></rect>`;
-    if (i % labelStep === 0) {
-      const short = r.label.replace(/:00$/, '');
-      labels += `<text x="${x + barW / 2}" y="${_SW_VBAR_H + lblH}" text-anchor="middle" class="sw-svg-label">${safeText(short)}</text>`;
+    const cls = i === best ? 'sw-svg-best-bar' : 'sw-svg-bar';
+    rects += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" class="${cls}" rx="2"><title>${safeText(_swTooltip(r))}</title></rect>`;
+    if (i % step === 0) {
+      labels += `<text x="${x + barW / 2}" y="${_SW_VBAR_H + lblH}" text-anchor="middle" class="sw-svg-label">${safeText(_swShortLabel(r.label))}</text>`;
     }
   });
   return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>` +
@@ -6742,10 +6766,10 @@ function _swBarH(title, rows) {
     const v = vals[i];
     const w = Math.max(2, Math.round(Math.abs(v) / mx * barArea));
     const y = i * (rowH + gap);
-    const fill = i === best ? 'var(--accent)' : 'var(--muted)';
+    const cls = i === best ? 'sw-svg-best-bar' : 'sw-svg-bar';
     const fv = (v >= 0 ? '+' : '') + v.toFixed(8);
-    elems += `<text x="${labelW - 4}" y="${y + rowH / 2 + 4}" text-anchor="end" class="sw-svg-label">${safeText(r.label)}</text>`;
-    elems += `<rect x="${labelW}" y="${y}" width="${w}" height="${rowH}" fill="${fill}" rx="3"><title>${safeText(r.label)}: ${fv}</title></rect>`;
+    elems += `<text x="${labelW - 4}" y="${y + rowH / 2 + 4}" text-anchor="end" class="sw-svg-label">${safeText(_swShortLabel(r.label))}</text>`;
+    elems += `<rect x="${labelW}" y="${y}" width="${w}" height="${rowH}" class="${cls}" rx="3"><title>${safeText(_swTooltip(r))}</title></rect>`;
     elems += `<text x="${labelW + w + 6}" y="${y + rowH / 2 + 4}" class="sw-svg-value">${fv}</text>`;
   });
   return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>` +
