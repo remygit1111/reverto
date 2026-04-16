@@ -37,21 +37,21 @@ class LiquidationGuard(BaseModel):
 class LeverageConfig(BaseModel):
     model_config = _STRICT
     enabled: bool = False
-    size: int = 1
+    size: int = Field(default=1, ge=1, le=125)
     liquidation_guard: LiquidationGuard = LiquidationGuard()
 
 
 class DCAConfig(BaseModel):
     model_config = _STRICT
     enabled: bool = True
-    base_order_size: float
+    base_order_size: float = Field(gt=0)
     # Total orders including base order. DCA orders = max_orders - 1.
     # max_orders=0 or 1 disables DCA (base order only).
     max_orders: int = Field(default=5, ge=0, le=50)
-    order_spacing_pct: float = 2.5
-    multiplier: float = 1.0
-    step_scale: float = 1.0
-    taker_fee: float = 0.0006  # Bitget BTCUSD inverse taker fee, 0.06%
+    order_spacing_pct: float = Field(default=2.5, gt=0, le=50)
+    multiplier: float = Field(default=1.0, gt=0, le=10)
+    step_scale: float = Field(default=1.0, gt=0, le=5)
+    taker_fee: float = Field(default=0.0006, ge=0, le=0.01)
 
 
 class IndicatorConfig(BaseModel):
@@ -101,21 +101,15 @@ class EntryConfig(BaseModel):
 class TakeProfitConfig(BaseModel):
     model_config = _STRICT
     enabled: bool = True
-    target_pct: float = 3.0
+    target_pct: float = Field(default=3.0, gt=0, le=100)
     indicator_confirm: Optional[str] = None
-    # Optional minimum gain guard. If set, the indicator-confirm path
-    # only fires when the deal's current pnl_pct is at least this
-    # percentage above the average entry. Prevents an indicator from
-    # closing a deal that's barely in profit (or underwater).
-    minimum_tp_pct: Optional[float] = None
+    minimum_tp_pct: Optional[float] = Field(default=None, ge=0, le=100)
 
 
 class StopLossConfig(BaseModel):
     model_config = _STRICT
-    # Literal type ensures invalid values like "traling" raise a validation error
-    # rather than silently falling through to fixed stop behaviour
     type: Literal["none", "fixed", "trailing"] = "fixed"
-    pct: float = 5.0
+    pct: float = Field(default=5.0, ge=0, le=100)
 
 
 class MLConfig(BaseModel):

@@ -82,6 +82,7 @@ function _handle401() {
   // after the session has expired.
   if (overviewInterval) { clearInterval(overviewInterval); overviewInterval = null; }
   if (detailInterval)   { clearInterval(detailInterval);   detailInterval   = null; }
+  if (_priceInterval)   { clearInterval(_priceInterval);   _priceInterval   = null; }
   if (ws) { try { ws.close(); } catch (e) {} ws = null; }
   try { disconnectStateWS(); } catch (e) {}
   document.querySelectorAll('.page').forEach(p => {
@@ -449,6 +450,7 @@ let currentSlug = null;
 let ws = null;
 let detailInterval = null;
 let overviewInterval = null;
+let _priceInterval = null;
 
 // /ws/state — bot-state push channel. The dashboard used to poll
 // /api/bots every 5s; now we poll every 30s as a safety net and let
@@ -1693,7 +1695,15 @@ function nbApplyMobileCollapse() {
 
 function nbShowError(msg) {
   const el = $('nb-error');
-  el.innerHTML = msg;
+  el.textContent = '';
+  if (Array.isArray(msg)) {
+    msg.forEach((m, i) => {
+      if (i > 0) el.appendChild(document.createElement('br'));
+      el.appendChild(document.createTextNode(m));
+    });
+  } else {
+    el.textContent = msg;
+  }
   el.classList.remove('hidden');
 }
 function nbHideError() {
@@ -2495,7 +2505,7 @@ async function nbSubmit() {
   nbReadAll();
   const errors = nbValidateAll();
   if (errors.length) {
-    nbShowError(errors.map(e => safeText(e)).join('<br>'));
+    nbShowError(errors);
     return;
   }
   const body = nbBuildBotConfig();
@@ -2515,7 +2525,7 @@ async function nbSubmit() {
     if (res.status === 401) { _handle401(); return; }
     const r = await res.json();
     if (!res.ok) {
-      nbShowError(safeText(r.detail || `Save failed (${res.status})`));
+      nbShowError(r.detail || `Save failed (${res.status})`);
       return;
     }
     const returnSlug = wasEdit ? nbEditSlug : (r.slug || null);
@@ -2526,7 +2536,7 @@ async function nbSubmit() {
       goBots();
     }
   } catch (e) {
-    nbShowError('Network error: ' + safeText(e.message));
+    nbShowError('Network error: ' + (e.message || e));
   } finally {
     btn.disabled = false;
     btn.textContent = origLabel;
@@ -5317,7 +5327,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   fetchOverview();
   fetchPrice();
   overviewInterval = setInterval(fetchOverview, 30000);
-  setInterval(fetchPrice, 15000);
+  _priceInterval = setInterval(fetchPrice, 15000);
   connectStateWS();
 
   setTimeout(async () => {
