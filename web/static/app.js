@@ -5535,6 +5535,9 @@ class RevertoBacktest {
     const maxDurationHours = durationsHours.length
       ? Math.max(...durationsHours)
       : 0;
+    const avgDcaOrders = deals.length
+      ? deals.reduce((s, d) => s + (d.dca_count || 0), 0) / deals.length
+      : 0;
     // Max drawdown from the equity curve
     let peak = this.initial_balance_btc, maxDd = 0;
     for (const p of this.equity_curve) {
@@ -5686,6 +5689,7 @@ class RevertoBacktest {
         wins, losses,
         avg_duration_hours: avgDurationHours,
         max_duration_hours: maxDurationHours,
+        avg_dca_orders: avgDcaOrders,
         total_fees_btc: deals.reduce((s, d) => s + (d.total_fees_btc || 0), 0),
         max_drawdown_pct: maxDd,
         max_drawdown_btc: maxDrawdownBtc,
@@ -6050,8 +6054,10 @@ function btRestoreResultsForSlug(slug) {
     btRenderResults(cached);
   } else {
     resultsEl.classList.add('hidden');
-    const grid = $('bt-summary-grid'); if (grid) grid.innerHTML = '';
-    const ratios = $('bt-ratios-grid'); if (ratios) ratios.innerHTML = '';
+    ['bt-sec-returns', 'bt-sec-activity', 'bt-sec-risk', 'bt-sec-ratios'].forEach(id => {
+      const el = $(id);
+      if (el) el.innerHTML = '';
+    });
     const note = $('bt-open-deals-note');
     if (note) { note.textContent = ''; note.classList.add('hidden'); }
     if (_btEquityChart) { try { _btEquityChart.remove(); } catch (e) {} _btEquityChart = null; }
@@ -6219,18 +6225,47 @@ function btRenderOpenDealsNote(noteId, s) {
 function btRenderResults(res) {
   const s = res.summary, r = res.ratios;
   btRenderOpenDealsNote('bt-open-deals-note', s);
-  $('bt-summary-grid').innerHTML = [
-    _btCard('Total PnL', _fmtBtc(s.total_pnl_btc), _fmtPct(s.total_pnl_pct)),
+
+  // ── Returns ──────────────────────────────────────────────────────
+  $('bt-sec-returns').innerHTML = [
+    _btCard('Total PnL', _fmtBtc(s.total_pnl_btc), 'net of fees'),
+    _btCard('Total PnL %', _fmtPct(s.total_pnl_pct), 'vs initial'),
     _btCard('Win rate', s.win_rate.toFixed(1) + '%', `${s.wins}W / ${s.losses}L`),
-    _btCard('Total deals', String(s.total_deals), 'closed'),
-    _btCard('Avg duration', btFormatDuration(s.avg_duration_hours), 'per deal'),
-    _btCard('Max duration', btFormatDuration(s.max_duration_hours || 0), 'longest deal'),
-    _btCard('Total fees', s.total_fees_btc.toFixed(8) + ' BTC', 'taker'),
-    _btCard('Max drawdown', s.max_drawdown_pct.toFixed(2) + '%', 'equity peak'),
     _btCard('Buy & hold', _fmtBtc(s.buy_and_hold_pnl_btc), _fmtPct(s.buy_and_hold_pnl_pct)),
+    _btCard('Winning deals', String(s.wins || 0), 'closed at TP'),
+    _btCard('Losing deals',  String(s.losses || 0), 'closed at SL'),
   ].join('');
 
-  $('bt-ratios-grid').innerHTML = [
+  // ── Activity ─────────────────────────────────────────────────────
+  const activityCards = [
+    _btCard('Total deals', String(s.total_deals || 0), 'closed'),
+    _btCard('Avg duration', btFormatDuration(s.avg_duration_hours), 'per deal'),
+    _btCard('Max duration', btFormatDuration(s.max_duration_hours || 0), 'longest deal'),
+    _btCard('Total fees', (s.total_fees_btc || 0).toFixed(8) + ' BTC', 'taker'),
+    _btCard('Avg DCA orders', (s.avg_dca_orders || 0).toFixed(2), 'per deal'),
+  ];
+  if ((s.open_deals_at_end || 0) > 0) {
+    activityCards.push(
+      _btCard(
+        'Open at end',
+        String(s.open_deals_at_end),
+        (s.open_deals_size_btc || 0).toFixed(6) + ' BTC',
+      ),
+    );
+  }
+  $('bt-sec-activity').innerHTML = activityCards.join('');
+
+  // ── Risk ─────────────────────────────────────────────────────────
+  $('bt-sec-risk').innerHTML = [
+    _btCard('Max drawdown', (s.max_drawdown_pct || 0).toFixed(2) + '%', 'equity peak'),
+    _btCard('Win streak', String(r.max_consecutive_wins || 0), 'max'),
+    _btCard('Loss streak', String(r.max_consecutive_losses || 0), 'max'),
+    _btCard('Best deal', _fmtBtc(r.best_deal_pnl_btc || 0), ''),
+    _btCard('Worst deal', _fmtBtc(r.worst_deal_pnl_btc || 0), ''),
+  ].join('');
+
+  // ── Ratios ───────────────────────────────────────────────────────
+  $('bt-sec-ratios').innerHTML = [
     _btCard('Profit factor', _fmtRatio(r.profit_factor), 'gross win / loss'),
     _btCard('Sharpe', String(r.sharpe), 'annualised'),
     _btCard('Sortino', String(r.sortino), 'downside'),
@@ -6239,10 +6274,6 @@ function btRenderResults(res) {
     _btCard('Expectancy', _fmtBtc(r.expectancy_btc || 0, 8), 'per deal'),
     _btCard('Avg W/L ratio', _fmtRatio(r.avg_win_loss_ratio), 'avg win / avg loss'),
     _btCard('Omega', _fmtRatio(r.omega_ratio), 'upside / downside'),
-    _btCard('Win streak', String(r.max_consecutive_wins), 'max'),
-    _btCard('Loss streak', String(r.max_consecutive_losses), 'max'),
-    _btCard('Best deal', _fmtBtc(r.best_deal_pnl_btc), ''),
-    _btCard('Worst deal', _fmtBtc(r.worst_deal_pnl_btc), ''),
   ].join('');
 
   // Equity curve chart

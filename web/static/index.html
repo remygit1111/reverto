@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=33">
+<link rel="stylesheet" href="/static/style.css?v=34">
 </head>
 <body>
 
@@ -854,10 +854,22 @@
     </div>
     <div id="bt-results" class="bt-results hidden">
       <div id="bt-open-deals-note" class="bt-info hidden"></div>
-      <div class="section-title">Summary</div>
-      <div class="stat-grid stat-grid-mb" id="bt-summary-grid"></div>
-      <div class="section-title">Performance ratios</div>
-      <div class="stat-grid stat-grid-mb" id="bt-ratios-grid"></div>
+      <section class="bt-section bt-section-returns">
+        <div class="bt-section-head">📈 Returns</div>
+        <div class="bt-section-grid" id="bt-sec-returns"></div>
+      </section>
+      <section class="bt-section bt-section-activity">
+        <div class="bt-section-head">🔄 Activity</div>
+        <div class="bt-section-grid" id="bt-sec-activity"></div>
+      </section>
+      <section class="bt-section bt-section-risk">
+        <div class="bt-section-head">📉 Risk</div>
+        <div class="bt-section-grid" id="bt-sec-risk"></div>
+      </section>
+      <section class="bt-section bt-section-ratios">
+        <div class="bt-section-head">⚖️ Ratios</div>
+        <div class="bt-section-grid" id="bt-sec-ratios"></div>
+      </section>
       <div class="section-title">Equity curve</div>
       <div id="bt-equity-chart" class="bt-chart"></div>
       <div class="section-title">Monthly PnL</div>
@@ -909,6 +921,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=57"></script>
+<script src="/static/app.js?v=58"></script>
 </body>
 </html>
