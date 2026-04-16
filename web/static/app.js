@@ -6582,7 +6582,6 @@ async function swRunSweep() {
       max_dd:        s.max_drawdown_pct,
       avg_dur:       s.avg_duration_hours,
       candles_used:  candles.length,
-      _avg_pnl_per_trade: s.total_deals > 0 ? s.total_pnl_btc / s.total_deals : 0,
       _result:       result,
     });
     await new Promise(r => setTimeout(r, 0));
@@ -6724,7 +6723,6 @@ function _swPfSection(rows) {
 
   if (infCount / total > 0.75) {
     const finiteList = finiteRows.map(r => {
-      const w = r.total_deals - (rows.filter(x => x.label === r.label).length ? (r.total_deals - Math.round(r.win_rate / 100 * r.total_deals)) : 0);
       const wins = Math.round((r.win_rate || 0) / 100 * (r.total_deals || 0));
       const losses = (r.total_deals || 0) - wins;
       return `<tr><td>${safeText(r.label)}</td><td>${_fmtRatio(r.profit_factor)}</td><td>${wins}W / ${losses}L</td><td>${(r.total_pnl_btc || 0).toFixed(8)}</td></tr>`;
@@ -6734,8 +6732,6 @@ function _swPfSection(rows) {
       (finiteRows.length ? `<div class="sw-chart-title sw-mt8">Finite results</div>` +
         `<table class="bt-history-table sw-pf-table"><thead><tr><th>Parameter</th><th>PF</th><th>W/L</th><th>PnL BTC</th></tr></thead>` +
         `<tbody>${finiteList}</tbody></table>` : '') +
-      `<div class="sw-chart-title sw-mt12">Avg PnL per trade</div>` +
-      _swBarV('', rows, '_avg_pnl_per_trade') +
       `</div>`;
   }
 
