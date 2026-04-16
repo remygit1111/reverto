@@ -3703,7 +3703,7 @@ function _renderIndicatorOverlays(candles) {
     const supData = buildData(sr.supSeries);
     if (resData.length > 0) {
       const s = _chartMain.addLineSeries({
-        color: '#e53935', lineWidth: 2, lineStyle: 2,
+        color: '#e53935', lineWidth: 2, lineStyle: 0, lineType: 2,
         priceLineVisible: false, lastValueVisible: true,
         crosshairMarkerVisible: false, title: 'R',
       });
@@ -3712,7 +3712,7 @@ function _renderIndicatorOverlays(candles) {
     }
     if (supData.length > 0) {
       const s = _chartMain.addLineSeries({
-        color: '#1e88e5', lineWidth: 2, lineStyle: 2,
+        color: '#1e88e5', lineWidth: 2, lineStyle: 0, lineType: 2,
         priceLineVisible: false, lastValueVisible: true,
         crosshairMarkerVisible: false, title: 'S',
       });
@@ -4894,7 +4894,7 @@ function renderWizardOverlays() {
               }
               if (data.length > 0) {
                 const ws = _wizardChart.addLineSeries({
-                  color, lineWidth: 2, lineStyle: 2,
+                  color, lineWidth: 2, lineStyle: 0, lineType: 2,
                   priceLineVisible: false, lastValueVisible: true,
                   title: label, crosshairMarkerVisible: false,
                 });
