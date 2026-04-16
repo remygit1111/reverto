@@ -5344,6 +5344,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Backtest tab wiring ────────────────────────────────────────────────
   const btRunBtn = $('bt-run-btn');
   if (btRunBtn) btRunBtn.addEventListener('click', btRunFromTab);
+  const btSweepBtn = $('bt-sweep-btn');
+  if (btSweepBtn) btSweepBtn.addEventListener('click', swOpenModal);
+  const swCloseBtn = $('sw-close-btn');
+  if (swCloseBtn) swCloseBtn.addEventListener('click', () => $('sweep-modal').classList.remove('show'));
+  const swRunBtn = $('sw-run-btn');
+  if (swRunBtn) swRunBtn.addEventListener('click', swRunSweep);
+  // Sweep tab switching
+  document.querySelectorAll('.sweep-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.sweep-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.sweep-pane').forEach(p => p.classList.add('hidden'));
+      tab.classList.add('active');
+      const pane = $('sweep-pane-' + tab.dataset.sweepTab);
+      if (pane) pane.classList.remove('hidden');
+    });
+  });
+  // Sweep estimate live update
+  document.querySelectorAll('#sweep-modal input, #sweep-modal select').forEach(el => {
+    el.addEventListener('input', swUpdateEstimate);
+    el.addEventListener('change', swUpdateEstimate);
+  });
   // Default dates — last 30 days
   const btEnd = new Date();
   const btStart = new Date(btEnd.getTime() - 30 * 86400 * 1000);
@@ -6192,6 +6213,265 @@ async function btRunFromWizard() {
     loaderId: 'wbt-loader', progressBarId: 'wbt-progress-bar',
     statusId: 'wbt-status', resultsId: 'wbt-results',
     errorId: 'wbt-error', mode: 'wizard',
+  });
+}
+
+// ── Parameter sweep ──────────────────────────────────────────────────────────
+
+function _swCountIter(min, max, step) {
+  if (step <= 0 || max < min) return 0;
+  return Math.max(0, Math.floor((max - min) / step) + 1);
+}
+
+function swUpdateEstimate() {
+  let total = 0;
+  if ($('sw-tp-enabled') && $('sw-tp-enabled').checked) {
+    const n = _swCountIter(
+      parseFloat($('sw-tp-min').value), parseFloat($('sw-tp-max').value),
+      parseFloat($('sw-tp-step').value));
+    total += n;
+    const p = $('sw-tp-preview'); if (p) p.textContent = `${n} iterations`;
+  } else { const p = $('sw-tp-preview'); if (p) p.textContent = ''; }
+  if ($('sw-sl-enabled') && $('sw-sl-enabled').checked) {
+    const n = _swCountIter(
+      parseFloat($('sw-sl-min').value), parseFloat($('sw-sl-max').value),
+      parseFloat($('sw-sl-step').value));
+    total += n;
+    const p = $('sw-sl-preview'); if (p) p.textContent = `${n} iterations`;
+  } else { const p = $('sw-sl-preview'); if (p) p.textContent = ''; }
+  if ($('sw-dca-enabled') && $('sw-dca-enabled').checked) {
+    const n = _swCountIter(
+      parseFloat($('sw-dca-min').value), parseFloat($('sw-dca-max').value),
+      parseFloat($('sw-dca-step').value));
+    total += n;
+    const p = $('sw-dca-preview'); if (p) p.textContent = `${n} iterations`;
+  } else { const p = $('sw-dca-preview'); if (p) p.textContent = ''; }
+  if (total === 0) total = 1;
+  const candles = btCandleCountForRange(
+    $('bt-tf') && $('bt-tf').value || '1h',
+    $('bt-start') && $('bt-start').value || '',
+    $('bt-end') && $('bt-end').value || '',
+  ) || 8760;
+  const estSec = Math.round(total * candles / 50000);
+  const est = $('sw-estimate');
+  if (est) est.textContent = `Total iterations: ${total} · est. ~${btHumanDuration(estSec)}`;
+  const warn = $('sw-warn');
+  if (warn) {
+    if (estSec > 300) {
+      warn.textContent = `⚠ This sweep may take ${btHumanDuration(estSec)}`;
+      warn.classList.remove('hidden');
+    } else {
+      warn.classList.add('hidden');
+    }
+  }
+}
+
+function _swGenerateConfigs(baseCfg) {
+  const configs = [];
+  if ($('sw-tp-enabled') && $('sw-tp-enabled').checked) {
+    const min = parseFloat($('sw-tp-min').value);
+    const max = parseFloat($('sw-tp-max').value);
+    const step = parseFloat($('sw-tp-step').value);
+    for (let v = min; v <= max + 1e-9; v += step) {
+      const c = JSON.parse(JSON.stringify(baseCfg));
+      c.take_profit.target_pct = Math.round(v * 100) / 100;
+      configs.push({ label: `TP: ${c.take_profit.target_pct}%`, config: c });
+    }
+  }
+  if ($('sw-sl-enabled') && $('sw-sl-enabled').checked) {
+    const min = parseFloat($('sw-sl-min').value);
+    const max = parseFloat($('sw-sl-max').value);
+    const step = parseFloat($('sw-sl-step').value);
+    const slType = $('sw-sl-type').value;
+    for (let v = min; v <= max + 1e-9; v += step) {
+      const c = JSON.parse(JSON.stringify(baseCfg));
+      c.stop_loss.type = slType;
+      c.stop_loss.pct = Math.round(v * 100) / 100;
+      configs.push({ label: `SL: ${c.stop_loss.pct}% (${slType})`, config: c });
+    }
+  }
+  if ($('sw-dca-enabled') && $('sw-dca-enabled').checked) {
+    const param = $('sw-dca-param').value;
+    const min = parseFloat($('sw-dca-min').value);
+    const max = parseFloat($('sw-dca-max').value);
+    const step = parseFloat($('sw-dca-step').value);
+    const labelMap = {
+      order_spacing_pct: 'Spacing', multiplier: 'VolScale',
+      step_scale: 'StepScale', max_orders: 'MaxDCA',
+    };
+    for (let v = min; v <= max + 1e-9; v += step) {
+      const c = JSON.parse(JSON.stringify(baseCfg));
+      const val = param === 'max_orders' ? Math.round(v) : Math.round(v * 100) / 100;
+      c.dca[param] = val;
+      if (param === 'max_orders') c.dca.max_orders = val + 1;
+      configs.push({ label: `${labelMap[param] || param}: ${val}`, config: c });
+    }
+  }
+  if (!configs.length) {
+    configs.push({ label: 'Base config', config: JSON.parse(JSON.stringify(baseCfg)) });
+  }
+  return configs;
+}
+
+function swOpenModal() {
+  $('sw-results').classList.add('hidden');
+  $('sw-loader').classList.add('hidden');
+  swUpdateEstimate();
+  $('sweep-modal').classList.add('show');
+}
+
+const SW_RESULT_COLS = [
+  { key: 'label',         label: 'Parameter',  fmt: v => safeText(String(v)) },
+  { key: 'total_deals',   label: 'Deals',      fmt: v => String(v ?? 0) },
+  { key: 'win_rate',      label: 'Win %',      fmt: v => v != null ? v.toFixed(1) + '%' : '—' },
+  { key: 'total_pnl_btc', label: 'PnL BTC',    fmt: v => _btColouredBtc(v) },
+  { key: 'total_pnl_pct', label: 'PnL %',      fmt: v => _btColouredPct(v) },
+  { key: 'profit_factor', label: 'PF',          fmt: v => _fmtRatio(v) },
+  { key: 'sharpe',        label: 'Sharpe',      fmt: v => v != null && v !== '—' ? String(v) : '—' },
+  { key: 'max_dd',        label: 'Max DD',      fmt: v => v != null ? v.toFixed(2) + '%' : '—' },
+  { key: 'avg_dur',       label: 'Avg Dur',     fmt: v => btFormatDuration(v) },
+];
+let _swSortKey = 'profit_factor';
+let _swSortDir = 'desc';
+let _swRows = [];
+
+async function swRunSweep() {
+  const startStr = $('bt-start').value;
+  const endStr   = $('bt-end').value;
+  const tf       = $('bt-tf').value;
+  const balance  = parseFloat($('bt-balance').value);
+  if (!startStr || !endStr) { alert('Pick start and end dates'); return; }
+
+  let cfg = null;
+  if (_detailConfigCache && _detailConfigCache.bot) cfg = JSON.parse(JSON.stringify(_detailConfigCache.bot));
+  if (!cfg && currentSlug) {
+    try {
+      const r = await fetch(`/api/bots/${currentSlug}/config`);
+      if (r.ok) { const j = await r.json(); cfg = JSON.parse(JSON.stringify(j.bot || j)); }
+    } catch (e) {}
+  }
+  if (!cfg) { alert('No bot config available'); return; }
+
+  const configs = _swGenerateConfigs(cfg);
+  const pair = cfg.pair || 'BTC/USD';
+  const startTimeStr = ($('bt-start-time') && $('bt-start-time').value) || '00:00';
+  const endTimeStr   = ($('bt-end-time')   && $('bt-end-time').value)   || '23:59';
+  const startIso = _btComposeIso(startStr, startTimeStr, '00:00');
+  const endIso   = _btComposeIso(endStr,   endTimeStr,   '23:59');
+  const limit    = btCandleCountForRange(tf, startStr, endStr) || btDefaultLimit(tf);
+
+  $('sw-results').classList.add('hidden');
+  $('sw-loader').classList.remove('hidden');
+  $('sw-progress-bar').style.width = '0%';
+  $('sw-status').textContent = 'Fetching candles…';
+  $('sw-run-btn').disabled = true;
+
+  const t0 = performance.now();
+  let candles;
+  try {
+    candles = await btFetchCandles(pair, tf, startIso, endIso, limit);
+  } catch (e) {
+    $('sw-status').textContent = 'Failed to fetch candles: ' + (e.message || e);
+    $('sw-run-btn').disabled = false;
+    return;
+  }
+  if (!candles || candles.length < 50) {
+    $('sw-status').textContent = `Not enough candles (${candles ? candles.length : 0})`;
+    $('sw-run-btn').disabled = false;
+    return;
+  }
+
+  _swRows = [];
+  for (let i = 0; i < configs.length; i++) {
+    const { label, config: c } = configs[i];
+    const pct = Math.round(((i + 1) / configs.length) * 100);
+    $('sw-progress-bar').style.width = pct + '%';
+    $('sw-status').textContent = `Running iteration ${i + 1}/${configs.length} (${label})…`;
+    const engine = new RevertoBacktest(c, candles);
+    const result = await engine.run(balance);
+    const s = result.summary;
+    const r = result.ratios;
+    _swRows.push({
+      label,
+      config: c,
+      total_deals:   s.total_deals,
+      win_rate:      s.win_rate,
+      total_pnl_btc: s.total_pnl_btc,
+      total_pnl_pct: s.total_pnl_pct,
+      profit_factor: typeof r.profit_factor === 'number' ? r.profit_factor : null,
+      sharpe:        r.sharpe,
+      max_dd:        s.max_drawdown_pct,
+      avg_dur:       s.avg_duration_hours,
+      _result:       result,
+    });
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+  $('sw-loader').classList.add('hidden');
+  $('sw-run-btn').disabled = false;
+  $('sw-results-header').textContent =
+    `Sweep complete — ${configs.length} iterations in ${elapsed}s`;
+  $('sw-results').classList.remove('hidden');
+  _swRenderResultsTable();
+}
+
+function _swRenderResultsTable() {
+  const head = $('sw-results-head');
+  head.innerHTML = SW_RESULT_COLS.map(col => {
+    const dir = col.key === _swSortKey
+      ? `<span class="bt-sort-dir">${_swSortDir === 'asc' ? '▲' : '▼'}</span>` : '';
+    return `<th data-key="${col.key}">${safeText(col.label)}${dir}</th>`;
+  }).join('') + '<th></th>';
+  head.querySelectorAll('th[data-key]').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.key;
+      if (_swSortKey === k) _swSortDir = _swSortDir === 'asc' ? 'desc' : 'asc';
+      else { _swSortKey = k; _swSortDir = 'desc'; }
+      _swRenderResultsTable();
+    });
+  });
+
+  const sorted = _swRows.slice().sort((a, b) => {
+    const av = a[_swSortKey], bv = b[_swSortKey];
+    let cmp = 0;
+    if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
+    else cmp = String(av ?? '').localeCompare(String(bv ?? ''));
+    return _swSortDir === 'asc' ? cmp : -cmp;
+  });
+
+  let bestIdx = -1, worstIdx = -1;
+  if (sorted.length >= 2) {
+    let bestPf = -Infinity, worstPf = Infinity;
+    sorted.forEach((r, i) => {
+      const pf = r.profit_factor;
+      if (pf != null && pf > bestPf) { bestPf = pf; bestIdx = i; }
+      if (pf != null && pf < worstPf) { worstPf = pf; worstIdx = i; }
+    });
+  }
+
+  const body = $('sw-results-body');
+  body.innerHTML = sorted.map((row, i) => {
+    const cls = i === bestIdx ? ' class="sw-best"' : (i === worstIdx ? ' class="sw-worst"' : '');
+    const cells = SW_RESULT_COLS.map(col => `<td>${col.fmt(row[col.key])}</td>`).join('');
+    return `<tr${cls} data-sw-idx="${i}">${cells}<td><button class="deal-btn deal-btn-edit sw-run-full" title="Run full backtest">▶</button></td></tr>`;
+  }).join('');
+
+  body.querySelectorAll('.sw-run-full').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tr = btn.closest('tr');
+      const idx = parseInt(tr.dataset.swIdx, 10);
+      const row = sorted[idx];
+      if (!row) return;
+      $('sweep-modal').classList.remove('show');
+      if (row._result && currentSlug) {
+        _btResultsSet(currentSlug, row._result);
+        btRestoreResultsForSlug(currentSlug);
+        const resultsEl = $('bt-results');
+        if (resultsEl) resultsEl.classList.remove('hidden');
+      }
+    });
   });
 }
 
