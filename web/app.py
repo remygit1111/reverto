@@ -2119,6 +2119,20 @@ async def api_backtest_runs(
     return {"runs": runs}
 
 
+@app.delete("/api/backtest/runs/{run_id}")
+@limiter.limit("10/minute")
+async def api_backtest_run_delete(
+    run_id: int,
+    request: Request,
+    actor: str = Depends(_request_actor),
+):
+    deleted = await asyncio.to_thread(deal_store.delete_backtest_run, run_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _audit("backtest_delete", str(run_id), actor)
+    return {"ok": True}
+
+
 @app.on_event("startup")
 async def on_startup():
     logger.info("=== Portal started ===")

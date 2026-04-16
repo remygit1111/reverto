@@ -5394,6 +5394,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   const swRunBtn = $('sw-run-btn');
   if (swRunBtn) swRunBtn.addEventListener('click', swRunSweep);
+  const swStopBtn = $('sw-stop-btn');
+  if (swStopBtn) swStopBtn.addEventListener('click', () => { _swStopped = true; });
   // Sweep tab switching
   document.querySelectorAll('.sweep-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -6427,7 +6429,7 @@ function _swGenerateConfigs(baseCfg) {
       const c = JSON.parse(JSON.stringify(baseCfg));
       c.stop_loss.type = slType;
       c.stop_loss.pct = Math.round(v * 100) / 100;
-      configs.push({ label: `SL: ${c.stop_loss.pct}% (${slType})`, config: c });
+      configs.push({ label: `SL: ${c.stop_loss.pct}`, config: c });
     }
   }
   if ($('sw-dca-enabled') && $('sw-dca-enabled').checked) {
@@ -6494,6 +6496,7 @@ const SW_RESULT_COLS = [
   { key: 'max_dd',        label: 'Max DD',      fmt: v => v != null ? v.toFixed(2) + '%' : '—' },
   { key: 'avg_dur',       label: 'Avg Dur',     fmt: v => btFormatDuration(v) },
 ];
+let _swStopped = false;
 let _swSortKey = 'profit_factor';
 let _swSortDir = 'desc';
 let _swRows = [];
@@ -6527,7 +6530,9 @@ async function swRunSweep() {
   $('sw-loader').classList.remove('hidden');
   $('sw-progress-bar').style.width = '0%';
   $('sw-status').textContent = 'Fetching candles…';
-  $('sw-run-btn').disabled = true;
+  _swStopped = false;
+  $('sw-run-btn').classList.add('hidden');
+  $('sw-stop-btn').classList.remove('hidden');
 
   const t0 = performance.now();
   let candles;
@@ -6535,17 +6540,21 @@ async function swRunSweep() {
     candles = await btFetchCandles(pair, tf, startIso, endIso, limit);
   } catch (e) {
     $('sw-status').textContent = 'Failed to fetch candles: ' + (e.message || e);
-    $('sw-run-btn').disabled = false;
+    $('sw-run-btn').classList.remove('hidden'); $('sw-stop-btn').classList.add('hidden');
     return;
   }
   if (!candles || candles.length < 50) {
     $('sw-status').textContent = `Not enough candles (${candles ? candles.length : 0})`;
-    $('sw-run-btn').disabled = false;
+    $('sw-run-btn').classList.remove('hidden'); $('sw-stop-btn').classList.add('hidden');
     return;
   }
 
   _swRows = [];
   for (let i = 0; i < configs.length; i++) {
+    if (_swStopped) {
+      $('sw-status').textContent = `Sweep stopped at iteration ${i}/${configs.length}`;
+      break;
+    }
     const { label, config: c } = configs[i];
     const pct = Math.round(((i + 1) / configs.length) * 100);
     $('sw-progress-bar').style.width = pct + '%';
@@ -6687,7 +6696,12 @@ function _swRenderChart() {
     html.push(_swBarV('PnL BTC per hour', _swRows));
   } else {
     html.push(_swBarV('PnL BTC per iteration', _swRows));
-    html.push(_swBarV('Profit Factor per iteration', _swRows, 'profit_factor'));
+    const allPfInf = _swRows.every(r => r.profit_factor === Infinity || r.profit_factor === null);
+    if (allPfInf) {
+      html.push(`<div class="sw-chart-row"><div class="sw-chart-title">Profit Factor per iteration</div><div class="sweep-estimate">All iterations profitable — Profit Factor: ∞</div></div>`);
+    } else {
+      html.push(_swBarV('Profit Factor per iteration', _swRows, 'profit_factor'));
+    }
   }
   area.innerHTML = html.join('');
 }
@@ -6698,6 +6712,8 @@ function _swSafe(v, cap) {
 }
 
 function _swLabelStep(n) {
+  if (n > 80) return 10;
+  if (n > 40) return 5;
   if (n > 20) return 4;
   if (n > 10) return 2;
   return 1;
@@ -6979,10 +6995,12 @@ function _btRenderHistoryTable() {
   }
   body.innerHTML = sorted.map(run => {
     const cells = visCols.map(col => `<td>${col.fmt(run[col.key])}</td>`).join('');
-    return `<tr data-slug="${safeText(run.bot_slug || '')}">${cells}</tr>`;
+    const delBtn = `<td class="deal-actions-cell"><button class="deal-btn deal-btn-cancel bt-hist-del" data-run-id="${run.id}" title="Delete run">🗑</button></td>`;
+    return `<tr data-slug="${safeText(run.bot_slug || '')}">${cells}${delBtn}</tr>`;
   }).join('');
   body.querySelectorAll('tr[data-slug]').forEach(tr => {
-    tr.addEventListener('click', () => {
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('.bt-hist-del')) return;
       const slug = tr.dataset.slug;
       if (!slug) return;
       openBot(slug);
@@ -6990,6 +7008,21 @@ function _btRenderHistoryTable() {
         const tabBtn = document.querySelector('.detail-subnav .tab[data-dtab="backtest"]');
         if (tabBtn) showDTab('backtest', tabBtn);
       }, 60);
+    });
+  });
+  body.querySelectorAll('.bt-hist-del').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.runId;
+      if (!confirm('Delete this backtest run?')) return;
+      try {
+        const r = await fetch(`/api/backtest/runs/${id}`, { method: 'DELETE' });
+        if (r.status === 401) { _handle401(); return; }
+        if (!r.ok) { _dealToast('Delete failed', 'toast-warn'); return; }
+        _btHistoryRows = _btHistoryRows.filter(r => r.id !== parseInt(id, 10));
+        _btRenderHistoryTable();
+        _dealToast('Backtest run deleted');
+      } catch (e) { _dealToast('Network error', 'toast-warn'); }
     });
   });
 }
