@@ -788,6 +788,12 @@ class PaperEngine:
                 logger.info("Deal %s settings updated via portal", deal_id)
 
             elif action == "cancel":
+                # Cancel removes the deal from tracking without realising
+                # PnL — the exchange position stays open and the operator
+                # is responsible for managing it manually. state.close_deal
+                # computes and applies PnL internally (updating balance),
+                # but we record 0.0 in the DB ledger because the gain/loss
+                # has not been crystallised through an actual exit trade.
                 self.state.close_deal(deal_id, price, "cancelled")
                 self._db_close_deal(deal_id, price, "cancelled", 0.0, 0.0)
                 logger.info("Deal %s cancelled via portal", deal_id)
