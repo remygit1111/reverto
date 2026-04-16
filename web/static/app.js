@@ -5085,6 +5085,11 @@ function setupEventListeners() {
   if (deDcaChk) deDcaChk.addEventListener('change', _deUpdateDcaDisabled);
   const navBtBtn = $('nav-backtests-btn');
   if (navBtBtn) navBtBtn.addEventListener('click', () => goBacktests());
+  const histGearBtn = $('bt-history-gear-btn');
+  if (histGearBtn) histGearBtn.addEventListener('click', () => {
+    const menu = $('bt-history-gear-menu');
+    if (menu) menu.classList.toggle('hidden');
+  });
 
   document.querySelectorAll('.detail-subnav .tab').forEach(btn => {
     btn.addEventListener('click', () => showDTab(btn.dataset.dtab, btn));
@@ -6556,6 +6561,26 @@ async function swRunSweep() {
     `Sweep complete — ${configs.length} iterations in ${elapsed}s`;
   $('sw-results').classList.remove('hidden');
   _swRenderResultsTable();
+
+  // Auto-save the best run (highest PF, or highest PnL if PF is Infinity)
+  if (_swRows.length) {
+    const best = _swRows.slice().sort((a, b) => {
+      const apf = a.profit_factor != null && isFinite(a.profit_factor) ? a.profit_factor : -1;
+      const bpf = b.profit_factor != null && isFinite(b.profit_factor) ? b.profit_factor : -1;
+      if (apf !== bpf) return bpf - apf;
+      return (b.total_pnl_btc || 0) - (a.total_pnl_btc || 0);
+    })[0];
+    if (best && best._result) {
+      const summary = _btFlattenForSave(best._result);
+      summary.sweep_param = best.label;
+      summary.source = 'sweep';
+      _btSaveRun(
+        { ...cfg, slug: (cfg && cfg.slug) || currentSlug || '' },
+        { start_date: startIso, end_date: endIso, timeframe: tf, initial_balance_btc: balance },
+        { summary: best._result.summary, ratios: best._result.ratios },
+      ).then(id => { if (id != null) $('sw-status').textContent = `✓ Best run saved (${best.label})`; });
+    }
+  }
 }
 
 function _swRenderResultsTable() {
@@ -6656,20 +6681,42 @@ function _btResultsSet(slug, result) {
 // the last-fetched rows, so clicking a header just re-renders from
 // cache instead of hitting the network again.
 const BT_HISTORY_COLUMNS = [
-  { key: 'bot_name',            label: 'Bot',       fmt: v => safeText(String(v || '—')) },
-  { key: 'created_at',          label: 'Run',       fmt: v => safeText((v || '').slice(0, 16).replace('T', ' ')) },
-  { key: 'start_date',          label: 'Start',     fmt: v => safeText((v || '').slice(0, 10)) },
-  { key: 'end_date',            label: 'End',       fmt: v => safeText((v || '').slice(0, 10)) },
-  { key: 'timeframe',           label: 'TF',        fmt: v => safeText(String(v || '—')) },
-  { key: 'total_deals',         label: 'Deals',     fmt: v => String(v ?? 0) },
-  { key: 'win_rate',            label: 'Win %',     fmt: v => (v != null ? v.toFixed(1) + '%' : '—') },
-  { key: 'total_pnl_btc',       label: 'PnL BTC',   fmt: v => _btColouredBtc(v) },
-  { key: 'total_pnl_pct',       label: 'PnL %',     fmt: v => _btColouredPct(v) },
-  { key: 'profit_factor',       label: 'PF',        fmt: v => _fmtRatio(v) },
-  { key: 'sharpe_ratio',        label: 'Sharpe',    fmt: v => _fmtRatio(v) },
-  { key: 'max_drawdown_pct',    label: 'Max DD',    fmt: v => (v != null ? v.toFixed(2) + '%' : '—') },
-  { key: 'buy_hold_pnl_pct',    label: 'B&H %',     fmt: v => _btColouredPct(v) },
+  { key: 'bot_name',            label: 'Bot',        fmt: v => safeText(String(v || '—')),                      on: true },
+  { key: 'created_at',          label: 'Run',        fmt: v => safeText((v || '').slice(0, 16).replace('T', ' ')), on: true },
+  { key: 'start_date',          label: 'Start',      fmt: v => safeText((v || '').slice(0, 10)),                on: true },
+  { key: 'end_date',            label: 'End',        fmt: v => safeText((v || '').slice(0, 10)),                on: true },
+  { key: 'timeframe',           label: 'TF',         fmt: v => safeText(String(v || '—')),                      on: true },
+  { key: 'total_deals',         label: 'Deals',      fmt: v => String(v ?? 0),                                  on: true },
+  { key: 'win_rate',            label: 'Win %',      fmt: v => (v != null ? v.toFixed(1) + '%' : '—'),          on: true },
+  { key: 'total_pnl_btc',       label: 'PnL BTC',    fmt: v => _btColouredBtc(v),                               on: true },
+  { key: 'total_pnl_pct',       label: 'PnL %',      fmt: v => _btColouredPct(v),                               on: true },
+  { key: 'profit_factor',       label: 'PF',         fmt: v => _fmtRatio(v),                                    on: true },
+  { key: 'sharpe_ratio',        label: 'Sharpe',     fmt: v => _fmtRatio(v),                                    on: true },
+  { key: 'sortino_ratio',       label: 'Sortino',    fmt: v => _fmtRatio(v),                                    on: false },
+  { key: 'calmar_ratio',        label: 'Calmar',     fmt: v => _fmtRatio(v),                                    on: false },
+  { key: 'recovery_factor',     label: 'Recovery',   fmt: v => _fmtRatio(v),                                    on: false },
+  { key: 'expectancy_btc',      label: 'Expect BTC', fmt: v => (v != null ? v.toFixed(8) : '—'),                on: false },
+  { key: 'avg_win_loss_ratio',  label: 'Avg W/L',    fmt: v => _fmtRatio(v),                                    on: false },
+  { key: 'omega_ratio',         label: 'Omega',      fmt: v => _fmtRatio(v),                                    on: false },
+  { key: 'max_drawdown_pct',    label: 'Max DD',     fmt: v => (v != null ? v.toFixed(2) + '%' : '—'),          on: true },
+  { key: 'avg_duration_hours',  label: 'Avg Dur',    fmt: v => btFormatDuration(v),                             on: false },
+  { key: 'total_fees_btc',      label: 'Fees BTC',   fmt: v => (v != null ? v.toFixed(8) : '—'),                on: false },
+  { key: 'buy_hold_pnl_pct',    label: 'B&H %',      fmt: v => _btColouredPct(v),                               on: true },
 ];
+const _BT_HIST_COL_LS = 'reverto.bt_history_cols';
+
+function _btHistVisibleCols() {
+  try {
+    const raw = localStorage.getItem(_BT_HIST_COL_LS);
+    if (raw) { const saved = JSON.parse(raw); return BT_HISTORY_COLUMNS.filter(c => saved.includes(c.key)); }
+  } catch (e) {}
+  return BT_HISTORY_COLUMNS.filter(c => c.on);
+}
+
+function _btHistSaveColPref(keys) {
+  try { localStorage.setItem(_BT_HIST_COL_LS, JSON.stringify(keys)); } catch (e) {}
+}
+
 let _btHistoryRows = [];
 let _btHistorySortKey = 'created_at';
 let _btHistorySortDir = 'desc';
@@ -6706,44 +6753,56 @@ async function btLoadHistory() {
 }
 
 function _btRenderHistoryTable() {
+  const visCols = _btHistVisibleCols();
+  const colSpan = Math.max(1, visCols.length + 1);
+
+  // Gear toggle for column visibility
+  const gearEl = $('bt-history-gear-menu');
+  if (gearEl) {
+    gearEl.innerHTML = BT_HISTORY_COLUMNS.map(col => {
+      const checked = visCols.some(v => v.key === col.key) ? ' checked' : '';
+      return `<label class="cog-option"><input type="checkbox" data-hist-col="${col.key}"${checked}> ${safeText(col.label)}</label>`;
+    }).join('');
+    gearEl.querySelectorAll('input[data-hist-col]').forEach(chk => {
+      chk.addEventListener('change', () => {
+        const keys = [];
+        gearEl.querySelectorAll('input[data-hist-col]:checked').forEach(c => keys.push(c.dataset.histCol));
+        _btHistSaveColPref(keys);
+        _btRenderHistoryTable();
+      });
+    });
+  }
+
   const head = $('bt-history-head');
-  head.innerHTML = BT_HISTORY_COLUMNS.map(col => {
+  head.innerHTML = visCols.map(col => {
     const dir = col.key === _btHistorySortKey
-      ? `<span class="bt-sort-dir">${_btHistorySortDir === 'asc' ? '▲' : '▼'}</span>`
-      : '';
+      ? `<span class="bt-sort-dir">${_btHistorySortDir === 'asc' ? '▲' : '▼'}</span>` : '';
     return `<th data-key="${col.key}">${safeText(col.label)}${dir}</th>`;
   }).join('');
   head.querySelectorAll('th').forEach(th => {
     th.addEventListener('click', () => {
       const k = th.dataset.key;
-      if (_btHistorySortKey === k) {
-        _btHistorySortDir = _btHistorySortDir === 'asc' ? 'desc' : 'asc';
-      } else {
-        _btHistorySortKey = k;
-        _btHistorySortDir = 'desc';
-      }
+      if (_btHistorySortKey === k) _btHistorySortDir = _btHistorySortDir === 'asc' ? 'desc' : 'asc';
+      else { _btHistorySortKey = k; _btHistorySortDir = 'desc'; }
       _btRenderHistoryTable();
     });
   });
 
   const sorted = _btHistoryRows.slice().sort((a, b) => {
-    const av = a[_btHistorySortKey];
-    const bv = b[_btHistorySortKey];
-    const an = typeof av === 'number';
-    const bn = typeof bv === 'number';
+    const av = a[_btHistorySortKey], bv = b[_btHistorySortKey];
     let cmp;
-    if (an && bn) cmp = av - bv;
+    if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
     else cmp = String(av ?? '').localeCompare(String(bv ?? ''));
     return _btHistorySortDir === 'asc' ? cmp : -cmp;
   });
 
   const body = $('bt-history-body');
   if (!sorted.length) {
-    body.innerHTML = '<tr><td colspan="13" class="empty-config-msg">No backtest runs yet. Run a backtest on any bot to populate this view.</td></tr>';
+    body.innerHTML = `<tr><td colspan="${colSpan}" class="empty-config-msg">No backtest runs yet.</td></tr>`;
     return;
   }
   body.innerHTML = sorted.map(run => {
-    const cells = BT_HISTORY_COLUMNS.map(col => `<td>${col.fmt(run[col.key])}</td>`).join('');
+    const cells = visCols.map(col => `<td>${col.fmt(run[col.key])}</td>`).join('');
     return `<tr data-slug="${safeText(run.bot_slug || '')}">${cells}</tr>`;
   }).join('');
   body.querySelectorAll('tr[data-slug]').forEach(tr => {
@@ -6751,8 +6810,6 @@ function _btRenderHistoryTable() {
       const slug = tr.dataset.slug;
       if (!slug) return;
       openBot(slug);
-      // Jump straight into the Backtest tab on the next tick so the
-      // detail layout has settled by the time we switch.
       setTimeout(() => {
         const tabBtn = document.querySelector('.detail-subnav .tab[data-dtab="backtest"]');
         if (tabBtn) showDTab('backtest', tabBtn);

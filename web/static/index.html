@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=45">
+<link rel="stylesheet" href="/static/style.css?v=46">
 </head>
 <body>
 
@@ -480,6 +480,10 @@
 <div id="view-backtests" class="page">
   <div class="bt-history-header">
     <div class="section-title">Backtest history</div>
+    <div class="bt-history-gear-wrap">
+      <button type="button" class="cog-btn" id="bt-history-gear-btn" aria-label="Toggle columns">⚙</button>
+      <div class="cog-menu hidden" id="bt-history-gear-menu"></div>
+    </div>
   </div>
   <div class="card card-no-pad">
     <table class="bt-history-table">
@@ -1131,6 +1135,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=79"></script>
+<script src="/static/app.js?v=80"></script>
 </body>
 </html>

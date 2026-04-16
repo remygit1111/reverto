@@ -2026,6 +2026,10 @@ html.compact .modal-card { padding: 19px; }
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 12px;
 }
+.bt-history-gear-wrap { position: relative; }
+.bt-history-gear-wrap .cog-menu {
+  right: 0; left: auto; min-width: 180px;
+}
 .bt-history-table {
   width: 100%; border-collapse: collapse;
   font-family: var(--mono); font-size: 12px;
