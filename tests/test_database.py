@@ -222,3 +222,40 @@ def test_save_and_fetch_backtest_runs():
     assert len(all_runs) == 3
     # Mixed-slug query returns rows from both bots
     assert {r["bot_slug"] for r in all_runs} == {"btc", "eth"}
+
+
+# ── Config model toggle serialisation ─────────────────────────────────────────
+
+def test_config_toggle_serialisation():
+    """Verify that enabled/disabled toggles produce the right config shapes."""
+    from config.models import BotConfig
+    import yaml
+
+    yaml_tp_disabled = """
+bot:
+  name: toggle-test
+  mode: paper
+  exchange: bitget
+  pair: BTC/USD
+  contract_type: inverse_perpetual
+  leverage: {enabled: false, size: 1}
+  dca:
+    base_order_size: 0.001
+    max_orders: 1
+    order_spacing_pct: 2.5
+    multiplier: 1.0
+    step_scale: 1.0
+    enabled: false
+  entry: {indicators: []}
+  take_profit: {target_pct: 3.0, enabled: false}
+  stop_loss: {type: none, pct: 5.0}
+  schedule: {enabled: false, timezone: Europe/Amsterdam, trading_windows: [], blackout_dates: []}
+"""
+    data = yaml.safe_load(yaml_tp_disabled)["bot"]
+    cfg = BotConfig(**data)
+    assert cfg.take_profit.enabled is False
+    assert cfg.stop_loss.type == "none"
+    assert cfg.dca.enabled is False
+    assert cfg.dca.max_orders == 1
+    assert cfg.schedule.enabled is False
+    assert cfg.schedule.trading_windows == []
