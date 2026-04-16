@@ -5330,6 +5330,10 @@ function setupEventListeners() {
     const el = $(id);
     if (el) el.addEventListener('change', () => { nbUpdateToggleStates(); nbRecompute(); });
   });
+  // Prevent toggle label clicks from toggling the <details> parent
+  document.querySelectorAll('.wizard-toggle').forEach(lbl => {
+    lbl.addEventListener('click', e => e.stopPropagation());
+  });
 
   // Live recompute: any input/change inside the wizard refreshes state,
   // DCA preview and review section. Indicator row controls are handled
