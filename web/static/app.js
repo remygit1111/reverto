@@ -5451,6 +5451,8 @@ class RevertoBacktest {
     this.equity_curve = [];
     this.fees_paid_btc = 0;
     this._deal_counter = 0;
+    this._entryFilter = config.entryFilter || null;
+    this._entryFilterUtc = config.entryFilterUtc !== false;
     this._tp_enabled = !config.take_profit || config.take_profit.enabled !== false;
     this._tp_pct   = (config.take_profit && config.take_profit.target_pct) || 3.0;
     this._sl_pct   = (config.stop_loss   && config.stop_loss.pct)          || 5.0;
@@ -5779,6 +5781,14 @@ class RevertoBacktest {
         let entry = sigIdx >= 0;
         if (entry) {
           for (const a of sigArrays) { if (!a[sigIdx]) { entry = false; break; } }
+        }
+        if (entry && this._entryFilter) {
+          const ef = this._entryFilter;
+          const ed = new Date(candle.time * 1000);
+          const eDay  = this._entryFilterUtc ? ed.getUTCDay()   : ed.getDay();
+          const eHour = this._entryFilterUtc ? ed.getUTCHours() : ed.getHours();
+          if (ef.days && !ef.days.includes(eDay)) entry = false;
+          if (ef.hours && !ef.hours.includes(eHour)) entry = false;
         }
         if (entry) {
           _btStatEntrySignalTrue++;
@@ -6300,20 +6310,9 @@ function swUpdateEstimate() {
 
 const _SW_DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
-function _swFilterCandles(candles, filter) {
-  if (!filter) return candles;
-  const useUtc = filter.tz === 'UTC';
-  return candles.filter(c => {
-    const d = new Date(c.time * 1000);
-    if (filter.days && !filter.days.includes(useUtc ? d.getUTCDay() : d.getDay())) return false;
-    if (filter.hour != null && (useUtc ? d.getUTCHours() : d.getHours()) !== filter.hour) return false;
-    return true;
-  });
-}
-
 function _swGenerateScheduleConfigs(baseCfg) {
   const configs = [];
-  const tz = ($('sw-sched-tz') && $('sw-sched-tz').value) || 'local';
+  const useUtc = ($('sw-sched-tz') && $('sw-sched-tz').value) === 'UTC';
   const daysOn  = $('sw-sched-days-enabled')  && $('sw-sched-days-enabled').checked;
   const hoursOn = $('sw-sched-hours-enabled') && $('sw-sched-hours-enabled').checked;
 
@@ -6333,24 +6332,25 @@ function _swGenerateScheduleConfigs(baseCfg) {
     const from = Math.max(0, Math.min(23, parseInt($('sw-hour-from').value, 10) || 0));
     const to   = Math.max(from, Math.min(23, parseInt($('sw-hour-to').value, 10) || 23));
     for (let h = from; h <= to; h++) {
-      hoursSets.push({ hour: h, label: String(h).padStart(2, '0') + ':00' });
+      hoursSets.push({ hours: [h], label: String(h).padStart(2, '0') + ':00' });
     }
   } else {
-    hoursSets.push({ hour: null, label: null });
+    hoursSets.push({ hours: null, label: null });
   }
 
   for (const ds of daysSets) {
     for (const hs of hoursSets) {
       const parts = [ds.label, hs.label].filter(Boolean);
-      const label = parts.length ? parts.join(' ') : 'All candles';
-      const filter = { tz };
-      if (ds.days) filter.days = ds.days;
-      if (hs.hour != null) filter.hour = hs.hour;
-      configs.push({
-        label,
-        config: JSON.parse(JSON.stringify(baseCfg)),
-        scheduleFilter: filter,
-      });
+      const label = parts.length ? parts.join(' ') : 'Base config';
+      const c = JSON.parse(JSON.stringify(baseCfg));
+      const ef = {};
+      if (ds.days) ef.days = ds.days;
+      if (hs.hours) ef.hours = hs.hours;
+      if (ef.days || ef.hours) {
+        c.entryFilter = ef;
+        c.entryFilterUtc = useUtc;
+      }
+      configs.push({ label, config: c });
     }
   }
   return configs;
@@ -6407,11 +6407,12 @@ function _swGenerateConfigs(baseCfg) {
       const cross = [];
       for (const pc of configs) {
         for (const sc of schedConfigs) {
-          cross.push({
-            label: `${pc.label} | ${sc.label}`,
-            config: JSON.parse(JSON.stringify(pc.config)),
-            scheduleFilter: sc.scheduleFilter,
-          });
+          const merged = JSON.parse(JSON.stringify(pc.config));
+          if (sc.config.entryFilter) {
+            merged.entryFilter = sc.config.entryFilter;
+            merged.entryFilterUtc = sc.config.entryFilterUtc;
+          }
+          cross.push({ label: `${pc.label} | ${sc.label}`, config: merged });
         }
       }
       return cross;
@@ -6495,19 +6496,11 @@ async function swRunSweep() {
 
   _swRows = [];
   for (let i = 0; i < configs.length; i++) {
-    const { label, config: c, scheduleFilter } = configs[i];
-    const iterCandles = scheduleFilter ? _swFilterCandles(candles, scheduleFilter) : candles;
+    const { label, config: c } = configs[i];
     const pct = Math.round(((i + 1) / configs.length) * 100);
     $('sw-progress-bar').style.width = pct + '%';
     $('sw-status').textContent = `Running iteration ${i + 1}/${configs.length} (${label})…`;
-    if (iterCandles.length < 78) {
-      _swRows.push({ label, config: c, total_deals: 0, win_rate: 0, total_pnl_btc: 0,
-        total_pnl_pct: 0, profit_factor: null, sharpe: '—', max_dd: 0, avg_dur: 0,
-        candles_used: iterCandles.length, _result: null });
-      await new Promise(r => setTimeout(r, 0));
-      continue;
-    }
-    const engine = new RevertoBacktest(c, iterCandles);
+    const engine = new RevertoBacktest(c, candles);
     const result = await engine.run(balance);
     const s = result.summary;
     const r = result.ratios;
@@ -6522,7 +6515,7 @@ async function swRunSweep() {
       sharpe:        r.sharpe,
       max_dd:        s.max_drawdown_pct,
       avg_dur:       s.avg_duration_hours,
-      candles_used:  iterCandles.length,
+      candles_used:  candles.length,
       _result:       result,
     });
     await new Promise(r => setTimeout(r, 0));
