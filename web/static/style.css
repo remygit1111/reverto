@@ -1925,6 +1925,7 @@ html.compact .modal-card { padding: 19px; }
 .de-stack { display: flex; flex-direction: column; gap: 8px; }
 .de-disabled { opacity: 0.4; pointer-events: none; }
 .deal-btn-cancel:hover { color: var(--red); border-color: var(--red); }
+.deal-btn-close { font-size: 10px; }
 .deal-btn-close:hover { color: var(--amber); border-color: var(--amber); }
 .deal-btn-edit:hover { color: var(--accent); border-color: var(--accent); }
 
