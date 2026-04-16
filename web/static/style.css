@@ -1937,17 +1937,14 @@ html.compact .modal-card { padding: 19px; }
 .bt-section-ratios   .bt-section-head { color: #b07aff; }
 
 /* ── Backtest card info tooltips ─────────────────────────────────── */
-.bt-tip-icon {
-  display: inline-block;
-  margin-left: 4px;
-  cursor: pointer;
-  font-size: 10px;
-  color: var(--muted);
-  opacity: 0.6;
-  transition: opacity 0.15s;
-  vertical-align: middle;
+.bt-tip-label {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--muted);
+  transition: text-decoration-color 0.15s;
 }
-.bt-tip-icon:hover { opacity: 1; color: var(--accent); }
+.bt-tip-label:hover { text-decoration-color: var(--accent); }
 .card-label { position: relative; }
 .bt-tip-popup {
   position: absolute;
