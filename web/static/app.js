@@ -2284,8 +2284,13 @@ async function nbSubmit() {
       nbShowError(safeText(r.detail || `Save failed (${res.status})`));
       return;
     }
+    const returnSlug = wasEdit ? nbEditSlug : (r.slug || null);
     nbInit();
-    goBots();
+    if (returnSlug) {
+      openBot(returnSlug);
+    } else {
+      goBots();
+    }
   } catch (e) {
     nbShowError('Network error: ' + safeText(e.message));
   } finally {
