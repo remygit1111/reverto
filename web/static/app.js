@@ -3270,6 +3270,7 @@ let _wizardCandleCache = null;
 // addLineSeries returns a series we have to removeSeries() ourselves.
 let _wizardOverlaySeries = [];
 let _wizardOverlayPriceLines = [];
+let _wizardSrLineSeries = [];
 // Sub-charts for RSI / MACD indicators in the wizard preview. Created
 // lazily when the user adds the corresponding indicator and destroyed
 // when they remove it, so a wizard with no RSI/MACD costs nothing.
@@ -3685,7 +3686,9 @@ function _renderIndicatorOverlays(candles) {
         if (startI >= candles.length || endI < startI) continue;
         const s = _chartMain.addLineSeries({
           color, lineWidth: 2, lineStyle: 0,
-          priceLineVisible: false, lastValueVisible: false,
+          priceLineVisible: false,
+          lastValueVisible: true,
+          title: label,
           crosshairMarkerVisible: false,
         });
         const data = [];
@@ -3693,10 +3696,6 @@ function _renderIndicatorOverlays(candles) {
           data.push({ time: candles[j].time, value: lv.price });
         }
         s.setData(data);
-        s.createPriceLine({
-          price: lv.price, color, lineWidth: 1, lineStyle: 0,
-          axisLabelVisible: true, title: label,
-        });
         _srLineSeries.push(s);
       }
     };
@@ -4409,6 +4408,7 @@ function teardownWizardChart() {
   _wizardCandleCache = null;
   _wizardOverlaySeries = [];
   _wizardOverlayPriceLines = [];
+  _wizardSrLineSeries = [];
   _wizardSubSeries = {};
 }
 
@@ -4703,6 +4703,10 @@ function _clearWizardOverlays() {
     try { _wizardCandles.removePriceLine(pl); } catch (e) {}
   }
   _wizardOverlayPriceLines = [];
+  for (const s of _wizardSrLineSeries) {
+    try { _wizardChart.removeSeries(s); } catch (e) {}
+  }
+  _wizardSrLineSeries = [];
 }
 
 function _wizardEnsureRsiChart() {
@@ -4861,11 +4865,30 @@ function renderWizardOverlays() {
           if (st && st.bear) _addWizardLineSeries(st.bear, red,    2);
         }
       } else if (t === 'SUPPORT_RESISTANCE') {
-        if (typeof calcSR === 'function' && _wizardCandleCache) {
+        if (typeof calcSR === 'function' && _wizardCandleCache && _wizardChart) {
           const sr = calcSR(_wizardCandleCache, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15);
           if (sr) {
-            for (const lvl of (sr.support || [])) _addWizardPriceLine(lvl, '#1e88e5', 'S', 0);
-            for (const lvl of (sr.resistance || [])) _addWizardPriceLine(lvl, '#e53935', 'R', 0);
+            const wCandles = _wizardCandleCache;
+            const renderWizSR = (detailed, color, label) => {
+              for (const lv of detailed) {
+                const startI = lv.pivotIdx;
+                const endI = lv.breakIdx != null ? lv.breakIdx : wCandles.length - 1;
+                if (startI >= wCandles.length || endI < startI) continue;
+                const ws = _wizardChart.addLineSeries({
+                  color, lineWidth: 2, lineStyle: 0,
+                  priceLineVisible: false, lastValueVisible: true,
+                  title: label, crosshairMarkerVisible: false,
+                });
+                const data = [];
+                for (let j = startI; j <= endI && j < wCandles.length; j++) {
+                  data.push({ time: wCandles[j].time, value: lv.price });
+                }
+                ws.setData(data);
+                _wizardSrLineSeries.push(ws);
+              }
+            };
+            renderWizSR(sr.supportDetailed || [], '#1e88e5', 'S');
+            renderWizSR(sr.resistanceDetailed || [], '#e53935', 'R');
           }
         }
       }
