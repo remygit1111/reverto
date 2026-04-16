@@ -337,3 +337,71 @@ class TestManualTriggerLiquidationGuard:
         e.config.leverage.enabled = True
         e.config.leverage.size = 10
         assert e._manual_trigger_liq_safe(0.0) is False
+
+
+# ── step_scale != 1.0 ────────────────────────────────────────────────────────
+
+class TestStepScale:
+    def test_step_scale_widens_spacing(self):
+        """DCA spacing should widen by step_scale^dca_count each order."""
+        e = _engine(spacing=2.0, max_orders=5, mult=1.0)
+        e.config.dca.step_scale = 1.5
+        d = _deal(80000.0); e.state.open_deal(d)
+
+        # DCA 1: spacing = 2.0 * 1.5^0 = 2.0% below 80000 = 78400
+        e._check_dca(d, 78400.0)
+        assert d.dca_count == 1
+        last = d.orders[-1].price
+        assert last == 78400.0
+
+        # DCA 2: spacing = 2.0 * 1.5^1 = 3.0% below 78400 = 76048
+        trigger = last * (1 - 3.0 / 100)
+        e._check_dca(d, trigger)
+        assert d.dca_count == 2
+
+        # DCA 3: spacing = 2.0 * 1.5^2 = 4.5% below last order
+        last2 = d.orders[-1].price
+        trigger3 = last2 * (1 - 4.5 / 100)
+        e._check_dca(d, trigger3)
+        assert d.dca_count == 3
+
+    def test_step_scale_1_matches_flat(self):
+        """step_scale=1.0 should produce constant spacing (sanity)."""
+        e = _engine(spacing=2.5, max_orders=3, mult=1.0)
+        e.config.dca.step_scale = 1.0
+        d = _deal(80000.0); e.state.open_deal(d)
+        e._check_dca(d, 80000.0 * 0.975)
+        assert d.dca_count == 1
+        p2 = d.orders[-1].price * 0.975
+        e._check_dca(d, p2)
+        assert d.dca_count == 2
+
+
+# ── Config model validators ───────────────────────────────────────────────────
+
+class TestConfigValidators:
+    def test_negative_base_order_size_rejected(self):
+        from config.models import DCAConfig
+        with pytest.raises(Exception):
+            DCAConfig(base_order_size=-1.0)
+
+    def test_zero_target_pct_rejected(self):
+        from config.models import TakeProfitConfig
+        with pytest.raises(Exception):
+            TakeProfitConfig(target_pct=0)
+
+    def test_leverage_over_125_rejected(self):
+        from config.models import LeverageConfig
+        with pytest.raises(Exception):
+            LeverageConfig(enabled=True, size=200)
+
+    def test_sl_pct_over_100_rejected(self):
+        from config.models import StopLossConfig
+        with pytest.raises(Exception):
+            StopLossConfig(type="fixed", pct=101)
+
+    def test_valid_config_accepted(self):
+        from config.models import DCAConfig, TakeProfitConfig, StopLossConfig
+        DCAConfig(base_order_size=0.001)
+        TakeProfitConfig(target_pct=3.0)
+        StopLossConfig(type="fixed", pct=5.0)
