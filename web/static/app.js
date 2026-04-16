@@ -6488,6 +6488,8 @@ const SW_RESULT_COLS = [
   { key: 'max_dd',        label: 'Max DD',      fmt: v => v != null ? v.toFixed(2) + '%' : '—' },
   { key: 'avg_dur',       label: 'Avg Dur',     fmt: v => btFormatDuration(v) },
 ];
+let _swChartUid = 0;
+let _swPendingBars = [];
 let _swSortKey = 'profit_factor';
 let _swSortDir = 'desc';
 let _swRows = [];
@@ -6683,7 +6685,11 @@ function _swRenderChart() {
     html.push(_swBarV('PnL BTC per iteration', _swRows));
     html.push(_swBarV('Profit Factor per iteration', _swRows, 'profit_factor'));
   }
+  _swPendingBars = [];
+  // _swBarV / _swBarH register pending bar containers during HTML build
   area.innerHTML = html.join('');
+  // Now that the DOM exists, apply sizes via setProperty (CSP-safe)
+  _swApplyBarSizes();
 }
 
 function _swSafe(v) {
@@ -6693,31 +6699,42 @@ function _swSafe(v) {
 function _swBarV(title, rows, key = 'total_pnl_btc') {
   const vals = rows.map(r => _swSafe(r[key]));
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
-  console.log('[SW_CHART] _swBarV', title, { count: rows.length, mx, sample: vals.slice(0, 5) });
-  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${
-    rows.map((r, i) => {
-      const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
-      const fv = Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4);
-      return `<div class="sw-bar-col" title="${safeText(r.label)}: ${fv}">` +
-        `<div class="sw-bar ${v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg'}" style="height:${pct}%"></div>` +
-        `<div class="sw-bar-label">${safeText(r.label)}</div></div>`;
-    }).join('')
-  }</div></div>`;
+  const id = 'sw-vbar-' + (++_swChartUid);
+  const bars = rows.map((r, i) => {
+    const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
+    const fv = Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4);
+    return `<div class="sw-bar-col" title="${safeText(r.label)}: ${fv}">` +
+      `<div class="sw-bar ${v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg'}" data-pct="${pct}"></div>` +
+      `<div class="sw-bar-label">${safeText(r.label)}</div></div>`;
+  }).join('');
+  _swPendingBars.push({ id, dir: 'height' });
+  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart" id="${id}">${bars}</div></div>`;
 }
 
 function _swBarH(title, rows) {
   const vals = rows.map(r => _swSafe(r.total_pnl_btc));
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
-  console.log('[SW_CHART] _swBarH', title, { count: rows.length, mx, vals });
-  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>${
-    rows.map((r, i) => {
-      const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
-      const fv = (v >= 0 ? '+' : '') + v.toFixed(8);
-      return `<div class="sw-hbar-row"><div class="sw-hbar-label">${safeText(r.label)}</div>` +
-        `<div class="sw-hbar-track"><div class="sw-bar ${v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg'}" style="width:${pct}%"></div></div>` +
-        `<div class="sw-hbar-value">${fv}</div></div>`;
-    }).join('')
-  }</div>`;
+  const id = 'sw-hbar-' + (++_swChartUid);
+  const bars = rows.map((r, i) => {
+    const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
+    const fv = (v >= 0 ? '+' : '') + v.toFixed(8);
+    return `<div class="sw-hbar-row"><div class="sw-hbar-label">${safeText(r.label)}</div>` +
+      `<div class="sw-hbar-track"><div class="sw-bar ${v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg'}" data-pct="${pct}"></div></div>` +
+      `<div class="sw-hbar-value">${fv}</div></div>`;
+  }).join('');
+  _swPendingBars.push({ id, dir: 'width' });
+  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div id="${id}">${bars}</div></div>`;
+}
+
+function _swApplyBarSizes() {
+  for (const { id, dir } of _swPendingBars) {
+    const container = $(id);
+    if (!container) continue;
+    container.querySelectorAll('.sw-bar[data-pct]').forEach(bar => {
+      bar.style.setProperty('--bar-pct', bar.dataset.pct + '%');
+    });
+  }
+  _swPendingBars = [];
 }
 
 function _swAggBarH(title, rows, re, grpIdx) {
