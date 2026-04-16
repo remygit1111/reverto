@@ -6664,7 +6664,6 @@ function _swRenderChart() {
   const area = $('sw-chart-area');
   if (!area || !_swRows.length) return;
 
-  // Classify sweep type from labels
   const dayRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/;
   const hourRe = /^\d{2}:00$/;
   const dayHourRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (\d{2}):00$/;
@@ -6672,91 +6671,74 @@ function _swRenderChart() {
   const isHourOnly = _swRows.every(r => hourRe.test(r.label));
   const isDayHour  = _swRows.length > 7 && _swRows.some(r => dayHourRe.test(r.label));
 
-  if (isDayHour) { area.innerHTML = _swBuildHeatmap(); return; }
-  if (isDayOnly)  { area.innerHTML = _swBuildHBar('PnL BTC per day', _swRows); return; }
-  if (isHourOnly) { area.innerHTML = _swBuildVBar('PnL BTC per hour', _swRows); return; }
-  // Default: vertical bar chart for TP/SL/DCA sweeps
-  area.innerHTML =
-    _swBuildVBar('PnL BTC per iteration', _swRows) +
-    _swBuildVBar('Profit Factor per iteration', _swRows, 'profit_factor');
+  const html = [];
+  if (isDayHour) {
+    html.push(_swAggBarH('Avg PnL BTC per day', _swRows, dayHourRe, 1));
+    html.push(_swAggBarV('Avg PnL BTC per hour', _swRows, dayHourRe, 2));
+  } else if (isDayOnly) {
+    html.push(_swBarH('PnL BTC per day', _swRows));
+  } else if (isHourOnly) {
+    html.push(_swBarV('PnL BTC per hour', _swRows));
+  } else {
+    html.push(_swBarV('PnL BTC per iteration', _swRows));
+    html.push(_swBarV('Profit Factor per iteration', _swRows, 'profit_factor'));
+  }
+  area.innerHTML = html.join('');
 }
 
-// Vertical bar chart (good for ≤ 30 items)
-function _swBuildVBar(title, rows, key = 'total_pnl_btc') {
+function _swBarV(title, rows, key = 'total_pnl_btc') {
   const vals = rows.map(r => typeof r[key] === 'number' ? r[key] : 0);
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
-  const bars = rows.map((r, i) => {
-    const v = vals[i];
-    const pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
-    const cls = v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg';
-    const fv = Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4);
-    return `<div class="sw-bar-col" title="${safeText(r.label)}: ${fv}">` +
-      `<div class="sw-bar ${cls}" style="height:${pct}%"></div>` +
-      `<div class="sw-bar-label">${safeText(r.label)}</div></div>`;
-  }).join('');
-  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${bars}</div></div>`;
+  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${
+    rows.map((r, i) => {
+      const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
+      const fv = Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4);
+      return `<div class="sw-bar-col" title="${safeText(r.label)}: ${fv}">` +
+        `<div class="sw-bar ${v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg'}" style="height:${pct}%"></div>` +
+        `<div class="sw-bar-label">${safeText(r.label)}</div></div>`;
+    }).join('')
+  }</div></div>`;
 }
 
-// Horizontal bar chart (good for labeled categories like days)
-function _swBuildHBar(title, rows) {
+function _swBarH(title, rows) {
   const vals = rows.map(r => r.total_pnl_btc || 0);
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
-  const bars = rows.map((r, i) => {
-    const v = vals[i];
-    const pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
-    const cls = v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg';
-    const fv = v >= 0 ? '+' + v.toFixed(8) : v.toFixed(8);
-    return `<div class="sw-hbar-row">` +
-      `<div class="sw-hbar-label">${safeText(r.label)}</div>` +
-      `<div class="sw-hbar-track"><div class="sw-bar ${cls}" style="width:${pct}%"></div></div>` +
-      `<div class="sw-hbar-value">${fv}</div></div>`;
-  }).join('');
-  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>${bars}</div>`;
+  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>${
+    rows.map((r, i) => {
+      const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
+      const fv = (v >= 0 ? '+' : '') + v.toFixed(8);
+      return `<div class="sw-hbar-row"><div class="sw-hbar-label">${safeText(r.label)}</div>` +
+        `<div class="sw-hbar-track"><div class="sw-bar ${v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg'}" style="width:${pct}%"></div></div>` +
+        `<div class="sw-hbar-value">${fv}</div></div>`;
+    }).join('')
+  }</div>`;
 }
 
-// Day × hour heatmap
-function _swBuildHeatmap() {
+function _swAggBarH(title, rows, re, grpIdx) {
+  const agg = {};
   const dayOrder = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  const dayMap = {}; dayOrder.forEach((d, i) => { dayMap[d] = i; });
-  const grid = {};
-  let minV = Infinity, maxV = -Infinity;
-  const dayHourRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (\d{2}):00$/;
-  for (const r of _swRows) {
-    const m = r.label.match(dayHourRe);
-    if (!m) continue;
-    const di = dayMap[m[1]], h = parseInt(m[2], 10);
-    const v = r.total_pnl_btc || 0;
-    grid[`${di}_${h}`] = v;
-    if (v < minV) minV = v;
-    if (v > maxV) maxV = v;
+  for (const r of rows) {
+    const m = r.label.match(re); if (!m) continue;
+    const k = m[grpIdx];
+    if (!agg[k]) agg[k] = { sum: 0, n: 0 };
+    agg[k].sum += r.total_pnl_btc || 0; agg[k].n++;
   }
-  const range = Math.max(1e-12, Math.abs(maxV), Math.abs(minV));
+  const sorted = dayOrder.filter(d => agg[d]);
+  const aggRows = sorted.map(k => ({ label: k, total_pnl_btc: agg[k].sum / agg[k].n }));
+  return _swBarH(title, aggRows);
+}
 
-  function cc(v) {
-    if (v >= 0) {
-      const t = Math.min(1, v / range);
-      return `rgba(38,${Math.round(166 + t * 50)},154,${(0.15 + t * 0.7).toFixed(2)})`;
-    }
-    const t = Math.min(1, Math.abs(v) / range);
-    return `rgba(255,77,109,${(0.15 + t * 0.7).toFixed(2)})`;
+function _swAggBarV(title, rows, re, grpIdx) {
+  const agg = {};
+  for (const r of rows) {
+    const m = r.label.match(re); if (!m) continue;
+    const k = m[grpIdx] + ':00';
+    if (!agg[k]) agg[k] = { sum: 0, n: 0 };
+    agg[k].sum += r.total_pnl_btc || 0; agg[k].n++;
   }
-
-  let cells = '';
-  for (let h = 0; h < 24; h++) {
-    for (let di = 0; di < 7; di++) {
-      const v = grid[`${di}_${h}`] ?? 0;
-      const tip = `${dayOrder[di]} ${String(h).padStart(2,'0')}:00: ${v >= 0 ? '+' : ''}${v.toFixed(8)} BTC`;
-      cells += `<div class="sw-hm-cell" style="background:${cc(v)}" title="${safeText(tip)}"></div>`;
-    }
-  }
-
-  const dh = dayOrder.map(d => `<div class="sw-hm-hdr">${d}</div>`).join('');
-  const hl = Array.from({length:24},(_,h)=>`<div class="sw-hm-ylbl">${String(h).padStart(2,'0')}</div>`).join('');
-
-  return `<div class="sw-chart-row"><div class="sw-chart-title">PnL Heatmap — Days × Hours</div>` +
-    `<div class="sw-heatmap-wrap"><div class="sw-hm-ylabel">${hl}</div>` +
-    `<div class="sw-hm-main"><div class="sw-hm-xheader">${dh}</div><div class="sw-hm-grid">${cells}</div></div></div>` +
-    `<div class="sw-hm-legend"><span class="sw-hm-leg-neg">Loss</span> ← 0 → <span class="sw-hm-leg-pos">Profit</span></div></div>`;
+  const sorted = Object.keys(agg).sort();
+  const aggRows = sorted.map(k => ({ label: k, total_pnl_btc: agg[k].sum / agg[k].n }));
+  return _swBarV(title, aggRows);
 }
 
 function btOpenWizardModal() {

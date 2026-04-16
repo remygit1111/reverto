@@ -2240,45 +2240,6 @@ html.compact .modal-card { padding: 19px; }
   font-family: var(--mono); font-size: 10px; color: var(--text);
 }
 
-/* Heatmap for day × hour schedule sweep */
-.sw-heatmap-wrap {
-  display: flex; gap: 4px;
-}
-.sw-hm-ylabel {
-  display: flex; flex-direction: column; gap: 1px;
-  justify-content: flex-end;
-}
-.sw-hm-ylbl {
-  height: 16px; line-height: 16px;
-  font-family: var(--mono); font-size: 9px; color: var(--muted);
-  text-align: right; padding-right: 4px;
-}
-.sw-hm-main { flex: 1; }
-.sw-hm-xheader {
-  display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px;
-  margin-bottom: 2px;
-}
-.sw-hm-hdr {
-  font-family: var(--mono); font-size: 9px; color: var(--muted);
-  text-align: center;
-}
-.sw-hm-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  grid-template-rows: repeat(24, 16px);
-  gap: 1px;
-}
-.sw-hm-cell {
-  border-radius: 2px; cursor: default;
-  transition: opacity 0.1s;
-}
-.sw-hm-cell:hover { opacity: 0.7; outline: 1px solid var(--text); }
-.sw-hm-legend {
-  font-family: var(--mono); font-size: 10px; color: var(--muted);
-  text-align: center; margin-top: 8px;
-}
-.sw-hm-leg-neg { color: var(--red); }
-.sw-hm-leg-pos { color: var(--accent); }
 .sweep-divider {
   border-top: 1px solid var(--border);
   margin: 12px 0;
