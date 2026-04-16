@@ -3700,11 +3700,23 @@ function _renderIndicatorOverlays(candles) {
     console.log('[SR v122] support:', JSON.stringify((sr.supportDetailed || []).map(l =>
       ({price: l.price, pivotIdx: l.pivotIdx, breakIdx: l.breakIdx}))));
     const renderSR = (detailed, color, label) => {
+      console.log('[SR CANDLES]',
+        'length:', candles?.length,
+        'first:', candles?.[0]?.time,
+        'last:', candles?.[candles.length - 1]?.time);
+      window._srLastCandles = candles;
       for (const lv of detailed) {
         const startI = Math.max(0, lv.pivotIdx);
         const endI = lv.breakIdx !== null
           ? Math.min(lv.breakIdx, candles.length - 1)
           : candles.length - 1;
+        console.log('[SR LEVEL CHECK]', lv.price,
+          'pivotIdx:', lv.pivotIdx,
+          'breakIdx:', lv.breakIdx,
+          'candles.length:', candles?.length,
+          'pivotIdx < candles.length:', lv.pivotIdx < candles?.length,
+          'startI:', startI, 'endI:', endI,
+          'SKIP:', startI >= candles.length);
         if (startI >= candles.length) continue;
         const s = _chartMain.addLineSeries({
           color, lineWidth: 2, lineStyle: 0,
