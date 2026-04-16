@@ -6488,8 +6488,6 @@ const SW_RESULT_COLS = [
   { key: 'max_dd',        label: 'Max DD',      fmt: v => v != null ? v.toFixed(2) + '%' : '—' },
   { key: 'avg_dur',       label: 'Avg Dur',     fmt: v => btFormatDuration(v) },
 ];
-let _swChartUid = 0;
-let _swPendingBars = [];
 let _swSortKey = 'profit_factor';
 let _swSortDir = 'desc';
 let _swRows = [];
@@ -6685,56 +6683,63 @@ function _swRenderChart() {
     html.push(_swBarV('PnL BTC per iteration', _swRows));
     html.push(_swBarV('Profit Factor per iteration', _swRows, 'profit_factor'));
   }
-  _swPendingBars = [];
-  // _swBarV / _swBarH register pending bar containers during HTML build
   area.innerHTML = html.join('');
-  // Now that the DOM exists, apply sizes via setProperty (CSP-safe)
-  _swApplyBarSizes();
 }
 
 function _swSafe(v) {
   return (typeof v === 'number' && Number.isFinite(v)) ? v : 0;
 }
 
+// SVG-based bar charts — CSP-safe because SVG rect width/height are
+// element attributes, not inline styles, so no style-src violation.
+const _SW_SVG_NS = 'http://www.w3.org/2000/svg';
+const _SW_VBAR_H = 180;
+const _SW_HBAR_ROW_H = 28;
+
 function _swBarV(title, rows, key = 'total_pnl_btc') {
   const vals = rows.map(r => _swSafe(r[key]));
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
-  const id = 'sw-vbar-' + (++_swChartUid);
-  const bars = rows.map((r, i) => {
-    const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
+  const n = rows.length;
+  const gap = 2, barW = Math.max(4, Math.floor((600 - gap * n) / n));
+  const svgW = n * (barW + gap);
+  let rects = '', labels = '';
+  rows.forEach((r, i) => {
+    const v = vals[i];
+    const h = Math.max(2, Math.round(Math.abs(v) / mx * _SW_VBAR_H));
+    const x = i * (barW + gap);
+    const y = _SW_VBAR_H - h;
+    const fill = v >= 0 ? 'var(--accent)' : 'var(--red)';
     const fv = Math.abs(v) < 0.001 ? v.toFixed(8) : v.toFixed(4);
-    return `<div class="sw-bar-col" title="${safeText(r.label)}: ${fv}">` +
-      `<div class="sw-bar ${v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg'}" data-pct="${pct}"></div>` +
-      `<div class="sw-bar-label">${safeText(r.label)}</div></div>`;
-  }).join('');
-  _swPendingBars.push({ id, dir: 'height' });
-  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart" id="${id}">${bars}</div></div>`;
+    rects += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" fill="${fill}" rx="2"><title>${safeText(r.label)}: ${fv}</title></rect>`;
+    if (n <= 30 || i % Math.ceil(n / 15) === 0) {
+      labels += `<text x="${x + barW / 2}" y="${_SW_VBAR_H + 12}" text-anchor="middle" class="sw-svg-label">${safeText(r.label)}</text>`;
+    }
+  });
+  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>` +
+    `<svg class="sw-svg-chart" viewBox="0 0 ${svgW} ${_SW_VBAR_H + 16}" preserveAspectRatio="none" xmlns="${_SW_SVG_NS}">` +
+    `${rects}${labels}</svg></div>`;
 }
 
 function _swBarH(title, rows) {
   const vals = rows.map(r => _swSafe(r.total_pnl_btc));
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
-  const id = 'sw-hbar-' + (++_swChartUid);
-  const bars = rows.map((r, i) => {
-    const v = vals[i], pct = Math.max(2, Math.round(Math.abs(v) / mx * 100));
+  const n = rows.length;
+  const rowH = _SW_HBAR_ROW_H, gap = 3, labelW = 40, valW = 120, barArea = 400;
+  const svgH = n * (rowH + gap);
+  let elems = '';
+  rows.forEach((r, i) => {
+    const v = vals[i];
+    const w = Math.max(2, Math.round(Math.abs(v) / mx * barArea));
+    const y = i * (rowH + gap);
+    const fill = v >= 0 ? 'var(--accent)' : 'var(--red)';
     const fv = (v >= 0 ? '+' : '') + v.toFixed(8);
-    return `<div class="sw-hbar-row"><div class="sw-hbar-label">${safeText(r.label)}</div>` +
-      `<div class="sw-hbar-track"><div class="sw-bar ${v >= 0 ? 'sw-bar-pos' : 'sw-bar-neg'}" data-pct="${pct}"></div></div>` +
-      `<div class="sw-hbar-value">${fv}</div></div>`;
-  }).join('');
-  _swPendingBars.push({ id, dir: 'width' });
-  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div id="${id}">${bars}</div></div>`;
-}
-
-function _swApplyBarSizes() {
-  for (const { id, dir } of _swPendingBars) {
-    const container = $(id);
-    if (!container) continue;
-    container.querySelectorAll('.sw-bar[data-pct]').forEach(bar => {
-      bar.style.setProperty('--bar-pct', bar.dataset.pct + '%');
-    });
-  }
-  _swPendingBars = [];
+    elems += `<text x="${labelW - 4}" y="${y + rowH / 2 + 4}" text-anchor="end" class="sw-svg-label">${safeText(r.label)}</text>`;
+    elems += `<rect x="${labelW}" y="${y}" width="${w}" height="${rowH}" fill="${fill}" rx="3"><title>${safeText(r.label)}: ${fv}</title></rect>`;
+    elems += `<text x="${labelW + w + 6}" y="${y + rowH / 2 + 4}" class="sw-svg-value">${fv}</text>`;
+  });
+  return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>` +
+    `<svg class="sw-svg-chart sw-svg-hchart" viewBox="0 0 ${labelW + barArea + valW} ${svgH}" xmlns="${_SW_SVG_NS}">` +
+    `${elems}</svg></div>`;
 }
 
 function _swAggBarH(title, rows, re, grpIdx) {
