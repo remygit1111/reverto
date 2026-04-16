@@ -58,6 +58,10 @@ def check_qfl_signal(
     max_bases: int = 5,
     below_pct: float = 0.0,
     condition: str = "below_base",
+    base_periods: int | None = None,
+    pump_periods: int | None = None,
+    pump_from_base_pct: float | None = None,
+    base_crack_pct: float | None = None,
 ) -> bool:
     """Evaluate a QFL condition on the latest close.
 
@@ -71,19 +75,28 @@ def check_qfl_signal(
     """
     # Validate the condition name up-front so unknown conditions always
     # raise, even when no bases were detected.
-    if condition not in ("below_base", "near_base", "base_retest"):
+    valid_conds = ("below_base", "near_base", "base_retest", "base_crack")
+    if condition not in valid_conds:
         raise ValueError(
-            f"Unknown QFL condition: {condition!r}. Choose from "
-            "below_base / near_base / base_retest."
+            f"Unknown QFL condition: {condition!r}. Choose from {valid_conds}."
         )
 
-    min_required = lookback * 20 + base_candles
-    if len(closes) < min_required:
-        raise ValueError(
-            f"QFL requires at least {min_required} data points, got {len(closes)}"
-        )
+    bp = base_periods or (lookback * 20 + base_candles)
+    if len(closes) < bp:
+        raise ValueError(f"QFL requires at least {bp} data points, got {len(closes)}")
 
-    bases = find_qfl_bases(closes, lookback, crack_pct, base_candles, max_bases)
+    if base_periods is not None:
+        pfb = pump_from_base_pct or 3.0
+        bcp = base_crack_pct or crack_pct
+        base_val = min(closes[-base_periods:])
+        pump_window = closes[-base_periods:]
+        has_pump = max(pump_window) >= base_val * (1 + pfb / 100)
+        price = closes[-1]
+        if condition == "base_crack":
+            return has_pump and price < base_val * (1 - bcp / 100)
+        bases = [base_val] if has_pump else []
+    else:
+        bases = find_qfl_bases(closes, lookback, crack_pct, base_candles, max_bases)
     price = closes[-1]
 
     if not bases:

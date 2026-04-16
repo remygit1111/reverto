@@ -65,52 +65,65 @@ def check_support_resistance_signal(
     tolerance_pct: float = 0.5,
     proximity_pct: float = 1.0,
     condition: str = "near_support",
+    left_bars: int | None = None,
+    right_bars: int | None = None,
+    value: str = "resistance",
+    highs: list[float] | None = None,
+    lows: list[float] | None = None,
 ) -> bool:
     """Evaluate a support/resistance condition on the latest close.
 
-    Supported conditions:
-        near_support     — current price within proximity_pct of a support level
-        near_resistance  — current price within proximity_pct of a resistance level
-        below_support    — current price is below the nearest support
-                           (support broken, bearish)
-        above_resistance — current price is above the nearest resistance
-                           (resistance broken, bullish)
+    When left_bars/right_bars are provided, pivots are detected from
+    high/low data (or falls back to closes). Otherwise uses the legacy
+    lookback-based swing detection.
+
+    Conditions: near_support, near_resistance, below_support,
+    above_resistance, price_crossing_up, price_crossing_down,
+    price_greater_than, price_lower_than.
     """
-    min_required = lookback * 20
+    lb = left_bars or lookback
+    rb = right_bars or lookback
+    min_required = max(lb, rb) * 10
     if len(closes) < min_required:
         raise ValueError(
             f"Support/Resistance requires at least {min_required} data points, "
             f"got {len(closes)}"
         )
 
-    support, resistance = find_support_resistance(closes, lookback, tolerance_pct)
+    if left_bars is not None or right_bars is not None:
+        hi = highs if highs and len(highs) == len(closes) else closes
+        lo = lows if lows and len(lows) == len(closes) else closes
+        res_levels, sup_levels = [], []
+        for i in range(lb, len(closes) - rb):
+            if hi[i] > max(hi[i - lb:i]) and hi[i] > max(hi[i + 1:i + rb + 1]):
+                res_levels.append(hi[i])
+            if lo[i] < min(lo[i - lb:i]) and lo[i] < min(lo[i + 1:i + rb + 1]):
+                sup_levels.append(lo[i])
+        support = _cluster(sup_levels, tolerance_pct)
+        resistance = _cluster(res_levels, tolerance_pct)
+    else:
+        support, resistance = find_support_resistance(closes, lookback, tolerance_pct)
+
     price = closes[-1]
+    prev = closes[-2] if len(closes) >= 2 else price
+    levels = support if value == "support" else resistance
+
+    if condition == "price_crossing_up":
+        return any(prev < lvl and price > lvl for lvl in levels)
+    if condition == "price_crossing_down":
+        return any(prev > lvl and price < lvl for lvl in levels)
+    if condition == "price_greater_than":
+        return any(price > lvl for lvl in levels)
+    if condition == "price_lower_than":
+        return any(price < lvl for lvl in levels)
 
     if condition == "near_support":
-        for level in support:
-            if abs(price - level) / price * 100 <= proximity_pct:
-                return True
-        return False
-
+        return any(abs(price - lvl) / price * 100 <= proximity_pct for lvl in support)
     if condition == "near_resistance":
-        for level in resistance:
-            if abs(price - level) / price * 100 <= proximity_pct:
-                return True
-        return False
-
+        return any(abs(price - lvl) / price * 100 <= proximity_pct for lvl in resistance)
     if condition == "below_support":
-        if not support:
-            return False
-        nearest = min(support, key=lambda lvl: abs(price - lvl))
-        return price < nearest
-
+        return bool(support) and price < min(support, key=lambda lv: abs(price - lv))
     if condition == "above_resistance":
-        if not resistance:
-            return False
-        nearest = min(resistance, key=lambda lvl: abs(price - lvl))
-        return price > nearest
+        return bool(resistance) and price > min(resistance, key=lambda lv: abs(price - lv))
 
-    raise ValueError(
-        f"Unknown Support/Resistance condition: {condition!r}. Choose from "
-        "near_support / near_resistance / below_support / above_resistance."
-    )
+    return False

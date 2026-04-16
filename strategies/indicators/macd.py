@@ -7,16 +7,14 @@ import pandas as pd
 
 
 def calculate_macd(closes: list[float], fast: int = 12,
-                   slow: int = 26, signal: int = 9) -> dict:
+                   slow: int = 26, signal: int = 9,
+                   oscillator_ma_type: str = "EMA",
+                   signal_ma_type: str = "EMA") -> dict:
     """
     Calculate MACD line, signal line and histogram.
-    Returns dict with macd, signal and histogram values.
 
-    Requires at least 3 * slow candles for reliable output.
-    EWM with adjust=False needs approximately 3x the slow period to converge.
-    The original minimum of slow + signal (35 candles) was insufficient —
-    MACD on 35 candles is heavily biased by EWM warm-up and produces
-    unreliable signals.
+    oscillator_ma_type: EMA (default) or SMA for the fast/slow lines.
+    signal_ma_type: EMA (default) or SMA for the signal line.
     """
     min_required = slow * 3
     if len(closes) < min_required:
@@ -27,11 +25,20 @@ def calculate_macd(closes: list[float], fast: int = 12,
 
     series = pd.Series(closes)
 
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    if oscillator_ma_type == "SMA":
+        ma_fast = series.rolling(window=fast).mean()
+        ma_slow = series.rolling(window=slow).mean()
+    else:
+        ma_fast = series.ewm(span=fast, adjust=False).mean()
+        ma_slow = series.ewm(span=slow, adjust=False).mean()
 
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    macd_line = ma_fast - ma_slow
+
+    if signal_ma_type == "SMA":
+        signal_line = macd_line.rolling(window=signal).mean()
+    else:
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+
     histogram = macd_line - signal_line
 
     return {

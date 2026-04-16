@@ -104,16 +104,13 @@ def check_parabolic_sar_signal(
     _, prev_trend = series[-2]
     _, curr_trend = series[-1]
 
-    if condition == "bullish":
+    if condition in ("bullish", "price_greater_than"):
         return curr_trend == 1
-    if condition == "bearish":
+    if condition in ("bearish", "price_lower_than"):
         return curr_trend == -1
-    if condition == "bullish_flip":
+    if condition in ("bullish_flip", "price_crossing_up"):
         return prev_trend == -1 and curr_trend == 1
-    if condition == "bearish_flip":
+    if condition in ("bearish_flip", "price_crossing_down"):
         return prev_trend == 1 and curr_trend == -1
 
-    raise ValueError(
-        f"Unknown Parabolic SAR condition: {condition!r}. Choose from "
-        "bullish / bearish / bullish_flip / bearish_flip."
-    )
+    return False
