@@ -5587,7 +5587,7 @@ class RevertoBacktest {
       const mean = pctReturns.reduce((s, v) => s + v, 0) / pctReturns.length;
       const variance = pctReturns.reduce((s, v) => s + (v - mean) * (v - mean), 0) / pctReturns.length;
       const sd = Math.sqrt(variance);
-      sharpe = sd > 0 ? ((mean / sd) * Math.sqrt(252)).toFixed(2) : '—';
+      sharpe = sd > 1e-6 ? ((mean / sd) * Math.sqrt(252)).toFixed(2) : '—';
       const losses = pctReturns.filter(v => v < 0);
       if (losses.length === 0) {
         sortino = '∞';
@@ -5595,7 +5595,7 @@ class RevertoBacktest {
         const lMean = 0;
         const lVar = losses.reduce((s, v) => s + (v - lMean) * (v - lMean), 0) / losses.length;
         const lSd = Math.sqrt(lVar);
-        sortino = lSd > 0 ? ((mean / lSd) * Math.sqrt(252)).toFixed(2) : '∞';
+        sortino = lSd > 1e-6 ? ((mean / lSd) * Math.sqrt(252)).toFixed(2) : '∞';
       }
     }
 
@@ -6215,9 +6215,9 @@ const BT_CARD_TIPS = {
   'Profit factor':
     'Gross profit divided by gross loss. A Profit Factor above 1.0 means you made more than you lost. Above 1.5 is good, above 2.0 is excellent. Below 1.0 means the strategy lost money overall.',
   'Sharpe':
-    'Measures return per unit of total risk (volatility). Calculated as average return divided by standard deviation of returns, annualised. Above 1.0 is acceptable, above 2.0 is good, above 3.0 is excellent. Higher is better.',
+    'Measures return per unit of total risk (volatility). Calculated as average return divided by standard deviation of returns, annualised. Above 1.0 is acceptable, above 2.0 is good, above 3.0 is excellent. Higher is better. Shows "\u2014" when variance is near zero (e.g. all trades have identical returns).',
   'Sortino':
-    'Similar to Sharpe, but only penalises downside volatility (losses), not upside volatility (gains). Better suited for trading strategies where winning variance is welcome. Above 1.0 is good, above 2.0 is excellent.',
+    'Similar to Sharpe, but only penalises downside volatility (losses), not upside volatility (gains). Better suited for trading strategies where winning variance is welcome. Above 1.0 is good, above 2.0 is excellent. Shows "\u221e" when there are zero losing trades.',
   'Calmar':
     'Annual return divided by maximum drawdown. Shows how much return you get per unit of drawdown risk. Above 1.0 means your annual return exceeds your worst drawdown. Higher is better.',
   'Recovery':
