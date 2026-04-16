@@ -1326,6 +1326,10 @@ async function dealOpenEditModal(slug, dealId) {
     if (cached.sl_type) slType = cached.sl_type;
     if (cached.sl_pct != null) slPct = cached.sl_pct;
     if (cached.dca_enabled != null) dcaEnabled = cached.dca_enabled;
+    if (cached.dca_spacing_pct != null) dcaSpacing = cached.dca_spacing_pct;
+    if (cached.dca_multiplier != null) dcaMult = cached.dca_multiplier;
+    if (cached.dca_step_scale != null) dcaStep = cached.dca_step_scale;
+    if (cached.dca_max_orders != null) dcaMax = cached.dca_max_orders;
   }
 
   // Fetch live deal state (includes per-deal overrides from engine)
@@ -1375,6 +1379,10 @@ async function dealSaveEdit() {
     sl_type: $('de-sl-type').value,
     sl_pct: parseFloat($('de-sl-pct').value),
     dca_enabled: $('de-dca-enabled').checked,
+    dca_spacing_pct: parseFloat($('de-dca-spacing').value),
+    dca_multiplier: parseFloat($('de-dca-mult').value),
+    dca_step_scale: parseFloat($('de-dca-step').value),
+    dca_max_orders: parseInt($('de-dca-max').value, 10),
   };
   try {
     const r = await fetch(`/api/bots/${slug}/deals/${dealId}`, {
