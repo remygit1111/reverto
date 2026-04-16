@@ -2157,3 +2157,11 @@ html.compact .modal-card { padding: 19px; }
 }
 .sw-best { background: rgba(38, 166, 154, 0.08) !important; }
 .sw-worst { background: rgba(255, 77, 109, 0.08) !important; }
+.sweep-divider {
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+.sw-day-checks {
+  display: flex; flex-wrap: wrap; gap: 8px 14px;
+  margin-top: 4px;
+}
