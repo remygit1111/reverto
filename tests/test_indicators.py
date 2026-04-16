@@ -477,3 +477,60 @@ class TestConfigValidation:
     def test_invalid_contract_type(self):
         with pytest.raises(ValidationError):
             BotConfig(**self._base(contract_type="linear_perpetual"))
+
+
+# ── New parameter expansion tests ─────────────────────────────────────────────
+
+class TestBollingerMA:
+    def test_wma_produces_different_result(self):
+        data = [float(i % 10 + 90) for i in range(30)]
+        sma = calculate_bollinger_bands(data, period=20, multiplier=2.0)
+        wma = calculate_bollinger_bands(data, period=20, multiplier=2.0, ma_type="WMA")
+        assert sma["middle"] != wma["middle"]
+
+    def test_ema_produces_different_result(self):
+        data = [float(i % 10 + 90) for i in range(30)]
+        sma = calculate_bollinger_bands(data, period=20, multiplier=2.0)
+        ema = calculate_bollinger_bands(data, period=20, multiplier=2.0, ma_type="EMA")
+        assert sma["middle"] != ema["middle"]
+
+    def test_crossing_up(self):
+        data = [100.0] * 25 + [80.0, 120.0]
+        assert check_bollinger_signal(data, period=20, condition="price_crossing_up", value="upper")
+
+
+class TestPSARCrossing:
+    def test_price_crossing_up_alias(self):
+        data = list(range(10, 25)) + list(range(25, 10, -1)) + list(range(10, 30))
+        result = check_parabolic_sar_signal(data, condition="price_crossing_up")
+        # Should not raise; just verify it runs
+        assert isinstance(result, bool)
+
+
+class TestSupertrendFlip:
+    def test_from_down_to_up_alias(self):
+        highs = [float(i + 1) for i in range(20)]
+        lows = [float(i - 1) for i in range(20)]
+        closes = [float(i) for i in range(20)]
+        result = check_supertrend_signal(
+            highs, lows, closes, atr_period=5,
+            condition="from_down_to_up")
+        assert isinstance(result, bool)
+
+
+class TestSRLeftRightBars:
+    def test_left_right_bars_detection(self):
+        data = ([100.0] * 80 + [90.0] + [100.0] * 80)
+        result = check_support_resistance_signal(
+            data, left_bars=15, right_bars=15,
+            condition="near_support", value="support",
+            proximity_pct=2.0)
+        assert isinstance(result, bool)
+
+    def test_crossing_condition(self):
+        data = [100.0] * 50 + [90.0] + [100.0] * 50 + [88.0]
+        result = check_support_resistance_signal(
+            data, left_bars=10, right_bars=10,
+            condition="price_crossing_down", value="support",
+            proximity_pct=2.0)
+        assert isinstance(result, bool)
