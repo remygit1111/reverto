@@ -6686,8 +6686,15 @@ function _swRenderChart() {
   area.innerHTML = html.join('');
 }
 
+function _swSanitizeVals(rows, key) {
+  return rows.map(r => {
+    const v = r[key];
+    return (typeof v === 'number' && Number.isFinite(v)) ? v : 0;
+  });
+}
+
 function _swBarV(title, rows, key = 'total_pnl_btc') {
-  const vals = rows.map(r => typeof r[key] === 'number' ? r[key] : 0);
+  const vals = _swSanitizeVals(rows, key);
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
   return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div><div class="sw-bar-chart">${
     rows.map((r, i) => {
@@ -6701,7 +6708,7 @@ function _swBarV(title, rows, key = 'total_pnl_btc') {
 }
 
 function _swBarH(title, rows) {
-  const vals = rows.map(r => r.total_pnl_btc || 0);
+  const vals = _swSanitizeVals(rows, 'total_pnl_btc');
   const mx = Math.max(1e-12, ...vals.map(v => Math.abs(v)));
   return `<div class="sw-chart-row"><div class="sw-chart-title">${safeText(title)}</div>${
     rows.map((r, i) => {
