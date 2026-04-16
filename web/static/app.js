@@ -6216,11 +6216,11 @@ const BT_CARD_TIPS = {
 
 function _btCard(label, value, sub) {
   const tip = BT_CARD_TIPS[label];
-  const infoHtml = tip
-    ? ` <span class="bt-tip-icon" data-bt-tip="${safeText(label)}">ℹ</span>`
-    : '';
+  const labelHtml = tip
+    ? `<span class="bt-tip-label" data-bt-tip="${safeText(label)}">${safeText(label)}</span>`
+    : safeText(label);
   return `<div class="card">
-    <div class="card-label">${safeText(label)}${infoHtml}</div>
+    <div class="card-label">${labelHtml}</div>
     <div class="card-value">${value}</div>
     <div class="card-sub">${safeText(sub || '')}</div>
   </div>`;
@@ -6232,7 +6232,7 @@ function _btDismissTip() {
 }
 
 document.addEventListener('click', (e) => {
-  const icon = e.target.closest('.bt-tip-icon');
+  const icon = e.target.closest('.bt-tip-label');
   if (!icon) { _btDismissTip(); return; }
   e.stopPropagation();
   const label = icon.dataset.btTip;
