@@ -588,13 +588,16 @@ function showPage(name) {
   $('view-' + name).classList.add('active');
 }
 
-function showDTab(name, btn) {
+function showDTab(name, btn, fromPop = false) {
   ['chart', 'dashboard', 'deals', 'backtest', 'config', 'log'].forEach(n => {
     const el = $('dtab-' + n);
     if (el) { el.classList.toggle('hidden', n !== name); }
   });
   document.querySelectorAll('.detail-subnav .tab').forEach(t => t.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  if (currentSlug && !fromPop) {
+    _pushHistory('bot', `#bot/${currentSlug}/${name}`, { slug: currentSlug, dtab: name });
+  }
   if (name === 'config' && currentSlug) fetchDetailConfig(currentSlug);
   if (name === 'chart' && currentSlug) {
     loadChartTab(currentSlug);
@@ -2575,14 +2578,23 @@ function openBot(slug, fromPop = false) {
   // tab until the operator runs it again.
   btRestoreResultsForSlug(slug);
   detailInterval = setInterval(() => fetchDetail(slug), 5000);
-  if (!fromPop) _pushHistory('bot', `#bot/${slug}`, { slug });
+  if (!fromPop) _pushHistory('bot', `#bot/${slug}/dashboard`, { slug, dtab: 'dashboard' });
 }
 
 function _routeFromHash() {
   const h = (window.location.hash || '').replace(/^#/, '');
   if (h.startsWith('bot/')) {
-    const slug = h.slice(4);
-    if (slug) { openBot(slug, true); return; }
+    const parts = h.slice(4).split('/');
+    const slug = parts[0];
+    const dtab = parts[1] || 'dashboard';
+    if (slug) {
+      openBot(slug, true);
+      setTimeout(() => {
+        const tabBtn = document.querySelector(`.detail-subnav .tab[data-dtab="${dtab}"]`);
+        if (tabBtn) showDTab(dtab, tabBtn, true);
+      }, 60);
+      return;
+    }
   }
   switch (h) {
     case 'bots':      goBots(true); break;
@@ -5313,7 +5325,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const s = e.state;
     if (!s) { _routeFromHash(); return; }
     switch (s.view) {
-      case 'bot':      if (s.slug) openBot(s.slug, true); else goOverview(true); break;
+      case 'bot':
+        if (s.slug) {
+          openBot(s.slug, true);
+          if (s.dtab) setTimeout(() => {
+            const tb = document.querySelector(`.detail-subnav .tab[data-dtab="${s.dtab}"]`);
+            if (tb) showDTab(s.dtab, tb, true);
+          }, 60);
+        } else { goOverview(true); }
+        break;
       case 'bots':     goBots(true); break;
       case 'deals':    goDeals(true); break;
       case 'backtests': goBacktests(true); break;
@@ -5347,7 +5367,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btSweepBtn = $('bt-sweep-btn');
   if (btSweepBtn) btSweepBtn.addEventListener('click', swOpenModal);
   const swCloseBtn = $('sw-close-btn');
-  if (swCloseBtn) swCloseBtn.addEventListener('click', () => $('sweep-modal').classList.remove('show'));
+  const _swClose = () => $('sweep-modal').classList.remove('show');
+  if (swCloseBtn) swCloseBtn.addEventListener('click', _swClose);
+  const swModal = $('sweep-modal');
+  if (swModal) swModal.addEventListener('click', (e) => {
+    if (e.target === swModal) _swClose();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && swModal && swModal.classList.contains('show')) _swClose();
+  });
   const swRunBtn = $('sw-run-btn');
   if (swRunBtn) swRunBtn.addEventListener('click', swRunSweep);
   // Sweep tab switching
