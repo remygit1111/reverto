@@ -823,12 +823,18 @@ class PaperEngine:
     def _check_tp(self, deal: PaperDeal, price: float):
         """Check if take profit target has been reached.
 
+        Skipped entirely when take_profit.enabled is False so the deal
+        can only close through SL or manual intervention.
+
         With wick simulation enabled the trigger fires when the FORMING
         candle's high reaches the target, even if the live tick hasn't
         printed there yet. The fill price is still capped at the
         target (we don't simulate slippage past the line) so realised
         PnL stays consistent with the user's TP percentage.
         """
+        if not getattr(self.config.take_profit, 'enabled', True):
+            return
+
         avg          = deal.avg_entry_price
         target_price = avg * (1 + self.config.take_profit.target_pct / 100)
 
@@ -950,6 +956,8 @@ class PaperEngine:
 
     def _check_dca(self, deal: PaperDeal, price: float):
         """Check if a DCA order should be placed."""
+        if not getattr(self.config.dca, 'enabled', True):
+            return
         # max_orders=0 means "base order only, never DCA".
         if self.config.dca.max_orders <= 1:
             return

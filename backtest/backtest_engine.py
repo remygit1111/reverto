@@ -188,11 +188,11 @@ class BacktestEngine:
         avg = deal.avg_entry_price
 
         # ── Take Profit ───────────────────────────────────────────────
-        tp_price = avg * (1 + self.config.take_profit.target_pct / 100)
-        if candle.high >= tp_price:
-            # TP geraakt — sluit op tp_price (conservatief: niet op high)
-            self._close_deal(deal.id, tp_price, "tp")
-            return True
+        if getattr(self.config.take_profit, 'enabled', True):
+            tp_price = avg * (1 + self.config.take_profit.target_pct / 100)
+            if candle.high >= tp_price:
+                self._close_deal(deal.id, tp_price, "tp")
+                return True
 
         # ── Stop Loss ─────────────────────────────────────────────────
         if self.config.stop_loss.type == "none":
@@ -216,6 +216,8 @@ class BacktestEngine:
 
     def _check_dca(self, deal: PaperDeal, price: float):
         """Voeg een DCA order toe als de prijs genoeg gedaald is."""
+        if not getattr(self.config.dca, 'enabled', True):
+            return
         # max_orders=0 means "base order only, never DCA".
         if self.config.dca.max_orders <= 1:
             return

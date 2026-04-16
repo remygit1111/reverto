@@ -43,6 +43,7 @@ class LeverageConfig(BaseModel):
 
 class DCAConfig(BaseModel):
     model_config = _STRICT
+    enabled: bool = True
     base_order_size: float
     # Total orders including base order. DCA orders = max_orders - 1.
     # max_orders=0 or 1 disables DCA (base order only).
@@ -99,7 +100,8 @@ class EntryConfig(BaseModel):
 
 class TakeProfitConfig(BaseModel):
     model_config = _STRICT
-    target_pct: float
+    enabled: bool = True
+    target_pct: float = 3.0
     indicator_confirm: Optional[str] = None
     # Optional minimum gain guard. If set, the indicator-confirm path
     # only fires when the deal's current pnl_pct is at least this
@@ -140,6 +142,7 @@ class ScheduleWindow(BaseModel):
 
 class ScheduleConfig(BaseModel):
     model_config = _STRICT
+    enabled: bool = False
     timezone: str = "Europe/Amsterdam"
     trading_windows: list[ScheduleWindow] = []
     blackout_dates: list[str] = []

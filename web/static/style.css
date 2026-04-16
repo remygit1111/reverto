@@ -1156,6 +1156,18 @@ tr:hover td { background: rgba(128,128,128,.04); }
   border-bottom-color: var(--border);
 }
 .wizard-section-header:hover { color: var(--accent); }
+.wizard-toggle {
+  float: right;
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer;
+  font-size: 11px; font-weight: 400;
+  color: var(--muted);
+}
+.wizard-toggle input { cursor: pointer; }
+.wizard-toggle-label { min-width: 56px; text-align: right; }
+.wizard-section.sect-disabled > .wizard-section-body {
+  opacity: 0.4; pointer-events: none;
+}
 
 .wizard-section-body {
   padding: 20px 18px;
