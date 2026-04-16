@@ -6191,13 +6191,62 @@ async function btRunPipeline(opts) {
   }
 }
 
+const BT_CARD_TIPS = {
+  'Buy & hold':
+    'What you would have earned by simply buying BTC at the start of the backtest period and holding until the end, without any active trading. Use this as a benchmark\u2009—\u2009if your bot underperforms buy & hold, a passive strategy may be better.',
+  'Max drawdown':
+    'The largest peak-to-trough decline in your account balance during the backtest. A drawdown of 5% means your balance dropped 5% from its highest point before recovering. Lower is better\u2009—\u2009high drawdowns indicate higher risk.',
+  'Profit factor':
+    'Gross profit divided by gross loss. A Profit Factor above 1.0 means you made more than you lost. Above 1.5 is good, above 2.0 is excellent. Below 1.0 means the strategy lost money overall.',
+  'Sharpe':
+    'Measures return per unit of total risk (volatility). Calculated as average return divided by standard deviation of returns, annualised. Above 1.0 is acceptable, above 2.0 is good, above 3.0 is excellent. Higher is better.',
+  'Sortino':
+    'Similar to Sharpe, but only penalises downside volatility (losses), not upside volatility (gains). Better suited for trading strategies where winning variance is welcome. Above 1.0 is good, above 2.0 is excellent.',
+  'Calmar':
+    'Annual return divided by maximum drawdown. Shows how much return you get per unit of drawdown risk. Above 1.0 means your annual return exceeds your worst drawdown. Higher is better.',
+  'Recovery':
+    'Total net profit divided by maximum drawdown in BTC. Shows how many times over the strategy recovered from its worst loss. A Recovery Factor of 3 means the strategy earned 3x its worst drawdown. Higher is better.',
+  'Expectancy':
+    'The average expected profit per trade, calculated as (Win Rate \u00d7 Avg Win) \u2212 (Loss Rate \u00d7 Avg Loss). A positive expectancy means the strategy has a statistical edge. This is the most important metric for long-term profitability.',
+  'Avg W/L ratio':
+    'Average winning trade divided by average losing trade. A ratio of 2.0 means your average win is twice your average loss. Combined with win rate, this determines your overall expectancy. Higher is better.',
+  'Omega':
+    'The ratio of the sum of all gains to the sum of all losses. Unlike Sharpe, it considers the full distribution of returns, not just mean and variance. Above 1.0 means more total gains than losses. Higher is better.',
+};
+
 function _btCard(label, value, sub) {
+  const tip = BT_CARD_TIPS[label];
+  const infoHtml = tip
+    ? ` <span class="bt-tip-icon" data-bt-tip="${safeText(label)}">ℹ</span>`
+    : '';
   return `<div class="card">
-    <div class="card-label">${safeText(label)}</div>
+    <div class="card-label">${safeText(label)}${infoHtml}</div>
     <div class="card-value">${value}</div>
     <div class="card-sub">${safeText(sub || '')}</div>
   </div>`;
 }
+
+function _btDismissTip() {
+  const existing = document.querySelector('.bt-tip-popup');
+  if (existing) existing.remove();
+}
+
+document.addEventListener('click', (e) => {
+  const icon = e.target.closest('.bt-tip-icon');
+  if (!icon) { _btDismissTip(); return; }
+  e.stopPropagation();
+  const label = icon.dataset.btTip;
+  const text = BT_CARD_TIPS[label];
+  if (!text) return;
+  const existing = document.querySelector('.bt-tip-popup');
+  if (existing && existing.dataset.btTip === label) { existing.remove(); return; }
+  _btDismissTip();
+  const popup = document.createElement('div');
+  popup.className = 'bt-tip-popup';
+  popup.dataset.btTip = label;
+  popup.textContent = text;
+  icon.closest('.card-label').appendChild(popup);
+});
 
 function _fmtBtc(v, d = 6) { return (v >= 0 ? '+' : '') + v.toFixed(d) + ' BTC'; }
 function _fmtPct(v, d = 2) { return (v >= 0 ? '+' : '') + v.toFixed(d) + '%'; }
