@@ -21,7 +21,7 @@ bot:
       right_bars: 15
       proximity_pct: 1
       condition: price_crossing_down
-      value: resistance
+      value: support
   take_profit:
     enabled: true
     target_pct: 3
