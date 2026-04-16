@@ -6582,6 +6582,7 @@ async function swRunSweep() {
       max_dd:        s.max_drawdown_pct,
       avg_dur:       s.avg_duration_hours,
       candles_used:  candles.length,
+      _avg_pnl_per_trade: s.total_deals > 0 ? s.total_pnl_btc / s.total_deals : 0,
       _result:       result,
     });
     await new Promise(r => setTimeout(r, 0));
@@ -6705,18 +6706,40 @@ function _swRenderChart() {
     html.push(_swBarV('PnL BTC per hour', _swRows));
   } else {
     html.push(_swBarV('PnL BTC per iteration', _swRows));
-    const pfVals = _swRows.map(r => r.profit_factor);
-    console.log('[SW_CHART] PF values for chart decision:', pfVals);
-    const allPfSame = pfVals.every(v => v === pfVals[0]) || pfVals.every(v => v === Infinity || v === null || v === 0);
-    if (allPfSame && (pfVals[0] === Infinity || pfVals[0] === null)) {
-      html.push(`<div class="sw-chart-row"><div class="sw-chart-title">Profit Factor per iteration</div><div class="sweep-estimate">All iterations profitable — Profit Factor: ∞</div></div>`);
-    } else if (allPfSame) {
-      html.push(`<div class="sw-chart-row"><div class="sw-chart-title">Profit Factor per iteration</div><div class="sweep-estimate">All iterations have identical Profit Factor: ${_fmtRatio(pfVals[0])}</div></div>`);
-    } else {
-      html.push(_swBarV('Profit Factor per iteration', _swRows, 'profit_factor'));
-    }
+    html.push(_swPfSection(_swRows));
   }
   area.innerHTML = html.join('');
+}
+
+function _swPfSection(rows) {
+  const infCount = rows.filter(r => r.profit_factor === Infinity || r.profit_factor === null).length;
+  const finiteRows = rows.filter(r => typeof r.profit_factor === 'number' && Number.isFinite(r.profit_factor));
+  const total = rows.length;
+  const title = 'Profit Factor per iteration';
+
+  if (infCount === total) {
+    return `<div class="sw-chart-row"><div class="sw-chart-title">${title}</div>` +
+      `<div class="sweep-estimate">All ${total} iterations achieved 100% win rate — Profit Factor: ∞</div></div>`;
+  }
+
+  if (infCount / total > 0.75) {
+    const finiteList = finiteRows.map(r => {
+      const w = r.total_deals - (rows.filter(x => x.label === r.label).length ? (r.total_deals - Math.round(r.win_rate / 100 * r.total_deals)) : 0);
+      const wins = Math.round((r.win_rate || 0) / 100 * (r.total_deals || 0));
+      const losses = (r.total_deals || 0) - wins;
+      return `<tr><td>${safeText(r.label)}</td><td>${_fmtRatio(r.profit_factor)}</td><td>${wins}W / ${losses}L</td><td>${(r.total_pnl_btc || 0).toFixed(8)}</td></tr>`;
+    }).join('');
+    return `<div class="sw-chart-row"><div class="sw-chart-title">${title}</div>` +
+      `<div class="sweep-estimate">${infCount}/${total} iterations achieved 100% win rate (PF = ∞)</div>` +
+      (finiteRows.length ? `<div class="sw-chart-title sw-mt8">Finite results</div>` +
+        `<table class="bt-history-table sw-pf-table"><thead><tr><th>Parameter</th><th>PF</th><th>W/L</th><th>PnL BTC</th></tr></thead>` +
+        `<tbody>${finiteList}</tbody></table>` : '') +
+      `<div class="sw-chart-title sw-mt12">Avg PnL per trade</div>` +
+      _swBarV('', rows, '_avg_pnl_per_trade') +
+      `</div>`;
+  }
+
+  return _swBarV(title, rows, 'profit_factor');
 }
 
 function _swSafe(v, cap) {
