@@ -1364,13 +1364,17 @@ function nbDefaultState() {
     leverage_enabled: false, leverage_size: 1, timeframe: '1h',
     base_unit: 'btc', base_size: 0.001,
     indicators: [],
+    tp_enabled: true,
     tp_target_pct: 3.0, tp_indicator_confirm: '',
     tp_min_pct: null,
     tp_max_age_enabled: false, tp_max_age_hours: 24,
+    sl_enabled: true,
     sl_type: 'fixed', sl_pct: 5.0,
     use_wick_simulation: true,
+    dca_enabled: true,
     dca_max_orders: 4, dca_size: 0.001, dca_spacing_pct: 2.5,
     dca_volume_scale: 1.0, dca_step_scale: 1.0,
+    sched_enabled: false,
     schedule_timezone: 'Europe/Amsterdam',
     schedule_windows: [],
     schedule_blackouts: [],
@@ -1506,18 +1510,20 @@ function nbReadAll() {
 
   nbState.base_size = parseFloat($('nb-base-size').value);
 
+  nbState.tp_enabled = $('nb-tp-enabled') ? $('nb-tp-enabled').checked : true;
   nbState.tp_target_pct = parseFloat($('nb-tp-pct').value);
   nbState.tp_indicator_confirm = $('nb-tp-confirm').value;
   const minRaw = $('nb-tp-min-pct').value;
   nbState.tp_min_pct = minRaw === '' ? null : parseFloat(minRaw);
   nbState.tp_max_age_enabled = $('nb-tp-max-age-enabled').checked;
   nbState.tp_max_age_hours = parseInt($('nb-tp-max-age-hours').value, 10);
+  nbState.sl_enabled = $('nb-sl-enabled') ? $('nb-sl-enabled').checked : true;
   nbState.sl_type = $('nb-sl-type').value;
   nbState.sl_pct = parseFloat($('nb-sl-pct').value);
-  const slPctRow = $('nb-sl-pct-row');
-  if (slPctRow) slPctRow.classList.toggle('hidden', nbState.sl_type === 'none');
   const wickEl = $('nb-use-wick-sim');
   nbState.use_wick_simulation = wickEl ? Boolean(wickEl.checked) : true;
+  nbState.dca_enabled = $('nb-dca-enabled') ? $('nb-dca-enabled').checked : true;
+  nbState.sched_enabled = $('nb-sched-enabled') ? $('nb-sched-enabled').checked : false;
 
   // dca_max_orders is the user-facing DCA-only count. Clamp to [0, 49];
   // serializer adds +1 to write the YAML's base+DCA max_orders.
@@ -1556,8 +1562,8 @@ function nbValidateAll() {
 
   if (!nbState.tp_target_pct || nbState.tp_target_pct <= 0)
     errors.push('Take Profit: target % must be > 0');
-  if (nbState.sl_type !== 'none' && (!nbState.sl_pct || nbState.sl_pct <= 0))
-    errors.push('Stop Loss: percentage must be > 0 when using Fixed or Trailing SL');
+  if (nbState.sl_enabled && (!nbState.sl_pct || nbState.sl_pct <= 0))
+    errors.push('Stop Loss: percentage must be > 0 when Stop Loss is enabled');
 
   if (nbState.dca_max_orders == null || isNaN(nbState.dca_max_orders) ||
       nbState.dca_max_orders < 0 || nbState.dca_max_orders > 49)
@@ -1610,25 +1616,27 @@ function nbApplyStateToForm() {
   $('nb-base-unit-label').textContent = nbState.base_unit === 'btc' ? 'BTC' : '%';
   $('nb-dca-unit-label').textContent = nbState.base_unit === 'btc' ? 'BTC' : '%';
 
+  if ($('nb-tp-enabled')) $('nb-tp-enabled').checked = nbState.tp_enabled;
   $('nb-tp-pct').value = nbState.tp_target_pct;
   $('nb-tp-confirm').value = nbState.tp_indicator_confirm;
   $('nb-tp-min-pct').value = nbState.tp_min_pct == null ? '' : nbState.tp_min_pct;
   $('nb-tp-max-age-enabled').checked = nbState.tp_max_age_enabled;
   $('nb-tp-max-age-hours').value = nbState.tp_max_age_hours;
   $('nb-tp-max-age-hours').disabled = !nbState.tp_max_age_enabled;
+  if ($('nb-sl-enabled')) $('nb-sl-enabled').checked = nbState.sl_enabled;
   $('nb-sl-type').value = nbState.sl_type;
   $('nb-sl-pct').value = nbState.sl_pct;
-  const slPctRow2 = $('nb-sl-pct-row');
-  if (slPctRow2) slPctRow2.classList.toggle('hidden', nbState.sl_type === 'none');
   const wickInput = $('nb-use-wick-sim');
   if (wickInput) wickInput.checked = Boolean(nbState.use_wick_simulation);
 
+  if ($('nb-dca-enabled')) $('nb-dca-enabled').checked = nbState.dca_enabled;
   $('nb-dca-max').value = nbState.dca_max_orders;
   $('nb-dca-size').value = nbState.dca_size;
   $('nb-dca-spacing').value = nbState.dca_spacing_pct;
   $('nb-dca-volume').value = nbState.dca_volume_scale;
   $('nb-dca-step').value = nbState.dca_step_scale;
 
+  if ($('nb-sched-enabled')) $('nb-sched-enabled').checked = nbState.sched_enabled;
   const tzEl = $('nb-sched-tz');
   if (tzEl) tzEl.value = nbState.schedule_timezone || 'Europe/Amsterdam';
   const blEl = $('nb-sched-blackouts');
@@ -1637,6 +1645,7 @@ function nbApplyStateToForm() {
   nbRenderIndicators();
   nbRenderScheduleWindows();
   nbUpdateLeverageUI();
+  nbUpdateToggleStates();
 }
 
 function nbToggleBaseUnit(unit) {
@@ -2024,6 +2033,25 @@ function nbUpdateLeverageUI() {
   }
 }
 
+function nbUpdateToggleStates() {
+  const pairs = [
+    { check: 'nb-tp-enabled',    body: 'nb-tp-body',    label: 'nb-tp-toggle-label',    state: 'tp_enabled' },
+    { check: 'nb-sl-enabled',    body: 'nb-sl-body',    label: 'nb-sl-toggle-label',    state: 'sl_enabled' },
+    { check: 'nb-dca-enabled',   body: 'nb-dca-body',   label: 'nb-dca-toggle-label',   state: 'dca_enabled' },
+    { check: 'nb-sched-enabled', body: 'nb-sched-body', label: 'nb-sched-toggle-label', state: 'sched_enabled' },
+  ];
+  for (const p of pairs) {
+    const chk = $(p.check);
+    if (!chk) continue;
+    const on = chk.checked;
+    nbState[p.state] = on;
+    const sect = chk.closest('.wizard-section');
+    if (sect) sect.classList.toggle('sect-disabled', !on);
+    const lbl = $(p.label);
+    if (lbl) lbl.textContent = on ? 'enabled' : 'disabled';
+  }
+}
+
 function nbCalcLiqPreview() {
   // Rough approximation: liq ≈ entry × (1 ∓ 0.95/leverage).
   // Uses header price from /api/price as a reference; falls back to 80k.
@@ -2150,10 +2178,10 @@ function nbRenderReview() {
     </div>
     <div class="review-section">
       <div class="review-section-title">TP / SL</div>
-      <div class="review-row"><span class="review-key">Take Profit</span><span>${nbState.tp_target_pct}%</span></div>
+      <div class="review-row"><span class="review-key">Take Profit</span><span>${nbState.tp_enabled ? nbState.tp_target_pct + '%' : 'disabled'}</span></div>
       <div class="review-row"><span class="review-key">TP confirmation</span><span>${safeText(nbState.tp_indicator_confirm) || 'none'}</span></div>
       <div class="review-row"><span class="review-key">Max age</span><span>${nbState.tp_max_age_enabled ? nbState.tp_max_age_hours + 'h' : 'none'}</span></div>
-      <div class="review-row"><span class="review-key">Stop Loss</span><span>${nbState.sl_type === 'none' ? 'None (disabled)' : safeText(nbState.sl_type) + ' ' + nbState.sl_pct + '%'}</span></div>
+      <div class="review-row"><span class="review-key">Stop Loss</span><span>${nbState.sl_enabled ? safeText(nbState.sl_type) + ' ' + nbState.sl_pct + '%' : 'disabled'}</span></div>
     </div>
     <div class="review-section">
       <div class="review-section-title">DCA</div>
@@ -2182,9 +2210,9 @@ function nbBuildBotConfig() {
       size: nbState.leverage_enabled ? nbState.leverage_size : 1,
     },
     dca: {
+      enabled: nbState.dca_enabled,
       base_order_size: nbState.base_size,
-      // Wizard stores DCA-only count; YAML expects base+DCA total.
-      max_orders: nbState.dca_max_orders + 1,
+      max_orders: nbState.dca_enabled ? nbState.dca_max_orders + 1 : 1,
       order_spacing_pct: nbState.dca_spacing_pct,
       multiplier: nbState.dca_volume_scale,
       step_scale: nbState.dca_step_scale,
@@ -2235,8 +2263,8 @@ function nbBuildBotConfig() {
         return out;
       }),
     },
-    take_profit: { target_pct: nbState.tp_target_pct },
-    stop_loss: { type: nbState.sl_type, pct: nbState.sl_pct },
+    take_profit: { enabled: nbState.tp_enabled, target_pct: nbState.tp_target_pct },
+    stop_loss: { type: nbState.sl_enabled ? nbState.sl_type : 'none', pct: nbState.sl_pct },
     use_wick_simulation: Boolean(nbState.use_wick_simulation),
   };
   if (nbState.tp_indicator_confirm) {
@@ -2246,13 +2274,14 @@ function nbBuildBotConfig() {
     cfg.take_profit.minimum_tp_pct = nbState.tp_min_pct;
   }
   cfg.schedule = {
+    enabled: nbState.sched_enabled,
     timezone: nbState.schedule_timezone || 'Europe/Amsterdam',
-    trading_windows: (nbState.schedule_windows || []).map(w => ({
+    trading_windows: nbState.sched_enabled ? (nbState.schedule_windows || []).map(w => ({
       days: (w.days || []).slice(),
       from: w.from || '00:00',
       to:   w.to   || '00:00',
-    })),
-    blackout_dates: (nbState.schedule_blackouts || []).slice(),
+    })) : [],
+    blackout_dates: nbState.sched_enabled ? (nbState.schedule_blackouts || []).slice() : [],
   };
   return { bot: cfg };
 }
@@ -2713,18 +2742,20 @@ function nbStateFromConfig(cfg) {
       signal:    i.signal || 'bullish_cross',
       condition: i.condition || 'histogram_positive',
     })),
+    tp_enabled:           tp.enabled !== false,
     tp_target_pct:        tp.target_pct != null ? tp.target_pct : d.tp_target_pct,
     tp_indicator_confirm: tp.indicator_confirm || '',
     tp_min_pct:           tp.minimum_tp_pct != null ? tp.minimum_tp_pct : null,
-    sl_type:              sl.type || d.sl_type,
+    sl_enabled:           sl.type !== 'none',
+    sl_type:              (sl.type && sl.type !== 'none') ? sl.type : d.sl_type,
     sl_pct:               sl.pct != null ? sl.pct : d.sl_pct,
     use_wick_simulation:  b.use_wick_simulation != null ? Boolean(b.use_wick_simulation) : d.use_wick_simulation,
-    // YAML stores base+DCA; wizard input is DCA-only, so subtract 1.
+    dca_enabled:          dca.enabled !== false,
     dca_max_orders:       dca.max_orders != null ? Math.max(0, dca.max_orders - 1) : d.dca_max_orders,
-    // YAML only stores base_order_size; mirror it as the initial DCA size.
     dca_size:             dca.base_order_size != null ? dca.base_order_size : d.dca_size,
     dca_spacing_pct:      dca.order_spacing_pct != null ? dca.order_spacing_pct : d.dca_spacing_pct,
     dca_volume_scale:     dca.multiplier != null ? dca.multiplier : d.dca_volume_scale,
+    sched_enabled:        (b.schedule && b.schedule.enabled) || false,
     schedule_timezone:    (b.schedule && b.schedule.timezone) || d.schedule_timezone,
     schedule_windows:     ((b.schedule && b.schedule.trading_windows) || []).map(w => ({
       days: (w.days || []).slice(),
@@ -4955,10 +4986,9 @@ function setupEventListeners() {
     $('nb-tp-max-age-hours').disabled = !e.target.checked;
     nbRecompute();
   });
-  $('nb-sl-type').addEventListener('change', () => {
-    const r = $('nb-sl-pct-row');
-    if (r) r.classList.toggle('hidden', $('nb-sl-type').value === 'none');
-    nbRecompute();
+  ['nb-tp-enabled', 'nb-sl-enabled', 'nb-dca-enabled', 'nb-sched-enabled'].forEach(id => {
+    const el = $(id);
+    if (el) el.addEventListener('change', () => { nbUpdateToggleStates(); nbRecompute(); });
   });
 
   // Live recompute: any input/change inside the wizard refreshes state,
@@ -5163,9 +5193,11 @@ class RevertoBacktest {
     this.equity_curve = [];
     this.fees_paid_btc = 0;
     this._deal_counter = 0;
+    this._tp_enabled = !config.take_profit || config.take_profit.enabled !== false;
     this._tp_pct   = (config.take_profit && config.take_profit.target_pct) || 3.0;
     this._sl_pct   = (config.stop_loss   && config.stop_loss.pct)          || 5.0;
     this._sl_type  = (config.stop_loss   && config.stop_loss.type)         || 'fixed';
+    this._dca_enabled = !config.dca || config.dca.enabled !== false;
     this._base_size = (config.dca && config.dca.base_order_size) || 0.001;
     this._max_orders = (config.dca && config.dca.max_orders)      || 1;
     this._spacing = (config.dca && config.dca.order_spacing_pct)  || 2.5;
@@ -5214,6 +5246,7 @@ class RevertoBacktest {
   }
 
   _checkTp(deal, candle) {
+    if (!this._tp_enabled) return false;
     const avg = this._avgEntry(deal);
     const tpPrice = avg * (1 + this._tp_pct / 100);
     if (candle.high >= tpPrice) {
@@ -5242,6 +5275,7 @@ class RevertoBacktest {
   }
 
   _checkDca(deal, candle) {
+    if (!this._dca_enabled) return;
     if (this._max_orders <= 1) return;
     if (deal.dca_count >= this._max_orders - 1) return;
     const lastPrice = deal.orders[deal.orders.length - 1].price;
