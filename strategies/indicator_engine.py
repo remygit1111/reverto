@@ -297,17 +297,17 @@ class IndicatorEngine:
                 condition=indicator.condition or "bullish_bos",
             )
         elif itype == "SUPPORT_RESISTANCE":
+            if not highs or not lows:
+                logger.warning("SUPPORT_RESISTANCE requires highs/lows — "
+                               "returning False (fail-closed)")
+                return False
             return check_support_resistance_signal(
-                closes,
-                lookback=indicator.lookback or 3,
-                tolerance_pct=indicator.tolerance_pct or 0.5,
+                highs, lows, closes,
+                left_bars=indicator.left_bars or 15,
+                right_bars=indicator.right_bars or 15,
                 proximity_pct=indicator.proximity_pct or 1.0,
-                condition=indicator.condition or "near_support",
-                left_bars=indicator.left_bars,
-                right_bars=indicator.right_bars,
+                condition=indicator.condition or "price_crossing_down",
                 value=indicator.value or "resistance",
-                highs=highs,
-                lows=lows,
             )
         elif itype == "QFL":
             return check_qfl_signal(

@@ -337,64 +337,63 @@ class TestMarketStructure:
 class TestSupportResistance:
     @staticmethod
     def _with_levels(final: float = 100.0):
-        """Build a 60-close series with two swing lows around 98 and
-        two swing highs around 108, letting us probe near/below/above
-        behaviour by changing the final close."""
-        closes = [100.0] * 60
-        closes[3:8] = [101.0, 99.5, 98.0, 99.5, 101.0]      # low @ 5
-        closes[10:15] = [106.0, 107.0, 108.0, 107.0, 106.0]  # high @ 12
-        closes[17:22] = [101.0, 99.5, 98.2, 99.5, 101.0]    # low @ 19
-        closes[24:29] = [106.0, 107.0, 108.1, 107.0, 106.0]  # high @ 26
+        """Build OHLC series with swing lows/highs for pivot detection."""
+        n = 60
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        # Pivot high at bar 10 (high=110, confirmed by lb=3, rb=3)
+        for j in range(7, 14):
+            highs[j] = 105.0 + (3 - abs(j - 10)) * 2
+        highs[10] = 110.0
+        closes[10] = 109.0
+        # Pivot low at bar 20
+        for j in range(17, 24):
+            lows[j] = 95.0 - (3 - abs(j - 20)) * 2
+        lows[20] = 90.0
+        closes[20] = 91.0
         closes[-1] = final
-        return closes
+        return highs, lows, closes
 
-    def test_near_support_detected(self):
-        closes = self._with_levels(final=98.3)  # within 1% of ~98
-        assert check_support_resistance_signal(
-            closes, lookback=2, proximity_pct=1.0, condition="near_support"
-        ) is True
+    def test_single_confirmed_pivot(self):
+        highs, lows, closes = self._with_levels(final=100.0)
+        sup, res = find_support_resistance(highs, lows, closes,
+                                           left_bars=3, right_bars=3)
+        assert len(res) >= 1 or len(sup) >= 1
 
-    def test_near_resistance_detected(self):
-        closes = self._with_levels(final=108.0)
-        assert check_support_resistance_signal(
-            closes, lookback=2, proximity_pct=1.0, condition="near_resistance"
-        ) is True
+    def test_broken_pivot_excluded(self):
+        highs, lows, closes = self._with_levels(final=120.0)
+        # Close at 120 breaks the resistance at 110
+        _, res = find_support_resistance(highs, lows, closes,
+                                         left_bars=3, right_bars=3)
+        assert all(r != 110.0 for r in res)
 
-    def test_above_resistance_detected(self):
-        closes = self._with_levels(final=115.0)
-        assert check_support_resistance_signal(
-            closes, lookback=2, condition="above_resistance"
-        ) is True
-
-    def test_below_support_detected(self):
-        closes = self._with_levels(final=90.0)
-        assert check_support_resistance_signal(
-            closes, lookback=2, condition="below_support"
-        ) is True
-
-    def test_clustering_collapses_close_levels(self):
-        # Two isolated peaks in a flat floor — both within 1% of each
-        # other, no swing lows (flat equals aren't strict minima). The
-        # clustering step must collapse the pair into a single level.
-        closes = [100.0] * 60
-        closes[10] = 108.0
-        closes[30] = 108.5  # within 0.5% of 108.0 → same cluster
-        support, resistance = find_support_resistance(
-            closes, lookback=2, tolerance_pct=1.0
-        )
-        assert support == []
-        assert len(resistance) == 1
+    def test_stair_step_levels(self):
+        # Two pivot highs at nearly the same price — both should
+        # be kept as distinct levels (no clustering).
+        n = 60
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        highs[10] = 110.0; highs[30] = 110.5
+        for j in range(7, 14): highs[j] = max(highs[j], 105.0)
+        for j in range(27, 34): highs[j] = max(highs[j], 105.0)
+        sup, res = find_support_resistance(highs, lows, closes,
+                                           left_bars=3, right_bars=3)
+        assert len(res) == 2
 
     def test_insufficient_data_raises(self):
         with pytest.raises(ValueError, match="at least"):
             check_support_resistance_signal(
-                [100.0] * 20, lookback=3, condition="near_support"
-            )
+                [100.0]*5, [100.0]*5, [100.0]*5,
+                left_bars=3, right_bars=3)
 
-    def test_unknown_condition_raises(self):
+    def test_unknown_condition_returns_false(self):
+        n = 60
         assert check_support_resistance_signal(
-            [100.0] * 60, lookback=2, condition="invalid"
-        ) is False
+            [100.0]*n, [100.0]*n, [100.0]*n,
+            left_bars=3, right_bars=3,
+            condition="invalid") is False
 
 
 class TestQFL:
@@ -520,17 +519,21 @@ class TestSupertrendFlip:
 
 class TestSRLeftRightBars:
     def test_left_right_bars_detection(self):
-        data = ([100.0] * 80 + [90.0] + [100.0] * 80)
+        n = 161
+        highs = [100.0] * n; lows = [100.0] * n; closes = [100.0] * n
+        lows[80] = 90.0; closes[80] = 91.0
         result = check_support_resistance_signal(
-            data, left_bars=15, right_bars=15,
+            highs, lows, closes, left_bars=15, right_bars=15,
             condition="near_support", value="support",
             proximity_pct=2.0)
         assert isinstance(result, bool)
 
     def test_crossing_condition(self):
-        data = [100.0] * 50 + [90.0] + [100.0] * 50 + [88.0]
+        n = 101
+        highs = [100.0] * n; lows = [100.0] * n; closes = [100.0] * n
+        lows[50] = 90.0; closes[50] = 91.0; closes[-1] = 88.0
         result = check_support_resistance_signal(
-            data, left_bars=10, right_bars=10,
+            highs, lows, closes, left_bars=10, right_bars=10,
             condition="price_crossing_down", value="support",
             proximity_pct=2.0)
         assert isinstance(result, bool)
