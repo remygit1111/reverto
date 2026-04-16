@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=46">
+<link rel="stylesheet" href="/static/style.css?v=47">
 </head>
 <body>
 
@@ -359,14 +359,23 @@
       <div class="bt-status" id="sw-status">Preparing…</div>
     </div>
 
-    <!-- Results table -->
+    <!-- Results -->
     <div id="sw-results" class="hidden">
       <div class="sweep-results-header" id="sw-results-header"></div>
-      <div class="card card-no-pad">
-        <table class="bt-history-table">
-          <thead><tr id="sw-results-head"></tr></thead>
-          <tbody id="sw-results-body"></tbody>
-        </table>
+      <div class="sweep-result-tabs">
+        <button class="sweep-tab active" data-sw-view="table">📊 Table</button>
+        <button class="sweep-tab" data-sw-view="chart">📈 Chart</button>
+      </div>
+      <div id="sw-view-table">
+        <div class="card card-no-pad">
+          <table class="bt-history-table">
+            <thead><tr id="sw-results-head"></tr></thead>
+            <tbody id="sw-results-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="sw-view-chart" class="hidden">
+        <div class="sw-chart-container" id="sw-chart-area"></div>
       </div>
     </div>
 
@@ -1135,6 +1144,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=80"></script>
+<script src="/static/app.js?v=81"></script>
 </body>
 </html>
