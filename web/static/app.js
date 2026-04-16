@@ -6748,6 +6748,9 @@ function _swBestIdx(vals) {
 function _swBarV(title, rows, key = 'total_pnl_btc') {
   const cap = key === 'profit_factor' ? 10 : null;
   const vals = rows.map(r => _swSafe(r[key], cap));
+  if (key === 'profit_factor') {
+    console.log('[SW_CHART] PF raw→capped:', rows.map((r, i) => `${r.label}: ${r[key]} → ${vals[i]}`));
+  }
   const best = _swBestIdx(vals);
   const n = rows.length;
   const gap = 2, barW = Math.max(4, Math.floor((600 - gap * n) / n));
@@ -6981,7 +6984,7 @@ function _btRenderHistoryTable() {
         ? `<span class="bt-sort-dir">${_btHistorySortDir === 'asc' ? '▲' : '▼'}</span>` : '';
       return `<th data-key="${col.key}">${safeText(col.label)}${dir}</th>`;
     }).join('') + '<th></th>';
-  head.querySelectorAll('th').forEach(th => {
+  head.querySelectorAll('th[data-key]').forEach(th => {
     th.addEventListener('click', () => {
       const k = th.dataset.key;
       if (_btHistorySortKey === k) _btHistorySortDir = _btHistorySortDir === 'asc' ? 'desc' : 'asc';
@@ -7012,6 +7015,7 @@ function _btRenderHistoryTable() {
   body.querySelectorAll('tr[data-slug]').forEach(tr => {
     tr.addEventListener('click', (e) => {
       if (e.target.closest('.bt-hist-del')) return;
+      if (e.target.closest('.bt-hist-chk') || e.target.classList.contains('bt-hist-chk')) return;
       const slug = tr.dataset.slug;
       if (!slug) return;
       openBot(slug);
