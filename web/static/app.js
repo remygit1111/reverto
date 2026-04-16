@@ -1979,21 +1979,27 @@ function nbRenderIndicators() {
 
 function nbIndicatorFieldsHtml(ind, i) {
   if (ind.type === 'RSI') {
-    // Parse threshold back into condition + value so the row always
-    // stays in sync even after an edit-load from YAML.
     const parsed = _parseRsiThreshold(ind.threshold);
     const cond = ind.rsi_condition || parsed.condition;
     const val = ind.rsi_value != null ? ind.rsi_value : parsed.value;
+    const ps = ind.price_source || 'close';
     const CONDS = [
       ['cross_above', 'Crosses above X'],
       ['cross_below', 'Crosses below X'],
       ['above', 'Greater than X'],
       ['below', 'Lower than X'],
     ];
+    const SOURCES = ['close','open','high','low','hl2','hlc3','ohlc4'];
     return `
       <div class="form-row">
         <label>Period</label>
         <input type="number" min="5" max="50" value="${ind.period}" data-nb-ind="${i}" data-nb-field="period">
+      </div>
+      <div class="form-row">
+        <label>Source</label>
+        <select data-nb-ind="${i}" data-nb-field="price_source">
+          ${SOURCES.map(s => `<option value="${s}" ${ps === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
       </div>
       <div class="form-row">
         <label>Condition</label>
@@ -2032,10 +2038,15 @@ function nbIndicatorFieldsHtml(ind, i) {
     const bc = ind.base_candles != null ? ind.base_candles : 5;
     const mb = ind.max_bases != null ? ind.max_bases : 5;
     const bp = ind.below_pct != null ? ind.below_pct : 0.0;
+    const basePer = ind.base_periods != null ? ind.base_periods : 36;
+    const pumpPer = ind.pump_periods != null ? ind.pump_periods : 8;
+    const pfb = ind.pump_from_base_pct != null ? ind.pump_from_base_pct : 3.0;
+    const bcp = ind.base_crack_pct != null ? ind.base_crack_pct : 3.0;
     const QFL_CONDS = [
       ['below_base', 'Below base'],
       ['near_base', 'Near base'],
       ['base_retest', 'Base retest'],
+      ['base_crack', 'Base crack'],
     ];
     return `
       <div class="form-row">
@@ -2059,6 +2070,22 @@ function nbIndicatorFieldsHtml(ind, i) {
         <input type="number" min="0" step="0.1" value="${bp}" data-nb-ind="${i}" data-nb-field="below_pct">
       </div>
       <div class="form-row">
+        <label>Base periods</label>
+        <input type="number" min="1" value="${basePer}" data-nb-ind="${i}" data-nb-field="base_periods">
+      </div>
+      <div class="form-row">
+        <label>Pump periods</label>
+        <input type="number" min="1" value="${pumpPer}" data-nb-ind="${i}" data-nb-field="pump_periods">
+      </div>
+      <div class="form-row">
+        <label>Pump from base %</label>
+        <input type="number" min="0.1" step="0.1" value="${pfb}" data-nb-ind="${i}" data-nb-field="pump_from_base_pct">
+      </div>
+      <div class="form-row">
+        <label>Base crack %</label>
+        <input type="number" min="0.1" step="0.1" value="${bcp}" data-nb-ind="${i}" data-nb-field="base_crack_pct">
+      </div>
+      <div class="form-row">
         <label>Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${QFL_CONDS.map(([v, l]) =>
@@ -2068,19 +2095,34 @@ function nbIndicatorFieldsHtml(ind, i) {
       </div>`;
   }
   if (ind.type === 'SUPPORT_RESISTANCE') {
-    const lb = ind.lookback != null ? ind.lookback : 3;
+    const lbars = ind.left_bars != null ? ind.left_bars : 15;
+    const rbars = ind.right_bars != null ? ind.right_bars : 15;
     const tol = ind.tolerance_pct != null ? ind.tolerance_pct : 0.5;
     const prox = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
+    const val = ind.value || 'resistance';
     const SR_CONDS = [
+      ['price_crossing_up', 'Price crossing up'],
+      ['price_crossing_down', 'Price crossing down'],
+      ['price_greater_than', 'Price greater than'],
+      ['price_lower_than', 'Price lower than'],
       ['near_support', 'Near support'],
       ['near_resistance', 'Near resistance'],
-      ['below_support', 'Below support'],
-      ['above_resistance', 'Above resistance'],
     ];
     return `
       <div class="form-row">
-        <label>Lookback</label>
-        <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
+        <label>Left bars</label>
+        <input type="number" min="1" value="${lbars}" data-nb-ind="${i}" data-nb-field="left_bars">
+      </div>
+      <div class="form-row">
+        <label>Right bars</label>
+        <input type="number" min="1" value="${rbars}" data-nb-ind="${i}" data-nb-field="right_bars">
+      </div>
+      <div class="form-row">
+        <label>Level</label>
+        <select data-nb-ind="${i}" data-nb-field="value">
+          <option value="support" ${val === 'support' ? 'selected' : ''}>Support</option>
+          <option value="resistance" ${val === 'resistance' ? 'selected' : ''}>Resistance</option>
+        </select>
       </div>
       <div class="form-row">
         <label>Tolerance %</label>
@@ -2101,6 +2143,7 @@ function nbIndicatorFieldsHtml(ind, i) {
   }
   if (ind.type === 'MARKET_STRUCTURE') {
     const lb = ind.lookback != null ? ind.lookback : 3;
+    const val = ind.value || 'bullish';
     const MS_CONDS = [
       ['bullish_bos', 'Bullish BOS'],
       ['bearish_bos', 'Bearish BOS'],
@@ -2115,6 +2158,13 @@ function nbIndicatorFieldsHtml(ind, i) {
         <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
       </div>
       <div class="form-row">
+        <label>Bias</label>
+        <select data-nb-ind="${i}" data-nb-field="value">
+          <option value="bullish" ${val === 'bullish' ? 'selected' : ''}>Bullish</option>
+          <option value="bearish" ${val === 'bearish' ? 'selected' : ''}>Bearish</option>
+        </select>
+      </div>
+      <div class="form-row">
         <label>Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${MS_CONDS.map(([v, l]) =>
@@ -2127,10 +2177,10 @@ function nbIndicatorFieldsHtml(ind, i) {
     const ap = ind.atr_period != null ? ind.atr_period : 10;
     const mult = ind.multiplier != null ? ind.multiplier : 3.0;
     const ST_CONDS = [
-      ['bullish', 'Bullish'],
-      ['bearish', 'Bearish'],
-      ['bullish_flip', 'Bullish flip'],
-      ['bearish_flip', 'Bearish flip'],
+      ['bullish', 'Uptrend'],
+      ['bearish', 'Downtrend'],
+      ['from_down_to_up', 'Flip down → up'],
+      ['from_up_to_down', 'Flip up → down'],
     ];
     return `
       <div class="form-row">
@@ -2154,10 +2204,12 @@ function nbIndicatorFieldsHtml(ind, i) {
     const iaf = ind.initial_af != null ? ind.initial_af : 0.02;
     const maf = ind.max_af     != null ? ind.max_af     : 0.20;
     const PSAR_CONDS = [
-      ['bullish', 'Bullish'],
-      ['bearish', 'Bearish'],
-      ['bullish_flip', 'Bullish flip'],
-      ['bearish_flip', 'Bearish flip'],
+      ['price_crossing_up', 'Price crossing up'],
+      ['price_crossing_down', 'Price crossing down'],
+      ['price_greater_than', 'Price greater than SAR'],
+      ['price_lower_than', 'Price lower than SAR'],
+      ['bullish', 'Bullish (alias)'],
+      ['bearish', 'Bearish (alias)'],
     ];
     return `
       <div class="form-row">
@@ -2179,11 +2231,15 @@ function nbIndicatorFieldsHtml(ind, i) {
   }
   if (ind.type === 'BOLLINGER') {
     const mult = ind.multiplier != null ? ind.multiplier : 2.0;
+    const maT = ind.ma_type || 'SMA';
+    const val = ind.value || 'lower';
     const BB_CONDS = [
+      ['price_crossing_up', 'Price crossing up'],
+      ['price_crossing_down', 'Price crossing down'],
+      ['price_greater_than', 'Price greater than band'],
+      ['price_lower_than', 'Price lower than band'],
       ['price_below_lower', 'Price below lower band'],
       ['price_above_upper', 'Price above upper band'],
-      ['price_below_middle', 'Price below middle'],
-      ['price_above_middle', 'Price above middle'],
       ['squeeze', 'Squeeze'],
     ];
     return `
@@ -2194,6 +2250,18 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Multiplier</label>
         <input type="number" min="0.1" step="0.1" value="${mult}" data-nb-ind="${i}" data-nb-field="multiplier">
+      </div>
+      <div class="form-row">
+        <label>MA type</label>
+        <select data-nb-ind="${i}" data-nb-field="ma_type">
+          ${['SMA','EMA','WMA'].map(t => `<option value="${t}" ${maT === t ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Band</label>
+        <select data-nb-ind="${i}" data-nb-field="value">
+          ${['lower','upper','middle'].map(v => `<option value="${v}" ${val === v ? 'selected' : ''}>${v}</option>`).join('')}
+        </select>
       </div>
       <div class="form-row">
         <label>Condition</label>
@@ -2208,13 +2276,19 @@ function nbIndicatorFieldsHtml(ind, i) {
     const mf = ind.macd_fast   != null ? ind.macd_fast   : 12;
     const ms = ind.macd_slow   != null ? ind.macd_slow   : 26;
     const mg = ind.macd_signal != null ? ind.macd_signal : 9;
+    const omt = ind.oscillator_ma_type || 'EMA';
+    const smt = ind.signal_ma_type || 'EMA';
+    const MACD_CONDS = [
+      ['histogram_positive', 'Histogram positive'],
+      ['histogram_negative', 'Histogram negative'],
+      ['macd_above_signal', 'MACD above signal'],
+      ['macd_below_signal', 'MACD below signal'],
+    ];
     return `
       <div class="form-row">
         <label>Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
-          ${['histogram_positive', 'histogram_negative', 'bullish_cross', 'bearish_cross'].map(c =>
-            `<option value="${c}" ${ind.condition === c ? 'selected' : ''}>${c}</option>`
-          ).join('')}
+          ${MACD_CONDS.map(([v, l]) => `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
       </div>
       <div class="form-row">
@@ -2228,6 +2302,18 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Signal</label>
         <input type="number" min="2" value="${mg}" data-nb-ind="${i}" data-nb-field="macd_signal">
+      </div>
+      <div class="form-row">
+        <label>Oscillator MA</label>
+        <select data-nb-ind="${i}" data-nb-field="oscillator_ma_type">
+          ${['EMA','SMA'].map(t => `<option value="${t}" ${omt === t ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Signal MA</label>
+        <select data-nb-ind="${i}" data-nb-field="signal_ma_type">
+          ${['EMA','SMA'].map(t => `<option value="${t}" ${smt === t ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
       </div>`;
   }
   return '';
@@ -2455,6 +2541,7 @@ function nbBuildBotConfig() {
         if (i.type === 'RSI') {
           out.period = i.period;
           out.threshold = i.threshold;
+          if (i.price_source && i.price_source !== 'close') out.price_source = i.price_source;
         } else if (i.type === 'EMA_CROSS') {
           out.fast = i.fast;
           out.slow = i.slow;
@@ -2464,14 +2551,18 @@ function nbBuildBotConfig() {
           if (i.macd_fast   != null) out.macd_fast   = i.macd_fast;
           if (i.macd_slow   != null) out.macd_slow   = i.macd_slow;
           if (i.macd_signal != null) out.macd_signal = i.macd_signal;
+          if (i.oscillator_ma_type) out.oscillator_ma_type = i.oscillator_ma_type;
+          if (i.signal_ma_type) out.signal_ma_type = i.signal_ma_type;
         } else if (i.type === 'BOLLINGER') {
           out.period = i.period || 20;
           out.multiplier = i.multiplier != null ? i.multiplier : 2.0;
           out.condition = i.condition || 'price_below_lower';
+          if (i.ma_type) out.ma_type = i.ma_type;
+          if (i.value) out.value = i.value;
         } else if (i.type === 'PARABOLIC_SAR') {
           out.initial_af = i.initial_af != null ? i.initial_af : 0.02;
           out.max_af = i.max_af != null ? i.max_af : 0.20;
-          out.condition = i.condition || 'bullish';
+          out.condition = i.condition || 'price_crossing_up';
         } else if (i.type === 'SUPERTREND') {
           out.atr_period = i.atr_period != null ? i.atr_period : 10;
           out.multiplier = i.multiplier != null ? i.multiplier : 3.0;
@@ -2479,11 +2570,14 @@ function nbBuildBotConfig() {
         } else if (i.type === 'MARKET_STRUCTURE') {
           out.lookback = i.lookback != null ? i.lookback : 3;
           out.condition = i.condition || 'bullish_bos';
+          if (i.value) out.value = i.value;
         } else if (i.type === 'SUPPORT_RESISTANCE') {
-          out.lookback = i.lookback != null ? i.lookback : 3;
+          if (i.left_bars != null) out.left_bars = i.left_bars;
+          if (i.right_bars != null) out.right_bars = i.right_bars;
           out.tolerance_pct = i.tolerance_pct != null ? i.tolerance_pct : 0.5;
           out.proximity_pct = i.proximity_pct != null ? i.proximity_pct : 1.0;
-          out.condition = i.condition || 'near_support';
+          out.condition = i.condition || 'price_crossing_down';
+          if (i.value) out.value = i.value;
         } else if (i.type === 'QFL') {
           out.lookback = i.lookback != null ? i.lookback : 3;
           out.crack_pct = i.crack_pct != null ? i.crack_pct : 3.0;
@@ -2491,6 +2585,10 @@ function nbBuildBotConfig() {
           out.max_bases = i.max_bases != null ? i.max_bases : 5;
           out.below_pct = i.below_pct != null ? i.below_pct : 0.0;
           out.condition = i.condition || 'below_base';
+          if (i.base_periods != null) out.base_periods = i.base_periods;
+          if (i.pump_periods != null) out.pump_periods = i.pump_periods;
+          if (i.pump_from_base_pct != null) out.pump_from_base_pct = i.pump_from_base_pct;
+          if (i.base_crack_pct != null) out.base_crack_pct = i.base_crack_pct;
         }
         return out;
       }),
