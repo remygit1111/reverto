@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=44">
+<link rel="stylesheet" href="/static/style.css?v=45">
 </head>
 <body>
 
@@ -315,12 +315,27 @@
 
     <!-- Schedule tab -->
     <div class="sweep-pane hidden" id="sweep-pane-sched">
-      <label class="checkbox-label"><input type="checkbox" id="sw-sched-days-enabled" class="checkbox-accent"> Test each day of the week separately (7 runs)</label>
+      <label class="checkbox-label"><input type="checkbox" id="sw-sched-days-enabled" class="checkbox-accent"> Test selected days of the week</label>
+      <div class="sw-day-picks hidden" id="sw-day-picks">
+        <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="1" checked> Mon</label>
+        <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="2" checked> Tue</label>
+        <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="3" checked> Wed</label>
+        <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="4" checked> Thu</label>
+        <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="5" checked> Fri</label>
+        <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="6" checked> Sat</label>
+        <label class="checkbox-label"><input type="checkbox" class="sw-day-chk" value="0" checked> Sun</label>
+      </div>
       <div class="form-hint" id="sw-sched-days-preview"></div>
 
       <div class="sweep-divider"></div>
 
-      <label class="checkbox-label"><input type="checkbox" id="sw-sched-hours-enabled" class="checkbox-accent"> Test each hour of the day separately (24 runs)</label>
+      <label class="checkbox-label"><input type="checkbox" id="sw-sched-hours-enabled" class="checkbox-accent"> Test each hour in range</label>
+      <div class="sw-hour-range hidden" id="sw-hour-range">
+        <div class="form-grid">
+          <div class="form-row"><label>From hour</label><input id="sw-hour-from" type="number" min="0" max="23" value="0" class="modal-input"></div>
+          <div class="form-row"><label>To hour</label><input id="sw-hour-to" type="number" min="0" max="23" value="23" class="modal-input"></div>
+        </div>
+      </div>
       <div class="form-hint" id="sw-sched-hours-preview"></div>
 
       <div class="sweep-divider"></div>
@@ -1116,6 +1131,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=76"></script>
+<script src="/static/app.js?v=77"></script>
 </body>
 </html>
