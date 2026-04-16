@@ -3686,10 +3686,16 @@ function _renderIndicatorOverlays(candles) {
   }
   // SUPPORT_RESISTANCE — horizontal line segments from pivot to break
   // Cleanup previous render
+  console.log('[SR CLEANUP] removing', _srLineSeries.length, 'old series');
   for (const s of _srLineSeries) {
-    try { if (_chartMain) _chartMain.removeSeries(s); } catch (e) {}
+    try {
+      if (_chartMain) _chartMain.removeSeries(s);
+    } catch (e) {
+      console.warn('[SR CLEANUP ERROR]', e.message);
+    }
   }
   _srLineSeries = [];
+  console.log('[SR CLEANUP] done, _srLineSeries reset');
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
     const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15, srCfg.max_levels || 3);
