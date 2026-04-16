@@ -3697,11 +3697,20 @@ function _renderIndicatorOverlays(candles) {
         const startI = lv.pivotIdx;
         const endI = lv.breakIdx != null ? lv.breakIdx : candles.length - 1;
         if (startI >= candles.length || endI < startI) continue;
+        if (window._BT_DEBUG) {
+          console.log('[SR RENDER]', label, lv.price.toFixed(1),
+            'start:', startI, 'end:', endI,
+            'candles.length:', candles.length,
+            'breakIdx raw:', lv.breakIdx,
+            'startTime:', candles[startI]?.time,
+            'endTime:', candles[endI]?.time,
+            'lastTime:', candles[candles.length - 1]?.time,
+            'dataPoints:', endI - startI + 1);
+        }
         const s = _chartMain.addLineSeries({
           color, lineWidth: 2, lineStyle: 0,
           priceLineVisible: false,
-          lastValueVisible: true,
-          title: label,
+          lastValueVisible: false,
           crosshairMarkerVisible: false,
         });
         const data = [];
@@ -4909,7 +4918,7 @@ function renderWizardOverlays() {
                 if (startI >= wCandles.length || endI < startI) continue;
                 const ws = _wizardChart.addLineSeries({
                   color, lineWidth: 2, lineStyle: 0,
-                  priceLineVisible: false, lastValueVisible: true,
+                  priceLineVisible: false, lastValueVisible: false,
                   title: label, crosshairMarkerVisible: false,
                 });
                 const data = [];
