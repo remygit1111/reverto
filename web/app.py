@@ -1528,7 +1528,7 @@ async def create_bot(
 
 
 @app.get("/api/bots/{slug}/config")
-async def get_bot_config(slug: str):
+async def get_bot_config(slug: str, actor: str = Depends(_request_actor)):
     path = _bot_yaml_path(slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
