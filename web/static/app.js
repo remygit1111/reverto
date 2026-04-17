@@ -8354,6 +8354,19 @@ function btRenderDealTable(deals) {
   } else if (pg) { pg.innerHTML = ''; }
 }
 
+function _getAllIndicators(config) {
+  const entry = config?.entry ?? {};
+  const groups = entry.indicator_groups || [];
+  if (groups.length) {
+    return { groups, flat: groups.flatMap(g => g.indicators || []) };
+  }
+  const inds = entry.indicators || [];
+  if (inds.length) {
+    return { groups: [{ id: 1, name: 'Group 1', indicators: inds }], flat: inds };
+  }
+  return { groups: [], flat: [] };
+}
+
 // ── Backtest chart + deal click ──────────────────────────────────────────────
 let _btCandleChart = null;
 let _btCandleSeries = null;
@@ -8397,10 +8410,7 @@ function _btRenderOverlays(candles) {
   }
   _btOverlaySeries = [];
   if (!_btCandleChart || !_btLastConfig) return;
-  const entry = _btLastConfig.entry || {};
-  const groups = entry.indicator_groups || [];
-  let allInds = groups.flatMap(g => g.indicators || []);
-  if (!allInds.length) allInds = entry.indicators || [];
+  const { flat: allInds } = _getAllIndicators(_btLastConfig);
   if (!allInds.length) return;
   const _addSeries = (data, color, lw, ls) => {
     if (!data?.length) return;
