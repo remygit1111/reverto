@@ -46,6 +46,8 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         pnl_btc     REAL,
         pnl_pct     REAL,
         peak_price  REAL,
+        entry_trigger TEXT DEFAULT NULL,
+        exit_trigger  TEXT DEFAULT NULL,
         created_at  TEXT DEFAULT (datetime('now'))
     )
     """,
@@ -167,12 +169,27 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Apply ALTER TABLE migrations for pre-existing DBs that miss newer
+    columns. SQLite's CREATE TABLE IF NOT EXISTS skips columns on an
+    already-existing table, so v17 added entry_trigger/exit_trigger
+    need an explicit ALTER for bots whose reverto.db predates the
+    schema bump."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(deals)").fetchall()}
+    if "entry_trigger" not in cols:
+        conn.execute("ALTER TABLE deals ADD COLUMN entry_trigger TEXT DEFAULT NULL")
+    if "exit_trigger" not in cols:
+        conn.execute("ALTER TABLE deals ADD COLUMN exit_trigger TEXT DEFAULT NULL")
+
+
 def init_db() -> None:
-    """Create all tables + indexes in a single transaction. Idempotent."""
+    """Create all tables + indexes in a single transaction. Idempotent.
+    Also runs _migrate_schema for pre-existing DBs missing newer columns."""
     conn = get_db()
     with conn:
         for stmt in _SCHEMA_STATEMENTS:
             conn.execute(stmt)
+        _migrate_schema(conn)
 
 
 def close_db() -> None:

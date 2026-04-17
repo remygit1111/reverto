@@ -75,6 +75,8 @@ def _deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
         "_tp_override":    deal._tp_override,
         "_sl_override":    deal._sl_override,
         "_dca_enabled":    deal._dca_enabled,
+        "entry_trigger":   deal.entry_trigger,
+        "exit_trigger":    deal.exit_trigger,
         # Full order list — required to reconstruct the deal on restart.
         # The dashboard only reads order_count, so adding this list is
         # backwards-compatible with the frontend.
@@ -136,6 +138,10 @@ def _dict_to_deal(d: dict) -> PaperDeal:
     deal._tp_override = d.get("_tp_override")
     deal._sl_override = d.get("_sl_override")
     deal._dca_enabled = d.get("_dca_enabled", True)
+    et = d.get("entry_trigger")
+    deal.entry_trigger = et if isinstance(et, dict) else None
+    xt = d.get("exit_trigger")
+    deal.exit_trigger = xt if isinstance(xt, dict) else None
     return deal
 
 
@@ -257,11 +263,15 @@ class PaperEngine:
     def _db_close_deal(
         self, deal_id: str, close_price: float, reason: str,
         pnl_btc: float, pnl_pct: float,
+        exit_trigger: dict | None = None,
     ) -> None:
         if not self._bot_slug:
             return
         try:
-            deal_store.close_deal(deal_id, close_price, reason, pnl_btc, pnl_pct)
+            deal_store.close_deal(
+                deal_id, close_price, reason, pnl_btc, pnl_pct,
+                exit_trigger=exit_trigger,
+            )
         except Exception as e:
             logger.warning("deal_store.close_deal failed: %s", e)
 
@@ -492,6 +502,17 @@ class PaperEngine:
         self.running = False
         self.liq_guard.stop()
         self._clear_state()
+        # Drop the wick-candle cache so a long-running portal process
+        # that restarts engines with shifting timeframe sets never
+        # accumulates stale entries. Only keep buckets that are still
+        # on the engine's required-timeframe set.
+        try:
+            required = self.indicator_engine.required_timeframes(self.config.timeframe)
+            self._wick_candle = {
+                k: v for k, v in self._wick_candle.items() if k in required
+            }
+        except Exception:
+            self._wick_candle = {}
         summary = self.state.summary()
         logger.info(f"Paper engine stopped. Summary: {summary}")
         # Legacy shutdown notification kept for back-compat. The new-style
@@ -797,8 +818,13 @@ class PaperEngine:
                 # computes and applies PnL internally (updating balance),
                 # but we record 0.0 in the DB ledger because the gain/loss
                 # has not been crystallised through an actual exit trade.
+                exit_trigger = {"type": "cancelled"}
+                deal.exit_trigger = exit_trigger
                 self.state.close_deal(deal_id, price, "cancelled")
-                self._db_close_deal(deal_id, price, "cancelled", 0.0, 0.0)
+                self._db_close_deal(
+                    deal_id, price, "cancelled", 0.0, 0.0,
+                    exit_trigger=exit_trigger,
+                )
                 logger.info("Deal %s cancelled via portal", deal_id)
                 self._notify(
                     self.notifier.notify_stop_loss,
@@ -808,11 +834,16 @@ class PaperEngine:
             elif action == "close":
                 pnl_btc, pnl_pct = deal.calculate_pnl(price)
                 exit_size = deal.total_size
+                exit_trigger = {"type": "manual"}
+                deal.exit_trigger = exit_trigger
                 self.state.close_deal(deal_id, price, "manual")
                 fee = self._calc_fee(exit_size)
                 self.state.balance_btc -= fee
                 self._fees_paid_btc += fee
-                self._db_close_deal(deal_id, price, "manual", pnl_btc, pnl_pct)
+                self._db_close_deal(
+                    deal_id, price, "manual", pnl_btc, pnl_pct,
+                    exit_trigger=exit_trigger,
+                )
                 logger.info(
                     "Deal %s manually closed at $%.2f PnL: %+.6f BTC (fee %.8f)",
                     deal_id, price, pnl_btc, fee,
@@ -871,7 +902,8 @@ class PaperEngine:
             symbol=self.config.pair,
             side="long",
             leverage=self.config.leverage.size,
-            orders=[base_order]
+            orders=[base_order],
+            entry_trigger=entry_trigger if isinstance(entry_trigger, dict) else None,
         )
 
         self.state.open_deal(deal)
@@ -964,11 +996,16 @@ class PaperEngine:
             fill_price = target_price if (wick_hit and not tick_hit) else price
             pnl_btc, pnl_pct = deal.calculate_pnl(fill_price)
             exit_size = deal.total_size
+            exit_trigger = {"type": "price_tp"}
+            deal.exit_trigger = exit_trigger
             self.state.close_deal(deal.id, fill_price, "tp")
             fee = self._calc_fee(exit_size)
             self.state.balance_btc -= fee
             self._fees_paid_btc    += fee
-            self._db_close_deal(deal.id, fill_price, "tp", pnl_btc, pnl_pct)
+            self._db_close_deal(
+                deal.id, fill_price, "tp", pnl_btc, pnl_pct,
+                exit_trigger=exit_trigger,
+            )
             if wick_hit and not tick_hit:
                 logger.info(
                     f"TP hit (wick): {deal.id} at ${fill_price:,.2f} "
@@ -990,7 +1027,7 @@ class PaperEngine:
         tp_groups = getattr(self.config.take_profit, 'indicator_groups', [])
         if tp_groups:
             bot_tf = self.config.timeframe
-            tp_hit, _ = self.indicator_engine.check_tp_indicator_groups(
+            tp_hit, tp_info = self.indicator_engine.check_tp_indicator_groups(
                 self._closes_per_tf, bot_tf,
                 highs_per_tf=self._highs_per_tf,
                 lows_per_tf=self._lows_per_tf,
@@ -998,11 +1035,20 @@ class PaperEngine:
             if tp_hit:
                 pnl_btc, pnl_pct = deal.calculate_pnl(price)
                 exit_size = deal.total_size
+                exit_trigger = {
+                    "type": "indicator_tp",
+                    "group_name": (tp_info or {}).get("group_name", ""),
+                    "indicators": (tp_info or {}).get("indicators", []),
+                }
+                deal.exit_trigger = exit_trigger
                 self.state.close_deal(deal.id, price, "tp")
                 fee = self._calc_fee(exit_size)
                 self.state.balance_btc -= fee
                 self._fees_paid_btc += fee
-                self._db_close_deal(deal.id, price, "tp", pnl_btc, pnl_pct)
+                self._db_close_deal(
+                    deal.id, price, "tp", pnl_btc, pnl_pct,
+                    exit_trigger=exit_trigger,
+                )
                 logger.info(
                     f"TP hit (indicator group): {deal.id} at ${price:,.2f} "
                     f"PnL: {pnl_btc:+.6f} BTC")
@@ -1063,11 +1109,18 @@ class PaperEngine:
             fill_price = sl_price if (wick_hit and not tick_hit) else price
             pnl_btc, pnl_pct = deal.calculate_pnl(fill_price)
             exit_size = deal.total_size
+            exit_trigger = {
+                "type": "trailing_sl" if sl_type == "trailing" else "price_sl",
+            }
+            deal.exit_trigger = exit_trigger
             self.state.close_deal(deal.id, fill_price, "sl")
             fee = self._calc_fee(exit_size)
             self.state.balance_btc -= fee
             self._fees_paid_btc    += fee
-            self._db_close_deal(deal.id, fill_price, "sl", pnl_btc, pnl_pct)
+            self._db_close_deal(
+                deal.id, fill_price, "sl", pnl_btc, pnl_pct,
+                exit_trigger=exit_trigger,
+            )
             if wick_hit and not tick_hit:
                 logger.info(
                     f"SL hit ({sl_type}, wick): {deal.id} "

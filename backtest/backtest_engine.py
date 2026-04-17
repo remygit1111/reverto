@@ -86,6 +86,14 @@ class BacktestEngine:
         self._candles_processed = 0
         self._fees_paid_btc     = 0.0
 
+        # Per-tick OHLC slice cache — _process_candle refreshes these
+        # every candle so _check_tp_sl_intracandle() can feed TP
+        # indicator groups without the caller having to thread five
+        # extra arguments through the call chain.
+        self._closes_per_tf: dict[str, list[float]] = {}
+        self._highs_per_tf:  dict[str, list[float]] = {}
+        self._lows_per_tf:   dict[str, list[float]] = {}
+
     # ------------------------------------------------------------------
     # Hoofdloop
     # ------------------------------------------------------------------
@@ -117,7 +125,10 @@ class BacktestEngine:
         if self.driving_candles:
             last_price = self.driving_candles[-1].close
             for deal_id in list(self.state.open_deals.keys()):
-                self._close_deal(deal_id, last_price, "end_of_data")
+                self._close_deal(
+                    deal_id, last_price, "end_of_data",
+                    exit_trigger={"type": "timeout"},
+                )
 
         return self._build_result()
 
@@ -162,6 +173,13 @@ class BacktestEngine:
         """Verwerk één driving candle: check entry en monitor open deals."""
         close = candle.close
 
+        # Hand the latest per-tf slices to the instance so
+        # _check_tp_sl_intracandle can evaluate TP indicator groups
+        # without re-threading these dicts through every helper.
+        self._closes_per_tf = closes_per_tf
+        self._highs_per_tf  = highs_per_tf
+        self._lows_per_tf   = lows_per_tf
+
         # Monitor open deals — check TP/SL met intra-candle high/low
         for deal_id, deal in list(self.state.get_open_deals_snapshot().items()):
             closed = self._check_tp_sl_intracandle(deal, candle)
@@ -180,7 +198,7 @@ class BacktestEngine:
                     opens_per_tf=opens_per_tf,
                 )
                 if triggered:
-                    self._open_deal(close, candle.dt)
+                    self._open_deal(close, candle.dt, entry_trigger=trigger_info)
             except Exception as e:
                 logger.debug(f"Entry check fout op candle {candle.dt}: {e}")
 
@@ -193,11 +211,50 @@ class BacktestEngine:
         avg = deal.avg_entry_price
 
         # ── Take Profit ───────────────────────────────────────────────
-        if getattr(self.config.take_profit, 'enabled', True):
-            tp_price = avg * (1 + self.config.take_profit.target_pct / 100)
-            if candle.high >= tp_price:
-                self._close_deal(deal.id, tp_price, "tp")
-                return True
+        # Paper engine evalueert twee TP-paden naast elkaar: de prijs-TP
+        # (wanneer price_enabled) en de indicator-TP groepen (OR). De
+        # backtest moet hetzelfde gedrag spiegelen, anders drift backtest
+        # ≠ paper zodra een strategie indicator-gebaseerde TP gebruikt.
+        tp_config = self.config.take_profit
+        tp_enabled = getattr(tp_config, 'enabled', True)
+        price_enabled = getattr(tp_config, 'price_enabled', True)
+
+        price_hit = False
+        tp_price = avg * (1 + tp_config.target_pct / 100)
+        if tp_enabled and price_enabled and candle.high >= tp_price:
+            price_hit = True
+
+        indicator_hit = False
+        indicator_info: dict | None = None
+        tp_groups = getattr(tp_config, 'indicator_groups', []) or []
+        if tp_enabled and tp_groups and self._closes_per_tf:
+            try:
+                indicator_hit, indicator_info = (
+                    self.indicator_engine.check_tp_indicator_groups(
+                        self._closes_per_tf, self.bot_timeframe,
+                        highs_per_tf=self._highs_per_tf,
+                        lows_per_tf=self._lows_per_tf,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"TP indicator group eval failed at {candle.dt}: {e}")
+
+        if price_hit or indicator_hit:
+            # Prefer the actual price-TP fill price when the price path
+            # fired; fall back to the candle close for indicator-only
+            # closes (we can't simulate slippage past an indicator line).
+            if price_hit:
+                fill_price = tp_price
+                exit_trigger = {"type": "price_tp"}
+            else:
+                fill_price = candle.close
+                exit_trigger = {
+                    "type": "indicator_tp",
+                    "group_name": (indicator_info or {}).get("group_name", ""),
+                    "indicators": (indicator_info or {}).get("indicators", []),
+                }
+            self._close_deal(deal.id, fill_price, "tp", exit_trigger=exit_trigger)
+            return True
 
         # ── Stop Loss ─────────────────────────────────────────────────
         if self.config.stop_loss.type == "none":
@@ -210,11 +267,16 @@ class BacktestEngine:
                 deal._peak_price = candle.open
             deal._peak_price = max(deal._peak_price, candle.high)
             sl_price = deal._peak_price * (1 - sl_pct / 100)
+            sl_type_tag = "trailing_sl"
         else:
             sl_price = avg * (1 - sl_pct / 100)
+            sl_type_tag = "price_sl"
 
         if candle.low <= sl_price:
-            self._close_deal(deal.id, sl_price, "sl")
+            self._close_deal(
+                deal.id, sl_price, "sl",
+                exit_trigger={"type": sl_type_tag},
+            )
             return True
 
         return False
@@ -253,7 +315,9 @@ class BacktestEngine:
 
             logger.debug(f"DCA #{dca_order.order_number} bij ${price:,.2f} | fee: {fee:.8f} BTC")
 
-    def _open_deal(self, price: float, dt: datetime):
+    def _open_deal(
+        self, price: float, dt: datetime, entry_trigger: dict | None = None,
+    ):
         """Open een nieuw deal op de gegeven prijs."""
         deal_id    = self.state.new_deal_id()
         size       = self.config.dca.base_order_size
@@ -274,6 +338,7 @@ class BacktestEngine:
             leverage=self.config.leverage.size,
             orders=[order],
             opened_at=dt,
+            entry_trigger=entry_trigger if isinstance(entry_trigger, dict) else None,
         )
         self.state.open_deal(deal)
         self.state.balance_btc  -= fee
@@ -281,11 +346,26 @@ class BacktestEngine:
 
         logger.debug(f"Deal geopend: {deal_id} @ ${price:,.2f} | fee: {fee:.8f} BTC")
 
-    def _close_deal(self, deal_id: str, price: float, reason: str):
-        """Sluit een deal en verwerk de exit fee."""
+    def _close_deal(
+        self, deal_id: str, price: float, reason: str,
+        exit_trigger: dict | None = None,
+    ):
+        """Sluit een deal en verwerk de exit fee.
+
+        `exit_trigger` is a structured dict describing the type of exit
+        (price_tp / indicator_tp / price_sl / trailing_sl / timeout) so
+        backtest reports can show why each deal closed — mirroring the
+        paper engine's PaperDeal.exit_trigger field.
+        """
         deal = self.state.open_deals.get(deal_id)
         if not deal:
             return
+
+        if isinstance(exit_trigger, dict):
+            deal.exit_trigger = exit_trigger
+        elif deal.exit_trigger is None:
+            # Fall-through fallback so reports always have something to show.
+            deal.exit_trigger = {"type": reason}
 
         fee = self._calc_fee(deal.total_size)
         self.state.close_deal(deal_id, price, reason)

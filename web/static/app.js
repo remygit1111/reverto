@@ -3461,13 +3461,24 @@ function getChartColors() {
 let _chartTimezone = localStorage.getItem('reverto_timezone') || 'UTC';
 
 function _tzFormatter(ts) {
+  // Chart tooltips + crosshair share the same DD-MM-YYYY HH:MM format
+  // used by the deal panel (fmtDateTimeNL). Built by walking the parts
+  // via Intl.DateTimeFormat so _chartTimezone (an IANA zone name) keeps
+  // applying — toLocaleString("en-GB", { timeZone }) returned "14 Apr
+  // 2026 11:22", which clashed with the rest of the UI.
   const d = new Date(ts * 1000);
   try {
-    return d.toLocaleString('en-GB', {
+    const parts = new Intl.DateTimeFormat('en-GB', {
       timeZone: _chartTimezone,
-      month: 'short', day: '2-digit',
+      year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', hour12: false,
-    });
+    }).formatToParts(d);
+    const lookup = {};
+    for (const p of parts) lookup[p.type] = p.value;
+    // Intl's "hour: '2-digit'" returns 24 as "24" on some runtimes at
+    // midnight; normalise to "00" so the string is always 16 chars.
+    const hh = lookup.hour === '24' ? '00' : lookup.hour;
+    return `${lookup.day}-${lookup.month}-${lookup.year} ${hh}:${lookup.minute}`;
   } catch (e) {
     return d.toISOString().slice(0, 16).replace('T', ' ');
   }

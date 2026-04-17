@@ -288,3 +288,120 @@ class TestClosesUpTo:
         result = engine.run()
         # Entry happens post-warmup, TP fires when price reaches 82400
         assert result.total_deals >= 1
+
+
+# ── TP indicator groups in backtest (audit v17) ──────────────────────────────
+
+class TestTpIndicatorGroupsBacktest:
+    """Paper engine supports TP triggered by an indicator group even when
+    the price-TP target hasn't been reached. The backtest engine must
+    mirror that behaviour, otherwise backtest results drift from paper
+    for any strategy that uses indicator-based TP."""
+
+    def _cfg_with_tp_groups(
+        self, tp_group, price_enabled=True, price_target_pct=50.0,
+    ):
+        cfg = _cfg(bot_tf="1h")
+        cfg.entry.indicator_groups = []  # entry always fires (no filters)
+        cfg.take_profit.target_pct = price_target_pct  # out of reach by default
+        cfg.take_profit.enabled = True
+        cfg.take_profit.price_enabled = price_enabled
+        cfg.take_profit.indicator_groups = [tp_group]
+        cfg.take_profit.indicator_confirm = None
+        cfg.take_profit.minimum_tp_pct = None
+        # Disable SL so a drawdown can't fire SL before the indicator
+        # path has a chance to register a TP trigger.
+        cfg.stop_loss.type = "none"
+        return cfg
+
+    def test_tp_fires_via_indicator_group_when_price_below_target(self):
+        """TP indicator group matches → deal closes with exit_trigger
+        type=indicator_tp, even though the price never reached the
+        50% target."""
+        # Flat market with a sharp drop near the end so RSI < 35 triggers.
+        prices = [80000.0] * 100 + [75000.0] * 30
+        h1 = _make_candles(prices)
+        # TP group = RSI below_35 (becomes true after the drop)
+        tp_rsi = _rsi_indicator(tf="1h", threshold="below_35")
+        tp_group = _mock_group(1, [tp_rsi])
+        tp_group.name = "TP Group A"
+        cfg = self._cfg_with_tp_groups(tp_group)
+        engine = BacktestEngine(
+            config=cfg, candles_per_tf={"1h": h1}, initial_balance_btc=0.1,
+        )
+        result = engine.run()
+        assert result.total_deals >= 1
+        closed = engine.state.get_closed_deals_snapshot()[0]
+        assert closed.close_reason == "tp"
+        assert closed.exit_trigger is not None
+        assert closed.exit_trigger["type"] == "indicator_tp"
+        assert closed.exit_trigger["group_name"] == "TP Group A"
+
+    def test_price_tp_still_fires_with_indicator_groups_configured(self):
+        """A strategy can configure both paths; price-TP wins when it
+        hits first and the exit_trigger type stays price_tp."""
+        prices = [80000.0] * 90 + [82500.0] * 20  # 3% spike → price TP
+        h1 = _make_candles(prices)
+        tp_rsi = _rsi_indicator(tf="1h", threshold="below_10")  # never true
+        tp_group = _mock_group(1, [tp_rsi])
+        cfg = self._cfg_with_tp_groups(
+            tp_group, price_enabled=True, price_target_pct=3.0,
+        )
+        engine = BacktestEngine(
+            config=cfg, candles_per_tf={"1h": h1}, initial_balance_btc=0.1,
+        )
+        result = engine.run()
+        assert result.total_deals >= 1
+        closed = engine.state.get_closed_deals_snapshot()[0]
+        assert closed.close_reason == "tp"
+        assert closed.exit_trigger["type"] == "price_tp"
+
+    def test_price_enabled_false_skips_price_tp(self):
+        """With price_enabled=False only the indicator-group path can
+        close the deal — even a candle that blows past the price target
+        must not fire a price TP."""
+        # Sharp spike that would normally fire a 3% price-TP
+        prices = [80000.0] * 90 + [82500.0] * 5 + [80000.0] * 20
+        h1 = _make_candles(prices)
+        # Indicator group that never fires
+        tp_rsi = _rsi_indicator(tf="1h", threshold="below_10")
+        tp_group = _mock_group(1, [tp_rsi])
+        cfg = self._cfg_with_tp_groups(
+            tp_group, price_enabled=False, price_target_pct=3.0,
+        )
+        engine = BacktestEngine(
+            config=cfg, candles_per_tf={"1h": h1}, initial_balance_btc=0.1,
+        )
+        engine.run()
+        closed = engine.state.get_closed_deals_snapshot()
+        # Deal may close via end_of_data, but NOT via price_tp — price_enabled=False.
+        for d in closed:
+            if d.exit_trigger:
+                assert d.exit_trigger["type"] != "price_tp"
+
+    def test_entry_trigger_persisted_on_backtest_deal(self):
+        """Entry trigger_info from indicator_engine lands on the PaperDeal."""
+        # Entry = RSI below_80 (always true on flat market past warmup)
+        entry_rsi = _rsi_indicator(tf="1h", threshold="below_80")
+        entry_group = _mock_group(1, [entry_rsi])
+        entry_group.name = "Entry Group"
+        cfg = _cfg(bot_tf="1h")
+        cfg.entry.indicators = []
+        cfg.entry.indicator_groups = [entry_group]
+        cfg.take_profit.indicator_groups = []
+        # Gentle upward drift to guarantee an entry past warmup
+        prices = [80000.0 - i * 10 for i in range(120)]
+        h1 = _make_candles(prices)
+        engine = BacktestEngine(
+            config=cfg, candles_per_tf={"1h": h1}, initial_balance_btc=0.1,
+        )
+        engine.run()
+        open_or_closed = (
+            list(engine.state.open_deals.values())
+            + engine.state.get_closed_deals_snapshot()
+        )
+        assert len(open_or_closed) >= 1
+        deal = open_or_closed[0]
+        assert deal.entry_trigger is not None
+        assert deal.entry_trigger["group_name"] == "Entry Group"
+        assert "RSI" in deal.entry_trigger["indicators"]
