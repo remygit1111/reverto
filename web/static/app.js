@@ -1460,9 +1460,9 @@ document.addEventListener('click', (e) => {
 document.addEventListener('click', (e) => {
   const lbl = e.target.closest('.param-label-toggle');
   if (!lbl) return;
-  const row = lbl.closest('.form-row');
-  if (!row) return;
-  const hint = row.querySelector('.param-hint');
+  const container = lbl.closest('.form-row') || lbl.closest('.card');
+  if (!container) return;
+  const hint = container.querySelector('.param-hint');
   if (!hint) return;
   hint.classList.toggle('param-hint-hidden');
 });
@@ -2002,7 +2002,7 @@ function nbIndicatorFieldsHtml(ind, i) {
     const SOURCES = ['close','open','high','low','hl2','hlc3','ohlc4'];
     return `
       <div class="form-row">
-        <label class="param-label-toggle">Period <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Period</label>
         <input type="number" min="5" max="50" value="${ind.period}" data-nb-ind="${i}" data-nb-field="period">
         <div class="param-hint param-hint-hidden">Number of candles used to calculate RSI (default 14)</div>
       </div>
@@ -2013,7 +2013,7 @@ function nbIndicatorFieldsHtml(ind, i) {
         </select>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Condition <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="rsi_condition">
           ${CONDS.map(([v, label]) =>
             `<option value="${v}" ${cond === v ? 'selected' : ''}>${label}</option>`
@@ -2022,7 +2022,7 @@ function nbIndicatorFieldsHtml(ind, i) {
         <div class="param-hint param-hint-hidden">Signal trigger: oversold/overbought threshold or crossing</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Value (X) <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Value (X)</label>
         <input type="number" min="1" max="99" step="1" value="${val}" data-nb-ind="${i}" data-nb-field="rsi_value">
         <div class="param-hint param-hint-hidden">RSI value that triggers the condition</div>
       </div>`;
@@ -2030,17 +2030,17 @@ function nbIndicatorFieldsHtml(ind, i) {
   if (ind.type === 'EMA_CROSS') {
     return `
       <div class="form-row">
-        <label class="param-label-toggle">Fast period <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Fast period</label>
         <input type="number" min="2" value="${ind.fast}" data-nb-ind="${i}" data-nb-field="fast">
         <div class="param-hint param-hint-hidden">Period of the fast exponential moving average</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Slow period <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Slow period</label>
         <input type="number" min="2" value="${ind.slow}" data-nb-ind="${i}" data-nb-field="slow">
         <div class="param-hint param-hint-hidden">Period of the slow exponential moving average</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Signal <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Signal</label>
         <select data-nb-ind="${i}" data-nb-field="signal">
           <option value="bullish_cross" ${ind.signal === 'bullish_cross' ? 'selected' : ''}>Bullish</option>
           <option value="bearish_cross" ${ind.signal === 'bearish_cross' ? 'selected' : ''}>Bearish</option>
@@ -2066,27 +2066,27 @@ function nbIndicatorFieldsHtml(ind, i) {
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle">Lookback <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Lookback</label>
         <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
         <div class="param-hint param-hint-hidden">Candles used to detect base formation (local lows)</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Crack % <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Crack %</label>
         <input type="number" min="0" step="0.1" value="${crack}" data-nb-ind="${i}" data-nb-field="crack_pct">
         <div class="param-hint param-hint-hidden">Minimum drop percentage required to confirm a base crack</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Base candles <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Base candles</label>
         <input type="number" min="1" value="${bc}" data-nb-ind="${i}" data-nb-field="base_candles">
         <div class="param-hint param-hint-hidden">Number of candles a base must consolidate before being valid</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Max bases <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Max bases</label>
         <input type="number" min="1" value="${mb}" data-nb-ind="${i}" data-nb-field="max_bases">
         <div class="param-hint param-hint-hidden">Maximum number of active bases tracked simultaneously</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Below % <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Below %</label>
         <input type="number" min="0" step="0.1" value="${bp}" data-nb-ind="${i}" data-nb-field="below_pct">
         <div class="param-hint param-hint-hidden">Trigger when price is this % below a base level</div>
       </div>
@@ -2107,7 +2107,7 @@ function nbIndicatorFieldsHtml(ind, i) {
         <input type="number" min="0.1" step="0.1" value="${bcp}" data-nb-ind="${i}" data-nb-field="base_crack_pct">
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Condition <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${QFL_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -2133,17 +2133,17 @@ function nbIndicatorFieldsHtml(ind, i) {
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle">Left bars <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Left bars</label>
         <input type="number" min="1" value="${lbars}" data-nb-ind="${i}" data-nb-field="left_bars">
         <div class="param-hint param-hint-hidden">Candles to the left required to confirm a pivot point</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Right bars <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Right bars</label>
         <input type="number" min="1" value="${rbars}" data-nb-ind="${i}" data-nb-field="right_bars">
         <div class="param-hint param-hint-hidden">Candles to the right required to confirm a pivot point. Higher = slower but more reliable.</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Level <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Level</label>
         <select data-nb-ind="${i}" data-nb-field="value">
           <option value="support" ${val === 'support' ? 'selected' : ''}>Support</option>
           <option value="resistance" ${val === 'resistance' ? 'selected' : ''}>Resistance</option>
@@ -2151,22 +2151,22 @@ function nbIndicatorFieldsHtml(ind, i) {
         <div class="param-hint param-hint-hidden">Apply condition to Support or Resistance level</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Proximity % <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Proximity %</label>
         <input type="number" min="0" step="0.1" value="${prox}" data-nb-ind="${i}" data-nb-field="proximity_pct">
         <div class="param-hint param-hint-hidden">Price is considered 'near' a level within this percentage</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Volume threshold <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Volume threshold</label>
         <input type="number" min="0" step="1" value="${volThr}" data-nb-ind="${i}" data-nb-field="volume_threshold">
         <div class="param-hint param-hint-hidden">Minimum volume momentum for a pivot to be valid. Uses EMA(5)/EMA(10) oscillator. 0 = disabled.</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Min touches <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Min touches</label>
         <input type="number" min="1" max="10" value="${minT}" data-nb-ind="${i}" data-nb-field="min_touches">
         <div class="param-hint param-hint-hidden">Number of times price must test a level before it becomes active. Higher = stronger levels only.</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Condition <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${SR_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -2188,7 +2188,7 @@ function nbIndicatorFieldsHtml(ind, i) {
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle">Lookback <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Lookback</label>
         <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
         <div class="param-hint param-hint-hidden">Number of candles to detect swing highs and lows</div>
       </div>
@@ -2200,7 +2200,7 @@ function nbIndicatorFieldsHtml(ind, i) {
         </select>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Condition <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${MS_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -2220,17 +2220,17 @@ function nbIndicatorFieldsHtml(ind, i) {
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle">ATR Period <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">ATR Period</label>
         <input type="number" min="2" value="${ap}" data-nb-ind="${i}" data-nb-field="atr_period">
         <div class="param-hint param-hint-hidden">ATR period used to calculate volatility (default 10)</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Multiplier <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Multiplier</label>
         <input type="number" min="0.1" step="0.1" value="${mult}" data-nb-ind="${i}" data-nb-field="multiplier">
         <div class="param-hint param-hint-hidden">ATR multiplier for band distance (default 3.0)</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Condition <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${ST_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -2252,17 +2252,17 @@ function nbIndicatorFieldsHtml(ind, i) {
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle">Initial AF <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Initial AF</label>
         <input type="number" min="0.001" step="0.01" value="${iaf}" data-nb-ind="${i}" data-nb-field="initial_af">
         <div class="param-hint param-hint-hidden">Starting acceleration factor — how fast SAR moves (default 0.02)</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Max AF <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Max AF</label>
         <input type="number" min="0.01" step="0.01" value="${maf}" data-nb-ind="${i}" data-nb-field="max_af">
         <div class="param-hint param-hint-hidden">Maximum acceleration factor cap (default 0.20)</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Condition <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${PSAR_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -2286,12 +2286,12 @@ function nbIndicatorFieldsHtml(ind, i) {
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle">Period <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Period</label>
         <input type="number" min="5" value="${ind.period || 20}" data-nb-ind="${i}" data-nb-field="period">
         <div class="param-hint param-hint-hidden">Number of candles for the moving average base (default 20)</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Multiplier <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Multiplier</label>
         <input type="number" min="0.1" step="0.1" value="${mult}" data-nb-ind="${i}" data-nb-field="multiplier">
         <div class="param-hint param-hint-hidden">Standard deviation multiplier for band width (default 2.0)</div>
       </div>
@@ -2308,7 +2308,7 @@ function nbIndicatorFieldsHtml(ind, i) {
         </select>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Condition <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${BB_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -2331,24 +2331,24 @@ function nbIndicatorFieldsHtml(ind, i) {
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle">Condition <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${MACD_CONDS.map(([v, l]) => `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
         <div class="param-hint param-hint-hidden">Histogram positive = bullish momentum, negative = bearish</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Fast <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Fast</label>
         <input type="number" min="2" value="${mf}" data-nb-ind="${i}" data-nb-field="macd_fast">
         <div class="param-hint param-hint-hidden">Fast EMA period (default 12)</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Slow <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Slow</label>
         <input type="number" min="2" value="${ms}" data-nb-ind="${i}" data-nb-field="macd_slow">
         <div class="param-hint param-hint-hidden">Slow EMA period (default 26)</div>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle">Signal <span class="param-hint-icon">?</span></label>
+        <label class="param-label-toggle">Signal</label>
         <input type="number" min="2" value="${mg}" data-nb-ind="${i}" data-nb-field="macd_signal">
         <div class="param-hint param-hint-hidden">Signal line EMA period (default 9)</div>
       </div>
@@ -2857,12 +2857,12 @@ function renderPerformanceStats(closedDeals) {
   const grid = $('perf-stats-grid');
   if (!grid) return;
   const cells = [
-    ['Profit Factor', 'profit_factor'],
-    ['Sharpe Ratio',  'sharpe'],
-    ['Sortino Ratio', 'sortino'],
-    ['Consistency',   'consistency'],
-    ['Max Drawdown',  'max_dd'],
-    ['Total Deals',   'total'],
+    ['Profit Factor', 'profit_factor', 'Ratio of gross profit to gross loss. Above 1.5 is good, above 2.0 is excellent.'],
+    ['Sharpe Ratio',  'sharpe',        'Risk-adjusted return. Measures excess return per unit of volatility. Above 1.0 is acceptable, above 2.0 is good.'],
+    ['Sortino Ratio', 'sortino',       'Like Sharpe but only penalizes downside volatility. More relevant for trading strategies.'],
+    ['Consistency',   'consistency',    'Percentage of trades closed in profit. High win rate alone is not enough — check Profit Factor too.'],
+    ['Max Drawdown',  'max_dd',        'Largest peak-to-trough decline in portfolio value. Lower is better — indicates worst-case loss scenario.'],
+    ['Total Deals',   'total',         'Total number of completed deals in the selected period.'],
   ];
   const list = Array.isArray(closedDeals) ? closedDeals : [];
   const n = list.length;
@@ -2937,10 +2937,11 @@ function renderPerformanceStats(closedDeals) {
     max_dd,
     total: String(n),
   };
-  grid.innerHTML = cells.map(([label, key]) => `
+  grid.innerHTML = cells.map(([label, key, hint]) => `
     <div class="card">
-      <div class="card-label">${safeText(label)}</div>
+      <div class="card-label param-label-toggle">${safeText(label)}</div>
       <div class="card-value">${safeText(values[key])}</div>
+      ${hint ? `<div class="param-hint param-hint-hidden">${safeText(hint)}</div>` : ''}
     </div>`).join('');
 }
 

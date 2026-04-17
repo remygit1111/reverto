@@ -954,23 +954,14 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .param-label-toggle {
   cursor: pointer;
   user-select: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--muted);
 }
-.param-label-toggle:hover { color: var(--accent); }
-.param-hint-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 1px solid currentColor;
-  font-size: 9px;
-  font-weight: bold;
-  opacity: 0.6;
-  flex-shrink: 0;
+.param-label-toggle:hover {
+  text-decoration-color: var(--accent);
+  color: var(--accent);
 }
 .param-hint {
   font-size: 11px;
