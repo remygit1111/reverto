@@ -91,3 +91,5 @@ clean:
 	@find logs -name "*.tmp" -delete 2>/dev/null && echo "  .tmp bestanden verwijderd" || true
 	@find . -name "*Zone.Identifier" -delete 2>/dev/null && echo "  Zone.Identifier bestanden verwijderd" || true
 	@echo "Klaar"
+beep:
+	powershell.exe -Command "(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\chimes.wav').PlaySync()"

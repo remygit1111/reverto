@@ -2209,12 +2209,10 @@ function nbIndicatorFieldsHtml(ind, i) {
     const iaf = ind.initial_af != null ? ind.initial_af : 0.02;
     const maf = ind.max_af     != null ? ind.max_af     : 0.20;
     const PSAR_CONDS = [
-      ['price_crossing_up', 'Price crossing up'],
-      ['price_crossing_down', 'Price crossing down'],
-      ['price_greater_than', 'Price greater than SAR'],
-      ['price_lower_than', 'Price lower than SAR'],
-      ['bullish', 'Bullish (alias)'],
-      ['bearish', 'Bearish (alias)'],
+      ['bullish', 'Bullish (price above SAR)'],
+      ['bearish', 'Bearish (price below SAR)'],
+      ['bullish_flip', 'Bullish flip (trend reversal up)'],
+      ['bearish_flip', 'Bearish flip (trend reversal down)'],
     ];
     return `
       <div class="form-row">
@@ -2226,7 +2224,7 @@ function nbIndicatorFieldsHtml(ind, i) {
         <input type="number" min="0.01" step="0.01" value="${maf}" data-nb-ind="${i}" data-nb-field="max_af">
       </div>
       <div class="form-row">
-        <label class="param-label-toggle" data-hint="Bullish: price above SAR dots. Bearish: price below SAR dots.">Condition</label>
+        <label class="param-label-toggle" data-hint="Bullish: price above SAR dots. Bearish: below. Flip: trend just reversed direction.">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${PSAR_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -5155,35 +5153,36 @@ function calcQFL(closes, lookback, crackPct, baseCandles, maxBases) {
 }
 
 function calcParabolicSARMarkers(candles, initialAF, maxAF) {
-  // Simplified close-based variant matching parabolic_sar.py. Marker per
-  // candle with shape:circle below (bullish) or above (bearish).
-  const closes = candles.map(c => c.close);
-  if (closes.length < 10) return [];
+  const n = candles.length;
+  if (n < 10) return [];
+  const hi = candles.map(c => c.high != null ? c.high : c.close);
+  const lo = candles.map(c => c.low != null ? c.low : c.close);
+  const cl = candles.map(c => c.close);
   let trend, ep, sar, af = initialAF;
-  if (closes[1] >= closes[0]) { trend = 1; ep = closes[1]; sar = closes[0]; }
-  else                        { trend = -1; ep = closes[1]; sar = closes[0]; }
-  const out = [];
+  if (cl[1] >= cl[0]) { trend = 1; ep = hi[1]; sar = lo[0]; }
+  else                 { trend = -1; ep = lo[1]; sar = hi[0]; }
   const accent = _cssVar('--accent', '#26a69a');
   const red    = _cssVar('--red',    '#ef5350');
-  for (let i = 2; i < closes.length; i++) {
-    const price = closes[i];
-    const newSar = sar + af * (ep - sar);
+  const out = [];
+  for (let i = 2; i < n; i++) {
+    let newSar = sar + af * (ep - sar);
     if (trend === 1) {
-      if (newSar > price) { trend = -1; sar = ep; ep = price; af = initialAF; }
-      else { sar = newSar; if (price > ep) { ep = price; af = Math.min(af + initialAF, maxAF); } }
+      newSar = Math.min(newSar, lo[i - 1], i >= 3 ? lo[i - 2] : lo[i - 1]);
+      if (newSar > lo[i]) { trend = -1; sar = ep; ep = lo[i]; af = initialAF; }
+      else { sar = newSar; if (hi[i] > ep) { ep = hi[i]; af = Math.min(af + initialAF, maxAF); } }
     } else {
-      if (newSar < price) { trend = 1; sar = ep; ep = price; af = initialAF; }
-      else { sar = newSar; if (price < ep) { ep = price; af = Math.min(af + initialAF, maxAF); } }
+      newSar = Math.max(newSar, hi[i - 1], i >= 3 ? hi[i - 2] : hi[i - 1]);
+      if (newSar < hi[i]) { trend = 1; sar = ep; ep = hi[i]; af = initialAF; }
+      else { sar = newSar; if (lo[i] < ep) { ep = lo[i]; af = Math.min(af + initialAF, maxAF); } }
     }
+    out.push({
+      time: candles[i].time,
+      position: trend === 1 ? 'belowBar' : 'aboveBar',
+      color: trend === 1 ? accent : red,
+      shape: 'circle',
+      size: 0.5,
+    });
   }
-  // Only render the latest marker — full per-candle markers would clutter.
-  out.push({
-    time: candles[candles.length - 1].time,
-    position: trend === 1 ? 'belowBar' : 'aboveBar',
-    color: trend === 1 ? accent : red,
-    shape: 'circle',
-    text: 'SAR',
-  });
   return out;
 }
 
@@ -5939,21 +5938,24 @@ class RevertoBacktest {
         const iaf = ind.initial_af != null ? ind.initial_af : 0.02;
         const maf = ind.max_af != null ? ind.max_af : 0.20;
         const cond = ind.condition || 'bullish';
-        const closes = this.candles.map(c => c.close);
-        if (closes.length >= 10) {
+        const hi = this.candles.map(c => c.high != null ? c.high : c.close);
+        const lo = this.candles.map(c => c.low != null ? c.low : c.close);
+        const cl = this.candles.map(c => c.close);
+        if (cl.length >= 10) {
           let trend, ep, sar, af = iaf;
-          if (closes[1] >= closes[0]) { trend = 1; ep = closes[1]; sar = closes[0]; }
-          else { trend = -1; ep = closes[1]; sar = closes[0]; }
+          if (cl[1] >= cl[0]) { trend = 1; ep = hi[1]; sar = lo[0]; }
+          else { trend = -1; ep = lo[1]; sar = hi[0]; }
           for (let i = 2; i < n; i++) {
             const prevTrend = trend;
-            const price = closes[i];
-            const newSar = sar + af * (ep - sar);
+            let newSar = sar + af * (ep - sar);
             if (trend === 1) {
-              if (newSar > price) { trend = -1; sar = ep; ep = price; af = iaf; }
-              else { sar = newSar; if (price > ep) { ep = price; af = Math.min(af + iaf, maf); } }
+              newSar = Math.min(newSar, lo[i - 1], i >= 3 ? lo[i - 2] : lo[i - 1]);
+              if (newSar > lo[i]) { trend = -1; sar = ep; ep = lo[i]; af = iaf; }
+              else { sar = newSar; if (hi[i] > ep) { ep = hi[i]; af = Math.min(af + iaf, maf); } }
             } else {
-              if (newSar < price) { trend = 1; sar = ep; ep = price; af = iaf; }
-              else { sar = newSar; if (price < ep) { ep = price; af = Math.min(af + iaf, maf); } }
+              newSar = Math.max(newSar, hi[i - 1], i >= 3 ? hi[i - 2] : hi[i - 1]);
+              if (newSar < hi[i]) { trend = 1; sar = ep; ep = hi[i]; af = iaf; }
+              else { sar = newSar; if (lo[i] < ep) { ep = lo[i]; af = Math.min(af + iaf, maf); } }
             }
             if ((cond === 'bullish' || cond === 'price_greater_than') && trend === 1) arr[i] = true;
             else if ((cond === 'bearish' || cond === 'price_lower_than') && trend === -1) arr[i] = true;

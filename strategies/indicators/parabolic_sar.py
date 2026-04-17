@@ -1,81 +1,68 @@
 # strategies/indicators/parabolic_sar.py
 # Parabolic SAR — trend-following Stop And Reverse indicator (Wilder).
-#
-# Classic Wilder uses candle high/low to track the extreme point. For
-# Reverto's current close-based data model we approximate using the
-# closes series: EP is max(close) during a bullish run, min(close)
-# during a bearish run. This is a common simplification for bots that
-# only have close data available. When Reverto's engine grows OHLC
-# plumbing the formulas below can be upgraded to use true high/low.
+# Uses high/low data for proper extreme point tracking.
 
 
 def calculate_parabolic_sar(
+    highs: list[float],
+    lows: list[float],
     closes: list[float],
     initial_af: float = 0.02,
     max_af: float = 0.20,
 ) -> list[tuple[float, int]]:
-    """Walk the closes series and return a list of (sar, trend) pairs,
-    one per closing price. Trend is +1 (bullish) or -1 (bearish).
+    """Walk the OHLC series and return (sar, trend) per bar.
 
-    The first two points bootstrap the trend direction from the sign
-    of the first close change. Subsequent points follow Wilder's
-    acceleration-factor recurrence:
-
-        SAR[i] = SAR[i-1] + AF × (EP - SAR[i-1])
-
-    The acceleration factor (AF) steps up by `initial_af` each time a
-    new extreme point is made, capped at `max_af`. A SAR crossing the
-    price flips the trend and resets AF to initial_af.
+    Trend is +1 (bullish / SAR below price) or -1 (bearish / SAR above price).
+    Uses Wilder's original high/low-based EP tracking.
     """
-    if len(closes) < 10:
+    n = len(closes)
+    if n < 10:
         raise ValueError(
-            f"Parabolic SAR requires at least 10 data points, got {len(closes)}"
+            f"Parabolic SAR requires at least 10 data points, got {n}"
         )
+    if len(highs) != n or len(lows) != n:
+        raise ValueError("highs/lows/closes must have equal length")
 
     result: list[tuple[float, int]] = []
 
-    # Bootstrap: trend = sign(close[1] - close[0])
     if closes[1] >= closes[0]:
         trend = 1
-        ep = closes[1]
-        sar = closes[0]
+        ep = highs[1]
+        sar = lows[0]
     else:
         trend = -1
-        ep = closes[1]
-        sar = closes[0]
+        ep = lows[1]
+        sar = highs[0]
     af = initial_af
-    result.append((sar, trend))  # index 0 placeholder
-    result.append((sar, trend))  # index 1 after bootstrap
+    result.append((sar, trend))
+    result.append((sar, trend))
 
-    for i in range(2, len(closes)):
-        price = closes[i]
+    for i in range(2, n):
         new_sar = sar + af * (ep - sar)
 
         if trend == 1:
-            # Bullish: SAR must stay below price. If it pierces price,
-            # flip to bearish.
-            if new_sar > price:
+            new_sar = min(new_sar, lows[i - 1], lows[i - 2] if i >= 3 else lows[i - 1])
+            if new_sar > lows[i]:
                 trend = -1
-                sar = ep  # on flip, SAR resets to the previous EP
-                ep = price
+                sar = ep
+                ep = lows[i]
                 af = initial_af
             else:
                 sar = new_sar
-                if price > ep:
-                    ep = price
+                if highs[i] > ep:
+                    ep = highs[i]
                     af = min(af + initial_af, max_af)
         else:
-            # Bearish: SAR must stay above price. If it pierces price,
-            # flip to bullish.
-            if new_sar < price:
+            new_sar = max(new_sar, highs[i - 1], highs[i - 2] if i >= 3 else highs[i - 1])
+            if new_sar < highs[i]:
                 trend = 1
                 sar = ep
-                ep = price
+                ep = highs[i]
                 af = initial_af
             else:
                 sar = new_sar
-                if price < ep:
-                    ep = price
+                if lows[i] < ep:
+                    ep = lows[i]
                     af = min(af + initial_af, max_af)
 
         result.append((sar, trend))
@@ -84,20 +71,15 @@ def calculate_parabolic_sar(
 
 
 def check_parabolic_sar_signal(
+    highs: list[float],
+    lows: list[float],
     closes: list[float],
     initial_af: float = 0.02,
     max_af: float = 0.20,
     condition: str = "bullish",
 ) -> bool:
-    """Evaluate a Parabolic SAR condition on the latest candle.
-
-    Supported conditions:
-        bullish       : current trend is +1 (price above SAR)
-        bearish       : current trend is -1 (price below SAR)
-        bullish_flip  : previous trend was -1 and current is +1
-        bearish_flip  : previous trend was +1 and current is -1
-    """
-    series = calculate_parabolic_sar(closes, initial_af, max_af)
+    """Evaluate a Parabolic SAR condition on the latest candle."""
+    series = calculate_parabolic_sar(highs, lows, closes, initial_af, max_af)
     if len(series) < 2:
         raise ValueError("Parabolic SAR series too short for signal check")
 
