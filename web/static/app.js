@@ -5871,7 +5871,10 @@ function setupEventListeners() {
         const val = Math.min(99, Math.max(1, ind.rsi_value || 35));
         ind.threshold = `${cond}_${val}`;
       }
-      if (f === 'type') nbRenderIndicators();
+      if (f === 'type') {
+        if (gk.startsWith('tp:')) nbRenderTpIndicators();
+        else nbRenderIndicators();
+      }
       nbRecompute();
     }
     if (t.dataset?.nbGname) {
@@ -5888,7 +5891,12 @@ function setupEventListeners() {
     const gk = t.dataset?.nbGind || t.dataset?.nbInd;
     if (gk != null && t.dataset.nbField === 'type') {
       const ind = _nbResolveGind(gk);
-      if (ind) { ind.type = t.value; nbRenderIndicators(); nbRecompute(); }
+      if (ind) {
+        ind.type = t.value;
+        if (gk.startsWith('tp:')) nbRenderTpIndicators();
+        else nbRenderIndicators();
+        nbRecompute();
+      }
     }
   });
   document.addEventListener('click', e => {
