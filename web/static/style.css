@@ -1400,6 +1400,17 @@ tr:hover td { background: rgba(128,128,128,.04); }
   font-size:12px; display:none; font-family:var(--mono); line-height:1.6;
 }
 .bt-deal-info.visible { display:block; }
+.bt-pagination {
+  display:flex; align-items:center; gap:12px;
+  justify-content:center; margin-top:8px; font-size:12px;
+}
+.bt-pagination button {
+  padding:4px 10px; border:1px solid var(--border);
+  border-radius:4px; background:var(--surface2);
+  color:var(--text); cursor:pointer; font-size:11px;
+}
+.bt-pagination button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+.bt-pagination button:disabled { opacity:0.4; cursor:default; }
 .nb-ind-card {
   background: var(--surface2);
   border: 1px solid var(--border);
