@@ -1457,9 +1457,29 @@ document.addEventListener('click', (e) => {
   else if (btn.classList.contains('deal-btn-close')) dealAction(slug, deal, 'close');
 });
 
+let _paramTipPopup = null;
 function _dismissParamTip() {
-  const p = document.querySelector('.param-tip-popup');
-  if (p) p.remove();
+  if (_paramTipPopup) { _paramTipPopup.remove(); _paramTipPopup = null; }
+}
+function _showParamTip(label, text) {
+  _dismissParamTip();
+  const popup = document.createElement('div');
+  popup.className = 'param-tip-popup';
+  popup.textContent = text;
+  popup.style.visibility = 'hidden';
+  document.body.appendChild(popup);
+  _paramTipPopup = popup;
+  const rect = label.getBoundingClientRect();
+  const pr = popup.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let left = rect.left;
+  if (left + pr.width > vw - 10) left = vw - pr.width - 10;
+  if (left < 10) left = 10;
+  let top = rect.bottom + window.scrollY + 6;
+  if (rect.bottom + pr.height > vh - 10) top = rect.top + window.scrollY - pr.height - 6;
+  popup.style.left = left + 'px';
+  popup.style.top = top + 'px';
+  popup.style.visibility = 'visible';
 }
 document.addEventListener('click', (e) => {
   const lbl = e.target.closest('.param-label-toggle');
@@ -1467,13 +1487,9 @@ document.addEventListener('click', (e) => {
   const text = lbl.dataset.hint;
   if (!text) { _dismissParamTip(); return; }
   e.stopPropagation();
-  const existing = document.querySelector('.param-tip-popup');
-  if (existing && existing.parentElement === lbl) { existing.remove(); return; }
-  _dismissParamTip();
-  const popup = document.createElement('div');
-  popup.className = 'param-tip-popup';
-  popup.textContent = text;
-  lbl.appendChild(popup);
+  if (_paramTipPopup && _paramTipPopup._srcLabel === lbl) { _dismissParamTip(); return; }
+  _showParamTip(lbl, text);
+  _paramTipPopup._srcLabel = lbl;
 });
 
 // ── Top-level tab navigation ─────────────────────────────────────────────────

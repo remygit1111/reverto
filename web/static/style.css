@@ -962,10 +962,8 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .param-label-toggle:hover { text-decoration-color: var(--accent); }
 .param-tip-popup {
   position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 50;
-  max-width: 280px;
+  z-index: 9999;
+  max-width: 260px;
   padding: 10px 12px;
   background: var(--surface2);
   border: 1px solid var(--border);
@@ -973,10 +971,11 @@ tr:hover td { background: rgba(128,128,128,.04); }
   color: var(--text);
   font-family: var(--mono);
   font-size: 11px;
-  line-height: 1.55;
+  line-height: 1.5;
   text-transform: none;
   letter-spacing: 0;
   white-space: normal;
+  word-wrap: break-word;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   animation: btTipFadeIn 0.15s ease-out;
 }
