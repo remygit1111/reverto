@@ -102,7 +102,7 @@ class IndicatorConfig(BaseModel):
 class IndicatorGroup(BaseModel):
     model_config = _STRICT
     id: int = 1
-    name: str = ""
+    name: str = Field(default="", max_length=128)
     indicators: list[IndicatorConfig] = Field(default_factory=list)
 
 

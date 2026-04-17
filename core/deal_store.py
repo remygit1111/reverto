@@ -10,6 +10,7 @@
 # lock so the portal's async routes and the engine's monitor thread do
 # not interleave writes on top of each other.
 
+import json
 import threading
 from datetime import datetime, UTC
 from typing import TYPE_CHECKING, Optional
@@ -24,6 +25,33 @@ _write_lock = threading.Lock()
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _encode_trigger(value: Optional[dict]) -> Optional[str]:
+    """Serialise a trigger dict for DB storage. None maps to NULL.
+    Non-dict values are coerced to None so a corrupt caller cannot
+    shove arbitrary JSON into the column."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return None
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return None
+
+
+def _decode_trigger(value: Optional[str]) -> Optional[dict]:
+    """Deserialise a stored trigger JSON string. Returns None on NULL
+    or on any parse failure — trigger metadata is best-effort, never
+    critical to deal logic."""
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 # ── Deals / orders ───────────────────────────────────────────────────────────
@@ -48,8 +76,8 @@ def save_deal(deal: "PaperDeal", bot_slug: str, bot_name: str) -> None:
                     id, bot_slug, bot_name, side, status, close_reason,
                     opened_at, closed_at, initial_price, avg_entry,
                     close_price, total_size, leverage, pnl_btc, pnl_pct,
-                    peak_price
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    peak_price, entry_trigger, exit_trigger
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deal.id,
@@ -68,6 +96,8 @@ def save_deal(deal: "PaperDeal", bot_slug: str, bot_name: str) -> None:
                     deal.pnl_btc,
                     deal.pnl_pct,
                     deal._peak_price,
+                    _encode_trigger(getattr(deal, "entry_trigger", None)),
+                    _encode_trigger(getattr(deal, "exit_trigger", None)),
                 ),
             )
 
@@ -101,8 +131,8 @@ def replay_deals_in_transaction(
                         id, bot_slug, bot_name, side, status, close_reason,
                         opened_at, closed_at, initial_price, avg_entry,
                         close_price, total_size, leverage, pnl_btc, pnl_pct,
-                        peak_price
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        peak_price, entry_trigger, exit_trigger
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         deal.id,
@@ -121,6 +151,8 @@ def replay_deals_in_transaction(
                         deal.pnl_btc,
                         deal.pnl_pct,
                         deal._peak_price,
+                        _encode_trigger(getattr(deal, "entry_trigger", None)),
+                        _encode_trigger(getattr(deal, "exit_trigger", None)),
                     ),
                 )
                 for order in deal.orders:
@@ -189,9 +221,17 @@ def close_deal(
     pnl_btc: float,
     pnl_pct: float,
     closed_at: Optional[str] = None,
+    exit_trigger: Optional[dict] = None,
 ) -> None:
-    """Mark a deal closed in the ledger. No-op if the row does not exist."""
+    """Mark a deal closed in the ledger. No-op if the row does not exist.
+
+    `exit_trigger`, when provided, is stored as a JSON blob next to the
+    close_reason — callers use the dict to record a richer structured
+    reason (type, matched indicator group, etc.) for the portal's deal
+    history panel.
+    """
     closed_at_iso = closed_at or _now_iso()
+    encoded = _encode_trigger(exit_trigger)
     with _write_lock:
         conn = get_db()
         with conn:
@@ -203,10 +243,12 @@ def close_deal(
                        close_reason = ?,
                        pnl_btc = ?,
                        pnl_pct = ?,
-                       closed_at = ?
+                       closed_at = ?,
+                       exit_trigger = COALESCE(?, exit_trigger)
                  WHERE id = ?
                 """,
-                (close_price, close_reason, pnl_btc, pnl_pct, closed_at_iso, deal_id),
+                (close_price, close_reason, pnl_btc, pnl_pct, closed_at_iso,
+                 encoded, deal_id),
             )
 
 
@@ -234,7 +276,13 @@ def get_deals(
     query += " ORDER BY opened_at DESC LIMIT ?"
     params.append(int(limit))
     rows = conn.execute(query, params).fetchall()
-    return [dict(r) for r in rows]
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        d["entry_trigger"] = _decode_trigger(d.get("entry_trigger"))
+        d["exit_trigger"] = _decode_trigger(d.get("exit_trigger"))
+        out.append(d)
+    return out
 
 
 def get_deal_orders(deal_id: str) -> list[dict]:

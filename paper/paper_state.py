@@ -36,6 +36,14 @@ class PaperDeal:
     pnl_btc: float = 0.0
     pnl_pct: float = 0.0
 
+    # Structured trigger metadata — what fired the entry / exit.
+    # entry_trigger: {"group_id": int, "group_name": str, "indicators": list[str]}
+    #   or {"group_name": "ASAP", ...} for bypass filters. None for manual opens.
+    # exit_trigger: {"type": "price_tp"|"price_sl"|"indicator_tp"|"timeout"|
+    #                        "manual"|"cancelled", ...}
+    entry_trigger: Optional[dict] = None
+    exit_trigger: Optional[dict] = None
+
     # Trailing stop peak price — stored in dataclass so it is part of the
     # deal object and survives serialization to/from state JSON.
     # 0.0 = not yet initialized; set to entry price on first tick.

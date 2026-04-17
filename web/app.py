@@ -1045,10 +1045,16 @@ async def api_portal_status():
 
 
 @app.get("/api/price")
-async def api_price():
+@limiter.limit("30/minute")
+async def api_price(request: Request):
     """
     Always-on BTC price endpoint — fetches directly from Bitget
     regardless of whether any bot is running.
+
+    Rate-limited to 30/min per IP — the underlying ccxt.fetch_ticker
+    call is a blocking HTTP round-trip against Bitget, and the endpoint
+    is public (no auth gate). Without the limit a single misbehaving
+    tab or hostile client can trivially saturate the shared ccxt client.
     """
     try:
         # ccxt is blocking — push it to a worker thread so the event loop stays free.
@@ -1114,12 +1120,21 @@ def _normalize_chart_pair(raw: str) -> str:
 
 
 @app.get("/api/chart/{pair}/{timeframe}")
-async def api_chart(pair: str, timeframe: str, limit: int = 200):
+@limiter.limit("40/minute")
+async def api_chart(
+    request: Request, pair: str, timeframe: str, limit: int = 200,
+):
     """Public OHLCV endpoint backing the dashboard's live candlestick chart.
 
     Wraps PublicExchange("bitget").get_ohlcv() with input validation, a
     60-second per-key in-memory cache, and a stable JSON shape that
     Lightweight Charts can consume directly (UTCTimestamp seconds).
+
+    Rate-limited to 40/min per IP — every cache miss triggers a live
+    Bitget fetch, and the dashboard polls this endpoint whenever the
+    timeframe or pair selector changes. Higher than /api/price because
+    the cache absorbs most repeats; still bounded to block trivially
+    hostile scans of the (pair × tf × limit) key space.
     """
     if timeframe not in _CHART_TIMEFRAMES:
         raise HTTPException(
@@ -1135,14 +1150,18 @@ async def api_chart(pair: str, timeframe: str, limit: int = 200):
     key = (normalized, timeframe, limit)
     now = time.time()
 
-    cached = _chart_cache.get(key)
-    if cached:
-        if cached[0] > now:
-            # Fresh hit — bump recency and return.
-            _chart_cache.move_to_end(key)
-            return cached[1]
-        # Expired — drop and fall through to refetch.
-        _chart_cache.pop(key, None)
+    # Cache hit/miss under the lock — OrderedDict.move_to_end + pop
+    # are not atomic with get, so two concurrent requests on the same
+    # expired entry would otherwise race on the pop + refetch path.
+    async with _chart_lock:
+        cached = _chart_cache.get(key)
+        if cached:
+            if cached[0] > now:
+                # Fresh hit — bump recency and return.
+                _chart_cache.move_to_end(key)
+                return cached[1]
+            # Expired — drop and fall through to refetch.
+            _chart_cache.pop(key, None)
 
     try:
         from exchanges.public_exchange import PublicExchange
@@ -1166,13 +1185,14 @@ async def api_chart(pair: str, timeframe: str, limit: int = 200):
         for c in raw
     ]
     ttl = _CHART_CACHE_TTL.get(timeframe, _CHART_CACHE_TTL_DEFAULT)
-    _chart_cache[key] = (now + ttl, payload)
-    _chart_cache.move_to_end(key)
-    # Bound the cache: evict the eldest entry once we cross the cap so
-    # the dict can never grow unbounded under a hostile or misbehaving
-    # client walking the limit parameter.
-    while len(_chart_cache) > _CHART_CACHE_MAX:
-        _chart_cache.popitem(last=False)
+    async with _chart_lock:
+        _chart_cache[key] = (now + ttl, payload)
+        _chart_cache.move_to_end(key)
+        # Bound the cache: evict the eldest entry once we cross the cap so
+        # the dict can never grow unbounded under a hostile or misbehaving
+        # client walking the limit parameter.
+        while len(_chart_cache) > _CHART_CACHE_MAX:
+            _chart_cache.popitem(last=False)
     return payload
 
 
@@ -1189,6 +1209,13 @@ _CANDLES_CACHE_LARGE_THRESHOLD = 5000
 _CANDLES_CACHE_MAX = 64
 _CANDLES_MAX_BARS  = 300000
 _CANDLES_PAGE_SLEEP_S = 0.15  # pause between paginated ccxt calls
+
+# Dedicated lock for _candles_cache so cache hit / miss / insert is a
+# single atomic critical section. Separate from _chart_lock because the
+# candles endpoint can hold its lock for seconds while paginating a
+# large range, and blocking /api/chart on that would starve the
+# dashboard polling loop.
+_candles_lock = asyncio.Lock()
 
 _TF_SECONDS = {
     "15m": 15 * 60,
@@ -1381,19 +1408,22 @@ async def api_candles(
     key = (normalized, timeframe, start_iso, end_iso, limit)
     now = time.time()
 
-    cached = _candles_cache.get(key)
-    if cached:
-        if cached[0] > now:
-            _candles_cache.move_to_end(key)
-            return cached[1]
-        _candles_cache.pop(key, None)
+    # Atomic hit/miss against _candles_cache — OrderedDict mutations
+    # under concurrent requests would otherwise race on pop + refetch.
+    async with _candles_lock:
+        cached = _candles_cache.get(key)
+        if cached:
+            if cached[0] > now:
+                _candles_cache.move_to_end(key)
+                return cached[1]
+            _candles_cache.pop(key, None)
 
     start_ms = int(start_dt.timestamp() * 1000)
     end_ms = int(end_dt.timestamp() * 1000)
 
     try:
         from exchanges.public_exchange import PublicExchange
-        async with _chart_lock:
+        async with _candles_lock:
             client = PublicExchange("bitget")
             raw = await _fetch_ohlcv_range(
                 client, normalized, timeframe, start_ms, end_ms
@@ -1430,10 +1460,11 @@ async def api_candles(
         else _CANDLES_CACHE_TTL
     )
     result = {"candles": payload, "gaps": gaps}
-    _candles_cache[key] = (now + ttl, result)
-    _candles_cache.move_to_end(key)
-    while len(_candles_cache) > _CANDLES_CACHE_MAX:
-        _candles_cache.popitem(last=False)
+    async with _candles_lock:
+        _candles_cache[key] = (now + ttl, result)
+        _candles_cache.move_to_end(key)
+        while len(_candles_cache) > _CANDLES_CACHE_MAX:
+            _candles_cache.popitem(last=False)
     return result
 
 

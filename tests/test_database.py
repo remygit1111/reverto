@@ -259,3 +259,124 @@ bot:
     assert cfg.dca.max_orders == 1
     assert cfg.schedule.enabled is False
     assert cfg.schedule.trading_windows == []
+
+
+# ── Entry / exit trigger persistence (audit v17) ─────────────────────────────
+
+def test_entry_trigger_persistence():
+    """save_deal() stores entry_trigger as JSON; get_deals() decodes it."""
+    trigger = {
+        "group_id": 2, "group_name": "Group 2",
+        "indicators": ["RSI", "SUPPORT_RESISTANCE"],
+    }
+    d = _deal("PAPER-TR1", 80000.0)
+    d.entry_trigger = trigger
+    deal_store.save_deal(d, "tb", "tb")
+
+    rows = deal_store.get_deals(bot_slug="tb")
+    assert len(rows) == 1
+    assert rows[0]["entry_trigger"] == trigger
+
+
+def test_exit_trigger_persistence():
+    """close_deal() with exit_trigger writes structured reason; get_deals() decodes it."""
+    d = _deal("PAPER-TR2", 80000.0)
+    deal_store.save_deal(d, "tb", "tb")
+    deal_store.close_deal(
+        "PAPER-TR2", close_price=82400.0, close_reason="tp",
+        pnl_btc=0.00003, pnl_pct=3.0,
+        exit_trigger={"type": "indicator_tp", "group_name": "TP Group 1"},
+    )
+    rows = deal_store.get_deals(status="closed")
+    assert rows[0]["exit_trigger"] == {
+        "type": "indicator_tp", "group_name": "TP Group 1",
+    }
+
+
+def test_trigger_roundtrip_replay():
+    """replay_deals_in_transaction preserves entry_trigger on batch migration."""
+    d1 = _deal("PAPER-TR3", 80000.0)
+    d1.entry_trigger = {"group_name": "ASAP", "indicators": ["ASAP"]}
+    d2 = _deal("PAPER-TR4", 81000.0, is_open=False)
+    d2.entry_trigger = {"group_name": "Group 1", "indicators": ["RSI"]}
+    d2.exit_trigger = {"type": "price_tp"}
+    d2.close_price = 83430.0
+    d2.close_reason = "tp"
+
+    deal_store.replay_deals_in_transaction([d1, d2], "tb", "tb")
+
+    rows = {r["id"]: r for r in deal_store.get_deals(bot_slug="tb")}
+    assert rows["PAPER-TR3"]["entry_trigger"]["group_name"] == "ASAP"
+    assert rows["PAPER-TR4"]["entry_trigger"]["indicators"] == ["RSI"]
+    assert rows["PAPER-TR4"]["exit_trigger"] == {"type": "price_tp"}
+
+
+def test_trigger_null_when_missing():
+    """A deal without triggers still round-trips — None is valid."""
+    d = _deal("PAPER-TR5", 80000.0)
+    assert d.entry_trigger is None
+    assert d.exit_trigger is None
+    deal_store.save_deal(d, "tb", "tb")
+    rows = deal_store.get_deals(bot_slug="tb")
+    assert rows[0]["entry_trigger"] is None
+    assert rows[0]["exit_trigger"] is None
+
+
+# ── Indicator groups YAML round-trip (audit v17) ─────────────────────────────
+
+def test_indicator_groups_yaml_roundtrip():
+    """BotConfig with indicator_groups survives YAML dump → parse."""
+    from config.models import BotConfig
+    import yaml
+
+    src = """
+bot:
+  name: Indi group test
+  mode: paper
+  exchange: bitget
+  pair: BTC/USD
+  contract_type: inverse_perpetual
+  leverage: {enabled: false, size: 1}
+  dca:
+    base_order_size: 0.001
+    max_orders: 5
+    order_spacing_pct: 2.5
+    multiplier: 1.0
+    step_scale: 1.0
+    enabled: true
+  entry:
+    indicators: []
+    indicator_groups:
+      - id: 1
+        name: Group 1
+        indicators:
+          - {type: RSI, timeframe: 1h, period: 14, threshold: below_29}
+      - id: 2
+        name: Group 2
+        indicators:
+          - {type: RSI, timeframe: 4h, period: 14, threshold: below_35}
+  take_profit:
+    target_pct: 3.0
+    price_enabled: true
+    indicator_groups:
+      - id: 1
+        name: TP Group 1
+        indicators:
+          - {type: RSI, timeframe: 1h, period: 14, threshold: above_70}
+  stop_loss: {type: none, pct: 5.0}
+  schedule: {enabled: false, timezone: Europe/Amsterdam, trading_windows: [], blackout_dates: []}
+"""
+    cfg = BotConfig(**yaml.safe_load(src)["bot"])
+    # Entry groups: 2 groups, each with 1 indicator
+    assert len(cfg.entry.indicator_groups) == 2
+    assert cfg.entry.indicator_groups[0].name == "Group 1"
+    assert cfg.entry.indicator_groups[1].indicators[0].timeframe == "4h"
+    # TP groups: price still on, plus one indicator group
+    assert cfg.take_profit.price_enabled is True
+    assert len(cfg.take_profit.indicator_groups) == 1
+    assert cfg.take_profit.indicator_groups[0].name == "TP Group 1"
+    # Dump → reparse round-trip
+    data = cfg.model_dump(by_alias=True)
+    cfg2 = BotConfig(**data)
+    assert cfg2.entry.indicator_groups[1].indicators[0].threshold == "below_35"
+    assert cfg2.take_profit.indicator_groups[0].indicators[0].threshold == "above_70"

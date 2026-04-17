@@ -385,6 +385,89 @@ class TestCandlesRange:
         assert r.status_code == 400
 
 
+class TestCandlePagination:
+    """Direct unit test for _fetch_ohlcv_range — walks the page cursor
+    until two empty pages in a row or end_ms is reached. We mock the
+    per-page retry helper so we never touch Bitget, and assert that
+    the stitched output has no gaps across page boundaries."""
+
+    def _page(self, since_ms, count, tf_ms, step=1):
+        """Build a contiguous page of ccxt-shape candles starting at since_ms."""
+        return [
+            [since_ms + i * tf_ms, 100.0, 101.0, 99.0, 100.5, 10.0]
+            for i in range(count * step)
+            if i % step == 0
+        ][:count]
+
+    def test_pagination_no_gaps_across_pages(self, monkeypatch):
+        """Three 200-candle pages stitched together cover the full range
+        without dropping any candles between page boundaries."""
+        import asyncio
+        from web import app as webapp
+
+        tf_ms = webapp._TF_SECONDS["1h"] * 1000
+        start_ms = 1_700_000_000_000
+        # 3 pages of 200 bars = 600 bars total
+        pages = [
+            self._page(start_ms + i * 200 * tf_ms, 200, tf_ms)
+            for i in range(3)
+        ]
+        end_ms = start_ms + 600 * tf_ms
+
+        call_log = []
+
+        async def fake_page(client, symbol, timeframe, since_ms_arg, limit):
+            call_log.append(since_ms_arg)
+            for page in pages:
+                if page and page[0][0] == since_ms_arg:
+                    return page
+            return []
+
+        monkeypatch.setattr(webapp, "_fetch_ohlcv_page_with_retry", fake_page)
+
+        bars = asyncio.run(webapp._fetch_ohlcv_range(
+            client=object(), symbol="BTC/USD", timeframe="1h",
+            start_ms=start_ms, end_ms=end_ms,
+        ))
+
+        # 600 contiguous bars, no duplicates, no gaps larger than tf_ms
+        assert len(bars) == 600
+        for i in range(1, len(bars)):
+            delta_ms = bars[i][0] - bars[i - 1][0]
+            assert delta_ms == tf_ms, (
+                f"Gap at index {i}: {delta_ms}ms vs expected {tf_ms}ms"
+            )
+        # Cursor walked forward page-by-page (each since > previous)
+        assert call_log == sorted(set(call_log))
+        assert call_log[0] == start_ms
+
+    def test_pagination_stops_on_two_empty_pages(self, monkeypatch):
+        """Two consecutive empty pages terminate the walk, so we don't
+        spin forever on a timeframe whose history ends mid-range."""
+        import asyncio
+        from web import app as webapp
+
+        tf_ms = webapp._TF_SECONDS["1h"] * 1000
+        start_ms = 1_700_000_000_000
+        end_ms = start_ms + 10_000 * tf_ms  # Asking for a huge range
+
+        empties = [0]
+
+        async def fake_page(client, symbol, timeframe, since_ms_arg, limit):
+            empties[0] += 1
+            return []  # Always empty
+
+        monkeypatch.setattr(webapp, "_fetch_ohlcv_page_with_retry", fake_page)
+
+        bars = asyncio.run(webapp._fetch_ohlcv_range(
+            client=object(), symbol="BTC/USD", timeframe="1h",
+            start_ms=start_ms, end_ms=end_ms,
+        ))
+        assert bars == []
+        # Should have given up after exactly 2 empty pages (not spun to max_pages)
+        assert empties[0] == 2
+
+
 # ── Deal management endpoints ─────────────────────────────────────────────────
 
 class TestDealEndpoints:
