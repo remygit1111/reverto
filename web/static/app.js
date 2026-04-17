@@ -1934,11 +1934,12 @@ function _nbDefaultIndicator() {
   };
 }
 function nbAddIndicator(groupId) {
+  const groups = nbState.indicatorGroups || [];
   if (groupId != null) {
-    const g = nbState.indicatorGroups.find(g => g.id === groupId);
+    const g = groups.find(g => g.id === groupId);
     if (g) g.indicators.push(_nbDefaultIndicator());
-  } else {
-    nbState.indicators.push(_nbDefaultIndicator());
+  } else if (groups.length) {
+    groups[0].indicators.push(_nbDefaultIndicator());
   }
   nbRenderIndicators();
   nbRecompute();
@@ -5690,7 +5691,6 @@ function setupEventListeners() {
 
   // ── New bot form ─────────────────────────────────────────────────────────
   $('nb-submit-btn').addEventListener('click', nbSubmit);
-  $('nb-add-indicator-btn').addEventListener('click', nbAddIndicator);
 
   const addWinBtn = $('nb-sched-add-window');
   if (addWinBtn) {
