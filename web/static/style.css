@@ -1411,6 +1411,13 @@ tr:hover td { background: rgba(128,128,128,.04); }
 }
 .bt-pagination button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
 .bt-pagination button:disabled { opacity:0.4; cursor:default; }
+.deal-trigger-row { display:flex; gap:8px; align-items:center; margin-top:4px; font-size:11px; }
+.trigger-label { color:var(--muted); min-width:40px; }
+.trigger-value { font-weight:500; }
+.trigger-value.accent { color:var(--accent); }
+.trigger-value.green { color:#26a69a; }
+.trigger-value.red { color:#ef5350; }
+.trigger-value.muted { color:var(--muted); }
 .nb-ind-card {
   background: var(--surface2);
   border: 1px solid var(--border);

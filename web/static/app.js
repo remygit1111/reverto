@@ -7974,6 +7974,7 @@ async function btRunPipeline(opts) {
     status.textContent = `Fetched ${candles.length.toLocaleString()} candles, starting simulation…`;
     const engine = new RevertoBacktest(cfg, candles);
     _btLastCandles = candles;
+    _btLastConfig = cfg;
     const result = await engine.run(balance, (pct, msg) => {
       // Remap engine 0–100% into 50–100% so the fetch phase owns
       // the first half of the progress bar and the simulation the
@@ -8356,6 +8357,8 @@ let _btCandleChart = null;
 let _btCandleSeries = null;
 let _btLastDeals = null;
 let _btLastCandles = null;
+let _btLastConfig = null;
+let _btOverlaySeries = [];
 
 let _btMarkersPrimitive = null;
 let _btDealLines = [];
@@ -8382,7 +8385,63 @@ function btInitChart(candles, deals) {
     wickDownColor: _cssVar('--red', '#ef5350'),
   });
   _btCandleSeries.setData(candles);
+  _btRenderOverlays(candles);
   _btCandleChart.timeScale().fitContent();
+}
+
+function _btRenderOverlays(candles) {
+  for (const s of _btOverlaySeries) {
+    try { _btCandleChart.removeSeries(s); } catch (e) {}
+  }
+  _btOverlaySeries = [];
+  if (!_btCandleChart || !_btLastConfig) return;
+  const groups = _btLastConfig.entry?.indicator_groups || [];
+  const allInds = groups.flatMap(g => g.indicators || []);
+  if (!allInds.length) return;
+  const _addSeries = (data, color, lw, ls) => {
+    if (!data?.length) return;
+    const s = _btCandleChart.addSeries(_LWC().LineSeries, {
+      color, lineWidth: lw || 1, lineStyle: ls || 0,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    s.setData(data);
+    _btOverlaySeries.push(s);
+  };
+  for (const ind of allInds) {
+    const t = (ind.type || '').toUpperCase();
+    try {
+      if (t === 'BOLLINGER') {
+        const bb = calcBollingerLines(candles, ind.period || 20, ind.multiplier || 2.0);
+        _addSeries(bb.upper, '#5b8dee', 1, 2);
+        _addSeries(bb.middle, '#888', 1, 0);
+        _addSeries(bb.lower, '#5b8dee', 1, 2);
+      } else if (t === 'SUPERTREND') {
+        const hi = candles.map(c => c.high), lo = candles.map(c => c.low);
+        const st = calcSupertrendLines(candles, ind.atr_period || 10, ind.multiplier || 3.0);
+        if (st?.bull) _addSeries(st.bull, '#26a69a', 2);
+        if (st?.bear) _addSeries(st.bear, '#ef5350', 2);
+      } else if (t === 'SUPPORT_RESISTANCE') {
+        const sr = calcSR(candles, ind.left_bars || 15, ind.right_bars || 15,
+          ind.volume_threshold || 0, ind.min_touches || 1);
+        const buildSegs = (series, color) => {
+          const segs = []; let ss = null, sv = null;
+          for (let i = 0; i < candles.length; i++) {
+            if (series[i] === null) continue;
+            if (sv === null) { ss = i; sv = series[i]; }
+            else if (series[i] !== sv) { segs.push({ s: ss, e: i - 1, v: sv }); ss = i; sv = series[i]; }
+          }
+          if (sv !== null) segs.push({ s: ss, e: candles.length - 1, v: sv });
+          for (const seg of segs) {
+            const data = [];
+            for (let j = seg.s; j <= seg.e; j++) data.push({ time: candles[j].time, value: seg.v });
+            _addSeries(data, color, 2, 0);
+          }
+        };
+        buildSegs(sr.resSeries, '#e53935');
+        buildSegs(sr.supSeries, '#1e88e5');
+      }
+    } catch (e) {}
+  }
 }
 
 function _btClearDealOverlay() {
@@ -8435,13 +8494,25 @@ function btShowDealOnChart(dealIdx) {
   const durH = Math.floor(durSec / 3600);
   const durM = Math.floor((durSec % 3600) / 60);
   const durStr = durSec > 0 ? `${durH}h ${durM}m` : '--';
+  let triggerHtml = '';
+  if (d.entry_trigger) {
+    const t = d.entry_trigger;
+    const inds = t.indicators?.join(' + ') || '';
+    triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Entry:</span>`
+      + `<span class="trigger-value accent">${safeText(t.group_name || '')}${inds ? ' — ' + safeText(inds) : ''}</span></div>`;
+  }
+  const ex = d.reason;
+  if (ex === 'tp') triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Exit:</span><span class="trigger-value green">TP price hit</span></div>`;
+  else if (ex === 'sl') triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Exit:</span><span class="trigger-value red">Stop loss</span></div>`;
+  else if (ex) triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Exit:</span><span class="trigger-value muted">${safeText(ex)}</span></div>`;
   const info = $('bt-deal-info');
   if (info) {
     info.innerHTML = `<strong>Deal #${safeText(String(d.id))}</strong>`
       + ` &bull; ${fmtDateTimeNL(et)}<br>`
       + `Entry: ${fmtPrice(ep)} &rarr; Exit: ${fmtPrice(xp)}<br>`
       + `PnL: ${d.pnl_pct >= 0 ? '+' : ''}${d.pnl_pct?.toFixed(2) || '--'}%`
-      + ` &bull; Duration: ${durStr} &bull; Exit: ${safeText(d.reason || '--')}`;
+      + ` &bull; Duration: ${durStr}`
+      + triggerHtml;
     info.classList.add('visible');
   }
   if (et) {
@@ -8458,6 +8529,7 @@ function btCleanupChart() {
   if (_btCandleChart) { try { _btCandleChart.remove(); } catch (e) {} }
   _btCandleChart = null; _btCandleSeries = null;
   _btLastDeals = null; _btLastCandles = null;
+  _btOverlaySeries = []; _btMarkersPrimitive = null; _btDealLines = [];
   const info = $('bt-deal-info');
   if (info) { info.classList.remove('visible'); info.innerHTML = ''; }
   const el = $('bt-chart-container');
