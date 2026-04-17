@@ -951,6 +951,27 @@ tr:hover td { background: rgba(128,128,128,.04); }
   color: var(--muted);
   margin-top: 4px;
 }
+.param-label-toggle {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.param-label-toggle:hover { color: var(--accent); }
+.param-hint-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  font-weight: bold;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
 .param-hint {
   font-size: 11px;
   color: var(--muted);
@@ -959,6 +980,7 @@ tr:hover td { background: rgba(128,128,128,.04); }
   border-top: 1px dashed var(--border);
   line-height: 1.4;
 }
+.param-hint-hidden { display: none; }
 
 .toggle-group {
   display: flex;
