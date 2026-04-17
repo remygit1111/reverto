@@ -3629,7 +3629,18 @@ function initCharts() {
     }
     _chSrc = null;
   };
-  _chartMain.subscribeCrosshairMove(p => chPush(_chartMain, p));
+  _chartMain.subscribeCrosshairMove(p => {
+    chPush(_chartMain, p);
+    if (window._BT_DEBUG && p.time) {
+      const mC = _chartMain.timeScale().timeToCoordinate(p.time);
+      const rC = _chartRsi?.timeScale().timeToCoordinate(p.time);
+      console.log('[CROSSHAIR SYNC]',
+        'time:', p.time,
+        'mainX:', mC, 'rsiX:', rC,
+        'mainW:', _chartMain.timeScale().width(),
+        'rsiW:', _chartRsi?.timeScale().width());
+    }
+  });
   if (_chartRsi) {
     _chartRsi.subscribeCrosshairMove(p => {
       chPush(_chartRsi, p);
