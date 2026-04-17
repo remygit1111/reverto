@@ -3242,6 +3242,7 @@ let _qflLineSeries = [];
 let _chartIndicatorMarkers = [];
 const _chRsiMap = new Map();
 const _chMacdMap = new Map();
+let _candleMarkersPrimitive = null;
 // Annotations toolbar state. Lightweight Charts v4.1.1 in the standalone
 // build does not expose a stable ISeriesPrimitive, so every "drawing" is
 // approximated with createPriceLine + series markers — enough to make
@@ -3368,6 +3369,8 @@ function _applyChartTheme() {
 }
 
 function _chartLibAvailable() { return typeof window.LightweightCharts !== 'undefined'; }
+const _LWC = () => window.LightweightCharts || {};
+const _lwcCreateChart = (el, opts) => _LWC().createChart(el, opts);
 
 function updateChartTfButtons() {
   document.querySelectorAll('.chart-tf-btn').forEach(b => {
@@ -3496,6 +3499,7 @@ function teardownChartTab() {
   _qflLineSeries = [];
   _chartDealMarkers = [];
   _chartIndicatorMarkers = [];
+  _candleMarkersPrimitive = null;
   // Annotations toolbar teardown — leaving the chart tab and coming back
   // must start clean. Handles are owned by the destroyed series, so just
   // drop refs.
@@ -3534,12 +3538,12 @@ function initCharts() {
   const mainEl = $('chart-main');
   if (!mainEl) return;
   const opts = _chartLayoutOpts();
-  _chartMain = LightweightCharts.createChart(mainEl, {
+  _chartMain = _lwcCreateChart(mainEl, {
     ...opts,
     width:  mainEl.clientWidth,
     height: mainEl.clientHeight || 500,
   });
-  _chartCandles = _chartMain.addCandlestickSeries({
+  _chartCandles = _chartMain.addSeries(_LWC().CandlestickSeries, {
     upColor:        _cssVar('--accent', '#26a69a'),
     downColor:      _cssVar('--red',    '#ef5350'),
     borderUpColor:  _cssVar('--accent', '#26a69a'),
@@ -3549,13 +3553,13 @@ function initCharts() {
   });
 
   if (_hasIndicator('BOLLINGER')) {
-    _chartSeries.bbUpper  = _chartMain.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
-    _chartSeries.bbMiddle = _chartMain.addLineSeries({ color: _cssVar('--muted', '#888'),   lineWidth: 1 });
-    _chartSeries.bbLower  = _chartMain.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
+    _chartSeries.bbUpper  = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
+    _chartSeries.bbMiddle = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--muted', '#888'),   lineWidth: 1 });
+    _chartSeries.bbLower  = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
   }
   if (_hasIndicator('SUPERTREND')) {
-    _chartSeries.stBull = _chartMain.addLineSeries({ color: _cssVar('--accent', '#26a69a'), lineWidth: 2 });
-    _chartSeries.stBear = _chartMain.addLineSeries({ color: _cssVar('--red',    '#ef5350'), lineWidth: 2 });
+    _chartSeries.stBull = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--accent', '#26a69a'), lineWidth: 2 });
+    _chartSeries.stBear = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--red',    '#ef5350'), lineWidth: 2 });
   }
 
   // RSI sub-chart
@@ -3564,14 +3568,14 @@ function initCharts() {
     rsiEl.classList.remove('hidden');
     rsiEl.style.paddingRight = '80px';
     rsiEl.style.boxSizing = 'border-box';
-    _chartRsi = LightweightCharts.createChart(rsiEl, {
+    _chartRsi = _lwcCreateChart(rsiEl, {
       ..._chartLayoutOpts(),
       width:  rsiEl.clientWidth - 80,
       height: rsiEl.clientHeight || 100,
       rightPriceScale: { visible: false },
       timeScale: { visible: false },
     });
-    _chartSeries.rsi = _chartRsi.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
+    _chartSeries.rsi = _chartRsi.addSeries(_LWC().LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
     const rsiCfgVal = _findIndicator('RSI');
     const rsiParsed = _parseRsiThreshold(rsiCfgVal?.threshold);
     const rsiTv = rsiCfgVal?.rsi_value != null ? rsiCfgVal.rsi_value : rsiParsed.value;
@@ -3584,16 +3588,16 @@ function initCharts() {
     macdEl.classList.remove('hidden');
     macdEl.style.paddingRight = '80px';
     macdEl.style.boxSizing = 'border-box';
-    _chartMacd = LightweightCharts.createChart(macdEl, {
+    _chartMacd = _lwcCreateChart(macdEl, {
       ..._chartLayoutOpts(),
       width:  macdEl.clientWidth - 80,
       height: macdEl.clientHeight || 100,
       rightPriceScale: { visible: false },
       timeScale: { visible: false },
     });
-    _chartSeries.macdHist   = _chartMacd.addHistogramSeries({ color: _cssVar('--muted', '#888') });
-    _chartSeries.macdLine   = _chartMacd.addLineSeries({ color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
-    _chartSeries.macdSignal = _chartMacd.addLineSeries({ color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
+    _chartSeries.macdHist   = _chartMacd.addSeries(_LWC().HistogramSeries, { color: _cssVar('--muted', '#888') });
+    _chartSeries.macdLine   = _chartMacd.addSeries(_LWC().LineSeries, { color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
+    _chartSeries.macdSignal = _chartMacd.addSeries(_LWC().LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
   }
 
   // Sync sub-chart timeScales with main chart
@@ -3798,7 +3802,7 @@ function _renderIndicatorOverlays(candles) {
       for (const seg of segs) {
         const data = [];
         for (let j = seg.start; j <= seg.end; j++) data.push({ time: candles[j].time, value: seg.value });
-        const s = _chartMain.addLineSeries({
+        const s = _chartMain.addSeries(_LWC().LineSeries, {
           color, lineWidth: 2, lineStyle: 0,
           priceLineVisible: false, lastValueVisible: false,
           crosshairMarkerVisible: false,
@@ -3839,7 +3843,7 @@ function _renderIndicatorOverlays(candles) {
     for (const seg of segs) {
       const data = [];
       for (let j = seg.start; j <= seg.end; j++) data.push({ time: candles[j].time, value: seg.value });
-      const s = _chartMain.addLineSeries({
+      const s = _chartMain.addSeries(_LWC().LineSeries, {
         color: '#f050a0', lineWidth: 1, lineStyle: 2,
         priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false,
@@ -3881,16 +3885,15 @@ function _renderIndicatorOverlays(candles) {
     const addSarSeries = (data, color) => {
       const filtered = data.filter(p => Number.isFinite(p.value));
       if (!filtered.length) return;
-      const s = _chartMain.addLineSeries({
+      const s = _chartMain.addSeries(_LWC().LineSeries, {
         color: 'transparent', lineWidth: 0,
         priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false,
       });
       s.setData(filtered);
-      s.setMarkers(filtered.map(p => ({
-        time: p.time, position: 'inBar',
-        color, shape: 'circle', size: 1,
-      })));
+      const csm = _LWC().createSeriesMarkers;
+      if (csm) csm(s, filtered.map(p => ({ time: p.time, position: 'inBar', color, shape: 'circle', size: 1 })));
+      else try { s.setMarkers(filtered.map(p => ({ time: p.time, position: 'inBar', color, shape: 'circle', size: 1 }))); } catch (e) {}
       _psarLineSeries.push(s);
     };
     addSarSeries(bullData, 'rgba(51, 136, 187, 0.6)');
@@ -4027,7 +4030,15 @@ function _setCombinedMarkers() {
   if (!_chartCandles) return;
   const combined = _chartIndicatorMarkers.concat(_chartDealMarkers);
   combined.sort((a, b) => a.time - b.time);
-  try { _chartCandles.setMarkers(combined); } catch (e) {}
+  try {
+    const csm = _LWC().createSeriesMarkers;
+    if (csm) {
+      if (_candleMarkersPrimitive) _candleMarkersPrimitive.setMarkers(combined);
+      else _candleMarkersPrimitive = csm(_chartCandles, combined);
+    } else {
+      _chartCandles.setMarkers(combined);
+    }
+  } catch (e) {}
 }
 
 function _clearDealMarkers() {
@@ -4624,12 +4635,12 @@ function initWizardChart() {
   // hidden again inside fetchWizardChartData on success.
   const sk = $('wizard-chart-skeleton');
   if (sk) sk.classList.remove('chart-skeleton-hidden');
-  _wizardChart = LightweightCharts.createChart(el, {
+  _wizardChart = _lwcCreateChart(el, {
     ..._chartLayoutOpts(),
     width:  el.clientWidth,
     height: el.clientHeight || 250,
   });
-  _wizardCandles = _wizardChart.addCandlestickSeries({
+  _wizardCandles = _wizardChart.addSeries(_LWC().CandlestickSeries, {
     upColor:        _cssVar('--accent', '#26a69a'),
     downColor:      _cssVar('--red',    '#ef5350'),
     borderUpColor:  _cssVar('--accent', '#26a69a'),
@@ -5012,12 +5023,12 @@ function _wizardEnsureRsiChart() {
   const el = $('wizard-chart-rsi');
   if (!el || !_chartLibAvailable()) return;
   el.classList.remove('hidden');
-  _wizardChartRsi = LightweightCharts.createChart(el, {
+  _wizardChartRsi = _lwcCreateChart(el, {
     ..._chartLayoutOpts(),
     width:  el.clientWidth,
     height: el.clientHeight || 100,
   });
-  _wizardSubSeries.rsi = _wizardChartRsi.addLineSeries({
+  _wizardSubSeries.rsi = _wizardChartRsi.addSeries(_LWC().LineSeries, {
     color: _cssVar('--blue', '#5b8dee'), lineWidth: 1,
   });
   if (_wizardResizeObs) _wizardResizeObs.observe(el);
@@ -5038,14 +5049,14 @@ function _wizardEnsureMacdChart() {
   const el = $('wizard-chart-macd');
   if (!el || !_chartLibAvailable()) return;
   el.classList.remove('hidden');
-  _wizardChartMacd = LightweightCharts.createChart(el, {
+  _wizardChartMacd = _lwcCreateChart(el, {
     ..._chartLayoutOpts(),
     width:  el.clientWidth,
     height: el.clientHeight || 100,
   });
-  _wizardSubSeries.macdHist   = _wizardChartMacd.addHistogramSeries({ color: _cssVar('--muted', '#888') });
-  _wizardSubSeries.macdLine   = _wizardChartMacd.addLineSeries({ color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
-  _wizardSubSeries.macdSignal = _wizardChartMacd.addLineSeries({ color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
+  _wizardSubSeries.macdHist   = _wizardChartMacd.addSeries(_LWC().HistogramSeries, { color: _cssVar('--muted', '#888') });
+  _wizardSubSeries.macdLine   = _wizardChartMacd.addSeries(_LWC().LineSeries, { color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
+  _wizardSubSeries.macdSignal = _wizardChartMacd.addSeries(_LWC().LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
   if (_wizardResizeObs) _wizardResizeObs.observe(el);
 }
 
@@ -5062,7 +5073,7 @@ function _wizardDestroyMacdChart() {
 
 function _addWizardLineSeries(data, color, lineWidth = 2, lineStyle = 0) {
   if (!_wizardChart || !data || !data.length) return null;
-  const s = _wizardChart.addLineSeries({
+  const s = _wizardChart.addSeries(_LWC().LineSeries, {
     color, lineWidth, lineStyle, lastValueVisible: false, priceLineVisible: false,
   });
   s.setData(data);
@@ -5174,16 +5185,15 @@ function renderWizardOverlays() {
           }
           const addWizPsar = (data, color) => {
             if (!data.length) return;
-            const s = _wizardChart.addLineSeries({
+            const s = _wizardChart.addSeries(_LWC().LineSeries, {
               color: 'transparent', lineWidth: 0,
               priceLineVisible: false, lastValueVisible: false,
               crosshairMarkerVisible: false,
             });
             s.setData(data);
-            s.setMarkers(data.map(p => ({
-              time: p.time, position: 'inBar',
-              color, shape: 'circle', size: 1,
-            })));
+            const csm = _LWC().createSeriesMarkers;
+            if (csm) csm(s, data.map(p => ({ time: p.time, position: 'inBar', color, shape: 'circle', size: 1 })));
+            else try { s.setMarkers(data.map(p => ({ time: p.time, position: 'inBar', color, shape: 'circle', size: 1 }))); } catch (e) {}
             _wizardPsarSeries.push(s);
           };
           addWizPsar(bullD, 'rgba(51, 136, 187, 0.6)');
@@ -5209,7 +5219,7 @@ function renderWizardOverlays() {
               for (const seg of segs) {
                 const data = [];
                 for (let j = seg.start; j <= seg.end; j++) data.push({ time: wCandles[j].time, value: seg.value });
-                const ws = _wizardChart.addLineSeries({
+                const ws = _wizardChart.addSeries(_LWC().LineSeries, {
                   color, lineWidth: 2, lineStyle: 0,
                   priceLineVisible: false, lastValueVisible: false,
                   title: label, crosshairMarkerVisible: false,
@@ -5241,7 +5251,7 @@ function renderWizardOverlays() {
           for (const seg of segs) {
             const data = [];
             for (let j = seg.start; j <= seg.end; j++) data.push({ time: wCandles[j].time, value: seg.value });
-            const ws = _wizardChart.addLineSeries({
+            const ws = _wizardChart.addSeries(_LWC().LineSeries, {
               color: '#f050a0', lineWidth: 1, lineStyle: 2,
               priceLineVisible: false, lastValueVisible: false,
               crosshairMarkerVisible: false,
@@ -8057,16 +8067,16 @@ function btRenderResults(res) {
   if (_btEquityChart) { try { _btEquityChart.remove(); } catch (e) {} _btEquityChart = null; }
   eqEl.innerHTML = '';
   if (typeof LightweightCharts !== 'undefined') {
-    _btEquityChart = LightweightCharts.createChart(eqEl, {
+    _btEquityChart = _lwcCreateChart(eqEl, {
       ..._chartLayoutOpts(),
       width: eqEl.clientWidth || 800,
       height: 300,
     });
-    const eqSeries = _btEquityChart.addLineSeries({
+    const eqSeries = _btEquityChart.addSeries(_LWC().LineSeries, {
       color: _cssVar('--accent', '#26a69a'), lineWidth: 2,
     });
     eqSeries.setData(res.equity_curve.map(p => ({ time: p.time, value: p.balance })));
-    const bhSeries = _btEquityChart.addLineSeries({
+    const bhSeries = _btEquityChart.addSeries(_LWC().LineSeries, {
       color: _cssVar('--muted', '#888'), lineWidth: 1, lineStyle: 2,
     });
     bhSeries.setData(res.buy_hold_curve.map(p => ({ time: p.time, value: p.balance })));
@@ -8078,12 +8088,12 @@ function btRenderResults(res) {
   if (_btMonthlyChart) { try { _btMonthlyChart.remove(); } catch (e) {} _btMonthlyChart = null; }
   mEl.innerHTML = '';
   if (typeof LightweightCharts !== 'undefined' && res.monthly_pnl.length) {
-    _btMonthlyChart = LightweightCharts.createChart(mEl, {
+    _btMonthlyChart = _lwcCreateChart(mEl, {
       ..._chartLayoutOpts(),
       width: mEl.clientWidth || 800,
       height: 200,
     });
-    const hist = _btMonthlyChart.addHistogramSeries({});
+    const hist = _btMonthlyChart.addSeries(_LWC().HistogramSeries, {});
     const green = _cssVar('--accent', '#26a69a');
     const red = _cssVar('--red', '#ef5350');
     hist.setData(res.monthly_pnl.map(m => {
@@ -8147,16 +8157,16 @@ function btRenderWizardResults(res) {
   if (_wbtEquityChart) { try { _wbtEquityChart.remove(); } catch (e) {} _wbtEquityChart = null; }
   eqEl.innerHTML = '';
   if (typeof LightweightCharts !== 'undefined') {
-    _wbtEquityChart = LightweightCharts.createChart(eqEl, {
+    _wbtEquityChart = _lwcCreateChart(eqEl, {
       ..._chartLayoutOpts(),
       width: eqEl.clientWidth || 600,
       height: 240,
     });
-    const series = _wbtEquityChart.addLineSeries({
+    const series = _wbtEquityChart.addSeries(_LWC().LineSeries, {
       color: _cssVar('--accent', '#26a69a'), lineWidth: 2,
     });
     series.setData(res.equity_curve.map(p => ({ time: p.time, value: p.balance })));
-    const bh = _wbtEquityChart.addLineSeries({
+    const bh = _wbtEquityChart.addSeries(_LWC().LineSeries, {
       color: _cssVar('--muted', '#888'), lineWidth: 1, lineStyle: 2,
     });
     bh.setData(res.buy_hold_curve.map(p => ({ time: p.time, value: p.balance })));
