@@ -6190,6 +6190,7 @@ class RevertoBacktest {
       entry_fee_btc: fee,
       dca_fees_btc: 0,
       exit_fee_btc: 0,
+      entry_trigger: this._lastEntryTrigger || null,
     };
   }
 
@@ -6301,6 +6302,8 @@ class RevertoBacktest {
       total_fees_btc: dealFees,
       reason,
       total_size: size,
+      entry_trigger: deal.entry_trigger || null,
+      exit_trigger: reason === 'tp' ? 'price_tp' : reason === 'sl' ? 'price_sl' : reason,
     });
     this.open_deal = null;
   }
@@ -6605,6 +6608,7 @@ class RevertoBacktest {
         if (entry) {
           _btStatEntrySignalTrue++;
           if (hadOpenDealAtStart) _btStatSameCandleReopens++;
+          this._lastEntryTrigger = { group_name: 'Entry', indicators: [] };
           if (window._BT_DEBUG && this.closed_deals.length < 10) {
             console.log('[BT] open deal #', this._deal_counter + 1,
               'at candle', i, 'price', candle.close);
@@ -8456,6 +8460,43 @@ function _btRenderOverlays(candles) {
       }
     } catch (e) {}
   }
+  // RSI sub-pane
+  const rsiInd = allInds.find(i => (i.type || '').toUpperCase() === 'RSI');
+  const macdInd = allInds.find(i => (i.type || '').toUpperCase() === 'MACD');
+  if (rsiInd) {
+    try {
+      const rsiLine = calcRSILine(candles, rsiInd.period || 14);
+      if (rsiLine.length) {
+        const s = _btCandleChart.addSeries(_LWC().LineSeries, {
+          color: '#2962FF', lineWidth: 1,
+          priceLineVisible: false, lastValueVisible: true,
+        }, 1);
+        s.setData(rsiLine);
+        const parsed = _parseRsiThreshold(rsiInd.threshold);
+        const tv = rsiInd.rsi_value != null ? rsiInd.rsi_value : parsed.value;
+        if (tv) s.createPriceLine({ price: tv, color: '#26a69a', lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(tv) });
+        _btOverlaySeries.push(s);
+      }
+    } catch (e) {}
+  }
+  // MACD sub-pane
+  if (macdInd) {
+    try {
+      const m = calcMACDLines(candles, macdInd.macd_fast || 12, macdInd.macd_slow || 26, macdInd.macd_signal || 9);
+      const pane = rsiInd ? 2 : 1;
+      if (m.histogram.length) {
+        const hs = _btCandleChart.addSeries(_LWC().HistogramSeries, { color: '#888' }, pane);
+        hs.setData(m.histogram);
+        _btOverlaySeries.push(hs);
+        const ms = _btCandleChart.addSeries(_LWC().LineSeries, { color: '#5b8dee', lineWidth: 1 }, pane);
+        ms.setData(m.macd);
+        _btOverlaySeries.push(ms);
+        const ss = _btCandleChart.addSeries(_LWC().LineSeries, { color: '#ffb347', lineWidth: 1 }, pane);
+        ss.setData(m.signal);
+        _btOverlaySeries.push(ss);
+      }
+    } catch (e) {}
+  }
 }
 
 function _btClearDealOverlay() {
@@ -8515,10 +8556,12 @@ function btShowDealOnChart(dealIdx) {
     triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Entry:</span>`
       + `<span class="trigger-value accent">${safeText(t.group_name || '')}${inds ? ' — ' + safeText(inds) : ''}</span></div>`;
   }
-  const ex = d.reason;
-  if (ex === 'tp') triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Exit:</span><span class="trigger-value green">TP price hit</span></div>`;
-  else if (ex === 'sl') triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Exit:</span><span class="trigger-value red">Stop loss</span></div>`;
-  else if (ex) triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Exit:</span><span class="trigger-value muted">${safeText(ex)}</span></div>`;
+  const exitLabels = { price_tp: 'TP price hit', price_sl: 'Stop loss', timeout: 'Timeout' };
+  const exitCls = { price_tp: 'green', price_sl: 'red', timeout: 'muted' };
+  const ext = d.exit_trigger || d.reason;
+  const extLabel = exitLabels[ext] || (ext === 'tp' ? 'TP price hit' : ext === 'sl' ? 'Stop loss' : safeText(ext || '--'));
+  const extClass = exitCls[ext] || (ext === 'tp' || ext === 'price_tp' ? 'green' : ext === 'sl' || ext === 'price_sl' ? 'red' : 'muted');
+  triggerHtml += `<div class="deal-trigger-row"><span class="trigger-label">Exit:</span><span class="trigger-value ${extClass}">${extLabel}</span></div>`;
   const info = $('bt-deal-info');
   if (info) {
     info.innerHTML = `<strong>Deal #${safeText(String(d.id))}</strong>`
