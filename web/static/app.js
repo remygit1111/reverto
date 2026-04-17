@@ -3286,6 +3286,7 @@ let _wizardCandleCache = null;
 let _wizardOverlaySeries = [];
 let _wizardOverlayPriceLines = [];
 let _wizardSrLineSeries = [];
+let _wizardPsarSeries = [];
 // Sub-charts for RSI / MACD indicators in the wizard preview. Created
 // lazily when the user adds the corresponding indicator and destroyed
 // when they remove it, so a wizard with no RSI/MACD costs nothing.
@@ -3762,11 +3763,15 @@ function _renderIndicatorOverlays(candles) {
       const filtered = data.filter(p => Number.isFinite(p.value));
       if (!filtered.length) return;
       const s = _chartMain.addLineSeries({
-        color, lineWidth: 1, lineStyle: 2,
+        color: 'transparent', lineWidth: 0,
         priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false,
       });
       s.setData(filtered);
+      s.setMarkers(filtered.map(p => ({
+        time: p.time, position: 'inBar',
+        color, shape: 'circle', size: 1,
+      })));
       _psarLineSeries.push(s);
     };
     addSarSeries(bullData, '#3388bb');
@@ -4756,6 +4761,10 @@ function _clearWizardOverlays() {
     try { _wizardChart.removeSeries(s); } catch (e) {}
   }
   _wizardSrLineSeries = [];
+  for (const s of _wizardPsarSeries) {
+    try { _wizardChart.removeSeries(s); } catch (e) {}
+  }
+  _wizardPsarSeries = [];
 }
 
 function _wizardEnsureRsiChart() {
@@ -4907,6 +4916,32 @@ function renderWizardOverlays() {
           const st = calcSupertrendLines(candles, highs, lows, atr, mult);
           if (st && st.bull) _addWizardLineSeries(st.bull, accent, 2);
           if (st && st.bear) _addWizardLineSeries(st.bear, red,    2);
+        }
+      } else if (t === 'PARABOLIC_SAR') {
+        if (typeof calcParabolicSAR === 'function' && _wizardChart) {
+          const ps = calcParabolicSAR(candles, Number(ind.initial_af) || 0.02, Number(ind.max_af) || 0.20);
+          const bullD = [], bearD = [];
+          for (let i = 0; i < candles.length; i++) {
+            if (ps.sarValues[i] === null) continue;
+            const pt = { time: candles[i].time, value: ps.sarValues[i] };
+            if (ps.dirs[i] === 1) bullD.push(pt); else bearD.push(pt);
+          }
+          const addWizPsar = (data, color) => {
+            if (!data.length) return;
+            const s = _wizardChart.addLineSeries({
+              color: 'transparent', lineWidth: 0,
+              priceLineVisible: false, lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            });
+            s.setData(data);
+            s.setMarkers(data.map(p => ({
+              time: p.time, position: 'inBar',
+              color, shape: 'circle', size: 1,
+            })));
+            _wizardPsarSeries.push(s);
+          };
+          addWizPsar(bullD, '#3388bb');
+          addWizPsar(bearD, '#fdcc02');
         }
       } else if (t === 'SUPPORT_RESISTANCE') {
         if (typeof calcSR === 'function' && _wizardCandleCache && _wizardChart) {
