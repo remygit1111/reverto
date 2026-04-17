@@ -1621,6 +1621,7 @@ function nbDefaultState() {
     leverage_enabled: false, leverage_size: 1, timeframe: '1h',
     base_unit: 'btc', base_size: 0.001,
     indicators: [],
+    indicatorGroups: [{ id: 1, name: 'Group 1', indicators: [] }],
     tp_enabled: true,
     tp_target_pct: 3.0, tp_indicator_confirm: '',
     tp_min_pct: null,
@@ -1922,89 +1923,127 @@ function nbToggleBaseUnit(unit) {
   $('nb-dca-unit-label').textContent = unit === 'btc' ? 'BTC' : '%';
 }
 
-function nbAddIndicator() {
-  nbState.indicators.push({
+function _nbDefaultIndicator() {
+  return {
     type: 'RSI', timeframe: '1h',
     period: 14, threshold: 'below_35',
-    // RSI condition/value are derived from threshold ("below_35" → below, 35)
-    // but we also keep them on the row for easy editing.
     rsi_condition: 'below', rsi_value: 35,
     fast: 9, slow: 21, signal: 'bullish_cross',
     condition: 'histogram_positive',
     macd_fast: 12, macd_slow: 26, macd_signal: 9,
-  });
+  };
+}
+function nbAddIndicator(groupId) {
+  if (groupId != null) {
+    const g = nbState.indicatorGroups.find(g => g.id === groupId);
+    if (g) g.indicators.push(_nbDefaultIndicator());
+  } else {
+    nbState.indicators.push(_nbDefaultIndicator());
+  }
   nbRenderIndicators();
-  // Must trigger a full recompute so the wizard chart picks up the new
-  // indicator overlay (e.g. the RSI sub-pane). Without this, the sub-
-  // pane only showed up after a later field edit re-triggered recompute.
   nbRecompute();
 }
-function nbRemoveIndicator(idx) {
-  nbState.indicators.splice(idx, 1);
+function nbRemoveIndicator(groupId, idx) {
+  if (groupId != null) {
+    const g = nbState.indicatorGroups.find(g => g.id === groupId);
+    if (g) g.indicators.splice(idx, 1);
+  } else {
+    nbState.indicators.splice(idx, 1);
+  }
   nbRenderIndicators();
   nbRecompute();
+}
+function nbAddGroup() {
+  const maxId = nbState.indicatorGroups.reduce((m, g) => Math.max(m, g.id), 0);
+  nbState.indicatorGroups.push({ id: maxId + 1, name: `Group ${maxId + 1}`, indicators: [] });
+  nbRenderIndicators();
+  nbRecompute();
+}
+function nbRemoveGroup(groupId) {
+  nbState.indicatorGroups = nbState.indicatorGroups.filter(g => g.id !== groupId);
+  nbRenderIndicators();
+  nbRecompute();
+}
+
+function _nbIndCardHtml(ind, dataPrefix) {
+  const typeClass = ind.type === 'RSI' ? 'type-rsi'
+                  : ind.type === 'MACD' ? 'type-macd'
+                  : ind.type === 'BOLLINGER' ? 'type-bollinger'
+                  : ind.type === 'PARABOLIC_SAR' ? 'type-psar'
+                  : ind.type === 'SUPERTREND' ? 'type-supertrend'
+                  : ind.type === 'MARKET_STRUCTURE' ? 'type-ms'
+                  : ind.type === 'SUPPORT_RESISTANCE' ? 'type-sr'
+                  : ind.type === 'QFL' ? 'type-qfl'
+                  : ind.type === 'ASAP' ? 'type-asap'
+                  : '';
+  const title = ind.type === 'BOLLINGER' ? 'Bollinger Bands'
+              : ind.type === 'PARABOLIC_SAR' ? 'Parabolic SAR'
+              : ind.type === 'SUPERTREND' ? 'Supertrend'
+              : ind.type === 'MARKET_STRUCTURE' ? 'Market Structure'
+              : ind.type === 'SUPPORT_RESISTANCE' ? 'Support & Resistance'
+              : ind.type === 'QFL' ? 'QFL Base Scanner'
+              : ind.type;
+  return `
+    <div class="nb-ind-card ${typeClass}">
+      <div class="nb-ind-head">
+        <span class="nb-ind-title">${safeText(title)}</span>
+        <button type="button" class="nb-ind-close" data-nb-grm="${dataPrefix}" title="Remove indicator">\u00d7</button>
+      </div>
+      <div class="nb-ind-body">
+        <div class="form-row form-row-wide">
+          <label>Type</label>
+          <select data-nb-gind="${dataPrefix}" data-nb-field="type">
+            <option value="RSI" ${ind.type === 'RSI' ? 'selected' : ''}>RSI</option>
+            <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
+            <option value="BOLLINGER" ${ind.type === 'BOLLINGER' ? 'selected' : ''}>Bollinger Bands</option>
+            <option value="PARABOLIC_SAR" ${ind.type === 'PARABOLIC_SAR' ? 'selected' : ''}>Parabolic SAR</option>
+            <option value="SUPERTREND" ${ind.type === 'SUPERTREND' ? 'selected' : ''}>Supertrend</option>
+            <option value="MARKET_STRUCTURE" ${ind.type === 'MARKET_STRUCTURE' ? 'selected' : ''}>Market Structure</option>
+            <option value="SUPPORT_RESISTANCE" ${ind.type === 'SUPPORT_RESISTANCE' ? 'selected' : ''}>Support &amp; Resistance</option>
+            <option value="QFL" ${ind.type === 'QFL' ? 'selected' : ''}>QFL Base Scanner</option>
+            <option value="ASAP" ${ind.type === 'ASAP' ? 'selected' : ''}>ASAP (no filter)</option>
+          </select>
+          <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
+        </div>
+        <div class="form-row">
+          <label>Timeframe</label>
+          <select data-nb-gind="${dataPrefix}" data-nb-field="timeframe">
+            ${['15m', '1h', '4h', '1d'].map(t =>
+              `<option value="${t}" ${ind.timeframe === t ? 'selected' : ''}>${t}</option>`
+            ).join('')}
+          </select>
+        </div>
+        ${nbIndicatorFieldsHtml(ind, dataPrefix)}
+      </div>
+    </div>`;
 }
 
 function nbRenderIndicators() {
   const list = $('nb-indicators-list');
   if (!list) return;
-  if (!nbState.indicators.length) {
-    list.innerHTML = '<div class="empty-config-msg">Always enter (no filter)</div>';
+  const groups = nbState.indicatorGroups || [];
+  if (!groups.length || groups.every(g => !g.indicators.length)) {
+    list.innerHTML = '<div class="empty-config-msg">Always enter (no filter)</div>'
+      + '<button type="button" class="btn-add-group" onclick="nbAddGroup()">+ Add indicator group</button>';
     return;
   }
-  list.innerHTML = nbState.indicators.map((ind, i) => {
-    const typeClass = ind.type === 'RSI' ? 'type-rsi'
-                    : ind.type === 'MACD' ? 'type-macd'
-                    : ind.type === 'BOLLINGER' ? 'type-bollinger'
-                    : ind.type === 'PARABOLIC_SAR' ? 'type-psar'
-                    : ind.type === 'SUPERTREND' ? 'type-supertrend'
-                    : ind.type === 'MARKET_STRUCTURE' ? 'type-ms'
-                    : ind.type === 'SUPPORT_RESISTANCE' ? 'type-sr'
-                    : ind.type === 'QFL' ? 'type-qfl'
-                    : ind.type === 'ASAP' ? 'type-asap'
-                    : '';
-    const title = ind.type === 'BOLLINGER' ? 'Bollinger Bands'
-                : ind.type === 'PARABOLIC_SAR' ? 'Parabolic SAR'
-                : ind.type === 'SUPERTREND' ? 'Supertrend'
-                : ind.type === 'MARKET_STRUCTURE' ? 'Market Structure'
-                : ind.type === 'SUPPORT_RESISTANCE' ? 'Support & Resistance'
-                : ind.type === 'QFL' ? 'QFL Base Scanner'
-                : ind.type;
-    return `
-      <div class="nb-ind-card ${typeClass}">
-        <div class="nb-ind-head">
-          <span class="nb-ind-title">${safeText(title)}</span>
-          <button type="button" class="nb-ind-close" data-nb-remove="${i}" title="Remove indicator">×</button>
-        </div>
-        <div class="nb-ind-body">
-          <div class="form-row form-row-wide">
-            <label>Type</label>
-            <select data-nb-ind="${i}" data-nb-field="type">
-              <option value="RSI" ${ind.type === 'RSI' ? 'selected' : ''}>RSI</option>
-              <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
-              <option value="BOLLINGER" ${ind.type === 'BOLLINGER' ? 'selected' : ''}>Bollinger Bands</option>
-              <option value="PARABOLIC_SAR" ${ind.type === 'PARABOLIC_SAR' ? 'selected' : ''}>Parabolic SAR</option>
-              <option value="SUPERTREND" ${ind.type === 'SUPERTREND' ? 'selected' : ''}>Supertrend</option>
-              <option value="MARKET_STRUCTURE" ${ind.type === 'MARKET_STRUCTURE' ? 'selected' : ''}>Market Structure</option>
-              <option value="SUPPORT_RESISTANCE" ${ind.type === 'SUPPORT_RESISTANCE' ? 'selected' : ''}>Support &amp; Resistance</option>
-              <option value="QFL" ${ind.type === 'QFL' ? 'selected' : ''}>QFL Base Scanner</option>
-              <option value="ASAP" ${ind.type === 'ASAP' ? 'selected' : ''}>ASAP (no filter)</option>
-            </select>
-            <div class="nb-ind-desc">${safeText(NB_INDICATOR_DESCRIPTIONS[ind.type] || '')}</div>
+  const html = groups.map((g, gi) => {
+    const cards = g.indicators.map((ind, ii) => {
+      const dp = `${g.id}:${ii}`;
+      return _nbIndCardHtml(ind, dp);
+    }).join('');
+    return (gi > 0 ? '<div class="group-or-divider">OR</div>' : '')
+      + `<div class="indicator-group" data-group-id="${g.id}">
+          <div class="indicator-group-header">
+            <input class="indicator-group-name" value="${safeText(g.name)}"
+              placeholder="Group ${g.id}" data-nb-gname="${g.id}">
+            ${groups.length > 1 ? `<button type="button" class="nb-ind-close" data-nb-gremove="${g.id}" title="Remove group">\u00d7</button>` : ''}
           </div>
-          <div class="form-row">
-            <label>Timeframe</label>
-            <select data-nb-ind="${i}" data-nb-field="timeframe">
-              ${['15m', '1h', '4h', '1d'].map(t =>
-                `<option value="${t}" ${ind.timeframe === t ? 'selected' : ''}>${t}</option>`
-              ).join('')}
-            </select>
-          </div>
-          ${nbIndicatorFieldsHtml(ind, i)}
-        </div>
-      </div>
-    `;
+          ${cards}
+          <button type="button" class="btn-add-group" onclick="nbAddIndicator(${g.id})">+ Add indicator</button>
+        </div>`;
   }).join('');
+  list.innerHTML = html + '<button type="button" class="btn-add-group" onclick="nbAddGroup()">+ Add group</button>';
 }
 
 function nbIndicatorFieldsHtml(ind, i) {
@@ -2517,6 +2556,54 @@ function nbRenderReview() {
   `;
 }
 
+function _nbSerializeIndicator(i) {
+  const out = { type: i.type };
+  if (i.timeframe && i.timeframe !== '1h') out.timeframe = i.timeframe;
+  if (i.type === 'RSI') {
+    out.period = i.period; out.threshold = i.threshold;
+    if (i.price_source && i.price_source !== 'close') out.price_source = i.price_source;
+  } else if (i.type === 'MACD') {
+    out.condition = i.condition;
+    if (i.macd_fast != null) out.macd_fast = i.macd_fast;
+    if (i.macd_slow != null) out.macd_slow = i.macd_slow;
+    if (i.macd_signal != null) out.macd_signal = i.macd_signal;
+    if (i.oscillator_ma_type) out.oscillator_ma_type = i.oscillator_ma_type;
+    if (i.signal_ma_type) out.signal_ma_type = i.signal_ma_type;
+  } else if (i.type === 'BOLLINGER') {
+    out.period = i.period || 20; out.multiplier = i.multiplier != null ? i.multiplier : 2.0;
+    out.condition = i.condition || 'price_below_lower';
+    if (i.ma_type) out.ma_type = i.ma_type; if (i.value) out.value = i.value;
+    if (i.squeeze_threshold != null) out.squeeze_threshold = i.squeeze_threshold;
+  } else if (i.type === 'PARABOLIC_SAR') {
+    out.initial_af = i.initial_af != null ? i.initial_af : 0.02;
+    out.max_af = i.max_af != null ? i.max_af : 0.20;
+    out.condition = i.condition || 'bullish';
+  } else if (i.type === 'SUPERTREND') {
+    out.atr_period = i.atr_period != null ? i.atr_period : 10;
+    out.multiplier = i.multiplier != null ? i.multiplier : 3.0;
+    out.condition = i.condition || 'bullish';
+  } else if (i.type === 'MARKET_STRUCTURE') {
+    out.lookback = i.lookback != null ? i.lookback : 3;
+    out.condition = i.condition || 'bullish_bos';
+    if (i.value) out.value = i.value;
+  } else if (i.type === 'SUPPORT_RESISTANCE') {
+    out.left_bars = i.left_bars != null ? i.left_bars : 15;
+    out.right_bars = i.right_bars != null ? i.right_bars : 15;
+    out.proximity_pct = i.proximity_pct != null ? i.proximity_pct : 1.0;
+    out.condition = i.condition || 'price_crossing_down';
+    if (i.value) out.value = i.value;
+    if (i.volume_threshold) out.volume_threshold = i.volume_threshold;
+    if (i.min_touches != null && i.min_touches > 1) out.min_touches = i.min_touches;
+  } else if (i.type === 'QFL') {
+    out.condition = i.condition || 'below_base';
+    out.base_periods = i.base_periods != null ? i.base_periods : 36;
+    out.pump_periods = i.pump_periods != null ? i.pump_periods : 8;
+    out.pump_from_base_pct = i.pump_from_base_pct != null ? i.pump_from_base_pct : 3.0;
+    out.base_crack_pct = i.base_crack_pct != null ? i.base_crack_pct : 3.0;
+  }
+  return out;
+}
+
 function nbBuildBotConfig() {
   // Build a BotConfig-compatible payload. Pydantic ignores unknown fields
   // (extra='ignore'), so timeframe/direction/etc. are dropped server-side
@@ -2540,55 +2627,12 @@ function nbBuildBotConfig() {
       step_scale: nbState.dca_step_scale,
     },
     entry: {
-      indicators: nbState.indicators.map(i => {
-        const out = { type: i.type };
-        if (i.type === 'RSI') {
-          out.period = i.period;
-          out.threshold = i.threshold;
-          if (i.price_source && i.price_source !== 'close') out.price_source = i.price_source;
-        } else if (i.type === 'MACD') {
-          out.condition = i.condition;
-          if (i.macd_fast   != null) out.macd_fast   = i.macd_fast;
-          if (i.macd_slow   != null) out.macd_slow   = i.macd_slow;
-          if (i.macd_signal != null) out.macd_signal = i.macd_signal;
-          if (i.oscillator_ma_type) out.oscillator_ma_type = i.oscillator_ma_type;
-          if (i.signal_ma_type) out.signal_ma_type = i.signal_ma_type;
-        } else if (i.type === 'BOLLINGER') {
-          out.period = i.period || 20;
-          out.multiplier = i.multiplier != null ? i.multiplier : 2.0;
-          out.condition = i.condition || 'price_below_lower';
-          if (i.ma_type) out.ma_type = i.ma_type;
-          if (i.value) out.value = i.value;
-          if (i.squeeze_threshold != null) out.squeeze_threshold = i.squeeze_threshold;
-        } else if (i.type === 'PARABOLIC_SAR') {
-          out.initial_af = i.initial_af != null ? i.initial_af : 0.02;
-          out.max_af = i.max_af != null ? i.max_af : 0.20;
-          out.condition = i.condition || 'price_crossing_up';
-        } else if (i.type === 'SUPERTREND') {
-          out.atr_period = i.atr_period != null ? i.atr_period : 10;
-          out.multiplier = i.multiplier != null ? i.multiplier : 3.0;
-          out.condition = i.condition || 'bullish';
-        } else if (i.type === 'MARKET_STRUCTURE') {
-          out.lookback = i.lookback != null ? i.lookback : 3;
-          out.condition = i.condition || 'bullish_bos';
-          if (i.value) out.value = i.value;
-        } else if (i.type === 'SUPPORT_RESISTANCE') {
-          out.left_bars = i.left_bars != null ? i.left_bars : 15;
-          out.right_bars = i.right_bars != null ? i.right_bars : 15;
-          out.proximity_pct = i.proximity_pct != null ? i.proximity_pct : 1.0;
-          out.condition = i.condition || 'price_crossing_down';
-          if (i.value) out.value = i.value;
-          if (i.volume_threshold) out.volume_threshold = i.volume_threshold;
-          if (i.min_touches != null && i.min_touches > 1) out.min_touches = i.min_touches;
-        } else if (i.type === 'QFL') {
-          out.condition = i.condition || 'below_base';
-          out.base_periods = i.base_periods != null ? i.base_periods : 36;
-          out.pump_periods = i.pump_periods != null ? i.pump_periods : 8;
-          out.pump_from_base_pct = i.pump_from_base_pct != null ? i.pump_from_base_pct : 3.0;
-          out.base_crack_pct = i.base_crack_pct != null ? i.base_crack_pct : 3.0;
-        }
-        return out;
-      }),
+      indicators: [],
+      indicator_groups: (nbState.indicatorGroups || []).map(g => ({
+        id: g.id,
+        name: g.name || '',
+        indicators: (g.indicators || []).map(_nbSerializeIndicator),
+      })),
     },
     take_profit: { enabled: nbState.tp_enabled, target_pct: nbState.tp_target_pct },
     stop_loss: { type: nbState.sl_enabled ? nbState.sl_type : 'none', pct: nbState.sl_pct },
@@ -3035,6 +3079,42 @@ async function editBot(slug) {
   }
 }
 
+function _nbDeserializeInd(i) {
+  return {
+    type: i.type || 'RSI', timeframe: i.timeframe || '1h',
+    period: i.period != null ? i.period : 14, threshold: i.threshold || 'below_35',
+    rsi_condition: undefined, rsi_value: undefined,
+    fast: i.fast != null ? i.fast : 9, slow: i.slow != null ? i.slow : 21,
+    signal: i.signal || 'bullish_cross', condition: i.condition || 'histogram_positive',
+    macd_fast: i.macd_fast, macd_slow: i.macd_slow, macd_signal: i.macd_signal,
+    oscillator_ma_type: i.oscillator_ma_type, signal_ma_type: i.signal_ma_type,
+    multiplier: i.multiplier, ma_type: i.ma_type, value: i.value,
+    initial_af: i.initial_af, max_af: i.max_af, atr_period: i.atr_period,
+    lookback: i.lookback, price_source: i.price_source,
+    left_bars: i.left_bars, right_bars: i.right_bars,
+    proximity_pct: i.proximity_pct, volume_threshold: i.volume_threshold,
+    min_touches: i.min_touches, squeeze_threshold: i.squeeze_threshold,
+    base_periods: i.base_periods, pump_periods: i.pump_periods,
+    pump_from_base_pct: i.pump_from_base_pct, base_crack_pct: i.base_crack_pct,
+    ...i,
+  };
+}
+function _nbDeserializeGroups(entry) {
+  const e = entry || {};
+  const groups = e.indicator_groups || [];
+  if (groups.length) {
+    return groups.map(g => ({
+      id: g.id || 1, name: g.name || '',
+      indicators: (g.indicators || []).map(_nbDeserializeInd),
+    }));
+  }
+  const flat = e.indicators || [];
+  if (flat.length) {
+    return [{ id: 1, name: 'Group 1', indicators: flat.map(_nbDeserializeInd) }];
+  }
+  return [{ id: 1, name: 'Group 1', indicators: [] }];
+}
+
 function nbStateFromConfig(cfg) {
   const b = (cfg && cfg.bot) || cfg || {};
   const lev = b.leverage || {};
@@ -3051,16 +3131,8 @@ function nbStateFromConfig(cfg) {
     leverage_enabled: !!lev.enabled,
     leverage_size:    lev.size || d.leverage_size,
     base_size:        dca.base_order_size != null ? dca.base_order_size : d.base_size,
-    indicators:       ((b.entry && b.entry.indicators) || []).map(i => ({
-      type:      i.type || 'RSI',
-      timeframe: i.timeframe || '1h',
-      period:    i.period != null ? i.period : 14,
-      threshold: i.threshold || 'below_35',
-      fast:      i.fast != null ? i.fast : 9,
-      slow:      i.slow != null ? i.slow : 21,
-      signal:    i.signal || 'bullish_cross',
-      condition: i.condition || 'histogram_positive',
-    })),
+    indicators:       [],
+    indicatorGroups:  _nbDeserializeGroups(b.entry),
     tp_enabled:           tp.enabled !== false,
     tp_target_pct:        tp.target_pct != null ? tp.target_pct : d.tp_target_pct,
     tp_indicator_confirm: tp.indicator_confirm || '',
@@ -3513,6 +3585,9 @@ function teardownChartTab() {
 function _indicatorsConfigured() {
   const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
   const entry = inner.entry || {};
+  const groups = entry.indicator_groups || [];
+  const flat = groups.flatMap(g => g.indicators || []);
+  if (flat.length) return flat;
   const inds = entry.indicators || [];
   return Array.isArray(inds) ? inds : [];
 }
@@ -5682,13 +5757,22 @@ function setupEventListeners() {
     });
   }
 
+  // Resolve "groupId:idx" to the indicator object
+  function _nbResolveGind(key) {
+    if (!nbState || !key) return null;
+    const [gid, idx] = key.split(':').map(Number);
+    const g = (nbState.indicatorGroups || []).find(g => g.id === gid);
+    return g && g.indicators[idx] ? g.indicators[idx] : null;
+  }
+
   // Indicator row event delegation (input changes, type switch, remove)
   document.addEventListener('input', e => {
     const t = e.target;
-    if (t.dataset && t.dataset.nbInd != null && t.dataset.nbField) {
-      const i = parseInt(t.dataset.nbInd, 10);
+    const gk = t.dataset?.nbGind || t.dataset?.nbInd;
+    if (gk != null && t.dataset.nbField) {
+      const ind = _nbResolveGind(gk);
+      if (!ind) return;
       const f = t.dataset.nbField;
-      if (!nbState || !nbState.indicators[i]) return;
       let v = t.value;
       const intFields = [
         'period', 'fast', 'slow',
@@ -5703,12 +5787,8 @@ function setupEventListeners() {
       ];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;
       else if (floatFields.includes(f)) v = parseFloat(v) || 0;
-      nbState.indicators[i][f] = v;
-      // RSI condition/value are derived back into the threshold field
-      // so the serialised payload still matches the "below_35" /
-      // "cross_above_30" schema the strategy engine expects.
+      ind[f] = v;
       if (f === 'rsi_condition' || f === 'rsi_value') {
-        const ind = nbState.indicators[i];
         const cond = ind.rsi_condition || 'below';
         const val = Math.min(99, Math.max(1, ind.rsi_value || 35));
         ind.threshold = `${cond}_${val}`;
@@ -5716,21 +5796,30 @@ function setupEventListeners() {
       if (f === 'type') nbRenderIndicators();
       nbRecompute();
     }
+    if (t.dataset?.nbGname) {
+      const g = (nbState.indicatorGroups || []).find(g => g.id === Number(t.dataset.nbGname));
+      if (g) g.name = t.value;
+    }
   });
   document.addEventListener('change', e => {
     const t = e.target;
-    if (t.dataset && t.dataset.nbInd != null && t.dataset.nbField === 'type') {
-      const i = parseInt(t.dataset.nbInd, 10);
-      if (nbState && nbState.indicators[i]) {
-        nbState.indicators[i].type = t.value;
-        nbRenderIndicators();
-        nbRecompute();
-      }
+    const gk = t.dataset?.nbGind || t.dataset?.nbInd;
+    if (gk != null && t.dataset.nbField === 'type') {
+      const ind = _nbResolveGind(gk);
+      if (ind) { ind.type = t.value; nbRenderIndicators(); nbRecompute(); }
     }
   });
   document.addEventListener('click', e => {
+    const rm = e.target.closest('[data-nb-grm]');
+    if (rm) {
+      const [gid, idx] = rm.dataset.nbGrm.split(':').map(Number);
+      nbRemoveIndicator(gid, idx);
+      return;
+    }
+    const grm = e.target.closest('[data-nb-gremove]');
+    if (grm) { nbRemoveGroup(Number(grm.dataset.nbGremove)); return; }
     const t = e.target.closest('[data-nb-remove]');
-    if (t) { nbRemoveIndicator(parseInt(t.dataset.nbRemove, 10)); nbRecompute(); }
+    if (t) { nbRemoveIndicator(null, parseInt(t.dataset.nbRemove, 10)); }
   });
 }
 
@@ -6106,13 +6195,17 @@ class RevertoBacktest {
     // semantics for RSI / MACD histogram / Bollinger lower
     // band; other indicator types simplify to "always true" — they are
     // intentionally documented as a client-side-backtester limitation.
-    const indicators = (this.config.entry && this.config.entry.indicators) || [];
+    const entry = this.config.entry || {};
+    const groups = (entry.indicator_groups || []).filter(g => g.indicators && g.indicators.length);
+    const flatInds = entry.indicators || [];
+    const allGroups = groups.length ? groups.map(g => g.indicators)
+      : flatInds.length ? [flatInds] : [];
     const n = this.candles.length;
-    const result = [];
-    if (!indicators.length) {
-      return [new Array(n).fill(true)];
-    }
-    for (const ind of indicators) {
+    if (!allGroups.length) return [new Array(n).fill(true)];
+    const groupSignals = [];
+    for (const groupInds of allGroups) {
+      const gArrays = [];
+      for (const ind of groupInds) {
       const arr = new Array(n).fill(false);
       const type = ind.type;
       if (type === 'RSI') {
@@ -6300,9 +6393,15 @@ class RevertoBacktest {
       } else {
         for (let i = 0; i < n; i++) arr[i] = true;
       }
-      result.push(arr);
+      gArrays.push(arr);
     }
-    return result;
+    const groupAnd = new Array(n).fill(false);
+    for (let i = 0; i < n; i++) groupAnd[i] = gArrays.every(a => a[i]);
+    groupSignals.push(groupAnd);
+    }
+    const combined = new Array(n).fill(false);
+    for (let i = 0; i < n; i++) combined[i] = groupSignals.some(g => g[i]);
+    return [combined];
   }
 
   async run(initialBalance, onProgress) {

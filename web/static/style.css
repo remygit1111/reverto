@@ -1359,6 +1359,32 @@ tr:hover td { background: rgba(128,128,128,.04); }
 /* Each indicator row becomes a self-contained card with a left accent
    strip coloured per indicator type. Uses existing design tokens so
    the look stays coherent with the rest of the portal. */
+.indicator-group {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; margin-bottom: 8px; background: var(--surface2);
+}
+.indicator-group-header {
+  display:flex; align-items:center; gap:8px; margin-bottom:10px;
+}
+.indicator-group-name {
+  flex:1; font-size:12px; font-weight:600; letter-spacing:0.05em;
+  text-transform:uppercase; background:transparent; border:none;
+  border-bottom:1px solid var(--border); color:var(--text); padding:2px 4px;
+}
+.group-or-divider {
+  text-align:center; font-size:11px; font-weight:600;
+  color:var(--muted); letter-spacing:0.1em; margin:8px 0;
+  display:flex; align-items:center; gap:8px;
+}
+.group-or-divider::before, .group-or-divider::after {
+  content:''; flex:1; height:1px; background:var(--border);
+}
+.btn-add-group {
+  width:100%; margin-top:8px; border:1px dashed var(--border);
+  background:transparent; color:var(--muted); padding:8px;
+  border-radius:6px; cursor:pointer; font-size:12px;
+}
+.btn-add-group:hover { border-color:var(--accent); color:var(--accent); }
 .nb-ind-card {
   background: var(--surface2);
   border: 1px solid var(--border);

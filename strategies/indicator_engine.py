@@ -32,9 +32,8 @@ class IndicatorEngine:
 
     def __init__(self, config: BotConfig):
         self.config = config
-        # Copy the list at init time so mutations to config after init
-        # do not affect the engine's indicator list.
         self.entry_indicators = list(config.entry.indicators)
+        self.indicator_groups = list(config.entry.indicator_groups)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -57,15 +56,17 @@ class IndicatorEngine:
             return None
         return closes
 
-    def required_timeframes(self, bot_timeframe: str) -> set[str]:
-        """Set of timeframes the engine needs closes for.
+    def _all_indicators(self) -> list:
+        """Flat list of all indicators across groups + legacy flat list."""
+        inds = list(self.entry_indicators)
+        for g in self.indicator_groups:
+            inds.extend(g.indicators)
+        return inds
 
-        Used by the paper engine to decide which candle buckets to fetch,
-        and by the backtest loader to validate that the caller supplied
-        all required tf data.
-        """
+    def required_timeframes(self, bot_timeframe: str) -> set[str]:
+        """Set of timeframes the engine needs closes for."""
         tfs = {bot_timeframe}
-        for ind in self.entry_indicators:
+        for ind in self._all_indicators():
             tfs.add(ind.timeframe or bot_timeframe)
         return tfs
 
@@ -81,53 +82,56 @@ class IndicatorEngine:
         lows_per_tf: dict[str, list[float]] | None = None,
         opens_per_tf: dict[str, list[float]] | None = None,
     ) -> bool:
-        """
-        Check all configured entry indicators.
-        Returns True only if ALL indicators confirm an entry signal.
-        If any indicator's timeframe data is missing we return False —
-        we refuse to enter a deal while a configured filter can't be
-        evaluated (fail-closed).
+        """Check entry indicators with AND/OR group logic.
 
-        highs_per_tf / lows_per_tf are optional OHLC plumbing used by
-        indicators that need high/low data (e.g. Supertrend). When
-        omitted, those indicators fail-closed.
+        If indicator_groups are configured: OR between groups, AND within.
+        Falls back to legacy flat indicators list (AND-only) for back-compat.
         """
-        if not self.entry_indicators:
+        all_inds = self._all_indicators()
+        has_groups = bool(self.indicator_groups)
+        if not all_inds and not has_groups:
             logger.debug("No entry indicators configured — signal always True")
             return True
 
-        # ASAP short-circuit: if any configured entry indicator is ASAP,
-        # the entry signal is unconditionally True. Useful for manual
-        # trigger strategies where the operator wants to bypass filters.
-        for ind in self.entry_indicators:
+        for ind in all_inds:
             if ind.type.upper() == "ASAP":
                 logger.info("Entry signal: ASAP indicator present — bypassing all filters")
                 return True
 
-        results = []
-        for indicator in self.entry_indicators:
-            tf = indicator.timeframe or bot_timeframe
-            closes = self._closes_for(
-                closes_per_tf, tf, f"Entry indicator {indicator.type}"
-            )
-            if closes is None:
-                return False  # fail-closed
-            highs = (highs_per_tf or {}).get(tf)
-            lows  = (lows_per_tf  or {}).get(tf)
-            opens = (opens_per_tf or {}).get(tf)
-            result = self._evaluate_indicator(indicator, closes, highs, lows, opens)
-            results.append(result)
-            logger.info(
-                f"Indicator {indicator.type}@{tf} → "
-                f"{'✅ SIGNAL' if result else '❌ no signal'}"
-            )
+        groups_to_eval = []
+        if self.indicator_groups:
+            groups_to_eval = [g.indicators for g in self.indicator_groups if g.indicators]
+        if self.entry_indicators and not self.indicator_groups:
+            groups_to_eval = [self.entry_indicators]
 
-        all_confirmed = all(results)
-        logger.info(
-            f"Entry signal: {'✅ CONFIRMED' if all_confirmed else '❌ NOT confirmed'} "
-            f"({sum(results)}/{len(results)} indicators agree)"
-        )
-        return all_confirmed
+        if not groups_to_eval:
+            return False
+
+        for group_inds in groups_to_eval:
+            group_ok = True
+            for indicator in group_inds:
+                tf = indicator.timeframe or bot_timeframe
+                closes = self._closes_for(
+                    closes_per_tf, tf, f"Entry indicator {indicator.type}")
+                if closes is None:
+                    group_ok = False
+                    break
+                highs = (highs_per_tf or {}).get(tf)
+                lows = (lows_per_tf or {}).get(tf)
+                opens = (opens_per_tf or {}).get(tf)
+                result = self._evaluate_indicator(indicator, closes, highs, lows, opens)
+                logger.info(
+                    f"Indicator {indicator.type}@{tf} → "
+                    f"{'✅ SIGNAL' if result else '❌ no signal'}")
+                if not result:
+                    group_ok = False
+                    break
+            if group_ok:
+                logger.info("Entry signal: ✅ CONFIRMED (group match)")
+                return True
+
+        logger.info("Entry signal: ❌ NOT confirmed (no group matched)")
+        return False
 
     # ------------------------------------------------------------------
     # TP confirmation
