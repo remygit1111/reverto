@@ -2061,7 +2061,7 @@ function _nbIndCardHtml(ind, dataPrefix) {
     <div class="nb-ind-card ${typeClass}">
       <div class="nb-ind-head">
         <span class="nb-ind-title">${safeText(title)}</span>
-        <button type="button" class="nb-ind-close" data-nb-grm="${dataPrefix}" title="Remove indicator">\u00d7</button>
+        <button type="button" class="nb-ind-close" data-nb-grm="${dataPrefix}" title="Remove indicator" aria-label="Remove indicator">\u00d7</button>
       </div>
       <div class="nb-ind-body">
         <div class="form-row form-row-wide">
@@ -2111,7 +2111,7 @@ function nbRenderIndicators() {
           <div class="indicator-group-header">
             <input class="indicator-group-name" value="${safeText(g.name)}"
               placeholder="Group ${gi + 1}" data-nb-gname="${g.id}">
-            ${groups.length > 1 ? `<button type="button" class="nb-ind-close" data-nb-gremove="${g.id}" title="Remove group">\u00d7</button>` : ''}
+            ${groups.length > 1 ? `<button type="button" class="nb-ind-close" data-nb-gremove="${g.id}" title="Remove group" aria-label="Remove group">\u00d7</button>` : ''}
           </div>
           ${cards || '<div class="empty-config-msg" style="margin:8px 0;font-size:11px">No indicators — add one below</div>'}
           <button type="button" class="btn-add-group" data-nb-action="add-indicator" data-nb-gid="${g.id}">+ Add indicator</button>

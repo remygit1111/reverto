@@ -1044,15 +1044,24 @@ class PaperEngine:
             )
             return
 
-        # TP indicator groups — trigger TP even if price hasn't hit target
+        # TP indicator groups — trigger TP even if price hasn't hit target.
+        # Wrapped in try/except so a buggy indicator config or bad candle
+        # data can never abort the monitoring tick — backtest_engine.py
+        # already follows the same fail-soft contract.
         tp_groups = getattr(self.config.take_profit, 'indicator_groups', [])
         if tp_groups:
             bot_tf = self.config.timeframe
-            tp_hit, tp_info = self.indicator_engine.check_tp_indicator_groups(
-                self._closes_per_tf, bot_tf,
-                highs_per_tf=self._highs_per_tf,
-                lows_per_tf=self._lows_per_tf,
-            )
+            try:
+                tp_hit, tp_info = self.indicator_engine.check_tp_indicator_groups(
+                    self._closes_per_tf, bot_tf,
+                    highs_per_tf=self._highs_per_tf,
+                    lows_per_tf=self._lows_per_tf,
+                )
+            except Exception as e:
+                logger.debug(
+                    "TP indicator eval error: %s", str(e)[:200],
+                )
+                tp_hit, tp_info = False, None
             if tp_hit:
                 pnl_btc, pnl_pct = deal.calculate_pnl(price)
                 exit_size = deal.total_size

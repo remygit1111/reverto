@@ -380,3 +380,93 @@ bot:
     cfg2 = BotConfig(**data)
     assert cfg2.entry.indicator_groups[1].indicators[0].threshold == "below_35"
     assert cfg2.take_profit.indicator_groups[0].indicators[0].threshold == "above_70"
+
+
+# ── Schema migration (audit v18 MED) ─────────────────────────────────────────
+
+def test_migrate_schema_sets_user_version():
+    """init_db() bumps PRAGMA user_version to SCHEMA_VERSION on a
+    fresh install (the autouse fixture gives us exactly that)."""
+    conn = database.get_db()
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert version == database.SCHEMA_VERSION
+    assert database.SCHEMA_VERSION >= 2
+
+
+def test_migrate_schema_idempotent():
+    """Calling init_db() twice must not crash and must not change
+    user_version — we've already migrated on the first pass."""
+    database.init_db()
+    database.init_db()
+    conn = database.get_db()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
+
+
+def test_migrate_schema_adds_trigger_columns_on_legacy_db(tmp_path):
+    """Simulate a pre-v17 DB (no entry_trigger/exit_trigger columns,
+    user_version=0) and verify _migrate_schema adds both columns and
+    bumps the version pointer."""
+    legacy_db = tmp_path / "legacy.db"
+
+    # Rebuild a minimal "old" deals table without the trigger columns,
+    # write user_version=0 explicitly to pretend we predate v17.
+    import sqlite3
+    raw = sqlite3.connect(str(legacy_db))
+    raw.execute(
+        """
+        CREATE TABLE deals (
+            id TEXT PRIMARY KEY,
+            bot_slug TEXT NOT NULL,
+            bot_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            opened_at TEXT NOT NULL,
+            initial_price REAL NOT NULL,
+            total_size REAL NOT NULL
+        )
+        """
+    )
+    raw.execute("PRAGMA user_version = 0")
+    raw.commit()
+    raw.close()
+
+    # Hand the path to the module + re-init.
+    database.set_db_path(legacy_db)
+    database.init_db()
+
+    conn = database.get_db()
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(deals)").fetchall()}
+    assert "entry_trigger" in cols
+    assert "exit_trigger" in cols
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
+
+
+def test_migrate_schema_tolerates_existing_columns(tmp_path):
+    """Legacy DB that already has the trigger columns but user_version=0
+    (e.g. someone ran an older migration manually) must not crash on
+    ALTER — the try/except swallows OperationalError, version bumps."""
+    legacy_db = tmp_path / "partial.db"
+    import sqlite3
+    raw = sqlite3.connect(str(legacy_db))
+    raw.execute(
+        """
+        CREATE TABLE deals (
+            id TEXT PRIMARY KEY,
+            bot_slug TEXT NOT NULL,
+            bot_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            opened_at TEXT NOT NULL,
+            initial_price REAL NOT NULL,
+            total_size REAL NOT NULL,
+            entry_trigger TEXT,
+            exit_trigger TEXT
+        )
+        """
+    )
+    raw.execute("PRAGMA user_version = 0")
+    raw.commit()
+    raw.close()
+
+    database.set_db_path(legacy_db)
+    database.init_db()  # must not raise
+    conn = database.get_db()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION

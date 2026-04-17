@@ -823,10 +823,16 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
-# Order: SecurityHeaders added first (runs last on the response), Auth added
-# second (runs first on the request so 401s never leak past the gate).
-app.add_middleware(SecurityHeadersMiddleware)
+# Middleware order (Starlette wraps last-added = outermost):
+#   add_middleware(AuthMiddleware)            → runs inner
+#   add_middleware(SecurityHeadersMiddleware) → runs outer
+# Request flow:  SecurityHeaders → Auth → route handler
+# Response flow: route handler   → Auth → SecurityHeaders
+# This lets 401/403 short-circuits from Auth still pass through
+# SecurityHeaders on the way out, so *every* response — including
+# authentication failures — carries CSP / X-Frame-Options / etc.
 app.add_middleware(AuthMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -892,6 +898,7 @@ async def auth_logout():
 
 
 @app.get("/auth/status")
+@limiter.limit("120/minute")
 async def auth_status(request: Request):
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
     if payload:
@@ -974,7 +981,8 @@ def _compute_summary(bots: list[dict]) -> dict:
 
 
 @app.get("/api/bots")
-async def get_bots():
+@limiter.limit("120/minute")
+async def get_bots(request: Request):
     bots = [b.read_state() for b in await registry.all()]
 
     all_open = []
@@ -1002,7 +1010,8 @@ async def get_bots():
 
 
 @app.get("/api/bots/{slug}")
-async def get_bot(slug: str):
+@limiter.limit("120/minute")
+async def get_bot(slug: str, request: Request):
     bot = await registry.get(slug)
     if not bot:
         return {"error": f"Unknown bot: {slug}"}
@@ -1061,7 +1070,8 @@ async def api_portal_restart(request: Request, actor: str = Depends(_request_act
 
 
 @app.get("/api/portal/status")
-async def api_portal_status():
+@limiter.limit("60/minute")
+async def api_portal_status(request: Request):
     """Simple health check — browser polls this to detect when portal is back."""
     return {"ok": True, "pid": os.getpid()}
 
@@ -1185,13 +1195,18 @@ async def api_chart(
             # Expired — drop and fall through to refetch.
             _chart_cache.pop(key, None)
 
+    # Fetch OUTSIDE the lock. Concurrent cache-misses on different keys
+    # (pair × tf × limit) now parallelise through asyncio.to_thread
+    # instead of serialising through _chart_lock. If two concurrent
+    # requests hit the same missing key they both fetch and both
+    # write-back — that is acceptable duplication, the cached payload
+    # is identical either way.
     try:
         from exchanges.public_exchange import PublicExchange
-        async with _chart_lock:
-            client = PublicExchange("bitget")
-            raw = await asyncio.to_thread(
-                client.get_ohlcv, normalized, timeframe, limit
-            )
+        client = PublicExchange("bitget")
+        raw = await asyncio.to_thread(
+            client.get_ohlcv, normalized, timeframe, limit
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Exchange error: {str(e)[:200]}")
 
@@ -1443,13 +1458,20 @@ async def api_candles(
     start_ms = int(start_dt.timestamp() * 1000)
     end_ms = int(end_dt.timestamp() * 1000)
 
+    # Paginated fetch lives OUTSIDE the lock. _fetch_ohlcv_range walks
+    # `since` forward over many ccxt requests with a 0.15s sleep per
+    # page — for a 300k-bar range that was blocking _candles_lock for
+    # 45+ seconds and stalling every other /api/candles request.
+    # Concurrent fetches for different keys now run in parallel; if
+    # two requests hit the same missing key the duplicate pagination
+    # is acceptable cost for much better responsiveness on distinct
+    # ranges.
     try:
         from exchanges.public_exchange import PublicExchange
-        async with _candles_lock:
-            client = PublicExchange("bitget")
-            raw = await _fetch_ohlcv_range(
-                client, normalized, timeframe, start_ms, end_ms
-            )
+        client = PublicExchange("bitget")
+        raw = await _fetch_ohlcv_range(
+            client, normalized, timeframe, start_ms, end_ms
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Exchange error: {str(e)[:200]}")
 
@@ -1496,7 +1518,8 @@ _KNOWN_EXCHANGES = ("bitget", "kraken")
 
 
 @app.get("/api/exchanges")
-async def list_exchanges():
+@limiter.limit("60/minute")
+async def list_exchanges(request: Request):
     """Welke exchanges Reverto kent en of er credentials voor opgeslagen zijn."""
     return {
         "exchanges": [
@@ -1594,7 +1617,12 @@ async def create_bot(
 
 
 @app.get("/api/bots/{slug}/config")
-async def get_bot_config(slug: str, actor: str = Depends(_request_actor)):
+@limiter.limit("60/minute")
+async def get_bot_config(
+    slug: str,
+    request: Request,
+    actor: str = Depends(_request_actor),
+):
     path = _bot_yaml_path(slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
