@@ -3565,15 +3565,11 @@ function initCharts() {
       height: rsiEl.clientHeight || 100,
     });
     _chartSeries.rsi = _chartRsi.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
-    _chartSeries.rsi.createPriceLine({ price: 70, color: 'rgba(239,83,80,0.3)', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '' });
-    _chartSeries.rsi.createPriceLine({ price: 30, color: 'rgba(38,166,154,0.3)', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '' });
     const rsiCfgVal = _findIndicator('RSI');
-    if (rsiCfgVal) {
-      const parsed = _parseRsiThreshold(rsiCfgVal.threshold);
-      const tv = rsiCfgVal.rsi_value != null ? rsiCfgVal.rsi_value : parsed.value;
-      if (tv && tv !== 70 && tv !== 30) {
-        _chartSeries.rsi.createPriceLine({ price: tv, color: _cssVar('--accent', '#26a69a'), lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(tv) });
-      }
+    const rsiParsed = _parseRsiThreshold(rsiCfgVal?.threshold);
+    const rsiTv = rsiCfgVal?.rsi_value != null ? rsiCfgVal.rsi_value : rsiParsed.value;
+    if (rsiTv) {
+      _chartSeries.rsi.createPriceLine({ price: rsiTv, color: _cssVar('--accent', '#26a69a'), lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(rsiTv) });
     }
   }
   if (_hasIndicator('MACD')) {
@@ -4942,25 +4938,15 @@ function _wizardEnsureRsiChart() {
   _wizardSubSeries.rsi = _wizardChartRsi.addLineSeries({
     color: _cssVar('--blue', '#5b8dee'), lineWidth: 1,
   });
-  _wizardSubSeries.rsi.createPriceLine({
-    price: 70, color: 'rgba(239,83,80,0.3)',
-    lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '',
-  });
-  _wizardSubSeries.rsi.createPriceLine({
-    price: 30, color: 'rgba(38,166,154,0.3)',
-    lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '',
-  });
   const wizRsiCfg = (Array.isArray(nbState?.indicators) ? nbState.indicators : [])
     .find(i => i && String(i.type).toUpperCase() === 'RSI');
-  if (wizRsiCfg) {
-    const p = _parseRsiThreshold(wizRsiCfg.threshold);
-    const tv = wizRsiCfg.rsi_value != null ? wizRsiCfg.rsi_value : p.value;
-    if (tv && tv !== 70 && tv !== 30) {
-      _wizardSubSeries.rsi.createPriceLine({
-        price: tv, color: _cssVar('--accent', '#26a69a'),
-        lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(tv),
-      });
-    }
+  const wizRsiP = _parseRsiThreshold(wizRsiCfg?.threshold);
+  const wizRsiTv = wizRsiCfg?.rsi_value != null ? wizRsiCfg.rsi_value : wizRsiP.value;
+  if (wizRsiTv) {
+    _wizardSubSeries.rsi.createPriceLine({
+      price: wizRsiTv, color: _cssVar('--accent', '#26a69a'),
+      lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(wizRsiTv),
+    });
   }
   if (_wizardResizeObs) _wizardResizeObs.observe(el);
 }
