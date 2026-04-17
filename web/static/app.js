@@ -8296,7 +8296,7 @@ function btRenderDealTable(deals) {
     tbody.innerHTML = `<tr class="empty-row"><td colspan="${cols.length}">No deals</td></tr>`;
     return;
   }
-  tbody.innerHTML = sorted.map(d => {
+  tbody.innerHTML = sorted.map((d, i) => {
     const cells = {
       id:       `<td>${d.id}</td>`,
       opened:   `<td class="muted-cell">${safeText(fmtTime(d.opened_at))}</td>`,
