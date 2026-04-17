@@ -51,7 +51,12 @@ class BitgetExchange(BaseExchange):
             timestamp=data["timestamp"]
         )
 
-    def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 100) -> list:
+    def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 200) -> list:
+        """Fetch OHLCV candles. Bitget's inverse-swap endpoint caps a
+        single request at 200 bars — the ccxt wrapper accepts larger
+        limits but silently truncates, which produced spurious gaps in
+        backtest fetches. Defaulting to 200 keeps us inside the exchange
+        contract without needing pagination for the common case."""
         return self.client.fetch_ohlcv(self._symbol(symbol), timeframe, limit=limit)
 
     def get_position(self, symbol: str) -> Optional[Position]:
@@ -92,7 +97,13 @@ class BitgetExchange(BaseExchange):
             self.client.cancel_order(order_id, self._symbol(symbol))
             return True
         except Exception as e:
-            logger.warning("Bitget cancel_order failed for %s: %s", order_id, e)
+            # Truncate at 200 chars so a verbose ccxt/exchange stack
+            # frame can never flood the log line (or worse, echo a
+            # token fragment through a downstream operator dashboard).
+            logger.warning(
+                "Bitget cancel_order failed for %s: %s",
+                order_id, str(e)[:200],
+            )
             return False
 
     def get_open_orders(self, symbol: str) -> list[Order]:
@@ -104,7 +115,10 @@ class BitgetExchange(BaseExchange):
             self.client.set_leverage(leverage, self._symbol(symbol))
             return True
         except Exception as e:
-            logger.warning("Bitget set_leverage failed for %s: %s", symbol, e)
+            logger.warning(
+                "Bitget set_leverage failed for %s: %s",
+                symbol, str(e)[:200],
+            )
             return False
 
     def _parse_order(self, raw: dict, symbol: str) -> Order:

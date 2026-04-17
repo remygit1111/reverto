@@ -50,7 +50,22 @@ def check_macd_signal(closes: list[float],
                       use_percentile: bool = False) -> bool:
     """Check if MACD meets the configured condition.
 
-    use_percentile: normalize histogram relative to recent max absolute value.
+    use_percentile
+        Normalises the current histogram value against the maximum
+        absolute histogram seen in the last 100 candles (or fewer if
+        the series is shorter). This makes the same "histogram_positive"
+        or "histogram_negative" threshold comparable across quiet and
+        volatile market regimes — without normalisation, a $100 MACD
+        reading at a trending $80k BTC is effectively the same sign
+        strength as a $10 reading at a flat $5k BTC, and the raw
+        comparison is dominated by price scale.
+
+        Edge case: when the recent window contains only zeros (a perfectly
+        flat market, the `histogram_series` yields max_abs == 0), we fall
+        back to `hist_val = 0`. A zero histogram is not a positive or
+        negative signal, so this short-circuits into a "no signal"
+        state — safer than dividing by zero or propagating NaN through
+        the condition check.
     """
     macd_data = calculate_macd(closes)
 
@@ -65,6 +80,7 @@ def check_macd_signal(closes: list[float],
         lookback = min(100, len(macd_data["histogram_series"]))
         recent = macd_data["histogram_series"][-lookback:]
         max_abs = max(abs(h) for h in recent)
+        # Guard: flat histogram → no scale reference → no signal.
         hist_val = hist_val / max_abs if max_abs > 0 else 0
 
     conditions = {

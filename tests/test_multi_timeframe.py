@@ -212,6 +212,65 @@ class TestIndicatorGroups:
         assert triggered is False
         assert info is None
 
+    # ── 3+ group OR semantics (audit v17 LOW) ────────────────────────────────
+    #
+    # The series below is a pure uptrend: RSI → 100. Thresholds are
+    # chosen so `below_5` fails (100 < 5 is False) and `above_50`
+    # passes (100 > 50 is True). That lets the test exercise the OR
+    # short-circuit without having to stage complex price paths.
+
+    def test_three_groups_third_matches(self):
+        """Three groups — only the third passes → entry True (OR across groups)."""
+        g1 = _mock_group(1, [_rsi_indicator(tf="1h", threshold="below_5")])
+        g2 = _mock_group(2, [_rsi_indicator(tf="1h", threshold="below_10")])
+        g3 = _mock_group(3, [_rsi_indicator(tf="1h", threshold="above_50")])
+        eng = IndicatorEngine(_cfg_groups([g1, g2, g3]))
+        closes = [50000.0 + i * 100 for i in range(50)]  # rising → RSI high
+        triggered, info = eng.check_entry_signal({"1h": closes}, "1h")
+        assert triggered is True
+        # trigger_info must point at the MATCHING group (g3), not g1.
+        assert info["group_id"] == 3
+
+    def test_three_groups_all_false(self):
+        """Three groups — all fail → entry False, no trigger_info."""
+        g1 = _mock_group(1, [_rsi_indicator(tf="1h", threshold="below_5")])
+        g2 = _mock_group(2, [_rsi_indicator(tf="1h", threshold="below_5")])
+        g3 = _mock_group(3, [_rsi_indicator(tf="1h", threshold="below_5")])
+        eng = IndicatorEngine(_cfg_groups([g1, g2, g3]))
+        closes = [50000.0 + i * 100 for i in range(50)]  # rising → RSI ~100
+        triggered, info = eng.check_entry_signal({"1h": closes}, "1h")
+        assert triggered is False
+        assert info is None
+
+    def test_first_matching_group_wins(self):
+        """First matching group wins — trigger_info names group 1 even
+        if group 2 would also match. Locks the short-circuit contract
+        so the operator can read the log and know *which* filter fired
+        without guessing across multiple groups."""
+        # Both groups can match on this rising market (RSI high).
+        g1 = _mock_group(1, [_rsi_indicator(tf="1h", threshold="above_50")])
+        g2 = _mock_group(2, [_rsi_indicator(tf="1h", threshold="above_50")])
+        eng = IndicatorEngine(_cfg_groups([g1, g2]))
+        closes = [50000.0 + i * 100 for i in range(50)]
+        triggered, info = eng.check_entry_signal({"1h": closes}, "1h")
+        assert triggered is True
+        assert info["group_id"] == 1, "Expected group 1 to win on short-circuit"
+
+    def test_four_groups_middle_matches(self):
+        """Four groups — only group 3 (and 4) match → OR short-circuits on g3."""
+        fail_ind = _rsi_indicator(tf="1h", threshold="below_5")
+        pass_ind = _rsi_indicator(tf="1h", threshold="above_50")
+        g1 = _mock_group(1, [fail_ind])
+        g2 = _mock_group(2, [fail_ind])
+        g3 = _mock_group(3, [pass_ind])
+        g4 = _mock_group(4, [pass_ind])
+        eng = IndicatorEngine(_cfg_groups([g1, g2, g3, g4]))
+        closes = [50000.0 + i * 100 for i in range(50)]  # rising → RSI high
+        triggered, info = eng.check_entry_signal({"1h": closes}, "1h")
+        assert triggered is True
+        # Short-circuit still stops at first match — group 3, not 4.
+        assert info["group_id"] == 3
+
 
 # ── BacktestEngine: candles_per_tf validation ────────────────────────────────
 
