@@ -74,6 +74,60 @@ class IndicatorEngine:
     # Entry signal
     # ------------------------------------------------------------------
 
+    def _eval_groups(
+        self,
+        groups,
+        closes_per_tf: dict[str, list[float]],
+        bot_timeframe: str,
+        highs_per_tf: dict[str, list[float]] | None = None,
+        lows_per_tf: dict[str, list[float]] | None = None,
+        opens_per_tf: dict[str, list[float]] | None = None,
+        context: str = "Entry",
+    ) -> tuple[bool, dict | None]:
+        """Evaluate indicator groups with AND/OR logic.
+
+        Returns (triggered, trigger_info). trigger_info is a dict with
+        group_id, group_name, indicators when triggered, else None.
+        """
+        for group in groups:
+            if not hasattr(group, 'indicators') or not group.indicators:
+                continue
+            group_ok = True
+            for indicator in group.indicators:
+                tf = indicator.timeframe or bot_timeframe
+                closes = self._closes_for(
+                    closes_per_tf, tf,
+                    f"{context} indicator {indicator.type}")
+                if closes is None:
+                    group_ok = False
+                    break
+                highs = (highs_per_tf or {}).get(tf)
+                lows = (lows_per_tf or {}).get(tf)
+                opens = (opens_per_tf or {}).get(tf)
+                result = self._evaluate_indicator(
+                    indicator, closes, highs, lows, opens)
+                logger.info(
+                    f"{context} {indicator.type}@{tf} → "
+                    f"{'✅ SIGNAL' if result else '❌ no signal'}")
+                if not result:
+                    group_ok = False
+                    break
+            if group_ok:
+                gid = getattr(group, 'id', 0)
+                gname = getattr(group, 'name', '')
+                trigger = {
+                    "group_id": gid,
+                    "group_name": gname,
+                    "indicators": [
+                        ind.type for ind in group.indicators
+                    ],
+                }
+                logger.info(f"{context} signal: ✅ CONFIRMED (group {gname})")
+                return True, trigger
+
+        logger.info(f"{context} signal: ❌ NOT confirmed")
+        return False, None
+
     def check_entry_signal(
         self,
         closes_per_tf: dict[str, list[float]],
@@ -81,57 +135,37 @@ class IndicatorEngine:
         highs_per_tf: dict[str, list[float]] | None = None,
         lows_per_tf: dict[str, list[float]] | None = None,
         opens_per_tf: dict[str, list[float]] | None = None,
-    ) -> bool:
-        """Check entry indicators with AND/OR group logic.
-
-        If indicator_groups are configured: OR between groups, AND within.
-        Falls back to legacy flat indicators list (AND-only) for back-compat.
-        """
+    ) -> tuple[bool, dict | None]:
+        """Check entry indicators. Returns (triggered, trigger_info)."""
         all_inds = self._all_indicators()
         has_groups = bool(self.indicator_groups)
         if not all_inds and not has_groups:
             logger.debug("No entry indicators configured — signal always True")
-            return True
+            return True, None
 
         for ind in all_inds:
             if ind.type.upper() == "ASAP":
-                logger.info("Entry signal: ASAP indicator present — bypassing all filters")
-                return True
+                logger.info("ASAP indicator present — bypassing all filters")
+                return True, {"group_id": 0, "group_name": "ASAP",
+                              "indicators": ["ASAP"]}
 
         groups_to_eval = []
         if self.indicator_groups:
-            groups_to_eval = [g.indicators for g in self.indicator_groups if g.indicators]
-        if self.entry_indicators and not self.indicator_groups:
-            groups_to_eval = [self.entry_indicators]
+            groups_to_eval = [g for g in self.indicator_groups if g.indicators]
+        elif self.entry_indicators:
+            class _LegacyGroup:
+                def __init__(self, inds):
+                    self.id = 1
+                    self.name = "Default"
+                    self.indicators = inds
+            groups_to_eval = [_LegacyGroup(self.entry_indicators)]
 
         if not groups_to_eval:
-            return False
+            return False, None
 
-        for group_inds in groups_to_eval:
-            group_ok = True
-            for indicator in group_inds:
-                tf = indicator.timeframe or bot_timeframe
-                closes = self._closes_for(
-                    closes_per_tf, tf, f"Entry indicator {indicator.type}")
-                if closes is None:
-                    group_ok = False
-                    break
-                highs = (highs_per_tf or {}).get(tf)
-                lows = (lows_per_tf or {}).get(tf)
-                opens = (opens_per_tf or {}).get(tf)
-                result = self._evaluate_indicator(indicator, closes, highs, lows, opens)
-                logger.info(
-                    f"Indicator {indicator.type}@{tf} → "
-                    f"{'✅ SIGNAL' if result else '❌ no signal'}")
-                if not result:
-                    group_ok = False
-                    break
-            if group_ok:
-                logger.info("Entry signal: ✅ CONFIRMED (group match)")
-                return True
-
-        logger.info("Entry signal: ❌ NOT confirmed (no group matched)")
-        return False
+        return self._eval_groups(
+            groups_to_eval, closes_per_tf, bot_timeframe,
+            highs_per_tf, lows_per_tf, opens_per_tf, "Entry")
 
     # ------------------------------------------------------------------
     # TP confirmation
@@ -160,6 +194,21 @@ class IndicatorEngine:
         confirmed = check_macd_signal(closes, tp_indicator)
         logger.info(f"TP confirmation ({tp_indicator}): {'✅' if confirmed else '❌'}")
         return confirmed
+
+    def check_tp_indicator_groups(
+        self,
+        closes_per_tf: dict[str, list[float]],
+        bot_timeframe: str,
+        highs_per_tf: dict[str, list[float]] | None = None,
+        lows_per_tf: dict[str, list[float]] | None = None,
+    ) -> tuple[bool, dict | None]:
+        """Evaluate TP indicator groups. Returns (triggered, trigger_info)."""
+        tp_groups = getattr(self.config.take_profit, 'indicator_groups', [])
+        if not tp_groups:
+            return False, None
+        return self._eval_groups(
+            tp_groups, closes_per_tf, bot_timeframe,
+            highs_per_tf, lows_per_tf, context="TP")
 
     # ------------------------------------------------------------------
     # Dashboard snapshot

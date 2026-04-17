@@ -105,18 +105,18 @@ class TestFailClosed:
         # closes_per_tf has 1h but not 4h → the RSI indicator cannot
         # be evaluated → entry blocked.
         closes_per_tf = {"1h": [80000.0] * 50}
-        assert eng.check_entry_signal(closes_per_tf, "1h") is False
+        assert eng.check_entry_signal(closes_per_tf, "1h")[0] is False
 
     def test_empty_tf_list_blocks_entry(self):
         ind = _rsi_indicator(tf="1h")
         eng = IndicatorEngine(_cfg(indicators=[ind], bot_tf="1h"))
         # 1h present but empty list → still treated as missing
-        assert eng.check_entry_signal({"1h": []}, "1h") is False
+        assert eng.check_entry_signal({"1h": []}, "1h")[0] is False
 
     def test_no_indicators_returns_true_without_closes(self):
         eng = IndicatorEngine(_cfg(indicators=[], bot_tf="1h"))
         # No indicators configured → always enter, closes irrelevant
-        assert eng.check_entry_signal({}, "1h") is True
+        assert eng.check_entry_signal({}, "1h")[0] is True
 
     def test_tp_confirmation_fail_closed_on_missing(self):
         cfg = _cfg(indicators=[])
@@ -147,7 +147,7 @@ class TestIndicatorGroups:
         grp = _mock_group(1, [ind])
         eng = IndicatorEngine(_cfg_groups([grp]))
         closes = [50000.0 - i * 50 for i in range(50)]
-        assert eng.check_entry_signal({"1h": closes}, "1h") is True
+        assert eng.check_entry_signal({"1h": closes}, "1h")[0] is True
 
     def test_single_group_partial(self):
         """Group with indicator that fails → entry False."""
@@ -155,7 +155,7 @@ class TestIndicatorGroups:
         grp = _mock_group(1, [ind])
         eng = IndicatorEngine(_cfg_groups([grp]))
         closes = [50000.0 + i * 100 for i in range(50)]
-        assert eng.check_entry_signal({"1h": closes}, "1h") is False
+        assert eng.check_entry_signal({"1h": closes}, "1h")[0] is False
 
     def test_two_groups_or(self):
         """Group 1 fails, Group 2 passes → entry True (OR)."""
@@ -165,7 +165,7 @@ class TestIndicatorGroups:
         g2 = _mock_group(2, [ind2])
         eng = IndicatorEngine(_cfg_groups([g1, g2]))
         closes = [50000.0 - i * 50 for i in range(50)]
-        assert eng.check_entry_signal({"1h": closes}, "1h") is True
+        assert eng.check_entry_signal({"1h": closes}, "1h")[0] is True
 
     def test_two_groups_both_false(self):
         """Both groups fail → entry False."""
@@ -175,20 +175,42 @@ class TestIndicatorGroups:
         g2 = _mock_group(2, [ind2])
         eng = IndicatorEngine(_cfg_groups([g1, g2]))
         closes = [50000.0 + i * 100 for i in range(50)]
-        assert eng.check_entry_signal({"1h": closes}, "1h") is False
+        assert eng.check_entry_signal({"1h": closes}, "1h")[0] is False
 
     def test_empty_group(self):
         """Empty group → entry False."""
         g = _mock_group(1, [])
         eng = IndicatorEngine(_cfg_groups([g]))
-        assert eng.check_entry_signal({"1h": [50000.0] * 50}, "1h") is False
+        assert eng.check_entry_signal({"1h": [50000.0] * 50}, "1h")[0] is False
 
     def test_no_groups(self):
         """No groups and no indicators → entry True (back-compat)."""
         eng = IndicatorEngine(_cfg_groups([]))
         eng.entry_indicators = []
         eng.indicator_groups = []
-        assert eng.check_entry_signal({"1h": [50000.0] * 50}, "1h") is True
+        assert eng.check_entry_signal({"1h": [50000.0] * 50}, "1h")[0] is True
+
+    def test_trigger_info_on_match(self):
+        """Trigger info returned when group matches."""
+        ind = _rsi_indicator(tf="1h", threshold="below_80")
+        grp = _mock_group(1, [ind])
+        eng = IndicatorEngine(_cfg_groups([grp]))
+        closes = [50000.0 - i * 50 for i in range(50)]
+        triggered, info = eng.check_entry_signal({"1h": closes}, "1h")
+        assert triggered is True
+        assert info is not None
+        assert info["group_id"] == 1
+        assert "RSI" in info["indicators"]
+
+    def test_trigger_info_none_on_no_match(self):
+        """No trigger info when no group matches."""
+        ind = _rsi_indicator(tf="1h", threshold="below_10")
+        grp = _mock_group(1, [ind])
+        eng = IndicatorEngine(_cfg_groups([grp]))
+        closes = [50000.0 + i * 100 for i in range(50)]
+        triggered, info = eng.check_entry_signal({"1h": closes}, "1h")
+        assert triggered is False
+        assert info is None
 
 
 # ── BacktestEngine: candles_per_tf validation ────────────────────────────────
