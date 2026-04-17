@@ -413,6 +413,20 @@ function formatDateTime(iso) {
   const mm  = String(d.getMinutes()).padStart(2, '0');
   return `${day} ${mon} ${yr} ${hh}:${mm}`;
 }
+function fmtDateTimeNL(ts) {
+  const d = new Date(typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts);
+  if (!Number.isFinite(d.getTime())) return '--';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function fmtDateNL(ts) {
+  const d = new Date(typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts);
+  if (!Number.isFinite(d.getTime())) return '--';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()}`;
+}
 function timeAgo(iso) {
   if (!iso) return '—';
   const s = Math.floor((Date.now() - new Date(iso)) / 1000);
@@ -8080,6 +8094,7 @@ function btRenderResults(res) {
   const s = res.summary, r = res.ratios;
   const btDeals = res.deals || [];
   const btCandles = _btLastCandles;
+  _btDealPage = 0;
   btCleanupChart();
   _btLastCandles = btCandles;
   _btLastDeals = btDeals;
@@ -8253,6 +8268,8 @@ function btRenderWizardResults(res) {
 }
 
 let _btDealSort = { key: 'id', dir: 'asc' };
+let _btDealPage = 0;
+const _BT_DEALS_PER_PAGE = 25;
 
 function btRenderDealTable(deals) {
   const cols = loadColumns(BT_DEAL_LS_KEY, BT_DEAL_COLUMNS).filter(c => c.visible);
@@ -8292,14 +8309,19 @@ function btRenderDealTable(deals) {
     if (va > vb) return _btDealSort.dir === 'asc' ? 1 : -1;
     return 0;
   });
-  const fmtTime = t => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
+  const fmtTime = t => fmtDateTimeNL(t);
   const fmtDur = s => btFormatDuration(s / 3600);
   const tbody = $('bt-deals-tbody');
   if (!sorted.length) {
     tbody.innerHTML = `<tr class="empty-row"><td colspan="${cols.length}">No deals</td></tr>`;
+    const pg = $('bt-deals-pagination'); if (pg) pg.innerHTML = '';
     return;
   }
-  tbody.innerHTML = sorted.map((d, i) => {
+  const totalPages = Math.ceil(sorted.length / _BT_DEALS_PER_PAGE);
+  _btDealPage = Math.min(_btDealPage, totalPages - 1);
+  const pageDeals = sorted.slice(_btDealPage * _BT_DEALS_PER_PAGE, (_btDealPage + 1) * _BT_DEALS_PER_PAGE);
+  tbody.innerHTML = pageDeals.map((d, i) => {
+    const globalIdx = _btDealPage * _BT_DEALS_PER_PAGE + i;
     const cells = {
       id:       `<td>${d.id}</td>`,
       opened:   `<td class="muted-cell">${safeText(fmtTime(d.opened_at))}</td>`,
@@ -8314,8 +8336,19 @@ function btRenderDealTable(deals) {
       reason:   `<td class="muted-cell">${safeText(d.reason)}</td>`,
     };
     const cls = d.pnl_btc > 0 ? 'bt-deal-win' : (d.pnl_btc < 0 ? 'bt-deal-loss' : '');
-    return `<tr class="${cls} bt-deal-row" data-bt-deal="${i}" style="cursor:pointer">${cols.map(c => cells[c.key] || '<td></td>').join('')}</tr>`;
+    return `<tr class="${cls} bt-deal-row" data-bt-deal="${globalIdx}" style="cursor:pointer">${cols.map(c => cells[c.key] || '<td></td>').join('')}</tr>`;
   }).join('');
+  const pg = $('bt-deals-pagination');
+  if (pg && totalPages > 1) {
+    pg.innerHTML = `<button data-bt-page="prev" ${_btDealPage === 0 ? 'disabled' : ''}>&#9668; Prev</button>`
+      + `<span>Page ${_btDealPage + 1} / ${totalPages}</span>`
+      + `<button data-bt-page="next" ${_btDealPage >= totalPages - 1 ? 'disabled' : ''}>Next &#9658;</button>`;
+    pg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      if (b.dataset.btPage === 'prev' && _btDealPage > 0) _btDealPage--;
+      if (b.dataset.btPage === 'next' && _btDealPage < totalPages - 1) _btDealPage++;
+      btRenderDealTable(deals);
+    }));
+  } else if (pg) { pg.innerHTML = ''; }
 }
 
 // ── Backtest chart + deal click ──────────────────────────────────────────────
@@ -8324,12 +8357,17 @@ let _btCandleSeries = null;
 let _btLastDeals = null;
 let _btLastCandles = null;
 
+let _btMarkersPrimitive = null;
+let _btDealLines = [];
+
 function btInitChart(candles, deals) {
   _btLastCandles = candles;
   _btLastDeals = deals;
   const el = $('bt-chart-container');
   if (!el || !_chartLibAvailable()) return;
   if (_btCandleChart) { try { _btCandleChart.remove(); } catch (e) {} }
+  _btMarkersPrimitive = null;
+  _btDealLines = [];
   _btCandleChart = _lwcCreateChart(el, {
     ..._chartLayoutOpts(),
     width: el.clientWidth || 800,
@@ -8344,25 +8382,17 @@ function btInitChart(candles, deals) {
     wickDownColor: _cssVar('--red', '#ef5350'),
   });
   _btCandleSeries.setData(candles);
-  const markers = [];
-  for (const d of deals) {
-    const et = d.entry_time || d.opened_at;
-    const xt = d.exit_time || d.closed_at;
-    if (et) markers.push({
-      time: et, position: 'belowBar', shape: 'arrowUp',
-      color: '#26a69a', size: 1,
-    });
-    if (xt) markers.push({
-      time: xt, position: 'aboveBar',
-      shape: 'arrowDown',
-      color: d.reason === 'sl' ? '#ef5350' : '#26a69a', size: 1,
-    });
-  }
-  markers.sort((a, b) => a.time - b.time);
-  const csm = _LWC().createSeriesMarkers;
-  if (csm) csm(_btCandleSeries, markers);
-  else try { _btCandleSeries.setMarkers(markers); } catch (e) {}
   _btCandleChart.timeScale().fitContent();
+}
+
+function _btClearDealOverlay() {
+  for (const pl of _btDealLines) {
+    try { _btCandleSeries.removePriceLine(pl); } catch (e) {}
+  }
+  _btDealLines = [];
+  if (_btMarkersPrimitive) {
+    try { _btMarkersPrimitive.setMarkers([]); } catch (e) {}
+  }
 }
 
 function btShowDealOnChart(dealIdx) {
@@ -8372,29 +8402,54 @@ function btShowDealOnChart(dealIdx) {
   document.querySelectorAll('.bt-deal-row').forEach(r => r.classList.remove('selected'));
   const row = document.querySelector(`[data-bt-deal="${dealIdx}"]`);
   if (row) row.classList.add('selected');
-  const et = d.entry_time || d.opened_at;
-  const xt = d.exit_time || d.closed_at;
-  const ep = d.entry_price || (d.orders && d.orders[0] ? d.orders[0].price : 0);
-  const xp = d.exit_price || d.close_price || 0;
+  _btClearDealOverlay();
+  const et = d.opened_at;
+  const xt = d.closed_at;
+  const ep = d.entry_price || (d.orders?.[0]?.price || 0);
+  const xp = d.close_price || 0;
+  const markers = [];
+  if (et) markers.push({ time: et, position: 'belowBar', shape: 'arrowUp', color: '#26a69a', size: 1 });
+  if (d.orders) {
+    for (let oi = 1; oi < d.orders.length; oi++) {
+      const o = d.orders[oi];
+      if (o.time || et) markers.push({
+        time: o.time || et, position: 'belowBar', shape: 'arrowUp', color: '#5b8dee', size: 1 });
+    }
+  }
+  if (xt) markers.push({
+    time: xt, position: 'aboveBar', shape: 'arrowDown',
+    color: d.reason === 'sl' ? '#ef5350' : '#26a69a', size: 1 });
+  markers.sort((a, b) => a.time - b.time);
+  const csm = _LWC().createSeriesMarkers;
+  if (csm) {
+    if (!_btMarkersPrimitive) _btMarkersPrimitive = csm(_btCandleSeries, markers);
+    else _btMarkersPrimitive.setMarkers(markers);
+  } else { try { _btCandleSeries.setMarkers(markers); } catch (e) {} }
+  if (ep) _btDealLines.push(_btCandleSeries.createPriceLine({
+    price: ep, color: '#5b8dee', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: 'Entry' }));
+  if (xp && d.reason === 'tp') _btDealLines.push(_btCandleSeries.createPriceLine({
+    price: xp, color: '#26a69a', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'TP' }));
+  if (xp && d.reason === 'sl') _btDealLines.push(_btCandleSeries.createPriceLine({
+    price: xp, color: '#ef5350', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'SL' }));
+  const durSec = xt && et ? xt - et : 0;
+  const durH = Math.floor(durSec / 3600);
+  const durM = Math.floor((durSec % 3600) / 60);
+  const durStr = durSec > 0 ? `${durH}h ${durM}m` : '--';
   const info = $('bt-deal-info');
   if (info) {
-    const dur = xt && et ? Math.round((xt - et) / 3600) + 'h' : '--';
     info.innerHTML = `<strong>Deal #${safeText(String(d.id))}</strong>`
-      + ` &bull; ${new Date(et * 1000).toLocaleString()}<br>`
-      + `Entry: $${Number(ep).toLocaleString()}`
-      + ` &rarr; Exit: $${Number(xp).toLocaleString()}<br>`
+      + ` &bull; ${fmtDateTimeNL(et)}<br>`
+      + `Entry: ${fmtPrice(ep)} &rarr; Exit: ${fmtPrice(xp)}<br>`
       + `PnL: ${d.pnl_pct >= 0 ? '+' : ''}${d.pnl_pct?.toFixed(2) || '--'}%`
-      + ` &bull; Duration: ${dur} &bull; Exit: ${safeText(d.reason || '--')}`;
+      + ` &bull; Duration: ${durStr} &bull; Exit: ${safeText(d.reason || '--')}`;
     info.classList.add('visible');
   }
   if (et) {
     const pad = 10;
     const entryIdx = _btLastCandles.findIndex(c => c.time >= et);
-    const exitIdx = xt
-      ? _btLastCandles.findIndex(c => c.time >= xt) : entryIdx + 20;
+    const exitIdx = xt ? _btLastCandles.findIndex(c => c.time >= xt) : entryIdx + 20;
     const from = Math.max(0, (entryIdx >= 0 ? entryIdx : 0) - pad);
-    const to = Math.min(_btLastCandles.length - 1,
-      (exitIdx >= 0 ? exitIdx : entryIdx + 20) + pad);
+    const to = Math.min(_btLastCandles.length - 1, (exitIdx >= 0 ? exitIdx : entryIdx + 20) + pad);
     _btCandleChart.timeScale().setVisibleLogicalRange({ from, to });
   }
 }
