@@ -169,17 +169,54 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+# Schema version sentinel — stored in SQLite's built-in PRAGMA user_version.
+# Bump this whenever a new migration step is added below; _migrate_schema
+# only runs the steps up to the stored value and then writes the new one
+# so every operator's DB converges on the same shape without having to
+# re-scan the whole schema on every portal start.
+SCHEMA_VERSION = 2
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    """Apply ALTER TABLE migrations for pre-existing DBs that miss newer
-    columns. SQLite's CREATE TABLE IF NOT EXISTS skips columns on an
-    already-existing table, so v17 added entry_trigger/exit_trigger
-    need an explicit ALTER for bots whose reverto.db predates the
-    schema bump."""
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(deals)").fetchall()}
-    if "entry_trigger" not in cols:
-        conn.execute("ALTER TABLE deals ADD COLUMN entry_trigger TEXT DEFAULT NULL")
-    if "exit_trigger" not in cols:
-        conn.execute("ALTER TABLE deals ADD COLUMN exit_trigger TEXT DEFAULT NULL")
+    """Apply stepwise ALTER TABLE migrations on pre-existing DBs.
+
+    Uses PRAGMA user_version as a monotonic version pointer. Each `if
+    current < N` block is idempotent on its own — if the ALTER fails
+    because the column already exists (old install that predates the
+    version pointer), we swallow the OperationalError and move on,
+    then bump user_version so subsequent restarts skip the check
+    entirely.
+
+    Resilient on partial failures: a crash between ALTER and the
+    final user_version bump means the ALTER is re-attempted on next
+    start, and the try/except makes that safe.
+    """
+    current = conn.execute("PRAGMA user_version").fetchone()[0] or 0
+
+    # Step 1: v17 trigger metadata column (entry_trigger).
+    if current < 1:
+        try:
+            conn.execute(
+                "ALTER TABLE deals ADD COLUMN entry_trigger TEXT DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            # Column may already exist on installs that predate user_version.
+            pass
+
+    # Step 2: v17 trigger metadata column (exit_trigger).
+    if current < 2:
+        try:
+            conn.execute(
+                "ALTER TABLE deals ADD COLUMN exit_trigger TEXT DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
+
+    # Future migrations land here as `if current < N:` blocks, and
+    # SCHEMA_VERSION is bumped in lock-step.
+
+    if current != SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def init_db() -> None:

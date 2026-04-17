@@ -7,6 +7,29 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+# ── Domain exceptions ────────────────────────────────────────────────────────
+# Catch-these classes let callers (engine, tests, portal) distinguish
+# between the actionable error modes without depending on ccxt's exception
+# hierarchy directly. Exchange implementations translate ccxt errors
+# into these at the boundary so the rest of Reverto stays framework-agnostic.
+
+class ExchangeError(Exception):
+    """Base class for all exchange-layer errors surfaced to Reverto."""
+
+
+class InsufficientFundsError(ExchangeError):
+    """Order rejected because the margin/balance is too low."""
+
+
+class RateLimitError(ExchangeError):
+    """Exchange refused the request due to rate-limit saturation
+    after the built-in retry budget has been exhausted."""
+
+
+class ExchangeNetworkError(ExchangeError):
+    """Transient network or DNS failure reaching the exchange."""
+
+
 @dataclass
 class Position:
     """Represents an open position on an exchange."""
