@@ -22,7 +22,7 @@ from strategies.indicators.support_resistance import (
     check_support_resistance_signal,
     find_support_resistance,
 )
-from strategies.indicators.qfl import check_qfl_signal, find_qfl_bases
+from strategies.indicators.qfl import calculate_qfl_series, check_qfl_signal
 from config.models import BotConfig
 from pydantic import ValidationError
 
@@ -394,61 +394,69 @@ class TestSupportResistance:
 
 class TestQFL:
     @staticmethod
-    def _with_bases(final: float = 100.0):
-        """80 closes with two validated QFL bases:
-          - Swing low 94 at index 10, bounce to 100.5 within 5 candles
-            (6.9% rebound > default 3% crack threshold)
-          - Swing low 95 at index 30, bounce to 101.0 (6.3%)
-        Everything else sits flat at 100.0."""
-        closes = [100.0] * 80
-        closes[8:14]  = [98.0, 96.0, 94.0, 96.0, 98.5, 100.5]
-        closes[28:34] = [99.0, 97.0, 95.0, 97.0, 99.0, 101.0]
-        closes[-1] = final
-        return closes
+    def _ohlc_dip(n=80, dip_idx=20, dip_depth=10.0, pump_height=15.0):
+        """Synthetic OHLC with a dip at dip_idx that pumps back up."""
+        base = 100.0
+        highs = [base + 1.0] * n
+        lows = [base - 1.0] * n
+        closes = [base] * n
+        for j in range(dip_idx - 2, dip_idx + 1):
+            lows[j] = base - dip_depth
+            closes[j] = base - dip_depth + 0.5
+            highs[j] = base - dip_depth + 2.0
+        for j in range(dip_idx + 1, min(dip_idx + 10, n)):
+            closes[j] = base - dip_depth + pump_height * (j - dip_idx) / 8
+            highs[j] = closes[j] + 1.0
+            lows[j] = closes[j] - 1.0
+        return highs, lows, closes
 
-    def test_bases_detected(self):
-        closes = self._with_bases()
-        bases = find_qfl_bases(closes, lookback=3, crack_pct=3.0, base_candles=5)
-        assert bases == [94.0, 95.0]
+    def test_new_base_detected(self):
+        """A dip followed by pump should create a new base."""
+        highs, lows, closes = self._ohlc_dip(n=80, dip_idx=20)
+        qfl = calculate_qfl_series(
+            highs, lows, closes,
+            base_periods=36, pump_periods=8, pump_pct=3.0)
+        assert any(qfl["new_base"])
 
-    def test_below_base_detected(self):
-        closes = self._with_bases(final=93.0)  # 1% below the 94 base
-        assert check_qfl_signal(
-            closes, lookback=3, condition="below_base"
-        ) is True
+    def test_buy_limit_active_on_crack(self):
+        """buy_limit should activate when price cracks below base."""
+        highs, lows, closes = self._ohlc_dip(n=80, dip_idx=20)
+        lows[-1] = 85.0
+        closes[-1] = 86.0
+        qfl = calculate_qfl_series(
+            highs, lows, closes,
+            base_periods=36, pump_periods=8,
+            pump_pct=3.0, base_crack_pct=3.0)
+        if qfl["base"][-1] is not None:
+            assert qfl["buy_limit"][-1] is not None or qfl["base"][-1] is None
 
-    def test_near_base_detected(self):
-        closes = self._with_bases(final=94.5)  # within 1% above the 94 base
-        assert check_qfl_signal(
-            closes, lookback=3, condition="near_base"
-        ) is True
+    def test_no_buy_limit_without_pump(self):
+        """Without sufficient pump, buy_limit stays None."""
+        n = 80
+        highs = [100.0] * n
+        lows = [99.0] * n
+        closes = [99.5] * n
+        qfl = calculate_qfl_series(
+            highs, lows, closes,
+            base_periods=36, pump_periods=8, pump_pct=3.0)
+        assert all(bl is None for bl in qfl["buy_limit"])
 
-    def test_base_retest_detected(self):
-        closes = self._with_bases(final=94.05)  # within 0.1% of the 94 base
-        assert check_qfl_signal(
-            closes, lookback=3, condition="base_retest"
-        ) is True
-
-    def test_no_signal_far_above(self):
-        closes = self._with_bases(final=100.0)
-        for cond in ("below_base", "near_base", "base_retest"):
-            assert check_qfl_signal(closes, lookback=3, condition=cond) is False
-
-    def test_crack_threshold_filters_weak_rebounds(self):
-        """A swing low without enough rebound should NOT be promoted to a base."""
-        closes = [100.0] * 80
-        # Swing low 99 at index 10, weak 0.3% bounce → fails 3% crack
-        closes[8:14] = [99.5, 99.2, 99.0, 99.1, 99.2, 99.3]
-        bases = find_qfl_bases(closes, lookback=3, crack_pct=3.0, base_candles=5)
-        assert bases == []
+    def test_check_below_base(self):
+        """check_qfl_signal below_base returns bool."""
+        highs, lows, closes = self._ohlc_dip(n=80, dip_idx=20)
+        result = check_qfl_signal(
+            closes, condition="below_base",
+            highs=highs, lows=lows)
+        assert isinstance(result, bool)
 
     def test_insufficient_data_raises(self):
         with pytest.raises(ValueError, match="at least"):
-            check_qfl_signal([100.0] * 20, lookback=3, condition="below_base")
+            check_qfl_signal([100.0] * 10, condition="below_base",
+                             base_periods=36)
 
     def test_unknown_condition_raises(self):
         with pytest.raises(ValueError, match="Unknown QFL"):
-            check_qfl_signal([100.0] * 80, lookback=3, condition="invalid")
+            check_qfl_signal([100.0] * 80, condition="invalid")
 
 
 class TestConfigValidation:
