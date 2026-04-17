@@ -7044,7 +7044,12 @@ async function btFetchCandles(pair, tf, startIso, endIso, limit) {
     try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch (e) {}
     throw new Error(detail);
   }
-  return r.json();
+  const data = await r.json();
+  if (Array.isArray(data)) return data;
+  if (data.gaps && data.gaps > 0) {
+    console.warn(`[CANDLES] ${data.gaps} data gap(s) detected in candle data`);
+  }
+  return data.candles || data;
 }
 
 function _btComposeIso(dateStr, timeStr, fallback) {
@@ -8040,7 +8045,12 @@ async function btRunPipeline(opts) {
     if (!candles || candles.length < 50) {
       throw new Error(`Not enough candles (${candles ? candles.length : 0}) for backtest`);
     }
-    status.textContent = `Fetched ${candles.length.toLocaleString()} candles, starting simulation…`;
+    const tfSec = { '15m': 900, '30m': 1800, '1h': 3600, '2h': 7200, '4h': 14400, '12h': 43200, '1d': 86400 }[tf] || 3600;
+    let gapCount = 0;
+    for (let ci = 1; ci < candles.length; ci++) {
+      if (candles[ci].time - candles[ci - 1].time > tfSec * 2) gapCount++;
+    }
+    status.textContent = `Fetched ${candles.length.toLocaleString()} candles${gapCount ? ` (${gapCount} gap${gapCount > 1 ? 's' : ''})` : ''}, starting simulation…`;
     const engine = new RevertoBacktest(cfg, candles);
     _btLastCandles = candles;
     _btLastConfig = cfg;

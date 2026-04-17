@@ -1409,16 +1409,29 @@ async def api_candles(
         }
         for c in raw
     ]
+    gaps = 0
+    if len(payload) >= 2:
+        for j in range(1, len(payload)):
+            if payload[j]["time"] - payload[j - 1]["time"] > tf_s * 2:
+                gaps += 1
+    if gaps:
+        logger.warning(
+            "Candle data has %d gaps for %s %s (%d bars, %s→%s)",
+            gaps, normalized, timeframe, len(payload),
+            start_dt.isoformat(), end_dt.isoformat(),
+        )
+
     ttl = (
         _CANDLES_CACHE_TTL_LARGE
         if limit > _CANDLES_CACHE_LARGE_THRESHOLD
         else _CANDLES_CACHE_TTL
     )
-    _candles_cache[key] = (now + ttl, payload)
+    result = {"candles": payload, "gaps": gaps}
+    _candles_cache[key] = (now + ttl, result)
     _candles_cache.move_to_end(key)
     while len(_candles_cache) > _CANDLES_CACHE_MAX:
         _candles_cache.popitem(last=False)
-    return payload
+    return result
 
 
 # ── Exchange credentials API ──────────────────────────────────────────────────
