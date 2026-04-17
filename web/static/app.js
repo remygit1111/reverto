@@ -3248,6 +3248,7 @@ let _chartPendingDeal = null;
 let _chartDealMarkers = [];
 let _chartDealPriceLines = [];
 let _srLineSeries = [];
+let _psarLineSeries = [];
 // Indicator-driven markers (parabolic SAR + market structure) live here
 // so _setCombinedMarkers() can merge them with deal markers in a single
 // setMarkers() call — Lightweight Charts replaces the full array on each
@@ -3484,6 +3485,7 @@ function teardownChartTab() {
   // teardown → init can still re-apply the deal overlay after init.
   _chartDealPriceLines = [];
   _srLineSeries = [];
+  _psarLineSeries = [];
   _chartDealMarkers = [];
   _chartIndicatorMarkers = [];
   // Annotations toolbar teardown — leaving the chart tab and coming back
@@ -3726,15 +3728,51 @@ function _renderIndicatorOverlays(candles) {
       _chartCandles.createPriceLine({ price: b, color: _cssVar('--blue', '#5b8dee'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'QFL' });
     });
   }
-  // Markers — Parabolic SAR + Market Structure. Stash in module var so
-  // _setCombinedMarkers() can merge indicator markers with deal timeline
-  // markers (setMarkers replaces the array on every call).
+  // PARABOLIC_SAR — LineSeries dots at exact SAR price + flip arrows
+  for (const s of _psarLineSeries) {
+    try { if (_chartMain) _chartMain.removeSeries(s); } catch (e) {}
+  }
+  _psarLineSeries = [];
   const markers = [];
   const psCfg = _findIndicator('PARABOLIC_SAR');
-  if (psCfg) {
-    const ps = calcParabolicSARMarkers(candles, psCfg.initial_af || 0.02, psCfg.max_af || 0.20);
-    for (const p of ps) markers.push(p);
+  if (psCfg && _chartMain) {
+    const ps = calcParabolicSAR(candles, psCfg.initial_af || 0.02, psCfg.max_af || 0.20);
+    const bullData = [], bearData = [];
+    for (let i = 0; i < candles.length; i++) {
+      if (ps.sarValues[i] === null) continue;
+      const t = candles[i].time, v = ps.sarValues[i];
+      if (ps.dirs[i] === 1) {
+        bullData.push({ time: t, value: v });
+        bearData.push({ time: t, value: NaN });
+      } else {
+        bearData.push({ time: t, value: v });
+        bullData.push({ time: t, value: NaN });
+      }
+      if (i > 0 && ps.dirs[i] !== 0 && ps.dirs[i - 1] !== 0 && ps.dirs[i] !== ps.dirs[i - 1]) {
+        markers.push({
+          time: t,
+          position: ps.dirs[i] === 1 ? 'belowBar' : 'aboveBar',
+          shape: ps.dirs[i] === 1 ? 'arrowUp' : 'arrowDown',
+          color: ps.dirs[i] === 1 ? '#26a69a' : '#ef5350',
+          size: 1,
+        });
+      }
+    }
+    const addSarSeries = (data, color) => {
+      const filtered = data.filter(p => Number.isFinite(p.value));
+      if (!filtered.length) return;
+      const s = _chartMain.addLineSeries({
+        color, lineWidth: 1, lineStyle: 2,
+        priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData(filtered);
+      _psarLineSeries.push(s);
+    };
+    addSarSeries(bullData, '#3388bb');
+    addSarSeries(bearData, '#fdcc02');
   }
+  // Market Structure markers
   const msCfg = _findIndicator('MARKET_STRUCTURE');
   if (msCfg) {
     const ms = calcMarketStructureMarkers(candles, msCfg.lookback || 3);
@@ -5152,16 +5190,19 @@ function calcQFL(closes, lookback, crackPct, baseCandles, maxBases) {
   return bases.slice(-maxBases);
 }
 
-function calcParabolicSARMarkers(candles, initialAF, maxAF) {
+function calcParabolicSAR(candles, initialAF, maxAF) {
   const n = candles.length;
-  if (n < 10) return [];
+  if (n < 10) return { sarValues: [], dirs: [] };
   const hi = candles.map(c => c.high != null ? c.high : c.close);
   const lo = candles.map(c => c.low != null ? c.low : c.close);
   const cl = candles.map(c => c.close);
+  const sarValues = new Array(n).fill(null);
+  const dirs = new Array(n).fill(0);
   let trend, ep, sar, af = initialAF;
   if (cl[1] >= cl[0]) { trend = 1; ep = hi[1]; sar = lo[0]; }
   else                 { trend = -1; ep = lo[1]; sar = hi[0]; }
-  const out = [];
+  sarValues[0] = sar; dirs[0] = trend;
+  sarValues[1] = sar; dirs[1] = trend;
   for (let i = 2; i < n; i++) {
     let newSar = sar + af * (ep - sar);
     if (trend === 1) {
@@ -5173,15 +5214,10 @@ function calcParabolicSARMarkers(candles, initialAF, maxAF) {
       if (newSar < hi[i]) { trend = 1; sar = ep; ep = hi[i]; af = initialAF; }
       else { sar = newSar; if (lo[i] < ep) { ep = lo[i]; af = Math.min(af + initialAF, maxAF); } }
     }
-    out.push({
-      time: candles[i].time,
-      position: trend === 1 ? 'belowBar' : 'aboveBar',
-      color: '#2962FF',
-      shape: 'circle',
-      size: 1,
-    });
+    sarValues[i] = sar;
+    dirs[i] = sar < cl[i] ? 1 : -1;
   }
-  return out;
+  return { sarValues, dirs };
 }
 
 function calcMarketStructureMarkers(candles, lookback) {
