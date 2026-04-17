@@ -3692,33 +3692,38 @@ function _renderIndicatorOverlays(candles) {
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
     const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15);
-    const buildData = (series) => {
-      const data = [];
+    const renderSegments = (series, color, label) => {
+      const segs = [];
+      let segStart = null, segVal = null;
       for (let i = 0; i < candles.length; i++) {
-        if (series[i] !== null) data.push({ time: candles[i].time, value: series[i] });
+        if (series[i] === null) continue;
+        if (segVal === null) { segStart = i; segVal = series[i]; }
+        else if (series[i] !== segVal) {
+          segs.push({ start: segStart, end: i - 1, value: segVal });
+          segStart = i; segVal = series[i];
+        }
       }
-      return data;
+      if (segVal !== null) segs.push({ start: segStart, end: candles.length - 1, value: segVal });
+      for (const seg of segs) {
+        const data = [];
+        for (let j = seg.start; j <= seg.end; j++) data.push({ time: candles[j].time, value: seg.value });
+        const s = _chartMain.addLineSeries({
+          color, lineWidth: 2, lineStyle: 0,
+          priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        s.setData(data);
+        _srLineSeries.push(s);
+        if (seg.end === candles.length - 1) {
+          s.createPriceLine({
+            price: seg.value, color, lineWidth: 0, lineStyle: 0,
+            axisLabelVisible: true, title: label,
+          });
+        }
+      }
     };
-    const resData = buildData(sr.resSeries);
-    const supData = buildData(sr.supSeries);
-    if (resData.length > 0) {
-      const s = _chartMain.addLineSeries({
-        color: '#e53935', lineWidth: 2, lineStyle: 0, lineType: 2,
-        priceLineVisible: false, lastValueVisible: true,
-        crosshairMarkerVisible: false, title: 'R',
-      });
-      s.setData(resData);
-      _srLineSeries.push(s);
-    }
-    if (supData.length > 0) {
-      const s = _chartMain.addLineSeries({
-        color: '#1e88e5', lineWidth: 2, lineStyle: 0, lineType: 2,
-        priceLineVisible: false, lastValueVisible: true,
-        crosshairMarkerVisible: false, title: 'S',
-      });
-      s.setData(supData);
-      _srLineSeries.push(s);
-    }
+    renderSegments(sr.resSeries, '#e53935', 'R');
+    renderSegments(sr.supSeries, '#1e88e5', 'S');
   }
   // QFL — base price lines
   const qflCfg = _findIndicator('QFL');
@@ -4887,23 +4892,32 @@ function renderWizardOverlays() {
           const wCandles = _wizardCandleCache;
           const sr = calcSR(wCandles, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15);
           if (sr) {
-            const addWizSR = (series, color, label) => {
-              const data = [];
+            const wizSegments = (series, color, label) => {
+              const segs = [];
+              let segStart = null, segVal = null;
               for (let i = 0; i < wCandles.length; i++) {
-                if (series[i] !== null) data.push({ time: wCandles[i].time, value: series[i] });
+                if (series[i] === null) continue;
+                if (segVal === null) { segStart = i; segVal = series[i]; }
+                else if (series[i] !== segVal) {
+                  segs.push({ start: segStart, end: i - 1, value: segVal });
+                  segStart = i; segVal = series[i];
+                }
               }
-              if (data.length > 0) {
+              if (segVal !== null) segs.push({ start: segStart, end: wCandles.length - 1, value: segVal });
+              for (const seg of segs) {
+                const data = [];
+                for (let j = seg.start; j <= seg.end; j++) data.push({ time: wCandles[j].time, value: seg.value });
                 const ws = _wizardChart.addLineSeries({
-                  color, lineWidth: 2, lineStyle: 0, lineType: 2,
-                  priceLineVisible: false, lastValueVisible: true,
+                  color, lineWidth: 2, lineStyle: 0,
+                  priceLineVisible: false, lastValueVisible: false,
                   title: label, crosshairMarkerVisible: false,
                 });
                 ws.setData(data);
                 _wizardSrLineSeries.push(ws);
               }
             };
-            addWizSR(sr.resSeries, '#e53935', 'R');
-            addWizSR(sr.supSeries, '#1e88e5', 'S');
+            wizSegments(sr.resSeries, '#e53935', 'R');
+            wizSegments(sr.supSeries, '#1e88e5', 'S');
           }
         }
       }
