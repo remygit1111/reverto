@@ -5993,31 +5993,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Backtest tab wiring ────────────────────────────────────────────────
   const btRunBtn = $('bt-run-btn');
   if (btRunBtn) btRunBtn.addEventListener('click', btRunFromTab);
-  const btChartToggle = $('bt-chart-toggle');
-  if (btChartToggle) btChartToggle.addEventListener('click', () => {
-    const el = $('bt-chart-container');
-    if (!el) return;
-    if (el.style.display === 'none') {
-      el.style.display = 'block';
-      btChartToggle.textContent = 'Hide chart';
-      if (_btLastCandles && _btLastDeals) btInitChart(_btLastCandles, _btLastDeals);
-    } else {
-      btCleanupChart();
-      btChartToggle.textContent = 'Show chart';
-    }
-  });
   document.addEventListener('click', e => {
     const row = e.target.closest('.bt-deal-row');
     if (!row) return;
     const idx = parseInt(row.dataset.btDeal);
     if (isNaN(idx)) return;
-    const el = $('bt-chart-container');
-    if (el && el.style.display === 'none') {
-      el.style.display = 'block';
-      const btn = $('bt-chart-toggle');
-      if (btn) btn.textContent = 'Hide chart';
-      if (_btLastCandles && _btLastDeals) btInitChart(_btLastCandles, _btLastDeals);
-    }
     btShowDealOnChart(idx);
   });
   const btSweepBtn = $('bt-sweep-btn');
@@ -8100,8 +8080,11 @@ function btRenderResults(res) {
   const s = res.summary, r = res.ratios;
   _btLastDeals = res.deals || [];
   btCleanupChart();
-  const btn = $('bt-chart-toggle');
-  if (btn) btn.textContent = 'Show chart';
+  const chartEl = $('bt-chart-container');
+  if (chartEl && _btLastCandles && _btLastDeals.length) {
+    chartEl.style.display = 'block';
+    btInitChart(_btLastCandles, _btLastDeals);
+  }
   btRenderOpenDealsNote('bt-open-deals-note', s);
 
   // ── Returns ──────────────────────────────────────────────────────
@@ -8360,12 +8343,14 @@ function btInitChart(candles, deals) {
   _btCandleSeries.setData(candles);
   const markers = [];
   for (const d of deals) {
-    if (d.entry_time) markers.push({
-      time: d.entry_time, position: 'belowBar', shape: 'arrowUp',
+    const et = d.entry_time || d.opened_at;
+    const xt = d.exit_time || d.closed_at;
+    if (et) markers.push({
+      time: et, position: 'belowBar', shape: 'arrowUp',
       color: '#26a69a', size: 1,
     });
-    if (d.exit_time) markers.push({
-      time: d.exit_time, position: 'aboveBar',
+    if (xt) markers.push({
+      time: xt, position: 'aboveBar',
       shape: 'arrowDown',
       color: d.reason === 'sl' ? '#ef5350' : '#26a69a', size: 1,
     });
@@ -8384,23 +8369,26 @@ function btShowDealOnChart(dealIdx) {
   document.querySelectorAll('.bt-deal-row').forEach(r => r.classList.remove('selected'));
   const row = document.querySelector(`[data-bt-deal="${dealIdx}"]`);
   if (row) row.classList.add('selected');
+  const et = d.entry_time || d.opened_at;
+  const xt = d.exit_time || d.closed_at;
+  const ep = d.entry_price || (d.orders && d.orders[0] ? d.orders[0].price : 0);
+  const xp = d.exit_price || d.close_price || 0;
   const info = $('bt-deal-info');
   if (info) {
-    const dur = d.exit_time && d.entry_time
-      ? Math.round((d.exit_time - d.entry_time) / 3600) + 'h' : '--';
+    const dur = xt && et ? Math.round((xt - et) / 3600) + 'h' : '--';
     info.innerHTML = `<strong>Deal #${safeText(String(d.id))}</strong>`
-      + ` &bull; ${new Date(d.entry_time * 1000).toLocaleString()}<br>`
-      + `Entry: $${Number(d.entry_price).toLocaleString()}`
-      + ` &rarr; Exit: $${Number(d.exit_price || 0).toLocaleString()}<br>`
+      + ` &bull; ${new Date(et * 1000).toLocaleString()}<br>`
+      + `Entry: $${Number(ep).toLocaleString()}`
+      + ` &rarr; Exit: $${Number(xp).toLocaleString()}<br>`
       + `PnL: ${d.pnl_pct >= 0 ? '+' : ''}${d.pnl_pct?.toFixed(2) || '--'}%`
       + ` &bull; Duration: ${dur} &bull; Exit: ${safeText(d.reason || '--')}`;
     info.classList.add('visible');
   }
-  if (d.entry_time) {
+  if (et) {
     const pad = 10;
-    const entryIdx = _btLastCandles.findIndex(c => c.time >= d.entry_time);
-    const exitIdx = d.exit_time
-      ? _btLastCandles.findIndex(c => c.time >= d.exit_time) : entryIdx + 20;
+    const entryIdx = _btLastCandles.findIndex(c => c.time >= et);
+    const exitIdx = xt
+      ? _btLastCandles.findIndex(c => c.time >= xt) : entryIdx + 20;
     const from = Math.max(0, (entryIdx >= 0 ? entryIdx : 0) - pad);
     const to = Math.min(_btLastCandles.length - 1,
       (exitIdx >= 0 ? exitIdx : entryIdx + 20) + pad);
