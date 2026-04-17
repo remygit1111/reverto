@@ -6578,6 +6578,8 @@ class RevertoBacktest {
     }
     const combined = new Array(n).fill(false);
     for (let i = 0; i < n; i++) combined[i] = groupSignals.some(g => g[i]);
+    this._groupSignals = groupSignals;
+    this._groupMeta = (groups.length ? groups : flatInds.length ? [{ id: 1, name: 'Group 1', indicators: flatInds }] : []);
     return [combined];
   }
 
@@ -6659,6 +6661,19 @@ class RevertoBacktest {
           _btStatEntrySignalTrue++;
           if (hadOpenDealAtStart) _btStatSameCandleReopens++;
           this._lastEntryTrigger = { group_name: 'Entry', indicators: [] };
+          if (this._groupSignals && this._groupMeta) {
+            const sigIdx = i - 1;
+            for (let gi = 0; gi < this._groupSignals.length; gi++) {
+              if (this._groupSignals[gi][sigIdx]) {
+                const gm = this._groupMeta[gi];
+                this._lastEntryTrigger = {
+                  group_name: gm?.name || `Group ${gi + 1}`,
+                  indicators: (gm?.indicators || []).map(x => x.type),
+                };
+                break;
+              }
+            }
+          }
           if (window._BT_DEBUG && this.closed_deals.length < 10) {
             console.log('[BT] open deal #', this._deal_counter + 1,
               'at candle', i, 'price', candle.close);
