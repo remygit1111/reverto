@@ -3565,8 +3565,16 @@ function initCharts() {
       height: rsiEl.clientHeight || 100,
     });
     _chartSeries.rsi = _chartRsi.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
-    _chartSeries.rsi.createPriceLine({ price: 70, color: _cssVar('--red',  '#ef5350'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '70' });
-    _chartSeries.rsi.createPriceLine({ price: 30, color: _cssVar('--accent','#26a69a'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30' });
+    _chartSeries.rsi.createPriceLine({ price: 70, color: 'rgba(239,83,80,0.3)', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '' });
+    _chartSeries.rsi.createPriceLine({ price: 30, color: 'rgba(38,166,154,0.3)', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '' });
+    const rsiCfgVal = _findIndicator('RSI');
+    if (rsiCfgVal) {
+      const parsed = _parseRsiThreshold(rsiCfgVal.threshold);
+      const tv = rsiCfgVal.rsi_value != null ? rsiCfgVal.rsi_value : parsed.value;
+      if (tv && tv !== 70 && tv !== 30) {
+        _chartSeries.rsi.createPriceLine({ price: tv, color: _cssVar('--accent', '#26a69a'), lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(tv) });
+      }
+    }
   }
   if (_hasIndicator('MACD')) {
     const macdEl = $('chart-macd');
@@ -4935,13 +4943,25 @@ function _wizardEnsureRsiChart() {
     color: _cssVar('--blue', '#5b8dee'), lineWidth: 1,
   });
   _wizardSubSeries.rsi.createPriceLine({
-    price: 70, color: _cssVar('--red',    '#ef5350'),
-    lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '70',
+    price: 70, color: 'rgba(239,83,80,0.3)',
+    lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '',
   });
   _wizardSubSeries.rsi.createPriceLine({
-    price: 30, color: _cssVar('--accent', '#26a69a'),
-    lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '30',
+    price: 30, color: 'rgba(38,166,154,0.3)',
+    lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: '',
   });
+  const wizRsiCfg = (Array.isArray(nbState?.indicators) ? nbState.indicators : [])
+    .find(i => i && String(i.type).toUpperCase() === 'RSI');
+  if (wizRsiCfg) {
+    const p = _parseRsiThreshold(wizRsiCfg.threshold);
+    const tv = wizRsiCfg.rsi_value != null ? wizRsiCfg.rsi_value : p.value;
+    if (tv && tv !== 70 && tv !== 30) {
+      _wizardSubSeries.rsi.createPriceLine({
+        price: tv, color: _cssVar('--accent', '#26a69a'),
+        lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(tv),
+      });
+    }
+  }
   if (_wizardResizeObs) _wizardResizeObs.observe(el);
 }
 
