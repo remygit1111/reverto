@@ -2033,11 +2033,6 @@ function nbIndicatorFieldsHtml(ind, i) {
       </div>`;
   }
   if (ind.type === 'QFL') {
-    const lb = ind.lookback != null ? ind.lookback : 3;
-    const crack = ind.crack_pct != null ? ind.crack_pct : 3.0;
-    const bc = ind.base_candles != null ? ind.base_candles : 5;
-    const mb = ind.max_bases != null ? ind.max_bases : 5;
-    const bp = ind.below_pct != null ? ind.below_pct : 0.0;
     const basePer = ind.base_periods != null ? ind.base_periods : 36;
     const pumpPer = ind.pump_periods != null ? ind.pump_periods : 8;
     const pfb = ind.pump_from_base_pct != null ? ind.pump_from_base_pct : 3.0;
@@ -2046,47 +2041,26 @@ function nbIndicatorFieldsHtml(ind, i) {
       ['below_base', 'Below base'],
       ['near_base', 'Near base'],
       ['base_retest', 'Base retest'],
-      ['base_crack', 'Base crack'],
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle" data-hint="Candles used to detect base formation (local lows)">Lookback</label>
-        <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
-      </div>
-      <div class="form-row">
-        <label class="param-label-toggle" data-hint="Minimum drop percentage required to confirm a base crack">Crack %</label>
-        <input type="number" min="0" step="0.1" value="${crack}" data-nb-ind="${i}" data-nb-field="crack_pct">
-      </div>
-      <div class="form-row">
-        <label class="param-label-toggle" data-hint="Number of candles a base must consolidate before being valid">Base candles</label>
-        <input type="number" min="1" value="${bc}" data-nb-ind="${i}" data-nb-field="base_candles">
-      </div>
-      <div class="form-row">
-        <label class="param-label-toggle" data-hint="Maximum number of active bases tracked simultaneously">Max bases</label>
-        <input type="number" min="1" value="${mb}" data-nb-ind="${i}" data-nb-field="max_bases">
-      </div>
-      <div class="form-row">
-        <label class="param-label-toggle" data-hint="Trigger when price is this % below a base level">Below %</label>
-        <input type="number" min="0" step="0.1" value="${bp}" data-nb-ind="${i}" data-nb-field="below_pct">
-      </div>
-      <div class="form-row">
-        <label>Base periods</label>
+        <label class="param-label-toggle" data-hint="Number of candles to look for a low that may form a new base">Base periods</label>
         <input type="number" min="1" value="${basePer}" data-nb-ind="${i}" data-nb-field="base_periods">
       </div>
       <div class="form-row">
-        <label>Pump periods</label>
+        <label class="param-label-toggle" data-hint="Number of candles price must stay above the low to confirm a new base">Pump periods</label>
         <input type="number" min="1" value="${pumpPer}" data-nb-ind="${i}" data-nb-field="pump_periods">
       </div>
       <div class="form-row">
-        <label>Pump from base %</label>
+        <label class="param-label-toggle" data-hint="Minimum % pump from base required before a crack signal is valid">Pump from base %</label>
         <input type="number" min="0.1" step="0.1" value="${pfb}" data-nb-ind="${i}" data-nb-field="pump_from_base_pct">
       </div>
       <div class="form-row">
-        <label>Base crack %</label>
+        <label class="param-label-toggle" data-hint="% below base that triggers the buy signal. Buy limit = base x (1 - crack%)">Base crack %</label>
         <input type="number" min="0.1" step="0.1" value="${bcp}" data-nb-ind="${i}" data-nb-field="base_crack_pct">
       </div>
       <div class="form-row">
-        <label class="param-label-toggle" data-hint="Below base = price cracked through. Near base = approaching. Retest = returning after crack.">Condition</label>
+        <label class="param-label-toggle" data-hint="Below base = buy limit active. Near base = price approaching. Retest = price returning to base.">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${QFL_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -2591,16 +2565,11 @@ function nbBuildBotConfig() {
           if (i.volume_threshold) out.volume_threshold = i.volume_threshold;
           if (i.min_touches != null && i.min_touches > 1) out.min_touches = i.min_touches;
         } else if (i.type === 'QFL') {
-          out.lookback = i.lookback != null ? i.lookback : 3;
-          out.crack_pct = i.crack_pct != null ? i.crack_pct : 3.0;
-          out.base_candles = i.base_candles != null ? i.base_candles : 5;
-          out.max_bases = i.max_bases != null ? i.max_bases : 5;
-          out.below_pct = i.below_pct != null ? i.below_pct : 0.0;
           out.condition = i.condition || 'below_base';
-          if (i.base_periods != null) out.base_periods = i.base_periods;
-          if (i.pump_periods != null) out.pump_periods = i.pump_periods;
-          if (i.pump_from_base_pct != null) out.pump_from_base_pct = i.pump_from_base_pct;
-          if (i.base_crack_pct != null) out.base_crack_pct = i.base_crack_pct;
+          out.base_periods = i.base_periods != null ? i.base_periods : 36;
+          out.pump_periods = i.pump_periods != null ? i.pump_periods : 8;
+          out.pump_from_base_pct = i.pump_from_base_pct != null ? i.pump_from_base_pct : 3.0;
+          out.base_crack_pct = i.base_crack_pct != null ? i.base_crack_pct : 3.0;
         }
         return out;
       }),
@@ -3249,6 +3218,7 @@ let _chartDealMarkers = [];
 let _chartDealPriceLines = [];
 let _srLineSeries = [];
 let _psarLineSeries = [];
+let _qflLineSeries = [];
 // Indicator-driven markers (parabolic SAR + market structure) live here
 // so _setCombinedMarkers() can merge them with deal markers in a single
 // setMarkers() call — Lightweight Charts replaces the full array on each
@@ -3487,6 +3457,7 @@ function teardownChartTab() {
   _chartDealPriceLines = [];
   _srLineSeries = [];
   _psarLineSeries = [];
+  _qflLineSeries = [];
   _chartDealMarkers = [];
   _chartIndicatorMarkers = [];
   // Annotations toolbar teardown — leaving the chart tab and coming back
@@ -3716,18 +3687,37 @@ function _renderIndicatorOverlays(candles) {
     renderSegments(sr.resSeries, '#e53935', 'R');
     renderSegments(sr.supSeries, '#1e88e5', 'S');
   }
-  // QFL — base price lines
+  // QFL — base segments + buy limit
+  for (const s of _qflLineSeries) {
+    try { if (_chartMain) _chartMain.removeSeries(s); } catch (e) {}
+  }
+  _qflLineSeries = [];
   const qflCfg = _findIndicator('QFL');
-  if (qflCfg) {
-    const lookback = qflCfg.lookback || 3;
-    const crack    = qflCfg.crack_pct || 3.0;
-    const baseN    = qflCfg.base_candles || 5;
-    const maxBases = qflCfg.max_bases || 5;
-    const closes = candles.map(c => c.close);
-    const bases  = calcQFL(closes, lookback, crack, baseN, maxBases);
-    bases.forEach(b => {
-      _chartCandles.createPriceLine({ price: b, color: _cssVar('--blue', '#5b8dee'), lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: 'QFL' });
-    });
+  if (qflCfg && _chartMain) {
+    const qfl = calcQFL(candles, qflCfg.base_periods || 36, qflCfg.pump_periods || 8,
+      qflCfg.pump_from_base_pct || 3.0, qflCfg.base_crack_pct || 3.0);
+    const segs = [];
+    let segStart = null, segVal = null;
+    for (let i = 0; i < candles.length; i++) {
+      if (qfl.baseSeries[i] === null) continue;
+      if (segVal === null) { segStart = i; segVal = qfl.baseSeries[i]; }
+      else if (qfl.baseSeries[i] !== segVal) {
+        segs.push({ start: segStart, end: i - 1, value: segVal });
+        segStart = i; segVal = qfl.baseSeries[i];
+      }
+    }
+    if (segVal !== null) segs.push({ start: segStart, end: candles.length - 1, value: segVal });
+    for (const seg of segs) {
+      const data = [];
+      for (let j = seg.start; j <= seg.end; j++) data.push({ time: candles[j].time, value: seg.value });
+      const s = _chartMain.addLineSeries({
+        color: '#f050a0', lineWidth: 1, lineStyle: 2,
+        priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData(data);
+      _qflLineSeries.push(s);
+    }
   }
   // PARABOLIC_SAR — LineSeries dots at exact SAR price + flip arrows
   for (const s of _psarLineSeries) {
@@ -5209,20 +5199,49 @@ function calcSR(candles, leftBars, rightBars, volumeThreshold, minTouches) {
   return { resSeries, supSeries };
 }
 
-function calcQFL(closes, lookback, crackPct, baseCandles, maxBases) {
-  const bases = [];
-  for (let i = lookback; i < closes.length - lookback; i++) {
-    const pivot = closes[i];
-    const left  = closes.slice(i - lookback, i);
-    const right = closes.slice(i + 1, i + 1 + lookback);
-    if (left.every(x => pivot < x) && right.every(x => pivot < x)) {
-      const end = Math.min(i + 1 + baseCandles, closes.length);
-      const window = closes.slice(i + 1, end);
-      const rebound = window.length ? Math.max(...window) : pivot;
-      if (rebound >= pivot * (1 + crackPct / 100)) bases.push(pivot);
+function calcQFL(candles, basePeriods, pumpPeriods, pumpPct, baseCrackPct) {
+  const n = candles.length;
+  const bp = basePeriods || 36;
+  const pp = Math.min(pumpPeriods || 8, bp - 1);
+  const pumpFrac = (pumpPct || 3.0) / 100;
+  const crackFrac = (baseCrackPct || 3.0) / 100;
+  const hi = candles.map(c => c.high != null ? c.high : c.close);
+  const lo = candles.map(c => c.low != null ? c.low : c.close);
+  const baseSeries = new Array(n).fill(null);
+  const buyLimitSeries = new Array(n).fill(null);
+  const newBaseSeries = new Array(n).fill(false);
+  let curBase = null, curHH = null;
+  for (let i = 0; i < n; i++) {
+    const start = Math.max(0, i - bp + 1);
+    let lowestLow = Infinity;
+    for (let k = start; k <= i; k++) if (lo[k] < lowestLow) lowestLow = lo[k];
+    let newBase = false;
+    if (i >= pp + 1) {
+      const endPp1 = Math.max(1, i - pp);
+      const endPp = i - pp + 1;
+      const sPp1 = Math.max(0, endPp1 - bp);
+      const sPp = Math.max(0, endPp - bp);
+      let llPp1 = Infinity, llPp = Infinity;
+      for (let k = sPp1; k < endPp1; k++) if (lo[k] < llPp1) llPp1 = lo[k];
+      for (let k = sPp; k < endPp; k++) if (lo[k] < llPp) llPp = lo[k];
+      newBase = (llPp1 > llPp) && (llPp === lowestLow);
     }
+    const hhStart = Math.max(0, i - pp + 1);
+    let offsetHigh = -Infinity;
+    for (let k = hhStart; k <= i; k++) if (hi[k] > offsetHigh) offsetHigh = hi[k];
+    if (newBase || curHH === null || hi[i] > curHH) curHH = offsetHigh;
+    if (newBase) curBase = lowestLow;
+    let buyLimit = null;
+    if (curBase !== null && curHH !== null && curBase > 0) {
+      const pumpOk = (curHH - curBase) / curBase > pumpFrac;
+      const crackOk = (curBase - lo[i]) / curBase > crackFrac;
+      if (pumpOk && crackOk) buyLimit = curBase * (1 - crackFrac);
+    }
+    baseSeries[i] = curBase;
+    buyLimitSeries[i] = buyLimit;
+    newBaseSeries[i] = newBase;
   }
-  return bases.slice(-maxBases);
+  return { baseSeries, buyLimitSeries, newBaseSeries };
 }
 
 function calcParabolicSAR(candles, initialAF, maxAF) {
@@ -5512,12 +5531,12 @@ function setupEventListeners() {
         'period', 'fast', 'slow',
         'rsi_value', 'macd_fast', 'macd_slow', 'macd_signal',
         'atr_period', 'lookback', 'min_touches',
-        'base_candles', 'max_bases',
+        'base_periods', 'pump_periods',
       ];
       const floatFields = [
         'multiplier', 'initial_af', 'max_af',
         'proximity_pct', 'volume_threshold', 'squeeze_threshold',
-        'crack_pct', 'below_pct',
+        'pump_from_base_pct', 'base_crack_pct',
       ];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;
       else if (floatFields.includes(f)) v = parseFloat(v) || 0;
@@ -6104,19 +6123,16 @@ class RevertoBacktest {
           else if (cond === 'above_resistance' && res !== null && c > res) arr[i] = true;
         }
       } else if (type === 'QFL') {
-        const lb = ind.lookback != null ? ind.lookback : 3;
-        const crackPct = ind.crack_pct != null ? ind.crack_pct : 3.0;
-        const baseN = ind.base_candles != null ? ind.base_candles : 5;
-        const maxBases = ind.max_bases != null ? ind.max_bases : 5;
-        const belowPct = ind.below_pct != null ? ind.below_pct : 0.0;
         const cond = ind.condition || 'below_base';
+        const qfl = calcQFL(this.candles, ind.base_periods || 36, ind.pump_periods || 8,
+          ind.pump_from_base_pct || 3.0, ind.base_crack_pct || 3.0);
         const closes = this.candles.map(c => c.close);
-        const bases = calcQFL(closes, lb, crackPct, baseN, maxBases);
         for (let i = 0; i < n; i++) {
-          const c = closes[i];
-          if (cond === 'below_base' && bases.some(b => c <= b * (1 - belowPct / 100))) arr[i] = true;
-          else if (cond === 'near_base' && bases.some(b => c >= b && c <= b * 1.01)) arr[i] = true;
-          else if (cond === 'base_retest' && bases.some(b => Math.abs(c - b) / b * 100 < 0.1 && c >= b)) arr[i] = true;
+          const base = qfl.baseSeries[i];
+          const bl = qfl.buyLimitSeries[i];
+          if (cond === 'below_base' && bl !== null) arr[i] = true;
+          else if (cond === 'near_base' && base !== null && Math.abs(closes[i] - base) / base < 0.005) arr[i] = true;
+          else if (cond === 'base_retest' && base !== null && closes[i] >= base * 0.998 && closes[i] <= base * 1.002) arr[i] = true;
         }
       } else {
         for (let i = 0; i < n; i++) arr[i] = true;

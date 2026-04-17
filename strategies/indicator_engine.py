@@ -312,16 +312,13 @@ class IndicatorEngine:
         elif itype == "QFL":
             return check_qfl_signal(
                 closes,
-                lookback=indicator.lookback or 3,
-                crack_pct=indicator.crack_pct or 3.0,
-                base_candles=indicator.base_candles or 5,
-                max_bases=indicator.max_bases or 5,
-                below_pct=indicator.below_pct if indicator.below_pct is not None else 0.0,
                 condition=indicator.condition or "below_base",
-                base_periods=indicator.base_periods,
-                pump_periods=indicator.pump_periods,
-                pump_from_base_pct=indicator.pump_from_base_pct,
-                base_crack_pct=indicator.base_crack_pct,
+                base_periods=indicator.base_periods or 36,
+                pump_periods=indicator.pump_periods or 8,
+                pump_from_base_pct=indicator.pump_from_base_pct or 3.0,
+                base_crack_pct=indicator.base_crack_pct or 3.0,
+                highs=highs,
+                lows=lows,
             )
         else:
             logger.warning(

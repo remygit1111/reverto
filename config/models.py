@@ -92,14 +92,10 @@ class IndicatorConfig(BaseModel):
     volume_threshold: Optional[float] = None
     min_touches: Optional[int] = None
     # QFL Base Scanner
-    crack_pct: Optional[float] = None
-    base_candles: Optional[int] = None
     base_periods: Optional[int] = None
     pump_periods: Optional[int] = None
     pump_from_base_pct: Optional[float] = None
     base_crack_pct: Optional[float] = None
-    max_bases: Optional[int] = None
-    below_pct: Optional[float] = None
 
 
 class EntryConfig(BaseModel):
