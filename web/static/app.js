@@ -3334,7 +3334,7 @@ function _chartLayoutOpts() {
     },
     localization: { timeFormatter: _tzFormatter },
     timeScale: { timeVisible: true, secondsVisible: false },
-    rightPriceScale: { borderColor: c.gridColor, minimumWidth: 90 },
+    rightPriceScale: { borderColor: c.gridColor },
     crosshair: { mode: 0 },
   };
 }
@@ -3562,9 +3562,11 @@ function initCharts() {
   if (_hasIndicator('RSI')) {
     const rsiEl = $('chart-rsi');
     rsiEl.classList.remove('hidden');
+    rsiEl.style.paddingRight = '80px';
+    rsiEl.style.boxSizing = 'border-box';
     _chartRsi = LightweightCharts.createChart(rsiEl, {
       ..._chartLayoutOpts(),
-      width:  rsiEl.clientWidth,
+      width:  rsiEl.clientWidth - 80,
       height: rsiEl.clientHeight || 100,
       rightPriceScale: { visible: false },
       timeScale: { visible: false },
@@ -3580,9 +3582,11 @@ function initCharts() {
   if (_hasIndicator('MACD')) {
     const macdEl = $('chart-macd');
     macdEl.classList.remove('hidden');
+    macdEl.style.paddingRight = '80px';
+    macdEl.style.boxSizing = 'border-box';
     _chartMacd = LightweightCharts.createChart(macdEl, {
       ..._chartLayoutOpts(),
-      width:  macdEl.clientWidth,
+      width:  macdEl.clientWidth - 80,
       height: macdEl.clientHeight || 100,
       rightPriceScale: { visible: false },
       timeScale: { visible: false },
