@@ -3774,8 +3774,8 @@ function _renderIndicatorOverlays(candles) {
       })));
       _psarLineSeries.push(s);
     };
-    addSarSeries(bullData, '#3388bb');
-    addSarSeries(bearData, '#fdcc02');
+    addSarSeries(bullData, 'rgba(51, 136, 187, 0.6)');
+    addSarSeries(bearData, 'rgba(253, 204, 2, 0.6)');
   }
   // Market Structure markers
   const msCfg = _findIndicator('MARKET_STRUCTURE');
@@ -4940,8 +4940,8 @@ function renderWizardOverlays() {
             })));
             _wizardPsarSeries.push(s);
           };
-          addWizPsar(bullD, '#3388bb');
-          addWizPsar(bearD, '#fdcc02');
+          addWizPsar(bullD, 'rgba(51, 136, 187, 0.6)');
+          addWizPsar(bearD, 'rgba(253, 204, 2, 0.6)');
         }
       } else if (t === 'SUPPORT_RESISTANCE') {
         if (typeof calcSR === 'function' && _wizardCandleCache && _wizardChart) {
