@@ -6155,6 +6155,9 @@ class RevertoBacktest {
     this._entryFilterUtc = config.entryFilterUtc !== false;
     this._tp_enabled = !config.take_profit || config.take_profit.enabled !== false;
     this._tp_pct   = (config.take_profit && config.take_profit.target_pct) || 3.0;
+    this._tp_price_enabled = !config.take_profit || config.take_profit.price_enabled !== false;
+    this._tp_ind_groups = (config.take_profit?.indicator_groups || []).filter(g => g.indicators?.length);
+    this.config = config;
     this._sl_pct   = (config.stop_loss   && config.stop_loss.pct)          || 5.0;
     this._sl_type  = (config.stop_loss   && config.stop_loss.type)         || 'fixed';
     this._dca_enabled = !config.dca || config.dca.enabled !== false;
@@ -6206,14 +6209,58 @@ class RevertoBacktest {
     let s = 0; for (const o of deal.orders) s += o.size; return s;
   }
 
-  _checkTp(deal, candle) {
+  _checkTp(deal, candle, candleIdx) {
     if (!this._tp_enabled) return false;
     const avg = this._avgEntry(deal);
     const tpPrice = avg * (1 + this._tp_pct / 100);
-    if (candle.high >= tpPrice) {
+    if (this._tp_price_enabled && candle.high >= tpPrice) {
+      deal.exit_trigger = 'price_tp';
       this._closeDeal(deal, tpPrice, 'tp', candle.time);
       return true;
     }
+    if (this._tp_ind_groups.length && candleIdx != null) {
+      for (const g of this._tp_ind_groups) {
+        let allTrue = true;
+        for (const ind of g.indicators) {
+          if (!this._evalTpIndicator(ind, candleIdx)) { allTrue = false; break; }
+        }
+        if (allTrue) {
+          deal.exit_trigger = 'indicator_tp';
+          this._closeDeal(deal, candle.close, 'tp', candle.time);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  _evalTpIndicator(ind, i) {
+    const t = (ind.type || '').toUpperCase();
+    const c = this.candles;
+    if (i < 1) return false;
+    try {
+      if (t === 'RSI') {
+        const line = calcRSILine(c, ind.period || 14);
+        const tMap = new Map(line.map(p => [p.time, p.value]));
+        const v = tMap.get(c[i].time);
+        if (v == null) return false;
+        const thr = (ind.threshold || 'above_70').toString();
+        const m = thr.match(/^([a-z_]+)_(\d+)/i);
+        const cond = m ? m[1] : 'above', val = m ? parseInt(m[2], 10) : 70;
+        if (cond === 'above') return v > val;
+        if (cond === 'below') return v < val;
+        return false;
+      }
+      if (t === 'MACD') {
+        const md = calcMACDLines(c, ind.macd_fast || 12, ind.macd_slow || 26, ind.macd_signal || 9);
+        const hMap = new Map(md.histogram.map(p => [p.time, p.value]));
+        const h = hMap.get(c[i].time);
+        const cond = ind.condition || 'histogram_positive';
+        if (cond === 'histogram_positive') return h != null && h > 0;
+        if (cond === 'histogram_negative') return h != null && h < 0;
+        return false;
+      }
+    } catch (e) {}
     return false;
   }
 
@@ -6306,7 +6353,7 @@ class RevertoBacktest {
       reason,
       total_size: size,
       entry_trigger: deal.entry_trigger || null,
-      exit_trigger: reason === 'tp' ? 'price_tp' : reason === 'sl' ? 'price_sl' : reason,
+      exit_trigger: deal.exit_trigger || (reason === 'tp' ? 'price_tp' : reason === 'sl' ? 'price_sl' : reason),
     });
     this.open_deal = null;
   }
@@ -6572,7 +6619,7 @@ class RevertoBacktest {
       const candle = this.candles[i];
       const hadOpenDealAtStart = !!this.open_deal;
       if (this.open_deal) {
-        const closed = this._checkTp(this.open_deal, candle)
+        const closed = this._checkTp(this.open_deal, candle, i)
                     || this._checkSl(this.open_deal, candle);
         if (closed) _btStatCloses++;
         if (!closed && this.open_deal) this._checkDca(this.open_deal, candle);
