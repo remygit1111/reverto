@@ -1569,8 +1569,6 @@ const NB_INDICATOR_DESCRIPTIONS = {
   RSI:
     "Measures momentum. Signals when the market is overbought or oversold " +
     "based on recent price changes.",
-  EMA_CROSS:
-    "Compares two moving averages. A crossover signals a potential trend change.",
   MACD:
     "Tracks trend momentum using the difference between two moving averages " +
     "and a signal line.",
@@ -1940,7 +1938,6 @@ function nbRenderIndicators() {
   }
   list.innerHTML = nbState.indicators.map((ind, i) => {
     const typeClass = ind.type === 'RSI' ? 'type-rsi'
-                    : ind.type === 'EMA_CROSS' ? 'type-ema'
                     : ind.type === 'MACD' ? 'type-macd'
                     : ind.type === 'BOLLINGER' ? 'type-bollinger'
                     : ind.type === 'PARABOLIC_SAR' ? 'type-psar'
@@ -1950,8 +1947,7 @@ function nbRenderIndicators() {
                     : ind.type === 'QFL' ? 'type-qfl'
                     : ind.type === 'ASAP' ? 'type-asap'
                     : '';
-    const title = ind.type === 'EMA_CROSS' ? 'EMA Cross'
-                : ind.type === 'BOLLINGER' ? 'Bollinger Bands'
+    const title = ind.type === 'BOLLINGER' ? 'Bollinger Bands'
                 : ind.type === 'PARABOLIC_SAR' ? 'Parabolic SAR'
                 : ind.type === 'SUPERTREND' ? 'Supertrend'
                 : ind.type === 'MARKET_STRUCTURE' ? 'Market Structure'
@@ -1969,7 +1965,6 @@ function nbRenderIndicators() {
             <label>Type</label>
             <select data-nb-ind="${i}" data-nb-field="type">
               <option value="RSI" ${ind.type === 'RSI' ? 'selected' : ''}>RSI</option>
-              <option value="EMA_CROSS" ${ind.type === 'EMA_CROSS' ? 'selected' : ''}>EMA Cross</option>
               <option value="MACD" ${ind.type === 'MACD' ? 'selected' : ''}>MACD</option>
               <option value="BOLLINGER" ${ind.type === 'BOLLINGER' ? 'selected' : ''}>Bollinger Bands</option>
               <option value="PARABOLIC_SAR" ${ind.type === 'PARABOLIC_SAR' ? 'selected' : ''}>Parabolic SAR</option>
@@ -2007,6 +2002,10 @@ function nbIndicatorFieldsHtml(ind, i) {
       ['cross_below', 'Crosses below X'],
       ['above', 'Greater than X'],
       ['below', 'Lower than X'],
+      ['rsi_cross_above_50', 'Centerline cross up (50)'],
+      ['rsi_cross_below_50', 'Centerline cross down (50)'],
+      ['rsi_bullish_divergence', 'Bullish divergence'],
+      ['rsi_bearish_divergence', 'Bearish divergence'],
     ];
     const SOURCES = ['close','open','high','low','hl2','hlc3','ohlc4'];
     return `
@@ -2015,13 +2014,13 @@ function nbIndicatorFieldsHtml(ind, i) {
         <input type="number" min="5" max="50" value="${ind.period}" data-nb-ind="${i}" data-nb-field="period">
       </div>
       <div class="form-row">
-        <label>Source</label>
+        <label class="param-label-toggle" data-hint="Price data used for RSI calculation. Close is standard. High/Low can detect wicks, Open reflects gap behavior.">Source</label>
         <select data-nb-ind="${i}" data-nb-field="price_source">
           ${SOURCES.map(s => `<option value="${s}" ${ps === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle" data-hint="Signal trigger: oversold/overbought threshold or crossing">Condition</label>
+        <label class="param-label-toggle" data-hint="Signal trigger: oversold/overbought threshold, crossing, centerline cross, or divergence">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="rsi_condition">
           ${CONDS.map(([v, label]) =>
             `<option value="${v}" ${cond === v ? 'selected' : ''}>${label}</option>`
@@ -2031,24 +2030,6 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label class="param-label-toggle" data-hint="RSI value that triggers the condition">Value (X)</label>
         <input type="number" min="1" max="99" step="1" value="${val}" data-nb-ind="${i}" data-nb-field="rsi_value">
-      </div>`;
-  }
-  if (ind.type === 'EMA_CROSS') {
-    return `
-      <div class="form-row">
-        <label class="param-label-toggle" data-hint="Period of the fast exponential moving average">Fast period</label>
-        <input type="number" min="2" value="${ind.fast}" data-nb-ind="${i}" data-nb-field="fast">
-      </div>
-      <div class="form-row">
-        <label class="param-label-toggle" data-hint="Period of the slow exponential moving average">Slow period</label>
-        <input type="number" min="2" value="${ind.slow}" data-nb-ind="${i}" data-nb-field="slow">
-      </div>
-      <div class="form-row">
-        <label class="param-label-toggle" data-hint="Bullish cross: fast crosses above slow. Bearish: opposite.">Signal</label>
-        <select data-nb-ind="${i}" data-nb-field="signal">
-          <option value="bullish_cross" ${ind.signal === 'bullish_cross' ? 'selected' : ''}>Bullish</option>
-          <option value="bearish_cross" ${ind.signal === 'bearish_cross' ? 'selected' : ''}>Bearish</option>
-        </select>
       </div>`;
   }
   if (ind.type === 'QFL') {
@@ -2257,6 +2238,7 @@ function nbIndicatorFieldsHtml(ind, i) {
     const mult = ind.multiplier != null ? ind.multiplier : 2.0;
     const maT = ind.ma_type || 'SMA';
     const val = ind.value || 'lower';
+    const sqThr = ind.squeeze_threshold != null ? ind.squeeze_threshold : 0.02;
     const BB_CONDS = [
       ['price_crossing_up', 'Price crossing up'],
       ['price_crossing_down', 'Price crossing down'],
@@ -2265,6 +2247,10 @@ function nbIndicatorFieldsHtml(ind, i) {
       ['price_below_lower', 'Price below lower band'],
       ['price_above_upper', 'Price above upper band'],
       ['squeeze', 'Squeeze'],
+      ['percent_b_below_0', '%B below 0 (under lower)'],
+      ['percent_b_above_1', '%B above 1 (over upper)'],
+      ['percent_b_below_20', '%B below 0.2 (near lower)'],
+      ['percent_b_above_80', '%B above 0.8 (near upper)'],
     ];
     return `
       <div class="form-row">
@@ -2276,19 +2262,23 @@ function nbIndicatorFieldsHtml(ind, i) {
         <input type="number" min="0.1" step="0.1" value="${mult}" data-nb-ind="${i}" data-nb-field="multiplier">
       </div>
       <div class="form-row">
-        <label>MA type</label>
+        <label class="param-label-toggle" data-hint="Moving average type for the middle band. SMA is standard. EMA reacts faster to recent prices.">MA type</label>
         <select data-nb-ind="${i}" data-nb-field="ma_type">
           ${['SMA','EMA','WMA'].map(t => `<option value="${t}" ${maT === t ? 'selected' : ''}>${t}</option>`).join('')}
         </select>
       </div>
       <div class="form-row">
-        <label>Band</label>
+        <label class="param-label-toggle" data-hint="Which band to apply the condition to. Upper = overbought zone, Lower = oversold zone, Middle = trend filter.">Band</label>
         <select data-nb-ind="${i}" data-nb-field="value">
           ${['lower','upper','middle'].map(v => `<option value="${v}" ${val === v ? 'selected' : ''}>${v}</option>`).join('')}
         </select>
       </div>
       <div class="form-row">
-        <label class="param-label-toggle" data-hint="Trigger when price crosses or sits relative to a band">Condition</label>
+        <label class="param-label-toggle" data-hint="Squeeze threshold: bands narrower than this % of middle band indicate low volatility before a breakout.">Squeeze threshold</label>
+        <input type="number" min="0.001" step="0.005" value="${sqThr}" data-nb-ind="${i}" data-nb-field="squeeze_threshold">
+      </div>
+      <div class="form-row">
+        <label class="param-label-toggle" data-hint="Trigger when price crosses or sits relative to a band. %B conditions measure where price sits within the bands (0=lower, 1=upper).">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${BB_CONDS.map(([v, l]) =>
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
@@ -2307,10 +2297,12 @@ function nbIndicatorFieldsHtml(ind, i) {
       ['histogram_negative', 'Histogram negative'],
       ['macd_above_signal', 'MACD above signal'],
       ['macd_below_signal', 'MACD below signal'],
+      ['macd_cross_above_zero', 'MACD cross above zero'],
+      ['macd_cross_below_zero', 'MACD cross below zero'],
     ];
     return `
       <div class="form-row">
-        <label class="param-label-toggle" data-hint="Histogram positive = bullish momentum, negative = bearish">Condition</label>
+        <label class="param-label-toggle" data-hint="Histogram positive = bullish momentum, negative = bearish. Zero cross = stronger trend signal.">Condition</label>
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${MACD_CONDS.map(([v, l]) => `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
@@ -2328,13 +2320,13 @@ function nbIndicatorFieldsHtml(ind, i) {
         <input type="number" min="2" value="${mg}" data-nb-ind="${i}" data-nb-field="macd_signal">
       </div>
       <div class="form-row">
-        <label>Oscillator MA</label>
+        <label class="param-label-toggle" data-hint="MA type for the MACD line itself. EMA is standard.">Oscillator MA</label>
         <select data-nb-ind="${i}" data-nb-field="oscillator_ma_type">
           ${['EMA','SMA'].map(t => `<option value="${t}" ${omt === t ? 'selected' : ''}>${t}</option>`).join('')}
         </select>
       </div>
       <div class="form-row">
-        <label>Signal MA</label>
+        <label class="param-label-toggle" data-hint="MA type for the signal line. EMA is standard. Changing this affects crossover sensitivity.">Signal MA</label>
         <select data-nb-ind="${i}" data-nb-field="signal_ma_type">
           ${['EMA','SMA'].map(t => `<option value="${t}" ${smt === t ? 'selected' : ''}>${t}</option>`).join('')}
         </select>
@@ -2566,10 +2558,6 @@ function nbBuildBotConfig() {
           out.period = i.period;
           out.threshold = i.threshold;
           if (i.price_source && i.price_source !== 'close') out.price_source = i.price_source;
-        } else if (i.type === 'EMA_CROSS') {
-          out.fast = i.fast;
-          out.slow = i.slow;
-          out.signal = i.signal;
         } else if (i.type === 'MACD') {
           out.condition = i.condition;
           if (i.macd_fast   != null) out.macd_fast   = i.macd_fast;
@@ -2583,6 +2571,7 @@ function nbBuildBotConfig() {
           out.condition = i.condition || 'price_below_lower';
           if (i.ma_type) out.ma_type = i.ma_type;
           if (i.value) out.value = i.value;
+          if (i.squeeze_threshold != null) out.squeeze_threshold = i.squeeze_threshold;
         } else if (i.type === 'PARABOLIC_SAR') {
           out.initial_af = i.initial_af != null ? i.initial_af : 0.02;
           out.max_af = i.max_af != null ? i.max_af : 0.20;
@@ -2959,10 +2948,6 @@ function renderDetailConfig(cfg) {
         if (i.type === 'RSI') {
           if (i.period != null) rows.push(`<div class="cfg-row"><span class="cfg-key">Period</span><span>${i.period}</span></div>`);
           if (i.threshold) rows.push(`<div class="cfg-row"><span class="cfg-key">Threshold</span><span>${safeText(i.threshold)}</span></div>`);
-        } else if (i.type === 'EMA_CROSS') {
-          if (i.fast != null) rows.push(`<div class="cfg-row"><span class="cfg-key">Fast</span><span>${i.fast}</span></div>`);
-          if (i.slow != null) rows.push(`<div class="cfg-row"><span class="cfg-key">Slow</span><span>${i.slow}</span></div>`);
-          if (i.signal) rows.push(`<div class="cfg-row"><span class="cfg-key">Signal</span><span>${safeText(i.signal)}</span></div>`);
         } else if (i.type === 'MACD') {
           if (i.condition) rows.push(`<div class="cfg-row"><span class="cfg-key">Condition</span><span>${safeText(i.condition)}</span></div>`);
         }
@@ -3555,11 +3540,6 @@ function initCharts() {
     wickDownColor:  _cssVar('--red',    '#ef5350'),
   });
 
-  // EMA_CROSS overlay
-  if (_hasIndicator('EMA_CROSS')) {
-    _chartSeries.emaFast = _chartMain.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
-    _chartSeries.emaSlow = _chartMain.addLineSeries({ color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
-  }
   if (_hasIndicator('BOLLINGER')) {
     _chartSeries.bbUpper  = _chartMain.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
     _chartSeries.bbMiddle = _chartMain.addLineSeries({ color: _cssVar('--muted', '#888'),   lineWidth: 1 });
@@ -3658,14 +3638,6 @@ async function fetchChartData() {
 }
 
 function _renderIndicatorOverlays(candles) {
-  // EMA_CROSS
-  const emaCfg = _findIndicator('EMA_CROSS');
-  if (emaCfg && _chartSeries.emaFast) {
-    const fast = emaCfg.fast || 9;
-    const slow = emaCfg.slow || 21;
-    _chartSeries.emaFast.setData(calcEMALine(candles, fast));
-    _chartSeries.emaSlow.setData(calcEMALine(candles, slow));
-  }
   // BOLLINGER
   const bbCfg = _findIndicator('BOLLINGER');
   if (bbCfg && _chartSeries.bbUpper) {
@@ -4883,12 +4855,7 @@ function renderWizardOverlays() {
     if (!ind || !ind.type) continue;
     const t = String(ind.type).toUpperCase();
     try {
-      if (t === 'EMA_CROSS') {
-        const fast = Number(ind.fast) || 9;
-        const slow = Number(ind.slow) || 21;
-        _addWizardLineSeries(calcEMALine(candles, fast), accent, 2);
-        _addWizardLineSeries(calcEMALine(candles, slow), blue,   2);
-      } else if (t === 'BOLLINGER') {
+      if (t === 'BOLLINGER') {
         const period = Number(ind.period) || 20;
         const mult   = Number(ind.multiplier) || 2.0;
         if (typeof calcBollingerLines === 'function') {
@@ -5481,7 +5448,7 @@ function setupEventListeners() {
       ];
       const floatFields = [
         'multiplier', 'initial_af', 'max_af',
-        'proximity_pct', 'volume_threshold',
+        'proximity_pct', 'volume_threshold', 'squeeze_threshold',
         'crack_pct', 'below_pct',
       ];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;
@@ -5886,7 +5853,7 @@ class RevertoBacktest {
     // Build aligned boolean "is the entry signal active at index i"
     // arrays per configured indicator. The caller then ANDs across all
     // indicators per candle. Matches the Python check_entry_signal
-    // semantics for RSI / EMA_CROSS / MACD histogram / Bollinger lower
+    // semantics for RSI / MACD histogram / Bollinger lower
     // band; other indicator types simplify to "always true" — they are
     // intentionally documented as a client-side-backtester limitation.
     const indicators = (this.config.entry && this.config.entry.indicators) || [];
@@ -5931,26 +5898,6 @@ class RevertoBacktest {
             hit = Number.isFinite(prev) && prev >= value && v < value;
           }
           arr[i] = hit;
-        }
-      } else if (type === 'EMA_CROSS') {
-        const fast = ind.fast || 9;
-        const slow = ind.slow || 21;
-        const fastLine = calcEMALine(this.candles, fast);
-        const slowLine = calcEMALine(this.candles, slow);
-        const fastMap = new Map(fastLine.map(p => [p.time, p.value]));
-        const slowMap = new Map(slowLine.map(p => [p.time, p.value]));
-        // Cross-only — match the Python check_ema_cross_signal which
-        // requires fast just crossed up through slow on this bar.
-        // The earlier "also allow currently above" fallback turned the
-        // filter into a permanent pass once fast > slow happened once.
-        let prevDiff = null;
-        for (let i = 0; i < n; i++) {
-          const t = this.candles[i].time;
-          const f = fastMap.get(t), s = slowMap.get(t);
-          if (f == null || s == null) { prevDiff = null; continue; }
-          const d = f - s;
-          if (prevDiff != null && d > 0 && prevDiff <= 0) arr[i] = true;
-          prevDiff = d;
         }
       } else if (type === 'MACD') {
         const fast   = ind.macd_fast   || 12;

@@ -1,9 +1,5 @@
 # strategies/indicators/bollinger.py
-# Bollinger Bands — volatility envelope around a simple moving average.
-#
-# Middle = SMA(closes, period)
-# Upper  = Middle + multiplier × population std dev
-# Lower  = Middle - multiplier × population std dev
+# Bollinger Bands — volatility envelope around a moving average.
 
 import statistics
 
@@ -27,10 +23,7 @@ def calculate_bollinger_bands(
     multiplier: float = 2.0,
     ma_type: str = "SMA",
 ) -> dict[str, float]:
-    """Return the latest upper/middle/lower bands.
-
-    ma_type: SMA (default), EMA, or WMA for the middle line.
-    """
+    """Return the latest upper/middle/lower bands."""
     if len(closes) < period:
         raise ValueError(
             f"Bollinger requires at least {period} data points, got {len(closes)}"
@@ -60,13 +53,11 @@ def check_bollinger_signal(
 ) -> bool:
     """Evaluate a Bollinger-band based condition.
 
-    Supported conditions:
-        price_below_lower  : latest close < lower band  (mean-reversion buy)
-        price_above_upper  : latest close > upper band  (mean-reversion sell)
-        price_below_middle : latest close < middle SMA  (bearish bias)
-        price_above_middle : latest close > middle SMA  (bullish bias)
-        squeeze            : (upper - lower) / middle < squeeze_threshold
-                             — bands are compressed, often precedes a breakout
+    Extended conditions:
+        percent_b_below_0  : %B < 0 (price below lower band)
+        percent_b_above_1  : %B > 1 (price above upper band)
+        percent_b_below_20 : %B < 0.2 (near lower band)
+        percent_b_above_80 : %B > 0.8 (near upper band)
     """
     bands = calculate_bollinger_bands(closes, period, multiplier, ma_type)
     price = closes[-1]
@@ -95,5 +86,20 @@ def check_bollinger_signal(
             return False
         bandwidth = (bands["upper"] - bands["lower"]) / bands["middle"]
         return bandwidth < squeeze_threshold
+
+    bw = bands["upper"] - bands["lower"]
+    if bw > 0:
+        pct_b = (price - bands["lower"]) / bw
+    else:
+        pct_b = 0.5
+
+    if condition == "percent_b_below_0":
+        return pct_b < 0
+    if condition == "percent_b_above_1":
+        return pct_b > 1
+    if condition == "percent_b_below_20":
+        return pct_b < 0.2
+    if condition == "percent_b_above_80":
+        return pct_b > 0.8
 
     return False
