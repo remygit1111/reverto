@@ -93,3 +93,6 @@ clean:
 	@echo "Klaar"
 beep:
 	@bash scripts/notify.sh
+
+notebook:
+	.venv/bin/jupyter notebook --no-browser --port=8888
