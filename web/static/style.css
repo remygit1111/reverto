@@ -1643,7 +1643,12 @@ table thead th.drop-after {
 .chart-change { font-size:0.95em; color:var(--muted); }
 .chart-change.pos { color:var(--accent); }
 .chart-change.neg { color:var(--red); }
-.chart-tf-selector { display:flex; gap:4px; }
+.chart-tf-selector { display:flex; gap:4px; align-items:center; }
+.chart-tz-select {
+  margin-left: 8px; padding: 2px 4px;
+  font-size: 11px; background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+}
 .chart-tf-btn { background:var(--surface2); border:1px solid var(--border); color:var(--muted); padding:6px 12px; border-radius:4px; cursor:pointer; font-size:0.9em; }
 .chart-tf-btn:hover { color:var(--text); }
 .chart-tf-btn.active { background:var(--accent); color:var(--bg); border-color:var(--accent); }

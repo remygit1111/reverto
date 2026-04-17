@@ -3303,6 +3303,21 @@ function getChartColors() {
   };
 }
 
+let _chartTimezone = localStorage.getItem('reverto_timezone') || 'UTC';
+
+function _tzFormatter(ts) {
+  const d = new Date(ts * 1000);
+  try {
+    return d.toLocaleString('en-GB', {
+      timeZone: _chartTimezone,
+      month: 'short', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+  } catch (e) {
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+  }
+}
+
 function _chartLayoutOpts() {
   const c = getChartColors();
   return {
@@ -3314,6 +3329,7 @@ function _chartLayoutOpts() {
       vertLines: { color: c.gridColor },
       horzLines: { color: c.gridColor },
     },
+    localization: { timeFormatter: _tzFormatter },
     timeScale: { timeVisible: true, secondsVisible: false },
     rightPriceScale: { borderColor: c.gridColor },
     crosshair: { mode: 0 },
@@ -3790,8 +3806,117 @@ function _renderIndicatorOverlays(candles) {
     const ms = calcMarketStructureMarkers(candles, msCfg.lookback || 3);
     for (const p of ms) markers.push(p);
   }
+  // Entry markers — green arrow on first candle where ALL indicators agree
+  const allInds = _indicatorsConfigured();
+  if (allInds.length > 0) {
+    const entryMarkers = _calcEntryMarkers(candles, allInds);
+    for (const m of entryMarkers) markers.push(m);
+  }
   _chartIndicatorMarkers = markers;
   _setCombinedMarkers();
+}
+
+function _calcEntryMarkers(candles, indicators) {
+  const n = candles.length;
+  if (n < 2 || !indicators.length) return [];
+  const signals = [];
+  for (const ind of indicators) {
+    const arr = new Array(n).fill(false);
+    const type = (ind.type || '').toUpperCase();
+    if (type === 'RSI') {
+      const period = ind.period || 14;
+      const thr = (ind.threshold || 'below_35').toString();
+      const m = thr.match(/^([a-z_]+)_(\d+)/i);
+      const cond = m ? m[1] : 'below', val = m ? parseInt(m[2], 10) : 35;
+      const line = calcRSILine(candles, period);
+      const rsi = new Array(n).fill(NaN);
+      const tMap = new Map(); candles.forEach((c, i) => tMap.set(c.time, i));
+      for (const p of line) { const i = tMap.get(p.time); if (i != null) rsi[i] = p.value; }
+      for (let i = 0; i < n; i++) {
+        const v = rsi[i]; if (!Number.isFinite(v)) continue;
+        if (cond === 'below' && v < val) arr[i] = true;
+        else if (cond === 'above' && v > val) arr[i] = true;
+        else if (cond === 'cross_above') { const p = rsi[i - 1]; if (Number.isFinite(p) && p <= val && v > val) arr[i] = true; }
+        else if (cond === 'cross_below') { const p = rsi[i - 1]; if (Number.isFinite(p) && p >= val && v < val) arr[i] = true; }
+      }
+    } else if (type === 'MACD') {
+      const macd = calcMACDLines(candles, ind.macd_fast || 12, ind.macd_slow || 26, ind.macd_signal || 9);
+      const hMap = new Map(macd.histogram.map(p => [p.time, p.value]));
+      const mMap = new Map(macd.macd.map(p => [p.time, p.value]));
+      const sMap = new Map(macd.signal.map(p => [p.time, p.value]));
+      const cond = ind.condition || 'histogram_positive';
+      for (let i = 0; i < n; i++) {
+        const t = candles[i].time, h = hMap.get(t), ml = mMap.get(t), sl = sMap.get(t);
+        if (cond === 'histogram_positive' && h > 0) arr[i] = true;
+        else if (cond === 'histogram_negative' && h < 0) arr[i] = true;
+        else if (cond === 'macd_above_signal' && ml != null && sl != null && ml > sl) arr[i] = true;
+        else if (cond === 'macd_below_signal' && ml != null && sl != null && ml < sl) arr[i] = true;
+      }
+    } else if (type === 'BOLLINGER') {
+      const bb = calcBollingerLines(candles, ind.period || 20, ind.multiplier || 2.0);
+      const loMap = new Map(bb.lower.map(p => [p.time, p.value]));
+      const upMap = new Map(bb.upper.map(p => [p.time, p.value]));
+      const cond = ind.condition || 'price_below_lower';
+      for (let i = 0; i < n; i++) {
+        const t = candles[i].time, c = candles[i].close;
+        const lo = loMap.get(t), up = upMap.get(t);
+        if (cond === 'price_below_lower' && lo != null && c < lo) arr[i] = true;
+        else if (cond === 'price_above_upper' && up != null && c > up) arr[i] = true;
+      }
+    } else if (type === 'SUPERTREND') {
+      const st = calcSupertrendLines(candles, ind.atr_period || 10, ind.multiplier || 3.0);
+      if (st) {
+        const bMap = new Map((st.bull || []).map(p => [p.time, p.value]));
+        const cond = ind.condition || 'bullish';
+        for (let i = 0; i < n; i++) {
+          const t = candles[i].time;
+          if (cond === 'bullish' && bMap.has(t)) arr[i] = true;
+          else if (cond === 'bearish' && !bMap.has(t)) arr[i] = true;
+        }
+      }
+    } else if (type === 'SUPPORT_RESISTANCE') {
+      const sr = calcSR(candles, ind.left_bars || 15, ind.right_bars || 15, ind.volume_threshold || 0, ind.min_touches || 1);
+      const cond = ind.condition || 'price_crossing_down';
+      const val = ind.value || 'resistance';
+      for (let i = 1; i < n; i++) {
+        const c = candles[i].close, p = candles[i - 1].close;
+        const lv = val === 'support' ? sr.supSeries[i] : sr.resSeries[i];
+        if (lv === null) continue;
+        if (cond === 'price_crossing_up' && p < lv && lv <= c) arr[i] = true;
+        else if (cond === 'price_crossing_down' && p > lv && lv >= c) arr[i] = true;
+        else if (cond === 'near_support' && sr.supSeries[i] != null) { if (Math.abs(c - sr.supSeries[i]) / sr.supSeries[i] * 100 <= (ind.proximity_pct || 1)) arr[i] = true; }
+        else if (cond === 'near_resistance' && sr.resSeries[i] != null) { if (Math.abs(c - sr.resSeries[i]) / sr.resSeries[i] * 100 <= (ind.proximity_pct || 1)) arr[i] = true; }
+      }
+    } else if (type === 'QFL') {
+      const qfl = calcQFL(candles, ind.base_periods || 36, ind.pump_periods || 8, ind.pump_from_base_pct || 3.0, ind.base_crack_pct || 3.0);
+      const cond = ind.condition || 'below_base';
+      for (let i = 0; i < n; i++) {
+        if (cond === 'below_base' && qfl.buyLimitSeries[i] !== null) arr[i] = true;
+        else if (cond === 'near_base' && qfl.baseSeries[i] !== null && Math.abs(candles[i].close - qfl.baseSeries[i]) / qfl.baseSeries[i] < 0.005) arr[i] = true;
+      }
+    } else if (type === 'PARABOLIC_SAR' || type === 'MARKET_STRUCTURE' || type === 'ASAP') {
+      for (let i = 0; i < n; i++) arr[i] = true;
+    } else {
+      for (let i = 0; i < n; i++) arr[i] = true;
+    }
+    signals.push(arr);
+  }
+  const out = [];
+  let wasEntry = false;
+  for (let i = 1; i < n; i++) {
+    const allTrue = signals.every(s => s[i]);
+    if (allTrue && !wasEntry) {
+      out.push({
+        time: candles[i].time,
+        position: 'belowBar',
+        color: '#26a69a',
+        shape: 'arrowUp',
+        size: 1,
+      });
+    }
+    wasEntry = allTrue;
+  }
+  return out;
 }
 
 function _setCombinedMarkers() {
@@ -5427,6 +5552,17 @@ function setupEventListeners() {
       _loadAnnotations();
     });
   });
+  const tzSel = document.getElementById('chart-tz');
+  if (tzSel) {
+    tzSel.value = _chartTimezone;
+    tzSel.addEventListener('change', () => {
+      _chartTimezone = tzSel.value;
+      localStorage.setItem('reverto_timezone', _chartTimezone);
+      if (_chartMain) _chartMain.applyOptions({ localization: { timeFormatter: _tzFormatter } });
+      if (_chartRsi) _chartRsi.applyOptions({ localization: { timeFormatter: _tzFormatter } });
+      if (_chartMacd) _chartMacd.applyOptions({ localization: { timeFormatter: _tzFormatter } });
+    });
+  }
 
   // Chart annotation toolbar — only buttons that declare data-tool.
   // The "Clear all" button has its own dedicated handler below and the
