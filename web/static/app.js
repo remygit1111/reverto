@@ -5161,8 +5161,6 @@ function calcParabolicSARMarkers(candles, initialAF, maxAF) {
   let trend, ep, sar, af = initialAF;
   if (cl[1] >= cl[0]) { trend = 1; ep = hi[1]; sar = lo[0]; }
   else                 { trend = -1; ep = lo[1]; sar = hi[0]; }
-  const accent = _cssVar('--accent', '#26a69a');
-  const red    = _cssVar('--red',    '#ef5350');
   const out = [];
   for (let i = 2; i < n; i++) {
     let newSar = sar + af * (ep - sar);
@@ -5178,7 +5176,7 @@ function calcParabolicSARMarkers(candles, initialAF, maxAF) {
     out.push({
       time: candles[i].time,
       position: trend === 1 ? 'belowBar' : 'aboveBar',
-      color: trend === 1 ? accent : red,
+      color: '#2962FF',
       shape: 'circle',
       size: 1,
     });
