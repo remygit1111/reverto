@@ -3278,6 +3278,7 @@ let _wizardQflSeries = [];
 // lazily when the user adds the corresponding indicator and destroyed
 // when they remove it, so a wizard with no RSI/MACD costs nothing.
 let _wizardChartRsi = null;
+let _wizardRsiThresholdLine = null;
 let _wizardChartMacd = null;
 let _wizardSubSeries = {};
 
@@ -4938,16 +4939,6 @@ function _wizardEnsureRsiChart() {
   _wizardSubSeries.rsi = _wizardChartRsi.addLineSeries({
     color: _cssVar('--blue', '#5b8dee'), lineWidth: 1,
   });
-  const wizRsiCfg = (Array.isArray(nbState?.indicators) ? nbState.indicators : [])
-    .find(i => i && String(i.type).toUpperCase() === 'RSI');
-  const wizRsiP = _parseRsiThreshold(wizRsiCfg?.threshold);
-  const wizRsiTv = wizRsiCfg?.rsi_value != null ? wizRsiCfg.rsi_value : wizRsiP.value;
-  if (wizRsiTv) {
-    _wizardSubSeries.rsi.createPriceLine({
-      price: wizRsiTv, color: _cssVar('--accent', '#26a69a'),
-      lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(wizRsiTv),
-    });
-  }
   if (_wizardResizeObs) _wizardResizeObs.observe(el);
 }
 
@@ -4955,6 +4946,7 @@ function _wizardDestroyRsiChart() {
   if (!_wizardChartRsi) return;
   try { _wizardChartRsi.remove(); } catch (e) {}
   _wizardChartRsi = null;
+  _wizardRsiThresholdLine = null;
   delete _wizardSubSeries.rsi;
   const el = $('wizard-chart-rsi');
   if (el) el.classList.add('hidden');
@@ -5040,6 +5032,19 @@ function renderWizardOverlays() {
     try {
       const period = Number(rsiCfg.period) || 14;
       _wizardSubSeries.rsi.setData(calcRSILine(candles, period));
+      if (_wizardRsiThresholdLine) {
+        try { _wizardSubSeries.rsi.removePriceLine(_wizardRsiThresholdLine); } catch (e) {}
+      }
+      const p = _parseRsiThreshold(rsiCfg.threshold);
+      const tv = rsiCfg.rsi_value != null ? Number(rsiCfg.rsi_value) : p.value;
+      if (tv) {
+        _wizardRsiThresholdLine = _wizardSubSeries.rsi.createPriceLine({
+          price: tv, color: _cssVar('--accent', '#26a69a'),
+          lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(tv),
+        });
+      } else {
+        _wizardRsiThresholdLine = null;
+      }
     } catch (e) {}
   }
   if (macdCfg && _wizardSubSeries.macdLine) {
