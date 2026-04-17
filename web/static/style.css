@@ -1418,6 +1418,9 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .trigger-value.green { color:#26a69a; }
 .trigger-value.red { color:#ef5350; }
 .trigger-value.muted { color:var(--muted); }
+.config-group { margin:2px 0; font-size:12px; }
+.config-group-name { font-weight:600; color:var(--accent); }
+.config-or { font-size:10px; color:var(--muted); margin:2px 0; font-weight:600; }
 .nb-ind-card {
   background: var(--surface2);
   border: 1px solid var(--border);
