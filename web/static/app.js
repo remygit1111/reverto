@@ -5993,6 +5993,33 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Backtest tab wiring ────────────────────────────────────────────────
   const btRunBtn = $('bt-run-btn');
   if (btRunBtn) btRunBtn.addEventListener('click', btRunFromTab);
+  const btChartToggle = $('bt-chart-toggle');
+  if (btChartToggle) btChartToggle.addEventListener('click', () => {
+    const el = $('bt-chart-container');
+    if (!el) return;
+    if (el.style.display === 'none') {
+      el.style.display = 'block';
+      btChartToggle.textContent = 'Hide chart';
+      if (_btLastCandles && _btLastDeals) btInitChart(_btLastCandles, _btLastDeals);
+    } else {
+      btCleanupChart();
+      btChartToggle.textContent = 'Show chart';
+    }
+  });
+  document.addEventListener('click', e => {
+    const row = e.target.closest('.bt-deal-row');
+    if (!row) return;
+    const idx = parseInt(row.dataset.btDeal);
+    if (isNaN(idx)) return;
+    const el = $('bt-chart-container');
+    if (el && el.style.display === 'none') {
+      el.style.display = 'block';
+      const btn = $('bt-chart-toggle');
+      if (btn) btn.textContent = 'Hide chart';
+      if (_btLastCandles && _btLastDeals) btInitChart(_btLastCandles, _btLastDeals);
+    }
+    btShowDealOnChart(idx);
+  });
   const btSweepBtn = $('bt-sweep-btn');
   if (btSweepBtn) btSweepBtn.addEventListener('click', swOpenModal);
   const swCloseBtn = $('sw-close-btn');
@@ -7952,6 +7979,7 @@ async function btRunPipeline(opts) {
     }
     status.textContent = `Fetched ${candles.length.toLocaleString()} candles, starting simulation…`;
     const engine = new RevertoBacktest(cfg, candles);
+    _btLastCandles = candles;
     const result = await engine.run(balance, (pct, msg) => {
       // Remap engine 0–100% into 50–100% so the fetch phase owns
       // the first half of the progress bar and the simulation the
@@ -8070,6 +8098,10 @@ function btRenderOpenDealsNote(noteId, s) {
 
 function btRenderResults(res) {
   const s = res.summary, r = res.ratios;
+  _btLastDeals = res.deals || [];
+  btCleanupChart();
+  const btn = $('bt-chart-toggle');
+  if (btn) btn.textContent = 'Show chart';
   btRenderOpenDealsNote('bt-open-deals-note', s);
 
   // ── Returns ──────────────────────────────────────────────────────
@@ -8296,6 +8328,92 @@ function btRenderDealTable(deals) {
       reason:   `<td class="muted-cell">${safeText(d.reason)}</td>`,
     };
     const cls = d.pnl_btc > 0 ? 'bt-deal-win' : (d.pnl_btc < 0 ? 'bt-deal-loss' : '');
-    return `<tr class="${cls}">${cols.map(c => cells[c.key] || '<td></td>').join('')}</tr>`;
+    return `<tr class="${cls} bt-deal-row" data-bt-deal="${i}" style="cursor:pointer">${cols.map(c => cells[c.key] || '<td></td>').join('')}</tr>`;
   }).join('');
+}
+
+// ── Backtest chart + deal click ──────────────────────────────────────────────
+let _btCandleChart = null;
+let _btCandleSeries = null;
+let _btLastDeals = null;
+let _btLastCandles = null;
+
+function btInitChart(candles, deals) {
+  _btLastCandles = candles;
+  _btLastDeals = deals;
+  const el = $('bt-chart-container');
+  if (!el || !_chartLibAvailable()) return;
+  if (_btCandleChart) { try { _btCandleChart.remove(); } catch (e) {} }
+  _btCandleChart = _lwcCreateChart(el, {
+    ..._chartLayoutOpts(),
+    width: el.clientWidth || 800,
+    height: 500,
+  });
+  _btCandleSeries = _btCandleChart.addSeries(_LWC().CandlestickSeries, {
+    upColor: _cssVar('--accent', '#26a69a'),
+    downColor: _cssVar('--red', '#ef5350'),
+    borderUpColor: _cssVar('--accent', '#26a69a'),
+    borderDownColor: _cssVar('--red', '#ef5350'),
+    wickUpColor: _cssVar('--accent', '#26a69a'),
+    wickDownColor: _cssVar('--red', '#ef5350'),
+  });
+  _btCandleSeries.setData(candles);
+  const markers = [];
+  for (const d of deals) {
+    if (d.entry_time) markers.push({
+      time: d.entry_time, position: 'belowBar', shape: 'arrowUp',
+      color: '#26a69a', size: 1,
+    });
+    if (d.exit_time) markers.push({
+      time: d.exit_time, position: 'aboveBar',
+      shape: 'arrowDown',
+      color: d.reason === 'sl' ? '#ef5350' : '#26a69a', size: 1,
+    });
+  }
+  markers.sort((a, b) => a.time - b.time);
+  const csm = _LWC().createSeriesMarkers;
+  if (csm) csm(_btCandleSeries, markers);
+  else try { _btCandleSeries.setMarkers(markers); } catch (e) {}
+  _btCandleChart.timeScale().fitContent();
+}
+
+function btShowDealOnChart(dealIdx) {
+  if (!_btLastDeals || !_btLastCandles || !_btCandleChart) return;
+  const d = _btLastDeals[dealIdx];
+  if (!d) return;
+  document.querySelectorAll('.bt-deal-row').forEach(r => r.classList.remove('selected'));
+  const row = document.querySelector(`[data-bt-deal="${dealIdx}"]`);
+  if (row) row.classList.add('selected');
+  const info = $('bt-deal-info');
+  if (info) {
+    const dur = d.exit_time && d.entry_time
+      ? Math.round((d.exit_time - d.entry_time) / 3600) + 'h' : '--';
+    info.innerHTML = `<strong>Deal #${safeText(String(d.id))}</strong>`
+      + ` &bull; ${new Date(d.entry_time * 1000).toLocaleString()}<br>`
+      + `Entry: $${Number(d.entry_price).toLocaleString()}`
+      + ` &rarr; Exit: $${Number(d.exit_price || 0).toLocaleString()}<br>`
+      + `PnL: ${d.pnl_pct >= 0 ? '+' : ''}${d.pnl_pct?.toFixed(2) || '--'}%`
+      + ` &bull; Duration: ${dur} &bull; Exit: ${safeText(d.reason || '--')}`;
+    info.classList.add('visible');
+  }
+  if (d.entry_time) {
+    const pad = 10;
+    const entryIdx = _btLastCandles.findIndex(c => c.time >= d.entry_time);
+    const exitIdx = d.exit_time
+      ? _btLastCandles.findIndex(c => c.time >= d.exit_time) : entryIdx + 20;
+    const from = Math.max(0, (entryIdx >= 0 ? entryIdx : 0) - pad);
+    const to = Math.min(_btLastCandles.length - 1,
+      (exitIdx >= 0 ? exitIdx : entryIdx + 20) + pad);
+    _btCandleChart.timeScale().setVisibleLogicalRange({ from, to });
+  }
+}
+
+function btCleanupChart() {
+  if (_btCandleChart) { try { _btCandleChart.remove(); } catch (e) {} }
+  _btCandleChart = null; _btCandleSeries = null;
+  _btLastDeals = null; _btLastCandles = null;
+  const info = $('bt-deal-info');
+  if (info) { info.classList.remove('visible'); info.innerHTML = ''; }
+  const el = $('bt-chart-container');
+  if (el) el.style.display = 'none';
 }
