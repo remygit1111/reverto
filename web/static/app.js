@@ -3257,6 +3257,7 @@ let _wizardOverlaySeries = [];
 let _wizardOverlayPriceLines = [];
 let _wizardSrLineSeries = [];
 let _wizardPsarSeries = [];
+let _wizardQflSeries = [];
 // Sub-charts for RSI / MACD indicators in the wizard preview. Created
 // lazily when the user adds the corresponding indicator and destroyed
 // when they remove it, so a wizard with no RSI/MACD costs nothing.
@@ -4755,6 +4756,10 @@ function _clearWizardOverlays() {
     try { _wizardChart.removeSeries(s); } catch (e) {}
   }
   _wizardPsarSeries = [];
+  for (const s of _wizardQflSeries) {
+    try { _wizardChart.removeSeries(s); } catch (e) {}
+  }
+  _wizardQflSeries = [];
 }
 
 function _wizardEnsureRsiChart() {
@@ -4964,6 +4969,34 @@ function renderWizardOverlays() {
             };
             wizSegments(sr.resSeries, '#e53935', 'R');
             wizSegments(sr.supSeries, '#1e88e5', 'S');
+          }
+        }
+      } else if (t === 'QFL') {
+        if (typeof calcQFL === 'function' && _wizardChart) {
+          const wCandles = _wizardCandleCache;
+          const qfl = calcQFL(wCandles, Number(ind.base_periods) || 36, Number(ind.pump_periods) || 8,
+            Number(ind.pump_from_base_pct) || 3.0, Number(ind.base_crack_pct) || 3.0);
+          const segs = [];
+          let segStart = null, segVal = null;
+          for (let i = 0; i < wCandles.length; i++) {
+            if (qfl.baseSeries[i] === null) continue;
+            if (segVal === null) { segStart = i; segVal = qfl.baseSeries[i]; }
+            else if (qfl.baseSeries[i] !== segVal) {
+              segs.push({ start: segStart, end: i - 1, value: segVal });
+              segStart = i; segVal = qfl.baseSeries[i];
+            }
+          }
+          if (segVal !== null) segs.push({ start: segStart, end: wCandles.length - 1, value: segVal });
+          for (const seg of segs) {
+            const data = [];
+            for (let j = seg.start; j <= seg.end; j++) data.push({ time: wCandles[j].time, value: seg.value });
+            const ws = _wizardChart.addLineSeries({
+              color: '#f050a0', lineWidth: 1, lineStyle: 2,
+              priceLineVisible: false, lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            });
+            ws.setData(data);
+            _wizardQflSeries.push(ws);
           }
         }
       }
