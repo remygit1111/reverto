@@ -5180,7 +5180,7 @@ function calcParabolicSARMarkers(candles, initialAF, maxAF) {
       position: trend === 1 ? 'belowBar' : 'aboveBar',
       color: trend === 1 ? accent : red,
       shape: 'circle',
-      size: 0.5,
+      size: 1,
     });
   }
   return out;
