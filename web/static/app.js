@@ -3332,7 +3332,7 @@ function _chartLayoutOpts() {
     },
     localization: { timeFormatter: _tzFormatter },
     timeScale: { timeVisible: true, secondsVisible: false },
-    rightPriceScale: { borderColor: c.gridColor },
+    rightPriceScale: { borderColor: c.gridColor, minimumWidth: 70 },
     crosshair: { mode: 0 },
   };
 }
@@ -3596,7 +3596,10 @@ function initCharts() {
     const subTs = sub.timeScale();
     mainTs.subscribeVisibleLogicalRangeChange(r => {
       if (_tsSync || !r) return;
-      _tsSync = true; subTs.setVisibleLogicalRange(r); _tsSync = false;
+      _tsSync = true;
+      subTs.setVisibleLogicalRange(r);
+      try { sub.applyOptions({ timeScale: { rightOffset: mainTs.options().rightOffset } }); } catch (e) {}
+      _tsSync = false;
     });
     subTs.subscribeVisibleLogicalRangeChange(r => {
       if (_tsSync || !r) return;
