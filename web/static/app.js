@@ -3216,7 +3216,7 @@ async function restartPortal() {
 // wizard preview is a simpler standalone candlestick chart. Both gracefully
 // degrade if window.LightweightCharts is undefined (CDN blocked).
 
-let _chartMain = null, _chartRsi = null, _chartMacd = null;
+let _chartMain = null;
 let _chartCandles = null;
 let _chartSeries = {};
 let _chartTimeframe = '1h';
@@ -3240,8 +3240,6 @@ let _qflLineSeries = [];
 // setMarkers() call — Lightweight Charts replaces the full array on each
 // invocation, so any overlay that forgets to merge wipes the other.
 let _chartIndicatorMarkers = [];
-const _chRsiMap = new Map();
-const _chMacdMap = new Map();
 let _candleMarkersPrimitive = null;
 // Annotations toolbar state. Lightweight Charts v4.1.1 in the standalone
 // build does not expose a stable ISeriesPrimitive, so every "drawing" is
@@ -3482,7 +3480,7 @@ function teardownChartTab() {
   if (_chartRefreshTimer) { clearInterval(_chartRefreshTimer); _chartRefreshTimer = null; }
   if (_chartResizeObs) { try { _chartResizeObs.disconnect(); } catch (e) {} _chartResizeObs = null; }
   try { if (_chartMain) _chartMain.remove(); } catch (e) {}
-  _chartMain = _chartRsi = _chartMacd = null;
+  _chartMain = null;
   _chartCandles = null;
   _chartSeries = {};
   // The candle series owned these price-line + marker handles; dropping
@@ -3510,8 +3508,6 @@ function teardownChartTab() {
   document.querySelectorAll('.chart-tool').forEach(b => {
     b.classList.toggle('active', b.dataset.tool === 'select');
   });
-  const r = $('chart-rsi'); if (r) r.classList.add('hidden');
-  const m = $('chart-macd'); if (m) m.classList.add('hidden');
 }
 
 function _indicatorsConfigured() {
@@ -3657,18 +3653,12 @@ function _renderIndicatorOverlays(candles) {
     _chartSeries.stBear.setData(st.bear);
   }
   // RSI
-  _chRsiMap.clear();
   const rsiCfg = _findIndicator('RSI');
   if (rsiCfg && _chartSeries.rsi) {
     const period = rsiCfg.period || 14;
-    const rsiLine = calcRSILine(candles, period);
-    _chartSeries.rsi.setData(rsiLine);
-    for (const p of rsiLine) _chRsiMap.set(p.time, p.value);
-    const rv = $('rsi-value');
-    if (rv && rsiLine.length) rv.textContent = rsiLine[rsiLine.length - 1].value.toFixed(2);
+    _chartSeries.rsi.setData(calcRSILine(candles, period));
   }
   // MACD
-  _chMacdMap.clear();
   const macdCfg = _findIndicator('MACD');
   if (macdCfg && _chartSeries.macdHist) {
     const fast   = macdCfg.fast   || 12;
@@ -3678,11 +3668,6 @@ function _renderIndicatorOverlays(candles) {
     _chartSeries.macdLine.setData(m.macd);
     _chartSeries.macdSignal.setData(m.signal);
     _chartSeries.macdHist.setData(m.histogram);
-    const macdMap = new Map(m.macd.map(p => [p.time, p.value]));
-    const sigMap = new Map(m.signal.map(p => [p.time, p.value]));
-    for (const p of m.histogram) _chMacdMap.set(p.time, { m: macdMap.get(p.time), s: sigMap.get(p.time), h: p.value });
-    const mv = $('macd-value');
-    if (mv && m.histogram.length) mv.textContent = m.histogram[m.histogram.length - 1].value.toFixed(4);
   }
   // SUPPORT_RESISTANCE — fixnan stepped lines
   for (const s of _srLineSeries) {

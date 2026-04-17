@@ -238,10 +238,25 @@ class IndicatorEngine:
         itype = indicator.type.upper()
 
         if itype == "ASAP":
-            # ASAP always fires. check_entry_signal short-circuits before
-            # reaching here, but we keep this branch so a direct call to
-            # _evaluate_indicator stays consistent.
             return True
+
+        try:
+            return self._dispatch_indicator(indicator, itype, closes, highs, lows, opens)
+        except Exception as e:
+            logger.warning(
+                f"Indicator {itype} error: {e} — returning False (fail-closed)"
+            )
+            return False
+
+    def _dispatch_indicator(
+        self,
+        indicator: IndicatorConfig,
+        itype: str,
+        closes: list[float],
+        highs: list[float] | None = None,
+        lows: list[float] | None = None,
+        opens: list[float] | None = None,
+    ) -> bool:
         if itype == "RSI":
             src = self._resolve_price_source(
                 indicator.price_source, closes, highs, lows, opens)
@@ -254,6 +269,7 @@ class IndicatorEngine:
             return check_macd_signal(
                 closes,
                 condition=indicator.condition or indicator.threshold or "histogram_positive",
+                use_percentile=bool(indicator.use_percentile),
             )
         elif itype == "BOLLINGER":
             return check_bollinger_signal(

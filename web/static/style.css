@@ -1658,7 +1658,6 @@ table thead th.drop-after {
 .chart-tool.active { color:var(--accent); border-color:var(--accent); }
 .chart-container { width:100%; }
 .chart-main { height:500px; margin-bottom:8px; }
-.chart-sub { height:100px; margin-bottom:8px; position:relative; }
 
 /* Skeleton loader: shown immediately when the chart tab opens so the
    user sees something is happening even before the OHLCV fetch lands.

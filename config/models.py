@@ -72,10 +72,11 @@ class IndicatorConfig(BaseModel):
     macd_signal: Optional[int] = None
     oscillator_ma_type: Optional[str] = None  # EMA/SMA
     signal_ma_type: Optional[str] = None      # EMA/SMA
+    use_percentile: Optional[bool] = None
     # Bollinger Bands / Supertrend
     multiplier: Optional[float] = None
     ma_type: Optional[str] = None   # SMA/EMA/WMA (Bollinger)
-    squeeze_threshold: Optional[float] = None
+    squeeze_threshold: Optional[float] = Field(default=None, gt=0)
     value: Optional[str] = None     # lower/upper/middle (BB) or support/resistance (S&R)
     # Parabolic SAR
     initial_af: Optional[float] = None
@@ -89,8 +90,8 @@ class IndicatorConfig(BaseModel):
     left_bars: Optional[int] = None
     right_bars: Optional[int] = None
     proximity_pct: Optional[float] = None
-    volume_threshold: Optional[float] = None
-    min_touches: Optional[int] = None
+    volume_threshold: Optional[float] = Field(default=None, ge=0)
+    min_touches: Optional[int] = Field(default=None, ge=1)
     # QFL Base Scanner
     base_periods: Optional[int] = None
     pump_periods: Optional[int] = None

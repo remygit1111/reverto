@@ -34,21 +34,23 @@ def calculate_macd(closes: list[float], fast: int = 12,
 
     histogram = macd_line - signal_line
 
+    hist_list = histogram.dropna().tolist()
+
     return {
         "macd": round(float(macd_line.iloc[-1]), 4),
         "signal": round(float(signal_line.iloc[-1]), 4),
         "histogram": round(float(histogram.iloc[-1]), 4),
         "macd_prev": round(float(macd_line.iloc[-2]), 4) if len(macd_line) >= 2 else 0.0,
+        "histogram_series": hist_list,
     }
 
 
 def check_macd_signal(closes: list[float],
-                      condition: str = "histogram_positive") -> bool:
+                      condition: str = "histogram_positive",
+                      use_percentile: bool = False) -> bool:
     """Check if MACD meets the configured condition.
 
-    Extended conditions:
-        macd_cross_above_zero : MACD line crosses above zero
-        macd_cross_below_zero : MACD line crosses below zero
+    use_percentile: normalize histogram relative to recent max absolute value.
     """
     macd_data = calculate_macd(closes)
 
@@ -58,9 +60,16 @@ def check_macd_signal(closes: list[float],
     if condition == "macd_cross_below_zero":
         return macd_data["macd_prev"] > 0 and macd_data["macd"] <= 0
 
+    hist_val = macd_data["histogram"]
+    if use_percentile and macd_data["histogram_series"]:
+        lookback = min(100, len(macd_data["histogram_series"]))
+        recent = macd_data["histogram_series"][-lookback:]
+        max_abs = max(abs(h) for h in recent)
+        hist_val = hist_val / max_abs if max_abs > 0 else 0
+
     conditions = {
-        "histogram_positive": macd_data["histogram"] > 0,
-        "histogram_negative": macd_data["histogram"] < 0,
+        "histogram_positive": hist_val > 0,
+        "histogram_negative": hist_val < 0,
         "macd_above_signal":  macd_data["macd"] > macd_data["signal"],
         "macd_below_signal":  macd_data["macd"] < macd_data["signal"],
     }
