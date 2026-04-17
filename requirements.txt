@@ -53,3 +53,21 @@ uvicorn==0.44.0
 websockets==16.0
 wrapt==2.1.2
 yarl==1.23.0
+
+# ── Optional ML stack ───────────────────────────────────────────────────────
+# Pulled in only when the operator runs the ml/ pipeline or opens
+# notebooks/reverto_analysis.ipynb. The ml/ package imports these
+# lazily and fails open when any one of them is missing, so shipping
+# a paper-only deploy without the block below is fully supported.
+# Install with:
+#   .venv/bin/pip install -r requirements.txt
+# after uncommenting the lines below.
+# optuna>=3.0.0
+# xgboost>=2.0.0
+# lightgbm>=4.0.0
+# scikit-learn>=1.3.0
+# joblib>=1.3.0
+# jupyter>=1.0.0
+# matplotlib>=3.7.0
+# seaborn>=0.12.0
+# plotly>=5.15.0
