@@ -3581,6 +3581,24 @@ function initCharts() {
     _chartSeries.macdSignal = _chartMacd.addLineSeries({ color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
   }
 
+  // Sync sub-chart timeScales with main chart
+  let _tsSync = false;
+  const mainTs = _chartMain.timeScale();
+  const syncSub = (sub) => {
+    if (!sub) return;
+    const subTs = sub.timeScale();
+    mainTs.subscribeVisibleLogicalRangeChange(r => {
+      if (_tsSync || !r) return;
+      _tsSync = true; subTs.setVisibleLogicalRange(r); _tsSync = false;
+    });
+    subTs.subscribeVisibleLogicalRangeChange(r => {
+      if (_tsSync || !r) return;
+      _tsSync = true; mainTs.setVisibleLogicalRange(r); _tsSync = false;
+    });
+  };
+  syncSub(_chartRsi);
+  syncSub(_chartMacd);
+
   // Resize handling
   if (typeof ResizeObserver !== 'undefined') {
     _chartResizeObs = new ResizeObserver(entries => {
