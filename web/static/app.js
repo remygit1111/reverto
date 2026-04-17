@@ -2023,8 +2023,8 @@ function nbRenderIndicators() {
   const list = $('nb-indicators-list');
   if (!list) return;
   const groups = nbState.indicatorGroups || [];
-  if (!groups.length || groups.every(g => !g.indicators.length)) {
-    list.innerHTML = '<div class="empty-config-msg">Always enter (no filter)</div>'
+  if (!groups.length) {
+    list.innerHTML = '<div class="empty-config-msg">No indicator groups configured</div>'
       + '<button type="button" class="btn-add-group" data-nb-action="add-group">+ Add indicator group</button>';
     return;
   }
@@ -2037,10 +2037,10 @@ function nbRenderIndicators() {
       + `<div class="indicator-group" data-group-id="${g.id}">
           <div class="indicator-group-header">
             <input class="indicator-group-name" value="${safeText(g.name)}"
-              placeholder="Group ${g.id}" data-nb-gname="${g.id}">
+              placeholder="Group ${gi + 1}" data-nb-gname="${g.id}">
             ${groups.length > 1 ? `<button type="button" class="nb-ind-close" data-nb-gremove="${g.id}" title="Remove group">\u00d7</button>` : ''}
           </div>
-          ${cards}
+          ${cards || '<div class="empty-config-msg" style="margin:8px 0;font-size:11px">No indicators — add one below</div>'}
           <button type="button" class="btn-add-group" data-nb-action="add-indicator" data-nb-gid="${g.id}">+ Add indicator</button>
         </div>`;
   }).join('');
