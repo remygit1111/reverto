@@ -3240,6 +3240,8 @@ let _qflLineSeries = [];
 // setMarkers() call — Lightweight Charts replaces the full array on each
 // invocation, so any overlay that forgets to merge wipes the other.
 let _chartIndicatorMarkers = [];
+const _chRsiMap = new Map();
+const _chMacdMap = new Map();
 // Annotations toolbar state. Lightweight Charts v4.1.1 in the standalone
 // build does not expose a stable ISeriesPrimitive, so every "drawing" is
 // approximated with createPriceLine + series markers — enough to make
@@ -3564,14 +3566,15 @@ function initCharts() {
       ..._chartLayoutOpts(),
       width:  rsiEl.clientWidth,
       height: rsiEl.clientHeight || 100,
-      timeScale: { timeVisible: true, secondsVisible: false, borderVisible: false },
+      rightPriceScale: { visible: false },
+      timeScale: { visible: false },
     });
     _chartSeries.rsi = _chartRsi.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
     const rsiCfgVal = _findIndicator('RSI');
     const rsiParsed = _parseRsiThreshold(rsiCfgVal?.threshold);
     const rsiTv = rsiCfgVal?.rsi_value != null ? rsiCfgVal.rsi_value : rsiParsed.value;
     if (rsiTv) {
-      _chartSeries.rsi.createPriceLine({ price: rsiTv, color: _cssVar('--accent', '#26a69a'), lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(rsiTv) });
+      _chartSeries.rsi.createPriceLine({ price: rsiTv, color: _cssVar('--accent', '#26a69a'), lineStyle: 0, lineWidth: 1, axisLabelVisible: false, title: '' });
     }
   }
   if (_hasIndicator('MACD')) {
@@ -3581,7 +3584,8 @@ function initCharts() {
       ..._chartLayoutOpts(),
       width:  macdEl.clientWidth,
       height: macdEl.clientHeight || 100,
-      timeScale: { timeVisible: true, secondsVisible: false, borderVisible: false },
+      rightPriceScale: { visible: false },
+      timeScale: { visible: false },
     });
     _chartSeries.macdHist   = _chartMacd.addHistogramSeries({ color: _cssVar('--muted', '#888') });
     _chartSeries.macdLine   = _chartMacd.addLineSeries({ color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
@@ -3611,14 +3615,38 @@ function initCharts() {
 
   // Crosshair sync main ↔ sub-charts + legend
   let _chSrc = null;
+  const chUpdateLegends = (time) => {
+    const rl = $('rsi-legend'), rv = $('rsi-value');
+    if (rl || rv) {
+      const r = _chRsiMap.get(time);
+      const txt = r != null ? `RSI: ${r.toFixed(2)}` : '';
+      if (rl) rl.textContent = txt;
+      if (rv) rv.textContent = r != null ? r.toFixed(2) : '';
+    }
+    const ml = $('macd-legend'), mv = $('macd-value');
+    if (ml || mv) {
+      const d = _chMacdMap.get(time);
+      if (d) {
+        const parts = [];
+        if (d.m != null) parts.push(`MACD: ${d.m.toFixed(4)}`);
+        if (d.s != null) parts.push(`Sig: ${d.s.toFixed(4)}`);
+        if (d.h != null) parts.push(`Hist: ${d.h.toFixed(4)}`);
+        if (ml) ml.textContent = parts.join('  ');
+        if (mv) mv.textContent = d.h != null ? d.h.toFixed(4) : '';
+      } else {
+        if (ml) ml.textContent = '';
+        if (mv) mv.textContent = '';
+      }
+    }
+  };
   const chPush = (src, param) => {
     if (_chSrc) return;
     _chSrc = src;
-    const targets = [_chartMain, _chartRsi, _chartMacd].filter(c => c && c !== src);
     if (!param.time) {
-      targets.forEach(c => { try { c.clearCrosshairPosition(); } catch (e) {} });
-      const rl = $('rsi-legend'); if (rl) rl.textContent = '';
-      const ml = $('macd-legend'); if (ml) ml.textContent = '';
+      [_chartMain, _chartRsi, _chartMacd].forEach(c => {
+        if (c && c !== src) try { c.clearCrosshairPosition(); } catch (e) {}
+      });
+      chUpdateLegends(null);
     } else {
       if (src !== _chartMain && _chartCandles)
         try { _chartMain.setCrosshairPosition(0, param.time, _chartCandles); } catch (e) {}
@@ -3626,38 +3654,13 @@ function initCharts() {
         try { _chartRsi.setCrosshairPosition(0, param.time, _chartSeries.rsi); } catch (e) {}
       if (src !== _chartMacd && _chartMacd && _chartSeries.macdLine)
         try { _chartMacd.setCrosshairPosition(0, param.time, _chartSeries.macdLine); } catch (e) {}
+      chUpdateLegends(param.time);
     }
     _chSrc = null;
   };
   _chartMain.subscribeCrosshairMove(p => chPush(_chartMain, p));
-  if (_chartRsi) {
-    _chartRsi.subscribeCrosshairMove(p => {
-      chPush(_chartRsi, p);
-      const rl = $('rsi-legend');
-      if (rl) {
-        if (!p.time) { rl.textContent = ''; return; }
-        const v = p.seriesData?.get(_chartSeries.rsi);
-        rl.textContent = v?.value != null ? `RSI: ${v.value.toFixed(2)}` : '';
-      }
-    });
-  }
-  if (_chartMacd) {
-    _chartMacd.subscribeCrosshairMove(p => {
-      chPush(_chartMacd, p);
-      const ml = $('macd-legend');
-      if (ml) {
-        if (!p.time) { ml.textContent = ''; return; }
-        const h = p.seriesData?.get(_chartSeries.macdHist);
-        const m = p.seriesData?.get(_chartSeries.macdLine);
-        const s = p.seriesData?.get(_chartSeries.macdSignal);
-        const parts = [];
-        if (m?.value != null) parts.push(`MACD: ${m.value.toFixed(4)}`);
-        if (s?.value != null) parts.push(`Sig: ${s.value.toFixed(4)}`);
-        if (h?.value != null) parts.push(`Hist: ${h.value.toFixed(4)}`);
-        ml.textContent = parts.join('  ');
-      }
-    });
-  }
+  if (_chartRsi) _chartRsi.subscribeCrosshairMove(p => chPush(_chartRsi, p));
+  if (_chartMacd) _chartMacd.subscribeCrosshairMove(p => chPush(_chartMacd, p));
 
   // Resize handling
   if (typeof ResizeObserver !== 'undefined') {
@@ -3741,12 +3744,18 @@ function _renderIndicatorOverlays(candles) {
     _chartSeries.stBear.setData(st.bear);
   }
   // RSI
+  _chRsiMap.clear();
   const rsiCfg = _findIndicator('RSI');
   if (rsiCfg && _chartSeries.rsi) {
     const period = rsiCfg.period || 14;
-    _chartSeries.rsi.setData(calcRSILine(candles, period));
+    const rsiLine = calcRSILine(candles, period);
+    _chartSeries.rsi.setData(rsiLine);
+    for (const p of rsiLine) _chRsiMap.set(p.time, p.value);
+    const rv = $('rsi-value');
+    if (rv && rsiLine.length) rv.textContent = rsiLine[rsiLine.length - 1].value.toFixed(2);
   }
   // MACD
+  _chMacdMap.clear();
   const macdCfg = _findIndicator('MACD');
   if (macdCfg && _chartSeries.macdHist) {
     const fast   = macdCfg.fast   || 12;
@@ -3756,6 +3765,11 @@ function _renderIndicatorOverlays(candles) {
     _chartSeries.macdLine.setData(m.macd);
     _chartSeries.macdSignal.setData(m.signal);
     _chartSeries.macdHist.setData(m.histogram);
+    const macdMap = new Map(m.macd.map(p => [p.time, p.value]));
+    const sigMap = new Map(m.signal.map(p => [p.time, p.value]));
+    for (const p of m.histogram) _chMacdMap.set(p.time, { m: macdMap.get(p.time), s: sigMap.get(p.time), h: p.value });
+    const mv = $('macd-value');
+    if (mv && m.histogram.length) mv.textContent = m.histogram[m.histogram.length - 1].value.toFixed(4);
   }
   // SUPPORT_RESISTANCE — fixnan stepped lines
   for (const s of _srLineSeries) {
