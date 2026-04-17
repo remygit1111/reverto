@@ -3484,8 +3484,6 @@ function teardownChartTab() {
   if (_chartRefreshTimer) { clearInterval(_chartRefreshTimer); _chartRefreshTimer = null; }
   if (_chartResizeObs) { try { _chartResizeObs.disconnect(); } catch (e) {} _chartResizeObs = null; }
   try { if (_chartMain) _chartMain.remove(); } catch (e) {}
-  try { if (_chartRsi)  _chartRsi.remove();  } catch (e) {}
-  try { if (_chartMacd) _chartMacd.remove(); } catch (e) {}
   _chartMain = _chartRsi = _chartMacd = null;
   _chartCandles = null;
   _chartSeries = {};
@@ -3562,113 +3560,26 @@ function initCharts() {
     _chartSeries.stBear = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--red',    '#ef5350'), lineWidth: 2 });
   }
 
-  // RSI sub-chart
+  // RSI pane (pane 1 on main chart)
   if (_hasIndicator('RSI')) {
-    const rsiEl = $('chart-rsi');
-    rsiEl.classList.remove('hidden');
-    rsiEl.style.paddingRight = '80px';
-    rsiEl.style.boxSizing = 'border-box';
-    _chartRsi = _lwcCreateChart(rsiEl, {
-      ..._chartLayoutOpts(),
-      width:  rsiEl.clientWidth - 80,
-      height: rsiEl.clientHeight || 100,
-      rightPriceScale: { visible: false },
-      timeScale: { visible: false },
-    });
-    _chartSeries.rsi = _chartRsi.addSeries(_LWC().LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
+    _chartSeries.rsi = _chartMain.addSeries(_LWC().LineSeries, {
+      color: _cssVar('--blue', '#5b8dee'), lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+    }, 1);
     const rsiCfgVal = _findIndicator('RSI');
     const rsiParsed = _parseRsiThreshold(rsiCfgVal?.threshold);
     const rsiTv = rsiCfgVal?.rsi_value != null ? rsiCfgVal.rsi_value : rsiParsed.value;
     if (rsiTv) {
-      _chartSeries.rsi.createPriceLine({ price: rsiTv, color: _cssVar('--accent', '#26a69a'), lineStyle: 0, lineWidth: 1, axisLabelVisible: false, title: '' });
+      _chartSeries.rsi.createPriceLine({ price: rsiTv, color: _cssVar('--accent', '#26a69a'), lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: String(rsiTv) });
     }
   }
+  // MACD pane (pane 2 on main chart, or 1 if no RSI)
   if (_hasIndicator('MACD')) {
-    const macdEl = $('chart-macd');
-    macdEl.classList.remove('hidden');
-    macdEl.style.paddingRight = '80px';
-    macdEl.style.boxSizing = 'border-box';
-    _chartMacd = _lwcCreateChart(macdEl, {
-      ..._chartLayoutOpts(),
-      width:  macdEl.clientWidth - 80,
-      height: macdEl.clientHeight || 100,
-      rightPriceScale: { visible: false },
-      timeScale: { visible: false },
-    });
-    _chartSeries.macdHist   = _chartMacd.addSeries(_LWC().HistogramSeries, { color: _cssVar('--muted', '#888') });
-    _chartSeries.macdLine   = _chartMacd.addSeries(_LWC().LineSeries, { color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
-    _chartSeries.macdSignal = _chartMacd.addSeries(_LWC().LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
+    const macdPane = _hasIndicator('RSI') ? 2 : 1;
+    _chartSeries.macdHist   = _chartMain.addSeries(_LWC().HistogramSeries, { color: _cssVar('--muted', '#888') }, macdPane);
+    _chartSeries.macdLine   = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 }, macdPane);
+    _chartSeries.macdSignal = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 }, macdPane);
   }
-
-  // Sync sub-chart timeScales with main chart
-  let _tsSync = false;
-  const mainTs = _chartMain.timeScale();
-  const syncSub = (sub) => {
-    if (!sub) return;
-    const subTs = sub.timeScale();
-    mainTs.subscribeVisibleLogicalRangeChange(r => {
-      if (_tsSync || !r) return;
-      _tsSync = true;
-      subTs.setVisibleLogicalRange(r);
-      try { sub.applyOptions({ timeScale: { rightOffset: mainTs.options().rightOffset } }); } catch (e) {}
-      _tsSync = false;
-    });
-    subTs.subscribeVisibleLogicalRangeChange(r => {
-      if (_tsSync || !r) return;
-      _tsSync = true; mainTs.setVisibleLogicalRange(r); _tsSync = false;
-    });
-  };
-  syncSub(_chartRsi);
-  syncSub(_chartMacd);
-
-  // Crosshair sync main ↔ sub-charts + legend
-  let _chSrc = null;
-  const chUpdateLegends = (time) => {
-    const rl = $('rsi-legend'), rv = $('rsi-value');
-    if (rl || rv) {
-      const r = _chRsiMap.get(time);
-      const txt = r != null ? `RSI: ${r.toFixed(2)}` : '';
-      if (rl) rl.textContent = txt;
-      if (rv) rv.textContent = r != null ? r.toFixed(2) : '';
-    }
-    const ml = $('macd-legend'), mv = $('macd-value');
-    if (ml || mv) {
-      const d = _chMacdMap.get(time);
-      if (d) {
-        const parts = [];
-        if (d.m != null) parts.push(`MACD: ${d.m.toFixed(4)}`);
-        if (d.s != null) parts.push(`Sig: ${d.s.toFixed(4)}`);
-        if (d.h != null) parts.push(`Hist: ${d.h.toFixed(4)}`);
-        if (ml) ml.textContent = parts.join('  ');
-        if (mv) mv.textContent = d.h != null ? d.h.toFixed(4) : '';
-      } else {
-        if (ml) ml.textContent = '';
-        if (mv) mv.textContent = '';
-      }
-    }
-  };
-  const chPush = (src, param) => {
-    if (_chSrc) return;
-    _chSrc = src;
-    if (!param.time) {
-      [_chartMain, _chartRsi, _chartMacd].forEach(c => {
-        if (c && c !== src) try { c.clearCrosshairPosition(); } catch (e) {}
-      });
-      chUpdateLegends(null);
-    } else {
-      if (src !== _chartMain && _chartCandles)
-        try { _chartMain.setCrosshairPosition(0, param.time, _chartCandles); } catch (e) {}
-      if (src !== _chartRsi && _chartRsi && _chartSeries.rsi)
-        try { _chartRsi.setCrosshairPosition(0, param.time, _chartSeries.rsi); } catch (e) {}
-      if (src !== _chartMacd && _chartMacd && _chartSeries.macdLine)
-        try { _chartMacd.setCrosshairPosition(0, param.time, _chartSeries.macdLine); } catch (e) {}
-      chUpdateLegends(param.time);
-    }
-    _chSrc = null;
-  };
-  _chartMain.subscribeCrosshairMove(p => chPush(_chartMain, p));
-  if (_chartRsi) _chartRsi.subscribeCrosshairMove(p => chPush(_chartRsi, p));
-  if (_chartMacd) _chartMacd.subscribeCrosshairMove(p => chPush(_chartMacd, p));
 
   // Resize handling
   if (typeof ResizeObserver !== 'undefined') {
@@ -3679,13 +3590,9 @@ function initCharts() {
           _chartMain.applyOptions({ width: w });
           _renderAnnotations();
         }
-        if (_chartRsi  && e.target === $('chart-rsi'))  _chartRsi.applyOptions({ width: w });
-        if (_chartMacd && e.target === $('chart-macd')) _chartMacd.applyOptions({ width: w });
       }
     });
     _chartResizeObs.observe(mainEl);
-    if (_chartRsi)  _chartResizeObs.observe($('chart-rsi'));
-    if (_chartMacd) _chartResizeObs.observe($('chart-macd'));
   }
 
   // Redraw the SVG annotation overlay whenever the user pans or zooms
@@ -3913,14 +3820,6 @@ function _renderIndicatorOverlays(candles) {
   }
   _chartIndicatorMarkers = markers;
   _setCombinedMarkers();
-  // Force sub-charts to same visible range as main chart after data load
-  try {
-    const range = _chartMain?.timeScale().getVisibleLogicalRange();
-    if (range) {
-      if (_chartRsi) _chartRsi.timeScale().setVisibleLogicalRange(range);
-      if (_chartMacd) _chartMacd.timeScale().setVisibleLogicalRange(range);
-    }
-  } catch (e) {}
 }
 
 function _calcEntryMarkers(candles, indicators) {
@@ -5679,8 +5578,6 @@ function setupEventListeners() {
       _chartTimezone = tzSel.value;
       localStorage.setItem('reverto_timezone', _chartTimezone);
       if (_chartMain) _chartMain.applyOptions({ localization: { timeFormatter: _tzFormatter } });
-      if (_chartRsi) _chartRsi.applyOptions({ localization: { timeFormatter: _tzFormatter } });
-      if (_chartMacd) _chartMacd.applyOptions({ localization: { timeFormatter: _tzFormatter } });
     });
   }
 
