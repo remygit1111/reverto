@@ -3564,6 +3564,7 @@ function initCharts() {
       ..._chartLayoutOpts(),
       width:  rsiEl.clientWidth,
       height: rsiEl.clientHeight || 100,
+      timeScale: { timeVisible: true, secondsVisible: false, borderVisible: false },
     });
     _chartSeries.rsi = _chartRsi.addLineSeries({ color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
     const rsiCfgVal = _findIndicator('RSI');
@@ -3580,6 +3581,7 @@ function initCharts() {
       ..._chartLayoutOpts(),
       width:  macdEl.clientWidth,
       height: macdEl.clientHeight || 100,
+      timeScale: { timeVisible: true, secondsVisible: false, borderVisible: false },
     });
     _chartSeries.macdHist   = _chartMacd.addHistogramSeries({ color: _cssVar('--muted', '#888') });
     _chartSeries.macdLine   = _chartMacd.addLineSeries({ color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
@@ -3887,6 +3889,14 @@ function _renderIndicatorOverlays(candles) {
   }
   _chartIndicatorMarkers = markers;
   _setCombinedMarkers();
+  // Force sub-charts to same visible range as main chart after data load
+  try {
+    const range = _chartMain?.timeScale().getVisibleLogicalRange();
+    if (range) {
+      if (_chartRsi) _chartRsi.timeScale().setVisibleLogicalRange(range);
+      if (_chartMacd) _chartMacd.timeScale().setVisibleLogicalRange(range);
+    }
+  } catch (e) {}
 }
 
 function _calcEntryMarkers(candles, indicators) {
