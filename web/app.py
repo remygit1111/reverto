@@ -1288,10 +1288,18 @@ async def _fetch_ohlcv_range(
             client, symbol, timeframe, since, 1000,
         )
         pages_fetched += 1
-        if pages_fetched % 10 == 0:
+        if page:
+            page_first = int(page[0][0]) if page else 0
+            page_last = int(page[-1][0]) if page else 0
             logger.info(
-                "Fetching page %d/~%d for %s %s (bars=%d)",
-                pages_fetched, expected_pages, symbol, timeframe, len(bars),
+                "Page %d: since=%d returned=%d first=%d last=%d gap=%d",
+                pages_fetched, since, len(page), page_first, page_last,
+                (page_first - since) // 1000 if page_first > since else 0,
+            )
+        elif pages_fetched % 10 == 0 or not page:
+            logger.info(
+                "Page %d: since=%d returned=0 (empty)",
+                pages_fetched, since,
             )
         if not page:
             empty_pages += 1
