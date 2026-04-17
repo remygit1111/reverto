@@ -951,6 +951,14 @@ tr:hover td { background: rgba(128,128,128,.04); }
   color: var(--muted);
   margin-top: 4px;
 }
+.param-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  line-height: 1.4;
+}
 
 .toggle-group {
   display: flex;

@@ -1994,6 +1994,7 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Period</label>
         <input type="number" min="5" max="50" value="${ind.period}" data-nb-ind="${i}" data-nb-field="period">
+        <div class="param-hint">Number of candles used to calculate RSI (default 14)</div>
       </div>
       <div class="form-row">
         <label>Source</label>
@@ -2008,10 +2009,12 @@ function nbIndicatorFieldsHtml(ind, i) {
             `<option value="${v}" ${cond === v ? 'selected' : ''}>${label}</option>`
           ).join('')}
         </select>
+        <div class="param-hint">Signal trigger: oversold/overbought threshold or crossing</div>
       </div>
       <div class="form-row">
         <label>Value (X)</label>
         <input type="number" min="1" max="99" step="1" value="${val}" data-nb-ind="${i}" data-nb-field="rsi_value">
+        <div class="param-hint">RSI value that triggers the condition</div>
       </div>`;
   }
   if (ind.type === 'EMA_CROSS') {
@@ -2019,10 +2022,12 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Fast period</label>
         <input type="number" min="2" value="${ind.fast}" data-nb-ind="${i}" data-nb-field="fast">
+        <div class="param-hint">Period of the fast exponential moving average</div>
       </div>
       <div class="form-row">
         <label>Slow period</label>
         <input type="number" min="2" value="${ind.slow}" data-nb-ind="${i}" data-nb-field="slow">
+        <div class="param-hint">Period of the slow exponential moving average</div>
       </div>
       <div class="form-row">
         <label>Signal</label>
@@ -2030,6 +2035,7 @@ function nbIndicatorFieldsHtml(ind, i) {
           <option value="bullish_cross" ${ind.signal === 'bullish_cross' ? 'selected' : ''}>Bullish</option>
           <option value="bearish_cross" ${ind.signal === 'bearish_cross' ? 'selected' : ''}>Bearish</option>
         </select>
+        <div class="param-hint">Bullish cross: fast crosses above slow. Bearish: opposite.</div>
       </div>`;
   }
   if (ind.type === 'QFL') {
@@ -2052,22 +2058,27 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Lookback</label>
         <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
+        <div class="param-hint">Candles used to detect base formation (local lows)</div>
       </div>
       <div class="form-row">
         <label>Crack %</label>
         <input type="number" min="0" step="0.1" value="${crack}" data-nb-ind="${i}" data-nb-field="crack_pct">
+        <div class="param-hint">Minimum drop percentage required to confirm a base crack</div>
       </div>
       <div class="form-row">
         <label>Base candles</label>
         <input type="number" min="1" value="${bc}" data-nb-ind="${i}" data-nb-field="base_candles">
+        <div class="param-hint">Number of candles a base must consolidate before being valid</div>
       </div>
       <div class="form-row">
         <label>Max bases</label>
         <input type="number" min="1" value="${mb}" data-nb-ind="${i}" data-nb-field="max_bases">
+        <div class="param-hint">Maximum number of active bases tracked simultaneously</div>
       </div>
       <div class="form-row">
         <label>Below %</label>
         <input type="number" min="0" step="0.1" value="${bp}" data-nb-ind="${i}" data-nb-field="below_pct">
+        <div class="param-hint">Trigger when price is this % below a base level</div>
       </div>
       <div class="form-row">
         <label>Base periods</label>
@@ -2092,6 +2103,7 @@ function nbIndicatorFieldsHtml(ind, i) {
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
           ).join('')}
         </select>
+        <div class="param-hint">Below base = price cracked through. Near base = approaching. Retest = returning after crack.</div>
       </div>`;
   }
   if (ind.type === 'SUPPORT_RESISTANCE') {
@@ -2113,10 +2125,12 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Left bars</label>
         <input type="number" min="1" value="${lbars}" data-nb-ind="${i}" data-nb-field="left_bars">
+        <div class="param-hint">Candles to the left required to confirm a pivot point</div>
       </div>
       <div class="form-row">
         <label>Right bars</label>
         <input type="number" min="1" value="${rbars}" data-nb-ind="${i}" data-nb-field="right_bars">
+        <div class="param-hint">Candles to the right required to confirm a pivot point. Higher = slower but more reliable.</div>
       </div>
       <div class="form-row">
         <label>Level</label>
@@ -2124,20 +2138,22 @@ function nbIndicatorFieldsHtml(ind, i) {
           <option value="support" ${val === 'support' ? 'selected' : ''}>Support</option>
           <option value="resistance" ${val === 'resistance' ? 'selected' : ''}>Resistance</option>
         </select>
+        <div class="param-hint">Apply condition to Support or Resistance level</div>
       </div>
       <div class="form-row">
         <label>Proximity %</label>
         <input type="number" min="0" step="0.1" value="${prox}" data-nb-ind="${i}" data-nb-field="proximity_pct">
+        <div class="param-hint">Price is considered 'near' a level within this percentage</div>
       </div>
       <div class="form-row">
         <label>Volume threshold</label>
         <input type="number" min="0" step="1" value="${volThr}" data-nb-ind="${i}" data-nb-field="volume_threshold">
-        <div class="form-hint">Min. volume momentum voor pivot (0 = uitgeschakeld)</div>
+        <div class="param-hint">Minimum volume momentum for a pivot to be valid. Uses EMA(5)/EMA(10) oscillator. 0 = disabled.</div>
       </div>
       <div class="form-row">
         <label>Min touches</label>
         <input type="number" min="1" max="10" value="${minT}" data-nb-ind="${i}" data-nb-field="min_touches">
-        <div class="form-hint">Aantal keer dat niveau getest moet zijn</div>
+        <div class="param-hint">Number of times price must test a level before it becomes active. Higher = stronger levels only.</div>
       </div>
       <div class="form-row">
         <label>Condition</label>
@@ -2146,6 +2162,7 @@ function nbIndicatorFieldsHtml(ind, i) {
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
           ).join('')}
         </select>
+        <div class="param-hint">When to trigger: crossing through level, proximity, or relative position</div>
       </div>`;
   }
   if (ind.type === 'MARKET_STRUCTURE') {
@@ -2163,6 +2180,7 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Lookback</label>
         <input type="number" min="1" value="${lb}" data-nb-ind="${i}" data-nb-field="lookback">
+        <div class="param-hint">Number of candles to detect swing highs and lows</div>
       </div>
       <div class="form-row">
         <label>Bias</label>
@@ -2178,6 +2196,7 @@ function nbIndicatorFieldsHtml(ind, i) {
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
           ).join('')}
         </select>
+        <div class="param-hint">BOS = Break of Structure. Higher low = bullish continuation.</div>
       </div>`;
   }
   if (ind.type === 'SUPERTREND') {
@@ -2193,10 +2212,12 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>ATR Period</label>
         <input type="number" min="2" value="${ap}" data-nb-ind="${i}" data-nb-field="atr_period">
+        <div class="param-hint">ATR period used to calculate volatility (default 10)</div>
       </div>
       <div class="form-row">
         <label>Multiplier</label>
         <input type="number" min="0.1" step="0.1" value="${mult}" data-nb-ind="${i}" data-nb-field="multiplier">
+        <div class="param-hint">ATR multiplier for band distance (default 3.0)</div>
       </div>
       <div class="form-row">
         <label>Condition</label>
@@ -2205,6 +2226,7 @@ function nbIndicatorFieldsHtml(ind, i) {
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
           ).join('')}
         </select>
+        <div class="param-hint">Bullish: price above supertrend line. Bearish: price below.</div>
       </div>`;
   }
   if (ind.type === 'PARABOLIC_SAR') {
@@ -2222,10 +2244,12 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Initial AF</label>
         <input type="number" min="0.001" step="0.01" value="${iaf}" data-nb-ind="${i}" data-nb-field="initial_af">
+        <div class="param-hint">Starting acceleration factor — how fast SAR moves (default 0.02)</div>
       </div>
       <div class="form-row">
         <label>Max AF</label>
         <input type="number" min="0.01" step="0.01" value="${maf}" data-nb-ind="${i}" data-nb-field="max_af">
+        <div class="param-hint">Maximum acceleration factor cap (default 0.20)</div>
       </div>
       <div class="form-row">
         <label>Condition</label>
@@ -2234,6 +2258,7 @@ function nbIndicatorFieldsHtml(ind, i) {
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
           ).join('')}
         </select>
+        <div class="param-hint">Bullish: price above SAR dots. Bearish: price below SAR dots.</div>
       </div>`;
   }
   if (ind.type === 'BOLLINGER') {
@@ -2253,10 +2278,12 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Period</label>
         <input type="number" min="5" value="${ind.period || 20}" data-nb-ind="${i}" data-nb-field="period">
+        <div class="param-hint">Number of candles for the moving average base (default 20)</div>
       </div>
       <div class="form-row">
         <label>Multiplier</label>
         <input type="number" min="0.1" step="0.1" value="${mult}" data-nb-ind="${i}" data-nb-field="multiplier">
+        <div class="param-hint">Standard deviation multiplier for band width (default 2.0)</div>
       </div>
       <div class="form-row">
         <label>MA type</label>
@@ -2277,6 +2304,7 @@ function nbIndicatorFieldsHtml(ind, i) {
             `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`
           ).join('')}
         </select>
+        <div class="param-hint">Trigger when price crosses or sits relative to a band</div>
       </div>`;
   }
   if (ind.type === 'MACD') {
@@ -2297,18 +2325,22 @@ function nbIndicatorFieldsHtml(ind, i) {
         <select data-nb-ind="${i}" data-nb-field="condition">
           ${MACD_CONDS.map(([v, l]) => `<option value="${v}" ${ind.condition === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
+        <div class="param-hint">Histogram positive = bullish momentum, negative = bearish</div>
       </div>
       <div class="form-row">
         <label>Fast</label>
         <input type="number" min="2" value="${mf}" data-nb-ind="${i}" data-nb-field="macd_fast">
+        <div class="param-hint">Fast EMA period (default 12)</div>
       </div>
       <div class="form-row">
         <label>Slow</label>
         <input type="number" min="2" value="${ms}" data-nb-ind="${i}" data-nb-field="macd_slow">
+        <div class="param-hint">Slow EMA period (default 26)</div>
       </div>
       <div class="form-row">
         <label>Signal</label>
         <input type="number" min="2" value="${mg}" data-nb-ind="${i}" data-nb-field="macd_signal">
+        <div class="param-hint">Signal line EMA period (default 9)</div>
       </div>
       <div class="form-row">
         <label>Oscillator MA</label>
