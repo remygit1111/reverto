@@ -116,8 +116,10 @@ class TakeProfitConfig(BaseModel):
     model_config = _STRICT
     enabled: bool = True
     target_pct: float = Field(default=3.0, gt=0, le=100)
+    price_enabled: bool = True
     indicator_confirm: Optional[str] = None
     minimum_tp_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    indicator_groups: list[IndicatorGroup] = Field(default_factory=list)
 
 
 class StopLossConfig(BaseModel):

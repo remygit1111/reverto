@@ -1385,6 +1385,12 @@ tr:hover td { background: rgba(128,128,128,.04); }
   border-radius:6px; cursor:pointer; font-size:12px;
 }
 .btn-add-group:hover { border-color:var(--accent); color:var(--accent); }
+.deal-trigger-badge { display:flex; gap:4px; align-items:center; margin-top:4px; flex-wrap:wrap; }
+.trigger-group {
+  font-size:10px; font-weight:600; color:var(--accent);
+  background:rgba(38,166,154,0.1); padding:1px 6px; border-radius:10px;
+}
+.trigger-indicators { font-size:10px; color:var(--muted); }
 .nb-ind-card {
   background: var(--surface2);
   border: 1px solid var(--border);

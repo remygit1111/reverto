@@ -173,12 +173,13 @@ class BacktestEngine:
         # Entry check — alleen als geen open deals
         if not self.state.open_deals and closes_per_tf.get(self.bot_timeframe):
             try:
-                if self.indicator_engine.check_entry_signal(
+                triggered, trigger_info = self.indicator_engine.check_entry_signal(
                     closes_per_tf, self.bot_timeframe,
                     highs_per_tf=highs_per_tf,
                     lows_per_tf=lows_per_tf,
                     opens_per_tf=opens_per_tf,
-                ):
+                )
+                if triggered:
                     self._open_deal(close, candle.dt)
             except Exception as e:
                 logger.debug(f"Entry check fout op candle {candle.dt}: {e}")

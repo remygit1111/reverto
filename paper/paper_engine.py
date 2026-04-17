@@ -842,18 +842,19 @@ class PaperEngine:
             f"MACD hist: {self._last_snapshot.get('macd_histogram','?')}"
         )
 
-        if self.indicator_engine.check_entry_signal(
+        triggered, trigger_info = self.indicator_engine.check_entry_signal(
             self._closes_per_tf, bot_tf,
             highs_per_tf=self._highs_per_tf,
             lows_per_tf=self._lows_per_tf,
-        ):
-            self._open_deal(price)
+        )
+        if triggered:
+            self._open_deal(price, entry_trigger=trigger_info)
 
     def _calc_fee(self, size: float) -> float:
         """Bereken de taker fee voor één order (in BTC, inverse contract)."""
         return size * self.config.dca.taker_fee
 
-    def _open_deal(self, price: float):
+    def _open_deal(self, price: float, entry_trigger: dict | None = None):
         """Open a new paper deal at the current price."""
         deal_id    = self.state.new_deal_id()
         base_order = PaperOrder(
@@ -983,6 +984,32 @@ class PaperEngine:
                 self.notifier.notify_take_profit,
                 self.config.name, deal.symbol, fill_price, pnl_btc, pnl_pct,
             )
+            return
+
+        # TP indicator groups — trigger TP even if price hasn't hit target
+        tp_groups = getattr(self.config.take_profit, 'indicator_groups', [])
+        if tp_groups:
+            bot_tf = self.config.timeframe
+            tp_hit, _ = self.indicator_engine.check_tp_indicator_groups(
+                self._closes_per_tf, bot_tf,
+                highs_per_tf=self._highs_per_tf,
+                lows_per_tf=self._lows_per_tf,
+            )
+            if tp_hit:
+                pnl_btc, pnl_pct = deal.calculate_pnl(price)
+                exit_size = deal.total_size
+                self.state.close_deal(deal.id, price, "tp")
+                fee = self._calc_fee(exit_size)
+                self.state.balance_btc -= fee
+                self._fees_paid_btc += fee
+                self._db_close_deal(deal.id, price, "tp", pnl_btc, pnl_pct)
+                logger.info(
+                    f"TP hit (indicator group): {deal.id} at ${price:,.2f} "
+                    f"PnL: {pnl_btc:+.6f} BTC")
+                self._notify(
+                    self.notifier.notify_take_profit,
+                    self.config.name, deal.symbol, price, pnl_btc, pnl_pct,
+                )
 
     def _check_sl(self, deal: PaperDeal, price: float):
         """
