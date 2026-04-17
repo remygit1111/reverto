@@ -3604,6 +3604,56 @@ function initCharts() {
   syncSub(_chartRsi);
   syncSub(_chartMacd);
 
+  // Crosshair sync main ↔ sub-charts + legend
+  let _chSrc = null;
+  const chPush = (src, param) => {
+    if (_chSrc) return;
+    _chSrc = src;
+    const targets = [_chartMain, _chartRsi, _chartMacd].filter(c => c && c !== src);
+    if (!param.time) {
+      targets.forEach(c => { try { c.clearCrosshairPosition(); } catch (e) {} });
+      const rl = $('rsi-legend'); if (rl) rl.textContent = '';
+      const ml = $('macd-legend'); if (ml) ml.textContent = '';
+    } else {
+      if (src !== _chartMain && _chartCandles)
+        try { _chartMain.setCrosshairPosition(0, param.time, _chartCandles); } catch (e) {}
+      if (src !== _chartRsi && _chartRsi && _chartSeries.rsi)
+        try { _chartRsi.setCrosshairPosition(0, param.time, _chartSeries.rsi); } catch (e) {}
+      if (src !== _chartMacd && _chartMacd && _chartSeries.macdLine)
+        try { _chartMacd.setCrosshairPosition(0, param.time, _chartSeries.macdLine); } catch (e) {}
+    }
+    _chSrc = null;
+  };
+  _chartMain.subscribeCrosshairMove(p => chPush(_chartMain, p));
+  if (_chartRsi) {
+    _chartRsi.subscribeCrosshairMove(p => {
+      chPush(_chartRsi, p);
+      const rl = $('rsi-legend');
+      if (rl) {
+        if (!p.time) { rl.textContent = ''; return; }
+        const v = p.seriesData?.get(_chartSeries.rsi);
+        rl.textContent = v?.value != null ? `RSI: ${v.value.toFixed(2)}` : '';
+      }
+    });
+  }
+  if (_chartMacd) {
+    _chartMacd.subscribeCrosshairMove(p => {
+      chPush(_chartMacd, p);
+      const ml = $('macd-legend');
+      if (ml) {
+        if (!p.time) { ml.textContent = ''; return; }
+        const h = p.seriesData?.get(_chartSeries.macdHist);
+        const m = p.seriesData?.get(_chartSeries.macdLine);
+        const s = p.seriesData?.get(_chartSeries.macdSignal);
+        const parts = [];
+        if (m?.value != null) parts.push(`MACD: ${m.value.toFixed(4)}`);
+        if (s?.value != null) parts.push(`Sig: ${s.value.toFixed(4)}`);
+        if (h?.value != null) parts.push(`Hist: ${h.value.toFixed(4)}`);
+        ml.textContent = parts.join('  ');
+      }
+    });
+  }
+
   // Resize handling
   if (typeof ResizeObserver !== 'undefined') {
     _chartResizeObs = new ResizeObserver(entries => {
