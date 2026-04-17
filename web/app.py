@@ -1285,22 +1285,17 @@ async def _fetch_ohlcv_range(
         if pages_fetched > 0:
             await asyncio.sleep(_CANDLES_PAGE_SLEEP_S)
         page = await _fetch_ohlcv_page_with_retry(
-            client, symbol, timeframe, since, 1000,
+            client, symbol, timeframe, since, 200,
         )
         pages_fetched += 1
         if page:
-            page_first = int(page[0][0]) if page else 0
-            page_last = int(page[-1][0]) if page else 0
+            page_last = int(page[-1][0])
             logger.info(
-                "Page %d: since=%d returned=%d first=%d last=%d gap=%d",
-                pages_fetched, since, len(page), page_first, page_last,
-                (page_first - since) // 1000 if page_first > since else 0,
+                "Page %d: since=%d got=%d last=%d",
+                pages_fetched, since, len(page), page_last,
             )
-        elif pages_fetched % 10 == 0 or not page:
-            logger.info(
-                "Page %d: since=%d returned=0 (empty)",
-                pages_fetched, since,
-            )
+        else:
+            logger.info("Page %d: since=%d empty", pages_fetched, since)
         if not page:
             empty_pages += 1
             if empty_pages >= 2:
