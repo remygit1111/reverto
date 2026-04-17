@@ -659,29 +659,21 @@
         </label>
       </summary>
       <div class="wizard-section-body" id="nb-tp-body">
+        <div class="section-title mt-8">Price Target</div>
         <div class="form-grid">
-          <div class="form-row">
+          <div class="form-row form-row-wide">
+            <label class="checkbox-label">
+              <input type="checkbox" id="nb-tp-price-enabled" class="checkbox-accent" checked>
+              Use price target
+            </label>
+          </div>
+          <div class="form-row" id="nb-tp-pct-row">
             <label>Target %</label>
             <input id="nb-tp-pct" type="number" step="0.1" min="0" value="3.0">
           </div>
-          <div class="form-row">
-            <label>Indicator confirmation</label>
-            <select id="nb-tp-confirm">
-              <option value="">none</option>
-              <option value="rsi_above_70">RSI above 70</option>
-              <option value="rsi_above_65">RSI above 65</option>
-              <option value="rsi_above_60">RSI above 60</option>
-              <option value="ema_bullish_cross">EMA bullish cross</option>
-              <option value="histogram_positive">MACD histogram positive</option>
-              <option value="histogram_negative">MACD histogram negative</option>
-              <option value="bullish_cross">MACD bullish cross</option>
-              <option value="bearish_cross">MACD bearish cross</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label>Minimum TP % (optional)</label>
-            <input id="nb-tp-min-pct" type="number" step="0.1" min="0" placeholder="leave empty to disable">
-            <div class="form-hint" id="nb-tp-min-hint"></div>
+          <div class="form-row" id="nb-tp-min-row">
+            <label>Minimum TP %</label>
+            <input id="nb-tp-min-pct" type="number" step="0.1" min="0" placeholder="optional">
           </div>
           <div class="form-row form-row-wide">
             <label class="checkbox-label">
@@ -691,6 +683,8 @@
             <input id="nb-tp-max-age-hours" type="number" min="1" max="720" value="24" disabled>
           </div>
         </div>
+        <div class="section-title mt-16">Indicator TP</div>
+        <div id="nb-tp-indicators-list"></div>
       </div>
     </details>
 
@@ -1150,6 +1144,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=165"></script>
+<script src="/static/app.js?v=166"></script>
 </body>
 </html>
