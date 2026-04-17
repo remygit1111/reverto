@@ -8078,10 +8078,13 @@ function btRenderOpenDealsNote(noteId, s) {
 
 function btRenderResults(res) {
   const s = res.summary, r = res.ratios;
-  _btLastDeals = res.deals || [];
+  const btDeals = res.deals || [];
+  const btCandles = _btLastCandles;
   btCleanupChart();
+  _btLastCandles = btCandles;
+  _btLastDeals = btDeals;
   const chartEl = $('bt-chart-container');
-  if (chartEl && _btLastCandles && _btLastDeals.length) {
+  if (chartEl && _btLastCandles?.length && _btLastDeals.length) {
     chartEl.style.display = 'block';
     btInitChart(_btLastCandles, _btLastDeals);
   }
