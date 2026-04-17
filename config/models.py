@@ -75,6 +75,7 @@ class IndicatorConfig(BaseModel):
     # Bollinger Bands / Supertrend
     multiplier: Optional[float] = None
     ma_type: Optional[str] = None   # SMA/EMA/WMA (Bollinger)
+    squeeze_threshold: Optional[float] = None
     value: Optional[str] = None     # lower/upper/middle (BB) or support/resistance (S&R)
     # Parabolic SAR
     initial_af: Optional[float] = None

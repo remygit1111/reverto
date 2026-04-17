@@ -1,33 +1,16 @@
 # strategies/indicators/rsi.py
 # Relative Strength Index (RSI) indicator.
-# Measures momentum — below 30 = oversold (buy signal),
-# above 70 = overbought (sell signal).
 
 import re
 
 import pandas as pd
 
 
-# Threshold grammar understood by check_rsi_signal:
-#   below_<N>         → rsi < N           (current RSI below value)
-#   above_<N>         → rsi > N           (current RSI above value)
-#   cross_below_<N>   → prev > N and curr <= N   (RSI crossed down through value)
-#   cross_above_<N>   → prev < N and curr >= N   (RSI crossed up through value)
-# where N is an integer in [1, 99].
 _THRESHOLD_RE = re.compile(r"^(cross_above|cross_below|above|below)_(\d+)$")
 
 
 def calculate_rsi(closes: list[float], period: int = 14) -> float:
-    """
-    Calculate the current RSI value from a list of closing prices.
-    Returns the latest RSI value (0-100).
-    Requires at least period + 1 data points.
-
-    Handles edge cases:
-    - All prices identical (no movement) → returns 50.0
-    - All gains, no losses → returns 100.0
-    - All losses, no gains → returns 0.0
-    """
+    """Return the latest RSI value (0-100)."""
     if len(closes) < period + 1:
         raise ValueError(
             f"RSI requires at least {period + 1} data points, got {len(closes)}"
@@ -42,40 +25,79 @@ def calculate_rsi(closes: list[float], period: int = 14) -> float:
     avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
 
-    # Replace zero avg_loss with NaN to avoid ZeroDivisionError
     avg_loss_safe = avg_loss.replace(0, float("nan"))
     rs = avg_gain / avg_loss_safe
 
     rsi = 100 - (100 / (1 + rs))
-
-    # Fill NaN: no losses means RSI = 100 (all gain)
     rsi = rsi.fillna(100)
 
     return round(float(rsi.iloc[-1]), 2)
 
 
+def _rsi_series(closes: list[float], period: int = 14) -> list[float]:
+    """Return full RSI series for divergence detection."""
+    if len(closes) < period + 1:
+        raise ValueError(
+            f"RSI requires at least {period + 1} data points, got {len(closes)}"
+        )
+    series = pd.Series(closes)
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss_safe = avg_loss.replace(0, float("nan"))
+    rs = avg_gain / avg_loss_safe
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(100)
+    return [round(float(v), 2) for v in rsi.tolist()]
+
+
 def check_rsi_signal(closes: list[float], period: int = 14,
                      threshold: str = "below_35") -> bool:
-    """
-    Check if RSI meets the configured threshold condition.
+    """Check if RSI meets the configured threshold condition.
 
-    Supported threshold grammar:
-        below_<N>        : RSI is strictly below N
-        above_<N>        : RSI is strictly above N
-        cross_below_<N>  : RSI just crossed down through N
-                           (previous RSI > N AND current RSI <= N)
-        cross_above_<N>  : RSI just crossed up through N
-                           (previous RSI < N AND current RSI >= N)
-
-    The crossing conditions need two consecutive RSI values, so the
-    closes list must contain at least `period + 2` points.
+    Extended conditions beyond the threshold grammar:
+        rsi_cross_above_50     : centerline cross up
+        rsi_cross_below_50     : centerline cross down
+        rsi_bullish_divergence : price lower low + RSI higher low
+        rsi_bearish_divergence : price higher high + RSI lower high
     """
+    if threshold == "rsi_cross_above_50":
+        if len(closes) < period + 2:
+            return False
+        prev = calculate_rsi(closes[:-1], period)
+        curr = calculate_rsi(closes, period)
+        return prev < 50 and curr >= 50
+
+    if threshold == "rsi_cross_below_50":
+        if len(closes) < period + 2:
+            return False
+        prev = calculate_rsi(closes[:-1], period)
+        curr = calculate_rsi(closes, period)
+        return prev > 50 and curr <= 50
+
+    if threshold == "rsi_bullish_divergence":
+        lookback = 5
+        if len(closes) < period + lookback + 1:
+            return False
+        rsi = _rsi_series(closes, period)
+        return closes[-1] < closes[-lookback] and rsi[-1] > rsi[-lookback]
+
+    if threshold == "rsi_bearish_divergence":
+        lookback = 5
+        if len(closes) < period + lookback + 1:
+            return False
+        rsi = _rsi_series(closes, period)
+        return closes[-1] > closes[-lookback] and rsi[-1] < rsi[-lookback]
+
     match = _THRESHOLD_RE.match(threshold)
     if not match:
         raise ValueError(
             f"Unknown RSI threshold: {threshold!r}. Expected one of "
-            "below_<N>, above_<N>, cross_below_<N>, cross_above_<N> "
-            "with 1 <= N <= 99."
+            "below_<N>, above_<N>, cross_below_<N>, cross_above_<N>, "
+            "rsi_cross_above_50, rsi_cross_below_50, "
+            "rsi_bullish_divergence, rsi_bearish_divergence."
         )
 
     op = match.group(1)
@@ -90,7 +112,6 @@ def check_rsi_signal(closes: list[float], period: int = 14,
     if op == "above":
         return calculate_rsi(closes, period) > value
 
-    # Crossing conditions — need the previous RSI value too.
     if len(closes) < period + 2:
         raise ValueError(
             f"RSI crossing conditions require at least {period + 2} "
@@ -101,5 +122,4 @@ def check_rsi_signal(closes: list[float], period: int = 14,
 
     if op == "cross_above":
         return prev < value and curr >= value
-    # cross_below
     return prev > value and curr <= value

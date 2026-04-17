@@ -1,7 +1,5 @@
 # strategies/indicators/macd.py
 # Moving Average Convergence Divergence (MACD) indicator.
-# Used as confirmation for take profit signals.
-# Positive histogram = bullish momentum → good time to take profit on longs
 
 import pandas as pd
 
@@ -10,12 +8,7 @@ def calculate_macd(closes: list[float], fast: int = 12,
                    slow: int = 26, signal: int = 9,
                    oscillator_ma_type: str = "EMA",
                    signal_ma_type: str = "EMA") -> dict:
-    """
-    Calculate MACD line, signal line and histogram.
-
-    oscillator_ma_type: EMA (default) or SMA for the fast/slow lines.
-    signal_ma_type: EMA (default) or SMA for the signal line.
-    """
+    """Calculate MACD line, signal line and histogram."""
     min_required = slow * 3
     if len(closes) < min_required:
         raise ValueError(
@@ -45,20 +38,25 @@ def calculate_macd(closes: list[float], fast: int = 12,
         "macd": round(float(macd_line.iloc[-1]), 4),
         "signal": round(float(signal_line.iloc[-1]), 4),
         "histogram": round(float(histogram.iloc[-1]), 4),
+        "macd_prev": round(float(macd_line.iloc[-2]), 4) if len(macd_line) >= 2 else 0.0,
     }
 
 
-def check_macd_signal(closes: list[float], condition: str = "histogram_positive") -> bool:
-    """
-    Check if MACD meets the configured condition.
-    Supported conditions:
-        histogram_positive → bullish momentum (good TP confirmation)
-        histogram_negative → bearish momentum
-        macd_above_signal  → bullish crossover
-        macd_below_signal  → bearish crossover
-    Returns True if the condition is met.
+def check_macd_signal(closes: list[float],
+                      condition: str = "histogram_positive") -> bool:
+    """Check if MACD meets the configured condition.
+
+    Extended conditions:
+        macd_cross_above_zero : MACD line crosses above zero
+        macd_cross_below_zero : MACD line crosses below zero
     """
     macd_data = calculate_macd(closes)
+
+    if condition == "macd_cross_above_zero":
+        return macd_data["macd_prev"] < 0 and macd_data["macd"] >= 0
+
+    if condition == "macd_cross_below_zero":
+        return macd_data["macd_prev"] > 0 and macd_data["macd"] <= 0
 
     conditions = {
         "histogram_positive": macd_data["histogram"] > 0,

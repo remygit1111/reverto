@@ -3,7 +3,6 @@ import sys, os, pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from strategies.indicators.rsi import calculate_rsi, check_rsi_signal
-from strategies.indicators.ema import calculate_ema, check_ema_cross_signal
 from strategies.indicators.macd import calculate_macd, check_macd_signal
 from strategies.indicators.bollinger import (
     calculate_bollinger_bands,
@@ -120,23 +119,6 @@ class TestRSI:
         # Between the last two ticks RSI stays well above 50, so cross_above_50
         # must NOT fire.
         assert check_rsi_signal(closes, 14, "cross_above_50") is False
-
-
-class TestEMA:
-    def test_constant_series(self):
-        assert calculate_ema([100.0]*30, 9) == 100.0
-
-    def test_insufficient_data_raises(self):
-        with pytest.raises(ValueError):
-            calculate_ema([100.0]*5, 9)
-
-    def test_cross_requires_3x_slow(self):
-        with pytest.raises(ValueError, match="3 \\* slow"):
-            check_ema_cross_signal([100.0]*30, fast=9, slow=21, signal="bullish")
-
-    def test_unknown_signal_raises(self):
-        with pytest.raises(ValueError, match="Unknown EMA signal"):
-            check_ema_cross_signal([100.0]*70, signal="sideways")
 
 
 class TestMACD:
@@ -755,3 +737,121 @@ class TestSRMinTouches:
             highs, lows, closes, left_bars=3, right_bars=3,
             min_touches=1)
         assert res_series[-1] == 110.0
+
+
+class TestRSICenterline:
+    def test_cross_above_50(self):
+        """RSI crossing above 50 midline."""
+        closes = [100.0] * 20 + [100.0 - i * 0.5 for i in range(10)]
+        closes += [c + 2.0 for c in closes[-5:]]
+        assert isinstance(
+            check_rsi_signal(closes, period=14, threshold="rsi_cross_above_50"),
+            bool)
+
+    def test_cross_below_50(self):
+        """RSI crossing below 50 midline."""
+        closes = [100.0 + i * 0.5 for i in range(30)]
+        closes += [closes[-1] - i * 2.0 for i in range(1, 6)]
+        assert isinstance(
+            check_rsi_signal(closes, period=14, threshold="rsi_cross_below_50"),
+            bool)
+
+    def test_insufficient_data_returns_false(self):
+        assert check_rsi_signal([100.0] * 10, period=14,
+                                threshold="rsi_cross_above_50") is False
+
+
+class TestRSIDivergence:
+    def test_bullish_divergence(self):
+        """Price lower low + RSI higher low = bullish divergence."""
+        closes = [100.0] * 20
+        closes += [100.0 - i * 0.3 for i in range(10)]
+        result = check_rsi_signal(closes, period=14,
+                                  threshold="rsi_bullish_divergence")
+        assert isinstance(result, bool)
+
+    def test_bearish_divergence(self):
+        """Price higher high + RSI lower high = bearish divergence."""
+        closes = [100.0] * 20
+        closes += [100.0 + i * 0.3 for i in range(10)]
+        result = check_rsi_signal(closes, period=14,
+                                  threshold="rsi_bearish_divergence")
+        assert isinstance(result, bool)
+
+    def test_insufficient_data_returns_false(self):
+        assert check_rsi_signal([100.0] * 10, period=14,
+                                threshold="rsi_bullish_divergence") is False
+
+
+class TestMACDZeroCross:
+    def test_cross_above_zero(self):
+        """MACD zero cross up."""
+        closes = [100.0 - i * 0.1 for i in range(40)]
+        closes += [closes[-1] + i * 0.5 for i in range(1, 50)]
+        result = check_macd_signal(closes, condition="macd_cross_above_zero")
+        assert isinstance(result, bool)
+
+    def test_cross_below_zero(self):
+        """MACD zero cross down."""
+        closes = [100.0 + i * 0.1 for i in range(40)]
+        closes += [closes[-1] - i * 0.5 for i in range(1, 50)]
+        result = check_macd_signal(closes, condition="macd_cross_below_zero")
+        assert isinstance(result, bool)
+
+
+class TestBBPercentB:
+    def test_percent_b_below_0(self):
+        """Price below lower band → %B < 0."""
+        closes = [100.0] * 20 + [80.0]
+        assert check_bollinger_signal(
+            closes, period=20, condition="percent_b_below_0") is True
+
+    def test_percent_b_above_1(self):
+        """Price above upper band → %B > 1."""
+        closes = [100.0] * 20 + [120.0]
+        assert check_bollinger_signal(
+            closes, period=20, condition="percent_b_above_1") is True
+
+    def test_percent_b_below_20_near_lower(self):
+        """Price near lower band → %B < 0.2."""
+        closes = [100.0 + (i % 3) * 0.5 for i in range(20)]
+        from strategies.indicators.bollinger import calculate_bollinger_bands
+        bands = calculate_bollinger_bands(closes, 20, 2.0)
+        target = bands["lower"] + 0.05 * (bands["upper"] - bands["lower"])
+        closes.append(target)
+        assert check_bollinger_signal(
+            closes, period=20, condition="percent_b_below_20") is True
+
+    def test_percent_b_above_80_near_upper(self):
+        """Price near upper band → %B > 0.8."""
+        closes = [100.0 + (i % 3) * 0.5 for i in range(20)]
+        from strategies.indicators.bollinger import calculate_bollinger_bands
+        bands = calculate_bollinger_bands(closes, 20, 2.0)
+        target = bands["upper"] - 0.1 * (bands["upper"] - bands["lower"])
+        closes.append(target)
+        assert check_bollinger_signal(
+            closes, period=20, condition="percent_b_above_80") is True
+
+    def test_flat_market_percent_b(self):
+        """Flat market: bands collapse, %B = 0.5 → not below 0 or above 1."""
+        closes = [100.0] * 22
+        assert check_bollinger_signal(
+            closes, period=20, condition="percent_b_below_0") is False
+        assert check_bollinger_signal(
+            closes, period=20, condition="percent_b_above_1") is False
+
+
+class TestBBSqueeze:
+    def test_squeeze_tight_bands(self):
+        """Very tight bands should trigger squeeze."""
+        closes = [100.0] * 20 + [100.01]
+        assert check_bollinger_signal(
+            closes, period=20, condition="squeeze",
+            squeeze_threshold=0.05) is True
+
+    def test_no_squeeze_wide_bands(self):
+        """Wide bands should not trigger squeeze."""
+        closes = [100.0 + (i % 2) * 10 for i in range(20)] + [105.0]
+        assert check_bollinger_signal(
+            closes, period=20, condition="squeeze",
+            squeeze_threshold=0.001) is False

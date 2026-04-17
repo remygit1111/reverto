@@ -12,7 +12,7 @@
 import logging
 from config.models import BotConfig, IndicatorConfig
 from strategies.indicators.rsi import calculate_rsi, check_rsi_signal
-from strategies.indicators.ema import calculate_ema, check_ema_cross_signal
+from strategies.indicators.ema import calculate_ema
 from strategies.indicators.macd import calculate_macd, check_macd_signal
 from strategies.indicators.bollinger import check_bollinger_signal
 from strategies.indicators.parabolic_sar import check_parabolic_sar_signal
@@ -250,13 +250,6 @@ class IndicatorEngine:
                 period=indicator.period or 14,
                 threshold=indicator.threshold or "below_35",
             )
-        elif itype == "EMA_CROSS":
-            return check_ema_cross_signal(
-                closes,
-                fast=indicator.fast or 9,
-                slow=indicator.slow or 21,
-                signal=indicator.signal or "bullish",
-            )
         elif itype == "MACD":
             return check_macd_signal(
                 closes,
@@ -268,6 +261,7 @@ class IndicatorEngine:
                 period=indicator.period or 20,
                 multiplier=indicator.multiplier or 2.0,
                 condition=indicator.condition or "price_below_lower",
+                squeeze_threshold=indicator.squeeze_threshold or 0.02,
                 ma_type=indicator.ma_type or "SMA",
                 value=indicator.value or "lower",
             )
