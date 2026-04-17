@@ -2024,7 +2024,7 @@ function nbRenderIndicators() {
   const groups = nbState.indicatorGroups || [];
   if (!groups.length || groups.every(g => !g.indicators.length)) {
     list.innerHTML = '<div class="empty-config-msg">Always enter (no filter)</div>'
-      + '<button type="button" class="btn-add-group" onclick="nbAddGroup()">+ Add indicator group</button>';
+      + '<button type="button" class="btn-add-group" data-nb-action="add-group">+ Add indicator group</button>';
     return;
   }
   const html = groups.map((g, gi) => {
@@ -2040,10 +2040,10 @@ function nbRenderIndicators() {
             ${groups.length > 1 ? `<button type="button" class="nb-ind-close" data-nb-gremove="${g.id}" title="Remove group">\u00d7</button>` : ''}
           </div>
           ${cards}
-          <button type="button" class="btn-add-group" onclick="nbAddIndicator(${g.id})">+ Add indicator</button>
+          <button type="button" class="btn-add-group" data-nb-action="add-indicator" data-nb-gid="${g.id}">+ Add indicator</button>
         </div>`;
   }).join('');
-  list.innerHTML = html + '<button type="button" class="btn-add-group" onclick="nbAddGroup()">+ Add group</button>';
+  list.innerHTML = html + '<button type="button" class="btn-add-group" data-nb-action="add-group">+ Add group</button>';
 }
 
 function nbIndicatorFieldsHtml(ind, i) {
@@ -5810,6 +5810,12 @@ function setupEventListeners() {
     }
   });
   document.addEventListener('click', e => {
+    const ab = e.target.closest('[data-nb-action]');
+    if (ab) {
+      const act = ab.dataset.nbAction;
+      if (act === 'add-group') { nbAddGroup(); return; }
+      if (act === 'add-indicator') { nbAddIndicator(parseInt(ab.dataset.nbGid)); return; }
+    }
     const rm = e.target.closest('[data-nb-grm]');
     if (rm) {
       const [gid, idx] = rm.dataset.nbGrm.split(':').map(Number);
