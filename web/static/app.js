@@ -6022,11 +6022,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btRunBtn = $('bt-run-btn');
   if (btRunBtn) btRunBtn.addEventListener('click', btRunFromTab);
   document.addEventListener('click', e => {
+    // Backtest deal rows → chart highlight.
     const row = e.target.closest('.bt-deal-row');
-    if (!row) return;
-    const idx = parseInt(row.dataset.btDeal);
-    if (isNaN(idx)) return;
-    btShowDealOnChart(idx);
+    if (row) {
+      const idx = parseInt(row.dataset.btDeal);
+      if (isNaN(idx)) return;
+      btShowDealOnChart(idx);
+      return;
+    }
+    // Backtest deal-table pagination — delegated so buttons can be
+    // re-rendered on every table refresh without stacking listeners.
+    const pageBtn = e.target.closest('.bt-page-btn');
+    if (pageBtn && !pageBtn.disabled && _btPageDeals) {
+      const dir = pageBtn.dataset.btPage;
+      if (dir === 'prev' && _btDealPage > 0) _btDealPage--;
+      else if (dir === 'next' && _btDealPage < _btPageTotalPages - 1) _btDealPage++;
+      btRenderDealTable(_btPageDeals);
+    }
   });
   const btSweepBtn = $('bt-sweep-btn');
   if (btSweepBtn) btSweepBtn.addEventListener('click', swOpenModal);
@@ -8433,16 +8445,24 @@ function btRenderDealTable(deals) {
   }).join('');
   const pg = $('bt-deals-pagination');
   if (pg && totalPages > 1) {
-    pg.innerHTML = `<button data-bt-page="prev" ${_btDealPage === 0 ? 'disabled' : ''}>&#9668; Prev</button>`
+    // Stash the current deals array on the container so the single
+    // document-level click handler (installed once in setupEventListeners)
+    // knows which list to re-render on prev/next. Per-render
+    // addEventListener would stack a new listener on every button each
+    // redraw, leaking memory and firing the callback N times after N
+    // renders. Event delegation avoids both.
+    _btPageDeals = deals;
+    _btPageTotalPages = totalPages;
+    pg.innerHTML = `<button class="bt-page-btn" data-bt-page="prev" ${_btDealPage === 0 ? 'disabled' : ''}>&#9668; Prev</button>`
       + `<span>Page ${_btDealPage + 1} / ${totalPages}</span>`
-      + `<button data-bt-page="next" ${_btDealPage >= totalPages - 1 ? 'disabled' : ''}>Next &#9658;</button>`;
-    pg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
-      if (b.dataset.btPage === 'prev' && _btDealPage > 0) _btDealPage--;
-      if (b.dataset.btPage === 'next' && _btDealPage < totalPages - 1) _btDealPage++;
-      btRenderDealTable(deals);
-    }));
+      + `<button class="bt-page-btn" data-bt-page="next" ${_btDealPage >= totalPages - 1 ? 'disabled' : ''}>Next &#9658;</button>`;
   } else if (pg) { pg.innerHTML = ''; }
 }
+
+// Delegated pagination state — populated by btRenderDealTable() and
+// consumed by the document-level click handler below.
+let _btPageDeals = null;
+let _btPageTotalPages = 0;
 
 function _getAllIndicators(config) {
   const entry = config?.entry ?? {};
@@ -8492,6 +8512,21 @@ function btInitChart(candles, deals) {
   _btCandleSeries.setData(candles);
   _btRenderOverlays(candles);
   _btCandleChart.timeScale().fitContent();
+}
+
+// Debounced wrapper around _btRenderOverlays — calcSR / calcRSI / calcMACD
+// are synchronous and scale linearly with candle count (18k+ bars stall
+// ~100ms). Callers that fire overlay rebuilds in bursts (timeframe
+// switches, chart resize) should use this wrapper so only the last
+// invocation lands; one-shot callers (btInitChart) can still hit the
+// underlying function directly.
+let _btOverlayDebounceTimer = null;
+function _btRenderOverlaysDebounced(candles) {
+  if (_btOverlayDebounceTimer) clearTimeout(_btOverlayDebounceTimer);
+  _btOverlayDebounceTimer = setTimeout(() => {
+    _btOverlayDebounceTimer = null;
+    _btRenderOverlays(candles);
+  }, 150);
 }
 
 function _btRenderOverlays(candles) {

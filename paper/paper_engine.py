@@ -5,6 +5,7 @@
 
 import json
 import queue
+import re
 import threading
 import time
 import logging
@@ -21,6 +22,14 @@ from core import deal_store
 from core.database import init_db as _init_db
 
 logger = logging.getLogger(__name__)
+
+# Deal IDs produced by PaperState.new_deal_id() follow "PAPER-0001".
+# Validate extracted sentinel filenames against this shape so a spoofed
+# filename (e.g. "mybot.deal_close_..") cannot flow through to a dict
+# lookup or downstream log. The web layer already enforces the same
+# regex on inbound POSTs (web/app.py:_DEAL_ID_RE); this is defence in
+# depth at the engine boundary.
+_DEAL_ID_RE = re.compile(r"^[A-Z]+-\d{1,6}$")
 
 # Ensure the SQLite schema exists before any engine instance writes to it.
 # Paper bots run as subprocesses launched by the portal, so they can't rely
@@ -786,6 +795,18 @@ class PaperEngine:
                     continue
                 action = parts[1]   # edit / cancel / close
                 deal_id = parts[2]  # e.g. PAPER-0001
+                # Reject malformed deal IDs before touching engine state.
+                # glob already constrains the filename prefix, but the
+                # last segment is still free-form bytes from whoever
+                # wrote the sentinel — refuse anything that doesn't look
+                # like a PaperState-minted ID.
+                if not _DEAL_ID_RE.match(deal_id):
+                    logger.warning(
+                        "Deal sentinel has invalid deal_id %r — discarding %s",
+                        deal_id, sentinel.name,
+                    )
+                    sentinel.unlink(missing_ok=True)
+                    continue
                 payload = sentinel.read_text(encoding="utf-8").strip()
                 sentinel.unlink(missing_ok=True)
             except Exception as e:

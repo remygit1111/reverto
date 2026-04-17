@@ -87,7 +87,13 @@ class KrakenExchange(BaseExchange):
             self.client.cancel_order(order_id, self._symbol(symbol))
             return True
         except Exception as e:
-            logger.warning("Kraken cancel_order failed for %s: %s", order_id, e)
+            # Truncate at 200 chars so a verbose ccxt/exchange stack
+            # frame can never flood the log line (or leak token fragments
+            # through a downstream operator dashboard).
+            logger.warning(
+                "Kraken cancel_order failed for %s: %s",
+                order_id, str(e)[:200],
+            )
             return False
 
     def get_open_orders(self, symbol: str) -> list[Order]:
@@ -99,7 +105,10 @@ class KrakenExchange(BaseExchange):
             self.client.set_leverage(leverage, self._symbol(symbol))
             return True
         except Exception as e:
-            logger.warning("Kraken set_leverage failed for %s: %s", symbol, e)
+            logger.warning(
+                "Kraken set_leverage failed for %s: %s",
+                symbol, str(e)[:200],
+            )
             return False
 
     def _parse_order(self, raw: dict, symbol: str) -> Order:

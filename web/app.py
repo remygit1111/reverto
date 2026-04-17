@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -798,7 +799,28 @@ try:
 except Exception as _e:  # pragma: no cover - defensive
     logger.warning("init_db failed on portal startup: %s", _e)
 
-app = FastAPI(title="Reverto Portal", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan handler — replaces the deprecated
+    @app.on_event("startup") hook. `tail_logs` and `watch_state_files`
+    are forward references (defined lower in the module) but Python
+    resolves names at call-time, so this body is only evaluated once
+    uvicorn invokes the handler after module import completes.
+
+    The shutdown half is intentionally empty: the portal owns no
+    long-lived async state that needs graceful teardown; subprocess
+    bots are managed via the existing stop_bot() path.
+    """
+    logger.info("=== Portal started ===")
+    asyncio.create_task(tail_logs())
+    asyncio.create_task(watch_state_files())
+    yield
+
+
+app = FastAPI(
+    title="Reverto Portal", docs_url=None, redoc_url=None,
+    lifespan=lifespan,
+)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 # Order: SecurityHeaders added first (runs last on the response), Auth added
@@ -2175,13 +2197,6 @@ async def api_backtest_run_delete(
         raise HTTPException(status_code=404, detail="Run not found")
     _audit("backtest_delete", str(run_id), actor)
     return {"ok": True}
-
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("=== Portal started ===")
-    asyncio.create_task(tail_logs())
-    asyncio.create_task(watch_state_files())
 
 
 def run_portal(host="0.0.0.0", port=8080):

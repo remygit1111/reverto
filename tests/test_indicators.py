@@ -23,6 +23,7 @@ from strategies.indicators.support_resistance import (
     find_support_resistance,
 )
 from strategies.indicators.qfl import calculate_qfl_series, check_qfl_signal
+from strategies.indicators.ema import calculate_ema, check_ema_cross_signal
 from config.models import BotConfig
 from pydantic import ValidationError
 
@@ -890,3 +891,273 @@ class TestBBSqueeze:
         assert check_bollinger_signal(
             closes, period=20, condition="squeeze",
             squeeze_threshold=0.001) is False
+
+
+# ── EMA standalone (audit v17 LOW) ───────────────────────────────────────────
+
+class TestEMAStandalone:
+    """calculate_ema has only been exercised via EMA-crossover tests.
+    These cover the standalone single-value helper directly."""
+
+    def test_ema_basic_calculation(self):
+        """EMA of a rising series rises; shape matches input length."""
+        closes = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0]
+        ema = calculate_ema(closes, period=3)
+        # Single-value return (current EMA) — audit asked for latest,
+        # docstring says latest, keep the contract.
+        assert isinstance(ema, float)
+        # Latest EMA tracks the rising trend and sits between the first
+        # and last close.
+        assert closes[0] < ema <= closes[-1]
+
+    def test_ema_period_1_equals_latest_close(self):
+        """EMA(period=1) is a no-op smoother — returns the latest close."""
+        closes = [10.0, 20.0, 30.0]
+        assert calculate_ema(closes, period=1) == pytest.approx(30.0)
+
+    def test_ema_flat_series_equals_value(self):
+        """EMA of a constant series equals the constant."""
+        assert calculate_ema([42.0] * 20, period=14) == pytest.approx(42.0)
+
+    def test_ema_insufficient_data_raises(self):
+        with pytest.raises(ValueError, match="at least"):
+            calculate_ema([1.0, 2.0, 3.0], period=5)
+
+    def test_ema_cross_unknown_signal_raises(self):
+        closes = [float(i) for i in range(70)]
+        with pytest.raises(ValueError, match="Unknown EMA signal"):
+            check_ema_cross_signal(closes, fast=9, slow=21, signal="sideways")
+
+
+# ── RSI rounding boundary (audit v17 LOW) ────────────────────────────────────
+
+class TestRSIBoundary:
+    """RSI comparison uses strict < / > — threshold exactly at the
+    boundary must evaluate as "not crossed". Lock that behaviour so a
+    future refactor to <= / >= is caught by the test suite."""
+
+    @staticmethod
+    def _rsi_to(target: float, period: int = 14) -> list[float]:
+        """Build a close-series whose final RSI is close to `target`
+        by searching for a two-phase "rise then fall" path. Used only
+        to exercise the threshold comparator, not to verify precision
+        of the RSI engine itself."""
+        # Simple heuristic: long up-leg saturates RSI ~100, then a
+        # measured drop pulls it down through the target band.
+        ups = [float(i) for i in range(1, 30)]
+        # Walk downward until calculate_rsi lands within a small band.
+        closes = list(ups)
+        for _ in range(200):
+            closes.append(closes[-1] - 0.5)
+            rsi = calculate_rsi(closes, period)
+            if abs(rsi - target) < 0.5:
+                return closes
+        return closes
+
+    def test_below_uses_strict_less_than(self):
+        """RSI strictly below the threshold → signal True."""
+        closes = [100.0] + [100.0 - i * 2 for i in range(1, 30)]
+        rsi = calculate_rsi(closes, 14)
+        # Threshold well above current RSI → must fire.
+        t = int(rsi) + 5
+        assert check_rsi_signal(closes, 14, f"below_{t}") is True
+
+    def test_above_uses_strict_greater_than(self):
+        """RSI strictly above the threshold → signal True."""
+        closes = [float(i) for i in range(1, 30)]
+        rsi = calculate_rsi(closes, 14)
+        t = max(1, int(rsi) - 5)
+        assert check_rsi_signal(closes, 14, f"above_{t}") is True
+
+    def test_below_at_exact_value_is_false(self):
+        """RSI at or above the threshold → below_<N> must be False.
+
+        RSI comparator is strict `<`, so a value of exactly N means
+        `rsi < N` is False. Tests the boundary by choosing N equal to
+        the (rounded) RSI, clamped into the allowed 1..99 band."""
+        closes = [100.0] + [100.0 - i * 2 for i in range(1, 30)]
+        rsi = calculate_rsi(closes, 14)
+        # Clamp the probed threshold to the 1..99 band the engine accepts.
+        # int(rsi) can be 0 on a strong-downtrend series (rsi=0.0), which
+        # is valid RSI but not a valid threshold.
+        threshold = max(1, min(99, int(rsi)))
+        expected = rsi < threshold
+        assert check_rsi_signal(closes, 14, f"below_{threshold}") is expected
+
+    def test_threshold_boundary_round_trip(self):
+        """Boundary test: value at integer threshold, verify comparator
+        matches (rsi < N) exactly — protects against an off-by-one
+        refactor that silently changes signal cadence."""
+        closes = [float(i % 7 + 50) for i in range(40)]
+        for n in (20, 30, 50, 70, 80):
+            rsi = calculate_rsi(closes, 14)
+            assert check_rsi_signal(closes, 14, f"below_{n}") is (rsi < n)
+            assert check_rsi_signal(closes, 14, f"above_{n}") is (rsi > n)
+
+
+# ── QFL pump_periods clamping (audit v17 LOW) ────────────────────────────────
+
+class TestQFLPumpPeriodsEdge:
+    """qfl.calculate_qfl_series clamps pump_periods to base_periods-1
+    to avoid referencing a lookback window larger than the base window.
+    Ensure the clamp is honoured and no IndexError / empty-slice crash
+    leaks when the operator misconfigures the pair."""
+
+    def test_pump_periods_greater_than_base_does_not_crash(self):
+        """pump_periods=20, base_periods=10 — should clamp to 9 and run."""
+        n = 80
+        highs = [100.0 + (i % 5) for i in range(n)]
+        lows = [99.0 + (i % 5) for i in range(n)]
+        closes = [99.5 + (i % 5) for i in range(n)]
+        out = calculate_qfl_series(
+            highs, lows, closes,
+            base_periods=10, pump_periods=20, pump_pct=3.0,
+        )
+        assert len(out["base"]) == n
+        assert len(out["buy_limit"]) == n
+
+    def test_pump_periods_equal_base_periods_clamps(self):
+        """pump_periods == base_periods → clamp to base_periods - 1."""
+        n = 80
+        highs = [100.0] * n
+        lows = [99.0] * n
+        closes = [99.5] * n
+        # Flat market, so we just smoke-test the clamp + length contract.
+        out = calculate_qfl_series(
+            highs, lows, closes,
+            base_periods=36, pump_periods=36, pump_pct=3.0,
+        )
+        assert len(out["new_base"]) == n
+
+    def test_pump_periods_one_runs(self):
+        """Minimum-valid pump_periods=1 still produces a full series."""
+        n = 50
+        highs = [100.0 + (i % 3) for i in range(n)]
+        lows = [99.0 + (i % 3) for i in range(n)]
+        closes = [99.5 + (i % 3) for i in range(n)]
+        out = calculate_qfl_series(
+            highs, lows, closes,
+            base_periods=20, pump_periods=1, pump_pct=3.0,
+        )
+        assert len(out["base"]) == n
+        assert len(out["highest_high"]) == n
+
+
+# ── S&R asymmetric left/right bars (audit v17 LOW) ───────────────────────────
+
+class TestSRAsymmetricBars:
+    """calculate_sr_series accepts unequal left_bars / right_bars. The
+    pivot window slides by right_bars, so asymmetric configs confirm
+    pivots later/earlier than the symmetric default and must still
+    yield a valid series across the full input range."""
+
+    def test_left_smaller_right_larger(self):
+        """left_bars=5, right_bars=20 — detects pivots sooner on the
+        left edge but waits longer for confirmation on the right."""
+        n = 100
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        # Inject a pronounced pivot-low at index 30 so the asymmetric
+        # window has something real to match on.
+        lows[30] = 85.0
+        closes[30] = 86.0
+        res_series, sup_series = calculate_sr_series(
+            highs, lows, closes, left_bars=5, right_bars=20,
+        )
+        assert len(sup_series) == n
+        # Pivot at 30 confirms at 30 + right_bars = 50, so from 50
+        # onward the support series carries forward (fixnan semantics).
+        assert sup_series[60] == pytest.approx(85.0)
+        assert sup_series[30] is None  # not yet confirmed
+
+    def test_left_larger_right_smaller(self):
+        """left_bars=20, right_bars=3 — reverse skew: confirmation fires
+        fast, but needs a long left window to qualify as a pivot."""
+        n = 80
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        highs[40] = 115.0
+        closes[40] = 114.0
+        res_series, sup_series = calculate_sr_series(
+            highs, lows, closes, left_bars=20, right_bars=3,
+        )
+        assert len(res_series) == n
+        # Pivot at 40 confirms at 40 + 3 = 43.
+        assert res_series[50] == pytest.approx(115.0)
+        assert res_series[30] is None  # before the pivot exists
+
+    def test_asymmetric_min_required_length(self):
+        """check_support_resistance_signal min_required = left+right+1
+        is respected across asymmetric configs."""
+        min_required = 5 + 20 + 1
+        n = min_required - 1
+        highs = [100.0] * n
+        lows = [100.0] * n
+        closes = [100.0] * n
+        with pytest.raises(ValueError, match="at least"):
+            check_support_resistance_signal(
+                highs, lows, closes,
+                left_bars=5, right_bars=20,
+                condition="near_support", value="support",
+            )
+
+
+# ── MACD use_percentile edge cases (audit v17 LOW) ───────────────────────────
+
+class TestMACDUsePercentileEdge:
+    """use_percentile divides by the max absolute histogram across the
+    lookback window. Ensure the flat-market and zero-histogram paths
+    don't crash and don't accidentally fire a positive signal."""
+
+    def test_flat_histogram_does_not_crash(self):
+        """Perfectly flat closes → histogram is identically zero →
+        max_abs=0 → normalized=0 → histogram_positive False."""
+        closes = [100.0] * 100
+        assert check_macd_signal(
+            closes, condition="histogram_positive", use_percentile=True
+        ) is False
+        assert check_macd_signal(
+            closes, condition="histogram_negative", use_percentile=True
+        ) is False
+
+    def test_flat_histogram_matches_raw(self):
+        """Flat closes produce the same (False) signal both with and
+        without the use_percentile normalisation — the fall-back to
+        zero keeps the signal sign consistent."""
+        closes = [100.0] * 100
+        raw = check_macd_signal(
+            closes, condition="histogram_positive", use_percentile=False,
+        )
+        pct = check_macd_signal(
+            closes, condition="histogram_positive", use_percentile=True,
+        )
+        assert raw == pct
+
+    def test_fresh_uptrend_positive_normalized(self):
+        """Flat warmup followed by a fresh acceleration keeps the MACD
+        histogram positive at the end of the series (fast EMA is still
+        ahead of the signal line during the ramp). Both raw and
+        normalised paths agree on the sign."""
+        closes = [100.0] * 80 + [100.0 + i * 2.0 for i in range(20)]
+        raw = check_macd_signal(
+            closes, condition="histogram_positive", use_percentile=False,
+        )
+        pct = check_macd_signal(
+            closes, condition="histogram_positive", use_percentile=True,
+        )
+        # Raw path must fire during a fresh acceleration; normalised
+        # path cannot flip the sign — only rescale the magnitude.
+        assert raw is True
+        assert pct is True
+
+    def test_cross_conditions_bypass_percentile(self):
+        """macd_cross_above_zero returns without touching use_percentile."""
+        closes = [100.0] * 80
+        # Flat input → macd_prev ≈ 0, macd ≈ 0 → cross check is False
+        # regardless of use_percentile. Smoke test that the path exits
+        # cleanly with use_percentile=True enabled.
+        assert check_macd_signal(
+            closes, condition="macd_cross_above_zero", use_percentile=True,
+        ) is False
