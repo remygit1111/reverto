@@ -8095,10 +8095,12 @@ function btRenderResults(res) {
   const s = res.summary, r = res.ratios;
   const btDeals = res.deals || [];
   const btCandles = _btLastCandles;
+  const btConfig = _btLastConfig;
   _btDealPage = 0;
   btCleanupChart();
   _btLastCandles = btCandles;
   _btLastDeals = btDeals;
+  _btLastConfig = btConfig;
   const chartEl = $('bt-chart-container');
   if (chartEl && _btLastCandles?.length && _btLastDeals.length) {
     chartEl.style.display = 'block';
@@ -8395,8 +8397,10 @@ function _btRenderOverlays(candles) {
   }
   _btOverlaySeries = [];
   if (!_btCandleChart || !_btLastConfig) return;
-  const groups = _btLastConfig.entry?.indicator_groups || [];
-  const allInds = groups.flatMap(g => g.indicators || []);
+  const entry = _btLastConfig.entry || {};
+  const groups = entry.indicator_groups || [];
+  let allInds = groups.flatMap(g => g.indicators || []);
+  if (!allInds.length) allInds = entry.indicators || [];
   if (!allInds.length) return;
   const _addSeries = (data, color, lw, ls) => {
     if (!data?.length) return;
