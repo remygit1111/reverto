@@ -7,6 +7,9 @@ config/bots/*.yaml
 logs/
 data/
 ml/model_store/
+ml/models/
+ml/results_*.json
+notebooks/.ipynb_checkpoints/
 *.log
 *:Zone.Identifier
 audit_*.docx
