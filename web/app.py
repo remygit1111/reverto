@@ -1301,12 +1301,10 @@ async def _fetch_ohlcv_range(
                     symbol, timeframe, len(bars),
                 )
                 break
-            # Jump ahead by ~200 bars worth of ms so a persistent
-            # no-data hole doesn't force us to crawl bar-by-bar.
             since += tf_ms * 200
             continue
         empty_pages = 0
-        page_max_ts = since
+        page_max_ts = 0
         for row in page:
             ts = int(row[0])
             if ts > page_max_ts:
@@ -1314,13 +1312,12 @@ async def _fetch_ohlcv_range(
             if ts < start_ms or ts > end_ms:
                 continue
             bars[ts] = row
-        # Advance strictly past the newest bar the exchange actually
-        # returned — tracked on every row, not just the in-range ones,
-        # so an all-out-of-range page still moves the cursor forward.
-        if page_max_ts > since:
+        if page_max_ts >= since + tf_ms:
+            since = page_max_ts + tf_ms
+        elif page_max_ts > 0:
             since = page_max_ts + tf_ms
         else:
-            since += tf_ms * 200
+            since += tf_ms
     logger.info(
         "Fetch complete for %s %s: %d bars over %d pages",
         symbol, timeframe, len(bars), pages_fetched,
