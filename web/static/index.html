@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto</title>
-<link rel="stylesheet" href="/static/style.css?v=65">
+<link rel="stylesheet" href="/static/style.css?v=66">
 </head>
 <body>
 
@@ -853,6 +853,16 @@
         <button type="button" class="chart-tf-btn active" data-tf="1h">1h</button>
         <button type="button" class="chart-tf-btn" data-tf="4h">4h</button>
         <button type="button" class="chart-tf-btn" data-tf="1d">1d</button>
+        <select id="chart-tz" class="chart-tz-select">
+          <option value="UTC">UTC</option>
+          <option value="Europe/Amsterdam">Amsterdam</option>
+          <option value="Europe/London">London</option>
+          <option value="America/New_York">New York</option>
+          <option value="America/Chicago">Chicago</option>
+          <option value="Asia/Tokyo">Tokyo</option>
+          <option value="Asia/Singapore">Singapore</option>
+          <option value="Asia/Hong_Kong">Hong Kong</option>
+        </select>
       </div>
       <button id="chart-clear-deal" class="hbtn hbtn-theme hidden" type="button">Clear deal markers</button>
     </div>
@@ -1143,6 +1153,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=144"></script>
+<script src="/static/app.js?v=145"></script>
 </body>
 </html>
