@@ -2097,9 +2097,9 @@ function nbIndicatorFieldsHtml(ind, i) {
   if (ind.type === 'SUPPORT_RESISTANCE') {
     const lbars = ind.left_bars != null ? ind.left_bars : 15;
     const rbars = ind.right_bars != null ? ind.right_bars : 15;
-    const maxLv = ind.max_levels != null ? ind.max_levels : 3;
-    const keepT = ind.keep_true != null ? ind.keep_true : 0;
     const prox = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
+    const volThr = ind.volume_threshold != null ? ind.volume_threshold : 0;
+    const minT = ind.min_touches != null ? ind.min_touches : 1;
     const val = ind.value || 'resistance';
     const SR_CONDS = [
       ['price_crossing_up', 'Price crossing up'],
@@ -2119,15 +2119,6 @@ function nbIndicatorFieldsHtml(ind, i) {
         <input type="number" min="1" value="${rbars}" data-nb-ind="${i}" data-nb-field="right_bars">
       </div>
       <div class="form-row">
-        <label>Max levels</label>
-        <input type="number" min="1" max="20" value="${maxLv}" data-nb-ind="${i}" data-nb-field="max_levels">
-      </div>
-      <div class="form-row">
-        <label>Keep true</label>
-        <input type="number" min="0" value="${keepT}" data-nb-ind="${i}" data-nb-field="keep_true">
-        <div class="form-hint">Bars to keep signal active after trigger</div>
-      </div>
-      <div class="form-row">
         <label>Level</label>
         <select data-nb-ind="${i}" data-nb-field="value">
           <option value="support" ${val === 'support' ? 'selected' : ''}>Support</option>
@@ -2137,6 +2128,16 @@ function nbIndicatorFieldsHtml(ind, i) {
       <div class="form-row">
         <label>Proximity %</label>
         <input type="number" min="0" step="0.1" value="${prox}" data-nb-ind="${i}" data-nb-field="proximity_pct">
+      </div>
+      <div class="form-row">
+        <label>Volume threshold</label>
+        <input type="number" min="0" step="1" value="${volThr}" data-nb-ind="${i}" data-nb-field="volume_threshold">
+        <div class="form-hint">Min. volume momentum voor pivot (0 = uitgeschakeld)</div>
+      </div>
+      <div class="form-row">
+        <label>Min touches</label>
+        <input type="number" min="1" max="10" value="${minT}" data-nb-ind="${i}" data-nb-field="min_touches">
+        <div class="form-hint">Aantal keer dat niveau getest moet zijn</div>
       </div>
       <div class="form-row">
         <label>Condition</label>
@@ -2580,11 +2581,11 @@ function nbBuildBotConfig() {
         } else if (i.type === 'SUPPORT_RESISTANCE') {
           out.left_bars = i.left_bars != null ? i.left_bars : 15;
           out.right_bars = i.right_bars != null ? i.right_bars : 15;
-          if (i.max_levels != null) out.max_levels = i.max_levels;
-          if (i.keep_true != null) out.keep_true = i.keep_true;
           out.proximity_pct = i.proximity_pct != null ? i.proximity_pct : 1.0;
           out.condition = i.condition || 'price_crossing_down';
           if (i.value) out.value = i.value;
+          if (i.volume_threshold) out.volume_threshold = i.volume_threshold;
+          if (i.min_touches != null && i.min_touches > 1) out.min_touches = i.min_touches;
         } else if (i.type === 'QFL') {
           out.lookback = i.lookback != null ? i.lookback : 3;
           out.crack_pct = i.crack_pct != null ? i.crack_pct : 3.0;
@@ -3691,7 +3692,7 @@ function _renderIndicatorOverlays(candles) {
   _srLineSeries = [];
   const srCfg = _findIndicator('SUPPORT_RESISTANCE');
   if (srCfg && _chartMain) {
-    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15);
+    const sr = calcSR(candles, srCfg.left_bars || 15, srCfg.right_bars || 15, srCfg.volume_threshold || 0, srCfg.min_touches || 1);
     const renderSegments = (series, color, label) => {
       const segs = [];
       let segStart = null, segVal = null;
@@ -4890,7 +4891,7 @@ function renderWizardOverlays() {
       } else if (t === 'SUPPORT_RESISTANCE') {
         if (typeof calcSR === 'function' && _wizardCandleCache && _wizardChart) {
           const wCandles = _wizardCandleCache;
-          const sr = calcSR(wCandles, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15);
+          const sr = calcSR(wCandles, Number(ind.left_bars) || 15, Number(ind.right_bars) || 15, Number(ind.volume_threshold) || 0, Number(ind.min_touches) || 1);
           if (sr) {
             const wizSegments = (series, color, label) => {
               const segs = [];
@@ -5095,11 +5096,21 @@ function calcSupertrendLines(candles, atrPeriod, multiplier) {
   };
 }
 
-function calcSR(candles, leftBars, rightBars) {
+function calcSR(candles, leftBars, rightBars, volumeThreshold, minTouches) {
   const n = candles.length;
+  const vt = volumeThreshold || 0;
+  const mt = minTouches || 1;
   const resSeries = new Array(n).fill(null);
   const supSeries = new Array(n).fill(null);
+  let volOsc = null;
+  if (vt > 0) {
+    const vols = candles.map(c => c.volume || 0);
+    const ema5 = _emaArray(vols, 5);
+    const ema10 = _emaArray(vols, 10);
+    volOsc = vols.map((_, i) => ema10[i] !== 0 ? 100 * (ema5[i] - ema10[i]) / ema10[i] : 0);
+  }
   let curRes = null, curSup = null;
+  let resTouches = 0, supTouches = 0;
   for (let i = 0; i < n; i++) {
     const p = i - rightBars;
     if (p >= leftBars) {
@@ -5119,11 +5130,23 @@ function calcSR(candles, leftBars, rightBars) {
         if (h > rightMaxH) rightMaxH = h;
         if (l < rightMinL) rightMinL = l;
       }
-      if (ph > leftMaxH && ph > rightMaxH) curRes = ph;
-      if (pl < leftMinL && pl < rightMinL) curSup = pl;
+      if (ph > leftMaxH && ph > rightMaxH) {
+        if (!volOsc || volOsc[p] > vt) { curRes = ph; resTouches = 1; }
+      }
+      if (pl < leftMinL && pl < rightMinL) {
+        if (!volOsc || volOsc[p] > vt) { curSup = pl; supTouches = 1; }
+      }
     }
-    resSeries[i] = curRes;
-    supSeries[i] = curSup;
+    if (curRes !== null && mt > 1) {
+      const hi = candles[i].high != null ? candles[i].high : candles[i].close;
+      if (Math.abs(hi - curRes) / curRes < 0.005) resTouches++;
+    }
+    if (curSup !== null && mt > 1) {
+      const lo = candles[i].low != null ? candles[i].low : candles[i].close;
+      if (Math.abs(lo - curSup) / curSup < 0.005) supTouches++;
+    }
+    resSeries[i] = resTouches >= mt ? curRes : null;
+    supSeries[i] = supTouches >= mt ? curSup : null;
   }
   if (window._BT_DEBUG) {
     console.log('[S&R DEBUG] resSeries last:', resSeries[n - 1], 'supSeries last:', supSeries[n - 1]);
@@ -5436,12 +5459,12 @@ function setupEventListeners() {
       const intFields = [
         'period', 'fast', 'slow',
         'rsi_value', 'macd_fast', 'macd_slow', 'macd_signal',
-        'atr_period', 'lookback',
+        'atr_period', 'lookback', 'min_touches',
         'base_candles', 'max_bases',
       ];
       const floatFields = [
         'multiplier', 'initial_af', 'max_af',
-        'tolerance_pct', 'proximity_pct',
+        'proximity_pct', 'volume_threshold',
         'crack_pct', 'below_pct',
       ];
       if (intFields.includes(f)) v = parseInt(v, 10) || 0;
@@ -6029,7 +6052,7 @@ class RevertoBacktest {
         const proxPct = ind.proximity_pct != null ? ind.proximity_pct : 1.0;
         const cond = ind.condition || 'price_crossing_down';
         const val = ind.value || 'resistance';
-        const sr = calcSR(this.candles, lb, rb);
+        const sr = calcSR(this.candles, lb, rb, ind.volume_threshold || 0, ind.min_touches || 1);
         const closes = this.candles.map(c => c.close);
         for (let i = 1; i < n; i++) {
           const c = closes[i], p = closes[i - 1];

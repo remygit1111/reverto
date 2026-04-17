@@ -308,6 +308,8 @@ class IndicatorEngine:
                 proximity_pct=indicator.proximity_pct or 1.0,
                 condition=indicator.condition or "price_crossing_down",
                 value=indicator.value or "resistance",
+                volume_threshold=indicator.volume_threshold or 0.0,
+                min_touches=indicator.min_touches or 1,
             )
         elif itype == "QFL":
             return check_qfl_signal(
