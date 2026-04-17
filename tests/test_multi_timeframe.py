@@ -35,6 +35,13 @@ def _cfg(indicators=None, bot_tf="1h"):
     cfg.dca.base_order_size = 0.001
     cfg.dca.taker_fee = 0.0006; cfg.dca.step_scale = 1.0
     cfg.entry.indicators = indicators or []
+    cfg.entry.indicator_groups = []
+    return cfg
+
+
+def _cfg_groups(groups, bot_tf="1h"):
+    cfg = _cfg(indicators=[], bot_tf=bot_tf)
+    cfg.entry.indicator_groups = groups
     return cfg
 
 
@@ -48,6 +55,8 @@ def _rsi_indicator(tf=None, threshold="below_35"):
     ind.slow = None
     ind.signal = None
     ind.condition = None
+    ind.price_source = None
+    ind.use_percentile = None
     return ind
 
 
@@ -121,6 +130,65 @@ class TestFailClosed:
         cfg.take_profit.indicator_confirm = None
         eng = IndicatorEngine(cfg)
         assert eng.check_tp_confirmation({}, "1h") is True
+
+
+def _mock_group(gid, indicators):
+    g = MagicMock()
+    g.id = gid
+    g.name = f"Group {gid}"
+    g.indicators = indicators
+    return g
+
+
+class TestIndicatorGroups:
+    def test_single_group_and_all_true(self):
+        """Group with 1 RSI indicator that passes → entry True."""
+        ind = _rsi_indicator(tf="1h", threshold="below_80")
+        grp = _mock_group(1, [ind])
+        eng = IndicatorEngine(_cfg_groups([grp]))
+        closes = [50000.0 - i * 50 for i in range(50)]
+        assert eng.check_entry_signal({"1h": closes}, "1h") is True
+
+    def test_single_group_partial(self):
+        """Group with indicator that fails → entry False."""
+        ind = _rsi_indicator(tf="1h", threshold="below_10")
+        grp = _mock_group(1, [ind])
+        eng = IndicatorEngine(_cfg_groups([grp]))
+        closes = [50000.0 + i * 100 for i in range(50)]
+        assert eng.check_entry_signal({"1h": closes}, "1h") is False
+
+    def test_two_groups_or(self):
+        """Group 1 fails, Group 2 passes → entry True (OR)."""
+        ind1 = _rsi_indicator(tf="1h", threshold="below_10")
+        ind2 = _rsi_indicator(tf="1h", threshold="below_80")
+        g1 = _mock_group(1, [ind1])
+        g2 = _mock_group(2, [ind2])
+        eng = IndicatorEngine(_cfg_groups([g1, g2]))
+        closes = [50000.0 - i * 50 for i in range(50)]
+        assert eng.check_entry_signal({"1h": closes}, "1h") is True
+
+    def test_two_groups_both_false(self):
+        """Both groups fail → entry False."""
+        ind1 = _rsi_indicator(tf="1h", threshold="below_10")
+        ind2 = _rsi_indicator(tf="1h", threshold="below_10")
+        g1 = _mock_group(1, [ind1])
+        g2 = _mock_group(2, [ind2])
+        eng = IndicatorEngine(_cfg_groups([g1, g2]))
+        closes = [50000.0 + i * 100 for i in range(50)]
+        assert eng.check_entry_signal({"1h": closes}, "1h") is False
+
+    def test_empty_group(self):
+        """Empty group → entry False."""
+        g = _mock_group(1, [])
+        eng = IndicatorEngine(_cfg_groups([g]))
+        assert eng.check_entry_signal({"1h": [50000.0] * 50}, "1h") is False
+
+    def test_no_groups(self):
+        """No groups and no indicators → entry True (back-compat)."""
+        eng = IndicatorEngine(_cfg_groups([]))
+        eng.entry_indicators = []
+        eng.indicator_groups = []
+        assert eng.check_entry_signal({"1h": [50000.0] * 50}, "1h") is True
 
 
 # ── BacktestEngine: candles_per_tf validation ────────────────────────────────

@@ -99,10 +99,17 @@ class IndicatorConfig(BaseModel):
     base_crack_pct: Optional[float] = None
 
 
+class IndicatorGroup(BaseModel):
+    model_config = _STRICT
+    id: int = 1
+    name: str = ""
+    indicators: list[IndicatorConfig] = Field(default_factory=list)
+
+
 class EntryConfig(BaseModel):
     model_config = _STRICT
-    # Field(default_factory=list) prevents shared mutable default across instances
     indicators: list[IndicatorConfig] = Field(default_factory=list)
+    indicator_groups: list[IndicatorGroup] = Field(default_factory=list)
 
 
 class TakeProfitConfig(BaseModel):
