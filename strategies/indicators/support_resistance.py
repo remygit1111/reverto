@@ -4,18 +4,48 @@
 # The value "steps" when a new pivot is confirmed.
 
 
+def _ema(values: list[float], period: int) -> list[float]:
+    """Simple EMA matching PineScript's ema() — adjust=False."""
+    out = [0.0] * len(values)
+    if not values:
+        return out
+    k = 2.0 / (period + 1)
+    out[0] = values[0]
+    for i in range(1, len(values)):
+        out[i] = k * values[i] + (1 - k) * out[i - 1]
+    return out
+
+
+def _volume_osc(volumes: list[float]) -> list[float]:
+    """Volume EMA oscillator: 100 * (EMA5 - EMA10) / EMA10."""
+    short = _ema(volumes, 5)
+    long = _ema(volumes, 10)
+    n = len(volumes)
+    osc = [0.0] * n
+    for i in range(n):
+        if long[i] != 0:
+            osc[i] = 100.0 * (short[i] - long[i]) / long[i]
+    return osc
+
+
 def calculate_sr_series(
     highs: list[float],
     lows: list[float],
     closes: list[float],
     left_bars: int = 15,
     right_bars: int = 15,
+    volumes: list[float] | None = None,
+    volume_threshold: float = 0.0,
+    min_touches: int = 1,
 ) -> tuple[list[float | None], list[float | None]]:
     """Return per-candle (resistance_series, support_series).
 
     Equivalent to PineScript's fixnan(ta.pivothigh)[1] / fixnan(ta.pivotlow)[1].
     A pivot high at bar p is confirmed at bar p + right_bars.
     The value carries forward (fixnan) until a new pivot replaces it.
+
+    volume_threshold: if > 0, pivot only valid when volume EMA osc > threshold.
+    min_touches: pivot only becomes active after price tests the level N times.
     """
     n = len(closes)
     if len(highs) != n or len(lows) != n:
@@ -24,31 +54,47 @@ def calculate_sr_series(
             f"got {len(highs)}/{len(lows)}/{n}"
         )
 
+    vol_osc: list[float] | None = None
+    if volumes and volume_threshold > 0 and len(volumes) == n:
+        vol_osc = _volume_osc(volumes)
+
     resistance_series: list[float | None] = [None] * n
     support_series: list[float | None] = [None] * n
 
     cur_res: float | None = None
     cur_sup: float | None = None
+    res_touches = 0
+    sup_touches = 0
 
     for i in range(n):
         p = i - right_bars
         if p >= left_bars:
-            window_h = highs[p - left_bars: p + right_bars + 1]
-            if len(window_h) == left_bars + right_bars + 1:
-                h = highs[p]
-                if (h > max(highs[p - left_bars:p])
-                        and h > max(highs[p + 1:p + right_bars + 1])):
+            h = highs[p]
+            if (h > max(highs[p - left_bars:p])
+                    and h > max(highs[p + 1:p + right_bars + 1])):
+                vol_ok = vol_osc is None or vol_osc[p] > volume_threshold
+                if vol_ok:
                     cur_res = h
+                    res_touches = 1
 
-            window_l = lows[p - left_bars: p + right_bars + 1]
-            if len(window_l) == left_bars + right_bars + 1:
-                lo = lows[p]
-                if (lo < min(lows[p - left_bars:p])
-                        and lo < min(lows[p + 1:p + right_bars + 1])):
+            lo = lows[p]
+            if (lo < min(lows[p - left_bars:p])
+                    and lo < min(lows[p + 1:p + right_bars + 1])):
+                vol_ok = vol_osc is None or vol_osc[p] > volume_threshold
+                if vol_ok:
                     cur_sup = lo
+                    sup_touches = 1
 
-        resistance_series[i] = cur_res
-        support_series[i] = cur_sup
+        # Count touches for min_touches filter
+        if cur_res is not None and min_touches > 1:
+            if abs(highs[i] - cur_res) / cur_res < 0.005:
+                res_touches += 1
+        if cur_sup is not None and min_touches > 1:
+            if abs(lows[i] - cur_sup) / cur_sup < 0.005:
+                sup_touches += 1
+
+        resistance_series[i] = cur_res if res_touches >= min_touches else None
+        support_series[i] = cur_sup if sup_touches >= min_touches else None
 
     return resistance_series, support_series
 
@@ -79,7 +125,6 @@ def find_support_resistance_detailed(
     closes: list[float],
     left_bars: int = 15,
     right_bars: int = 15,
-    max_levels: int = 3,
 ) -> tuple[list[dict], list[dict]]:
     """Return (support_levels, resistance_levels) with pivot metadata.
 
@@ -120,7 +165,7 @@ def find_support_resistance_detailed(
         for i, p in sup_pivots
     ]
 
-    return sup_out[-max_levels:], res_out[-max_levels:]
+    return sup_out, res_out
 
 
 def check_support_resistance_signal(
@@ -132,6 +177,9 @@ def check_support_resistance_signal(
     proximity_pct: float = 1.0,
     condition: str = "price_crossing_down",
     value: str = "resistance",
+    volumes: list[float] | None = None,
+    volume_threshold: float = 0.0,
+    min_touches: int = 1,
 ) -> bool:
     """Evaluate an S&R condition using fixnan pivot series."""
     n = len(closes)
@@ -145,6 +193,9 @@ def check_support_resistance_signal(
 
     res_series, sup_series = calculate_sr_series(
         highs, lows, closes, left_bars, right_bars,
+        volumes=volumes,
+        volume_threshold=volume_threshold,
+        min_touches=min_touches,
     )
 
     resistance = res_series[-1]

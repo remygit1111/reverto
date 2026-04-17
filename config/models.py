@@ -87,10 +87,9 @@ class IndicatorConfig(BaseModel):
     # Support & Resistance
     left_bars: Optional[int] = None
     right_bars: Optional[int] = None
-    max_levels: Optional[int] = None
-    keep_true: Optional[int] = None
-    tolerance_pct: Optional[float] = None
     proximity_pct: Optional[float] = None
+    volume_threshold: Optional[float] = None
+    min_touches: Optional[int] = None
     # QFL Base Scanner
     crack_pct: Optional[float] = None
     base_candles: Optional[int] = None
