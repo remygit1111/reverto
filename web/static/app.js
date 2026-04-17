@@ -2589,8 +2589,11 @@ function nbRenderReview() {
     warnings += `<div class="wizard-warning">⚠️ Total committed ${totalSize.toFixed(0)}% exceeds 100%</div>`;
   }
 
-  const indSummary = nbState.indicators.length
-    ? nbState.indicators.map(i => `${i.type} (${i.timeframe})`).join(', ')
+  const allGroupInds = (nbState.indicatorGroups || []).flatMap(g => g.indicators || []);
+  const indSummary = allGroupInds.length
+    ? (nbState.indicatorGroups || []).map(g =>
+        (g.indicators || []).map(i => i.type).join('+') || 'empty'
+      ).join(' OR ')
     : 'none — always enter';
   const unit = nbState.base_unit === 'btc' ? 'BTC' : '%';
 
@@ -2613,8 +2616,8 @@ function nbRenderReview() {
     </div>
     <div class="review-section">
       <div class="review-section-title">TP / SL</div>
-      <div class="review-row"><span class="review-key">Take Profit</span><span>${nbState.tp_enabled ? nbState.tp_target_pct + '%' : 'disabled'}</span></div>
-      <div class="review-row"><span class="review-key">TP confirmation</span><span>${safeText(nbState.tp_indicator_confirm) || 'none'}</span></div>
+      <div class="review-row"><span class="review-key">Take Profit</span><span>${nbState.tp_enabled ? nbState.tp_target_pct + '%' : 'disabled'}${nbState.tp_price_enabled ? '' : ' (indicator only)'}</span></div>
+      <div class="review-row"><span class="review-key">TP indicators</span><span>${(nbState.tpIndicatorGroups || []).flatMap(g => g.indicators || []).length ? (nbState.tpIndicatorGroups || []).map(g => (g.indicators || []).map(i => i.type).join('+')).join(' OR ') : 'none'}</span></div>
       <div class="review-row"><span class="review-key">Max age</span><span>${nbState.tp_max_age_enabled ? nbState.tp_max_age_hours + 'h' : 'none'}</span></div>
       <div class="review-row"><span class="review-key">Stop Loss</span><span>${nbState.sl_enabled ? safeText(nbState.sl_type) + ' ' + nbState.sl_pct + '%' : 'disabled'}</span></div>
     </div>
@@ -3042,26 +3045,25 @@ function renderDetailConfig(cfg) {
   const dca = b.dca || {};
   const tp  = b.take_profit || {};
   const sl  = b.stop_loss || {};
-  const indicators = (b.entry && b.entry.indicators) || [];
   const sched = b.schedule || null;
+  const { groups: entryGroups, flat: entryFlat } = _getAllIndicators(b);
 
   const leverageStr = lev.enabled ? `${lev.size || 1}x` : 'off';
-  const indHtml = indicators.length
-    ? indicators.map(i => {
-        const rows = [];
-        rows.push(`<div class="cfg-row"><span class="cfg-key">Type</span><span>${safeText(i.type || '—')}</span></div>`);
-        if (i.timeframe) rows.push(`<div class="cfg-row"><span class="cfg-key">Timeframe</span><span>${safeText(i.timeframe)}</span></div>`);
-        if (i.type === 'RSI') {
-          if (i.period != null) rows.push(`<div class="cfg-row"><span class="cfg-key">Period</span><span>${i.period}</span></div>`);
-          if (i.threshold) rows.push(`<div class="cfg-row"><span class="cfg-key">Threshold</span><span>${safeText(i.threshold)}</span></div>`);
-        } else if (i.type === 'MACD') {
-          if (i.condition) rows.push(`<div class="cfg-row"><span class="cfg-key">Condition</span><span>${safeText(i.condition)}</span></div>`);
-        }
-        return `<div class="cfg-indicator">
-          <div class="cfg-indicator-head">${safeText(i.type || 'Indicator')}</div>
-          ${rows.join('')}
-        </div>`;
-      }).join('')
+  const _cfgRenderInd = (i) => {
+    const parts = [safeText(i.type || '?')];
+    if (i.timeframe) parts.push(safeText(i.timeframe));
+    if (i.condition) parts.push(safeText(i.condition));
+    else if (i.threshold) parts.push(safeText(i.threshold));
+    if (i.value) parts.push(safeText(i.value));
+    return parts.join(' — ');
+  };
+  const _cfgRenderGroups = (groups) => groups.map((g, gi) => {
+    const inds = (g.indicators || []).map(_cfgRenderInd).join(', ');
+    return `<div class="config-group"><span class="config-group-name">${safeText(g.name || 'Group ' + (gi + 1))}</span>: ${inds || 'empty'}</div>`
+      + (gi < groups.length - 1 ? '<div class="config-or">OR</div>' : '');
+  }).join('');
+  const indHtml = entryGroups.length
+    ? _cfgRenderGroups(entryGroups)
     : '<div class="cfg-empty">No indicators — always enter</div>';
 
   $('d-config-body').innerHTML = `
@@ -3084,7 +3086,8 @@ function renderDetailConfig(cfg) {
     <div class="cfg-section">
       <div class="cfg-section-title">Take Profit &amp; Stop Loss</div>
       <div class="cfg-row"><span class="cfg-key">TP target</span><span>${tp.target_pct != null ? tp.target_pct + '%' : '—'}</span></div>
-      <div class="cfg-row"><span class="cfg-key">TP confirmation</span><span>${safeText(tp.indicator_confirm || 'none')}</span></div>
+      <div class="cfg-row"><span class="cfg-key">Price TP</span><span>${tp.price_enabled !== false ? 'Enabled' : 'Disabled'}</span></div>
+      ${(tp.indicator_groups || []).length ? '<div class="cfg-subtitle">TP Indicator Groups</div>' + _cfgRenderGroups(tp.indicator_groups) : ''}
       <div class="cfg-row"><span class="cfg-key">SL type</span><span>${safeText(sl.type || '—')}</span></div>
       <div class="cfg-row"><span class="cfg-key">SL percentage</span><span>${sl.pct != null ? sl.pct + '%' : '—'}</span></div>
     </div>
