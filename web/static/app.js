@@ -3280,9 +3280,7 @@ let _wizardQflSeries = [];
 // Sub-charts for RSI / MACD indicators in the wizard preview. Created
 // lazily when the user adds the corresponding indicator and destroyed
 // when they remove it, so a wizard with no RSI/MACD costs nothing.
-let _wizardChartRsi = null;
 let _wizardRsiThresholdLine = null;
-let _wizardChartMacd = null;
 let _wizardSubSeries = {};
 
 function _cssVar(name, fallback) {
@@ -3345,7 +3343,7 @@ function _applyChartTheme() {
   // theme switch so the operator sees the new palette without having
   // to reopen the tab. No-ops cleanly when a chart isn't mounted.
   const opts = _chartLayoutOpts();
-  for (const chart of [_chartMain, _chartRsi, _chartMacd, _wizardChart, _wizardChartRsi, _wizardChartMacd]) {
+  for (const chart of [_chartMain, _wizardChart]) {
     if (!chart) continue;
     try { chart.applyOptions(opts); } catch (e) {}
   }
@@ -4555,8 +4553,6 @@ function initWizardChart() {
           _wizardChart.applyOptions({ width: w });
           _renderWizardAnnotations();
         }
-        if (_wizardChartRsi  && e.target === $('wizard-chart-rsi'))  _wizardChartRsi.applyOptions({ width: w });
-        if (_wizardChartMacd && e.target === $('wizard-chart-macd')) _wizardChartMacd.applyOptions({ width: w });
       }
     });
     _wizardResizeObs.observe(el);
@@ -4589,8 +4585,8 @@ function teardownWizardChart() {
   const tfSel = $('nb-timeframe');
   if (tfSel && _wizardTfHandler) tfSel.removeEventListener('change', _wizardTfHandler);
   _wizardTfHandler = null;
-  _wizardDestroyRsiChart();
-  _wizardDestroyMacdChart();
+  _wizardDestroyRsiPane();
+  _wizardDestroyMacdPane();
   if (_wizardAnnotSvg && _wizardAnnotSvg.parentNode) {
     try { _wizardAnnotSvg.parentNode.removeChild(_wizardAnnotSvg); } catch (e) {}
   }
@@ -4917,57 +4913,37 @@ function _clearWizardOverlays() {
   _wizardQflSeries = [];
 }
 
-function _wizardEnsureRsiChart() {
-  if (_wizardChartRsi) return;
-  const el = $('wizard-chart-rsi');
-  if (!el || !_chartLibAvailable()) return;
-  el.classList.remove('hidden');
-  _wizardChartRsi = _lwcCreateChart(el, {
-    ..._chartLayoutOpts(),
-    width:  el.clientWidth,
-    height: el.clientHeight || 100,
-  });
-  _wizardSubSeries.rsi = _wizardChartRsi.addSeries(_LWC().LineSeries, {
+function _wizardEnsureRsiPane() {
+  if (_wizardSubSeries.rsi || !_wizardChart) return;
+  _wizardSubSeries.rsi = _wizardChart.addSeries(_LWC().LineSeries, {
     color: _cssVar('--blue', '#5b8dee'), lineWidth: 1,
-  });
-  if (_wizardResizeObs) _wizardResizeObs.observe(el);
+    priceLineVisible: false, lastValueVisible: true,
+  }, 1);
 }
 
-function _wizardDestroyRsiChart() {
-  if (!_wizardChartRsi) return;
-  try { _wizardChartRsi.remove(); } catch (e) {}
-  _wizardChartRsi = null;
+function _wizardDestroyRsiPane() {
+  if (!_wizardSubSeries.rsi || !_wizardChart) return;
+  try { _wizardChart.removeSeries(_wizardSubSeries.rsi); } catch (e) {}
   _wizardRsiThresholdLine = null;
   delete _wizardSubSeries.rsi;
-  const el = $('wizard-chart-rsi');
-  if (el) el.classList.add('hidden');
 }
 
-function _wizardEnsureMacdChart() {
-  if (_wizardChartMacd) return;
-  const el = $('wizard-chart-macd');
-  if (!el || !_chartLibAvailable()) return;
-  el.classList.remove('hidden');
-  _wizardChartMacd = _lwcCreateChart(el, {
-    ..._chartLayoutOpts(),
-    width:  el.clientWidth,
-    height: el.clientHeight || 100,
-  });
-  _wizardSubSeries.macdHist   = _wizardChartMacd.addSeries(_LWC().HistogramSeries, { color: _cssVar('--muted', '#888') });
-  _wizardSubSeries.macdLine   = _wizardChartMacd.addSeries(_LWC().LineSeries, { color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 });
-  _wizardSubSeries.macdSignal = _wizardChartMacd.addSeries(_LWC().LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 });
-  if (_wizardResizeObs) _wizardResizeObs.observe(el);
+function _wizardEnsureMacdPane() {
+  if (_wizardSubSeries.macdLine || !_wizardChart) return;
+  const pane = _wizardSubSeries.rsi ? 2 : 1;
+  _wizardSubSeries.macdHist   = _wizardChart.addSeries(_LWC().HistogramSeries, { color: _cssVar('--muted', '#888') }, pane);
+  _wizardSubSeries.macdLine   = _wizardChart.addSeries(_LWC().LineSeries, { color: _cssVar('--blue',  '#5b8dee'), lineWidth: 1 }, pane);
+  _wizardSubSeries.macdSignal = _wizardChart.addSeries(_LWC().LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 }, pane);
 }
 
-function _wizardDestroyMacdChart() {
-  if (!_wizardChartMacd) return;
-  try { _wizardChartMacd.remove(); } catch (e) {}
-  _wizardChartMacd = null;
+function _wizardDestroyMacdPane() {
+  if (!_wizardSubSeries.macdLine || !_wizardChart) return;
+  try { _wizardChart.removeSeries(_wizardSubSeries.macdHist); } catch (e) {}
+  try { _wizardChart.removeSeries(_wizardSubSeries.macdLine); } catch (e) {}
+  try { _wizardChart.removeSeries(_wizardSubSeries.macdSignal); } catch (e) {}
   delete _wizardSubSeries.macdHist;
   delete _wizardSubSeries.macdLine;
   delete _wizardSubSeries.macdSignal;
-  const el = $('wizard-chart-macd');
-  if (el) el.classList.add('hidden');
 }
 
 function _addWizardLineSeries(data, color, lineWidth = 2, lineStyle = 0) {
@@ -5016,8 +4992,8 @@ function renderWizardOverlays() {
   // adding RSI alone doesn't drag MACD along.
   const rsiCfg  = indicators.find(i => i && String(i.type).toUpperCase() === 'RSI');
   const macdCfg = indicators.find(i => i && String(i.type).toUpperCase() === 'MACD');
-  if (rsiCfg)  _wizardEnsureRsiChart();  else _wizardDestroyRsiChart();
-  if (macdCfg) _wizardEnsureMacdChart(); else _wizardDestroyMacdChart();
+  if (rsiCfg)  _wizardEnsureRsiPane();  else _wizardDestroyRsiPane();
+  if (macdCfg) _wizardEnsureMacdPane(); else _wizardDestroyMacdPane();
 
   if (rsiCfg && _wizardSubSeries.rsi) {
     try {
