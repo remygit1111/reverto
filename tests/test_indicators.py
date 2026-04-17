@@ -184,25 +184,35 @@ class TestBollinger:
 
 
 class TestParabolicSAR:
+    @staticmethod
+    def _ohlc(closes, spread=0.5):
+        highs = [c + spread for c in closes]
+        lows = [c - spread for c in closes]
+        return highs, lows, closes
+
     def test_bullish_trend_detected(self):
         """Steadily rising prices → SAR stays below price → bullish."""
         closes = [float(100 + i) for i in range(30)]
-        assert check_parabolic_sar_signal(closes, condition="bullish") is True
-        assert check_parabolic_sar_signal(closes, condition="bearish") is False
+        h, lo, c = self._ohlc(closes)
+        assert check_parabolic_sar_signal(h, lo, c, condition="bullish") is True
+        assert check_parabolic_sar_signal(h, lo, c, condition="bearish") is False
 
     def test_bearish_trend_detected(self):
         closes = [float(130 - i) for i in range(30)]
-        assert check_parabolic_sar_signal(closes, condition="bearish") is True
-        assert check_parabolic_sar_signal(closes, condition="bullish") is False
+        h, lo, c = self._ohlc(closes)
+        assert check_parabolic_sar_signal(h, lo, c, condition="bearish") is True
+        assert check_parabolic_sar_signal(h, lo, c, condition="bullish") is False
 
     def test_bullish_flip_on_reversal(self):
         """Down-trend then sharp reversal should eventually produce a flip."""
         down = [float(130 - i) for i in range(20)]
         up = down + [float(110 + i * 3) for i in range(15)]
+        h, lo, c = self._ohlc(up)
         flips = 0
         for end in range(11, len(up) + 1):
             try:
-                if check_parabolic_sar_signal(up[:end], condition="bullish_flip"):
+                if check_parabolic_sar_signal(h[:end], lo[:end], c[:end],
+                                              condition="bullish_flip"):
                     flips += 1
             except ValueError:
                 pass
@@ -210,11 +220,14 @@ class TestParabolicSAR:
 
     def test_insufficient_data_raises(self):
         with pytest.raises(ValueError, match="at least 10"):
-            calculate_parabolic_sar([100.0, 101.0, 102.0])
+            calculate_parabolic_sar([100.0, 101.0, 102.0],
+                                   [99.0, 100.0, 101.0],
+                                   [99.5, 100.5, 101.5])
 
     def test_unknown_condition_returns_false(self):
-        data = [float(i) for i in range(15)]
-        assert check_parabolic_sar_signal(data, condition="invalid") is False
+        closes = [float(i) for i in range(15)]
+        h, lo, c = self._ohlc(closes)
+        assert check_parabolic_sar_signal(h, lo, c, condition="invalid") is False
 
 
 class TestSupertrend:
@@ -483,9 +496,11 @@ class TestBollingerMA:
 
 class TestPSARCrossing:
     def test_price_crossing_up_alias(self):
-        data = list(range(10, 25)) + list(range(25, 10, -1)) + list(range(10, 30))
-        result = check_parabolic_sar_signal(data, condition="price_crossing_up")
-        # Should not raise; just verify it runs
+        raw = list(range(10, 25)) + list(range(25, 10, -1)) + list(range(10, 30))
+        closes = [float(x) for x in raw]
+        highs = [c + 0.5 for c in closes]
+        lows = [c - 0.5 for c in closes]
+        result = check_parabolic_sar_signal(highs, lows, closes, condition="price_crossing_up")
         assert isinstance(result, bool)
 
 

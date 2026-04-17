@@ -266,8 +266,12 @@ class IndicatorEngine:
                 value=indicator.value or "lower",
             )
         elif itype == "PARABOLIC_SAR":
+            if not highs or not lows:
+                logger.warning("PARABOLIC_SAR requires highs/lows — "
+                               "returning False (fail-closed)")
+                return False
             return check_parabolic_sar_signal(
-                closes,
+                highs, lows, closes,
                 initial_af=indicator.initial_af or 0.02,
                 max_af=indicator.max_af or 0.20,
                 condition=indicator.condition or "bullish",
