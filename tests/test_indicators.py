@@ -142,6 +142,18 @@ class TestMACD:
         result = calculate_macd([100.0]*80)
         assert abs(result["histogram"]) < 0.0001
 
+    def test_use_percentile_normalizes(self):
+        """use_percentile=True should not change sign of histogram."""
+        closes = [100.0 + i * 0.5 for i in range(80)]
+        normal = check_macd_signal(closes, "histogram_positive", use_percentile=False)
+        pct = check_macd_signal(closes, "histogram_positive", use_percentile=True)
+        assert normal == pct
+
+    def test_use_percentile_false_default(self):
+        """Default behavior unchanged when use_percentile=False."""
+        closes = [100.0 + i * 0.5 for i in range(80)]
+        assert isinstance(check_macd_signal(closes, "histogram_positive"), bool)
+
 
 class TestBollinger:
     def test_happy_path_below_lower(self):

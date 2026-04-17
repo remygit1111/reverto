@@ -1152,7 +1152,7 @@ async def api_chart(pair: str, timeframe: str, limit: int = 200):
                 client.get_ohlcv, normalized, timeframe, limit
             )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Exchange error: {e}")
+        raise HTTPException(status_code=502, detail=f"Exchange error: {str(e)[:200]}")
 
     payload = [
         {
@@ -1399,7 +1399,7 @@ async def api_candles(
                 client, normalized, timeframe, start_ms, end_ms
             )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Exchange error: {e}")
+        raise HTTPException(status_code=502, detail=f"Exchange error: {str(e)[:200]}")
 
     payload = [
         {
