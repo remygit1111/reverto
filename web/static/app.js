@@ -1623,9 +1623,11 @@ function nbDefaultState() {
     indicators: [],
     indicatorGroups: [{ id: 1, name: 'Group 1', indicators: [] }],
     tp_enabled: true,
-    tp_target_pct: 3.0, tp_indicator_confirm: '',
+    tp_price_enabled: true,
+    tp_target_pct: 3.0,
     tp_min_pct: null,
     tp_max_age_enabled: false, tp_max_age_hours: 24,
+    tpIndicatorGroups: [],
     sl_enabled: true,
     sl_type: 'fixed', sl_pct: 5.0,
     use_wick_simulation: true,
@@ -1777,8 +1779,8 @@ function nbReadAll() {
   nbState.base_size = parseFloat($('nb-base-size').value);
 
   nbState.tp_enabled = $('nb-tp-enabled') ? $('nb-tp-enabled').checked : true;
+  nbState.tp_price_enabled = $('nb-tp-price-enabled') ? $('nb-tp-price-enabled').checked : true;
   nbState.tp_target_pct = parseFloat($('nb-tp-pct').value);
-  nbState.tp_indicator_confirm = $('nb-tp-confirm').value;
   const minRaw = $('nb-tp-min-pct').value;
   nbState.tp_min_pct = minRaw === '' ? null : parseFloat(minRaw);
   nbState.tp_max_age_enabled = $('nb-tp-max-age-enabled').checked;
@@ -1883,12 +1885,17 @@ function nbApplyStateToForm() {
   $('nb-dca-unit-label').textContent = nbState.base_unit === 'btc' ? 'BTC' : '%';
 
   if ($('nb-tp-enabled')) $('nb-tp-enabled').checked = nbState.tp_enabled;
+  const tpPriceChk = $('nb-tp-price-enabled');
+  if (tpPriceChk) tpPriceChk.checked = nbState.tp_price_enabled;
   $('nb-tp-pct').value = nbState.tp_target_pct;
-  $('nb-tp-confirm').value = nbState.tp_indicator_confirm;
   $('nb-tp-min-pct').value = nbState.tp_min_pct == null ? '' : nbState.tp_min_pct;
+  const tpPctRow = $('nb-tp-pct-row'), tpMinRow = $('nb-tp-min-row');
+  if (tpPctRow) tpPctRow.style.display = nbState.tp_price_enabled ? '' : 'none';
+  if (tpMinRow) tpMinRow.style.display = nbState.tp_price_enabled ? '' : 'none';
   $('nb-tp-max-age-enabled').checked = nbState.tp_max_age_enabled;
   $('nb-tp-max-age-hours').value = nbState.tp_max_age_hours;
   $('nb-tp-max-age-hours').disabled = !nbState.tp_max_age_enabled;
+  nbRenderTpIndicators();
   if ($('nb-sl-enabled')) $('nb-sl-enabled').checked = nbState.sl_enabled;
   $('nb-sl-type').value = nbState.sl_type;
   $('nb-sl-pct').value = nbState.sl_pct;
@@ -1964,6 +1971,58 @@ function nbRemoveGroup(groupId) {
   nbState.indicatorGroups = nbState.indicatorGroups.filter(g => g.id !== groupId);
   nbRenderIndicators();
   nbRecompute();
+}
+function nbAddTpGroup() {
+  const groups = nbState.tpIndicatorGroups || [];
+  const maxId = groups.reduce((m, g) => Math.max(m, g.id), 0);
+  groups.push({ id: maxId + 1, name: `TP Group ${maxId + 1}`, indicators: [] });
+  nbState.tpIndicatorGroups = groups;
+  nbRenderTpIndicators();
+  nbRecompute();
+}
+function nbRemoveTpGroup(gid) {
+  nbState.tpIndicatorGroups = (nbState.tpIndicatorGroups || []).filter(g => g.id !== gid);
+  nbRenderTpIndicators();
+  nbRecompute();
+}
+function nbAddTpIndicator(gid) {
+  const g = (nbState.tpIndicatorGroups || []).find(g => g.id === gid);
+  if (g) g.indicators.push(_nbDefaultIndicator());
+  nbRenderTpIndicators();
+  nbRecompute();
+}
+function nbRemoveTpIndicator(gid, idx) {
+  const g = (nbState.tpIndicatorGroups || []).find(g => g.id === gid);
+  if (g) g.indicators.splice(idx, 1);
+  nbRenderTpIndicators();
+  nbRecompute();
+}
+function nbRenderTpIndicators() {
+  const list = $('nb-tp-indicators-list');
+  if (!list) return;
+  const groups = nbState.tpIndicatorGroups || [];
+  if (!groups.length) {
+    list.innerHTML = '<div class="empty-config-msg">No indicator TP (price target only)</div>'
+      + '<button type="button" class="btn-add-group" data-nb-action="add-tp-group">+ Add TP indicator group</button>';
+    return;
+  }
+  const html = groups.map((g, gi) => {
+    const cards = g.indicators.map((ind, ii) => {
+      const dp = `tp:${g.id}:${ii}`;
+      return _nbIndCardHtml(ind, dp);
+    }).join('');
+    return (gi > 0 ? '<div class="group-or-divider">OR</div>' : '')
+      + `<div class="indicator-group" data-group-id="tp:${g.id}">
+          <div class="indicator-group-header">
+            <input class="indicator-group-name" value="${safeText(g.name)}"
+              placeholder="TP Group ${gi + 1}" data-nb-tp-gname="${g.id}">
+            ${groups.length > 1 ? `<button type="button" class="nb-ind-close" data-nb-action="remove-tp-group" data-nb-gid="${g.id}">\u00d7</button>` : ''}
+          </div>
+          ${cards || '<div class="empty-config-msg" style="margin:8px 0;font-size:11px">No indicators — add one below</div>'}
+          <button type="button" class="btn-add-group" data-nb-action="add-tp-indicator" data-nb-gid="${g.id}">+ Add indicator</button>
+        </div>`;
+  }).join('');
+  list.innerHTML = html + '<button type="button" class="btn-add-group" data-nb-action="add-tp-group">+ Add TP indicator group</button>';
 }
 
 function _nbIndCardHtml(ind, dataPrefix) {
@@ -2635,13 +2694,18 @@ function nbBuildBotConfig() {
         indicators: (g.indicators || []).map(_nbSerializeIndicator),
       })),
     },
-    take_profit: { enabled: nbState.tp_enabled, target_pct: nbState.tp_target_pct },
+    take_profit: {
+      enabled: nbState.tp_enabled,
+      target_pct: nbState.tp_target_pct,
+      price_enabled: nbState.tp_price_enabled,
+      indicator_groups: (nbState.tpIndicatorGroups || []).map(g => ({
+        id: g.id, name: g.name || '',
+        indicators: (g.indicators || []).map(_nbSerializeIndicator),
+      })),
+    },
     stop_loss: { type: nbState.sl_enabled ? nbState.sl_type : 'none', pct: nbState.sl_pct },
     use_wick_simulation: Boolean(nbState.use_wick_simulation),
   };
-  if (nbState.tp_indicator_confirm) {
-    cfg.take_profit.indicator_confirm = nbState.tp_indicator_confirm;
-  }
   if (nbState.tp_min_pct != null && nbState.tp_min_pct > 0) {
     cfg.take_profit.minimum_tp_pct = nbState.tp_min_pct;
   }
@@ -3135,9 +3199,10 @@ function nbStateFromConfig(cfg) {
     indicators:       [],
     indicatorGroups:  _nbDeserializeGroups(b.entry),
     tp_enabled:           tp.enabled !== false,
+    tp_price_enabled:     tp.price_enabled !== false,
     tp_target_pct:        tp.target_pct != null ? tp.target_pct : d.tp_target_pct,
-    tp_indicator_confirm: tp.indicator_confirm || '',
     tp_min_pct:           tp.minimum_tp_pct != null ? tp.minimum_tp_pct : null,
+    tpIndicatorGroups:    _nbDeserializeGroups({ indicator_groups: tp.indicator_groups }),
     sl_enabled:           sl.type !== 'none',
     sl_type:              (sl.type && sl.type !== 'none') ? sl.type : d.sl_type,
     sl_pct:               sl.pct != null ? sl.pct : d.sl_pct,
@@ -5732,6 +5797,14 @@ function setupEventListeners() {
     $('nb-tp-max-age-hours').disabled = !e.target.checked;
     nbRecompute();
   });
+  const tpPriceToggle = $('nb-tp-price-enabled');
+  if (tpPriceToggle) tpPriceToggle.addEventListener('change', e => {
+    nbState.tp_price_enabled = e.target.checked;
+    const pr = $('nb-tp-pct-row'), mr = $('nb-tp-min-row');
+    if (pr) pr.style.display = e.target.checked ? '' : 'none';
+    if (mr) mr.style.display = e.target.checked ? '' : 'none';
+    nbRecompute();
+  });
   ['nb-tp-enabled', 'nb-sl-enabled', 'nb-dca-enabled', 'nb-sched-enabled'].forEach(id => {
     const el = $(id);
     if (el) el.addEventListener('change', () => { nbUpdateToggleStates(); nbRecompute(); });
@@ -5757,10 +5830,15 @@ function setupEventListeners() {
     });
   }
 
-  // Resolve "groupId:idx" to the indicator object
   function _nbResolveGind(key) {
     if (!nbState || !key) return null;
-    const [gid, idx] = key.split(':').map(Number);
+    const parts = key.split(':');
+    if (parts[0] === 'tp') {
+      const [, gid, idx] = parts.map((v, i) => i === 0 ? v : Number(v));
+      const g = (nbState.tpIndicatorGroups || []).find(g => g.id === gid);
+      return g && g.indicators[idx] ? g.indicators[idx] : null;
+    }
+    const [gid, idx] = parts.map(Number);
     const g = (nbState.indicatorGroups || []).find(g => g.id === gid);
     return g && g.indicators[idx] ? g.indicators[idx] : null;
   }
@@ -5800,6 +5878,10 @@ function setupEventListeners() {
       const g = (nbState.indicatorGroups || []).find(g => g.id === Number(t.dataset.nbGname));
       if (g) g.name = t.value;
     }
+    if (t.dataset?.nbTpGname) {
+      const g = (nbState.tpIndicatorGroups || []).find(g => g.id === Number(t.dataset.nbTpGname));
+      if (g) g.name = t.value;
+    }
   });
   document.addEventListener('change', e => {
     const t = e.target;
@@ -5815,11 +5897,18 @@ function setupEventListeners() {
       const act = ab.dataset.nbAction;
       if (act === 'add-group') { nbAddGroup(); return; }
       if (act === 'add-indicator') { nbAddIndicator(parseInt(ab.dataset.nbGid)); return; }
+      if (act === 'add-tp-group') { nbAddTpGroup(); return; }
+      if (act === 'add-tp-indicator') { nbAddTpIndicator(parseInt(ab.dataset.nbGid)); return; }
+      if (act === 'remove-tp-group') { nbRemoveTpGroup(parseInt(ab.dataset.nbGid)); return; }
     }
     const rm = e.target.closest('[data-nb-grm]');
     if (rm) {
-      const [gid, idx] = rm.dataset.nbGrm.split(':').map(Number);
-      nbRemoveIndicator(gid, idx);
+      const parts = rm.dataset.nbGrm.split(':');
+      if (parts[0] === 'tp') {
+        nbRemoveTpIndicator(Number(parts[1]), Number(parts[2]));
+      } else {
+        nbRemoveIndicator(Number(parts[0]), Number(parts[1]));
+      }
       return;
     }
     const grm = e.target.closest('[data-nb-gremove]');
