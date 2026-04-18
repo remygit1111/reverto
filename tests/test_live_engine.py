@@ -83,169 +83,51 @@ def _make_engine(config, exchange, notifier, tmp_path, **kwargs):
     return eng
 
 
-# ── Preflight checks ────────────────────────────────────────────────────────
+# ── Boot smoke test (replaces the former preflight suite) ───────────────────
+#
+# The v25 refactor removed every static configuration cap from LiveEngine:
+# no more max_base_order_size, no MAX_DCA_SIZE_VS_BASE, no
+# DEFAULT_CUMULATIVE_MULTIPLIER. Ladder risk is surfaced as advisory
+# warnings in the portal wizard (see TestValidateConfigEndpoint in
+# test_web_routes.py), never as hard refusals. The only test left here is
+# the boot smoke — any well-formed BotConfig must produce a LiveEngine
+# without raising, regardless of how aggressive the DCA ladder is.
 
-class TestLiveEnginePreflights:
+class TestLiveEngineBoots:
 
-    def test_rejects_oversized_base_order(
+    def test_boots_with_conservative_config(
         self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
     ):
-        """base_order_size > max → ValueError before the engine ever
-        touches the state file or starts a notify thread."""
-        minimal_bot_config.dca.base_order_size = 0.1
-        with pytest.raises(ValueError, match="exceeds max"):
-            _make_engine(
-                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-                max_base_order_size=0.001,
-            )
-
-    def test_accepts_valid_size(
-        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-    ):
-        """base_order_size <= max → engine boots."""
-        minimal_bot_config.dca.base_order_size = 0.0005
+        """Sanity check on the default test fixture — covers the
+        super().__init__ → state_io → notifier wiring."""
         eng = _make_engine(
             minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-            max_base_order_size=0.001,
         )
         try:
             assert eng is not None
             assert eng.is_dry_run is True
-            assert eng._max_base_order_size == 0.001
         finally:
             eng._notify_queue.put(None)
             eng._notify_thread.join(timeout=5)
 
-    def test_custom_max_allows_larger_size(
+    def test_boots_with_aggressive_ladder(
         self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
     ):
-        """Operator can raise the cap for well-funded accounts."""
-        minimal_bot_config.dca.base_order_size = 0.01
-        eng = _make_engine(
-            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-            max_base_order_size=0.05,
-        )
-        try:
-            assert eng is not None
-        finally:
-            eng._notify_queue.put(None)
-            eng._notify_thread.join(timeout=5)
-
-    def test_rejects_dca_multiplier_explosion(
-        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-    ):
-        """multiplier=2.0 + max_orders=10 makes the last DCA order
-        0.001 × 2^9 = 0.512 BTC — 512× the base-order cap. The preflight
-        must refuse this even when base_order_size itself is tiny."""
+        """Pre-v25 this combination (mult=2.0 × 10 orders, cumulative
+        1023× base) was refused at construction. Post-v25 it boots — the
+        portal wizard flags it as a high-severity warning instead, and
+        the runtime balance guard is the actual brake."""
         minimal_bot_config.dca.base_order_size = 0.001
         minimal_bot_config.dca.multiplier = 2.0
         minimal_bot_config.dca.max_orders = 10
-        with pytest.raises(ValueError, match="Worst-case DCA"):
-            _make_engine(
-                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-                max_base_order_size=0.001,
-            )
-
-    def test_rejects_cumulative_explosion(
-        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-    ):
-        """Per-order worst-case under the ceiling, but the SUM of base
-        + every DCA order exceeds max_cumulative_size → refused."""
-        minimal_bot_config.dca.base_order_size = 0.001
-        minimal_bot_config.dca.multiplier = 1.5
-        minimal_bot_config.dca.max_orders = 6  # worst DCA ≈ 0.0076 (7.6x)
-        # Tight explicit cap — cumulative with 6 orders exceeds 0.005.
-        minimal_bot_config.dca.max_cumulative_size = 0.005
-        with pytest.raises(ValueError, match="Cumulative DCA"):
-            _make_engine(
-                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-                max_base_order_size=0.01,
-            )
-
-    def test_preflight_accepts_legit_dca_ladder(
-        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-    ):
-        """Conservative 1.5× × 10 orders → 1.5**9 = 38.4× base, below
-        the 50× cap. Pre-v23 this was rejected at the 10× cap even
-        though it's a deliberate drawdown-scaling config; the bump
-        lets it through."""
-        minimal_bot_config.dca.base_order_size = 0.0001
-        minimal_bot_config.dca.multiplier = 1.5
-        minimal_bot_config.dca.max_orders = 10
-        # Generous cumulative ceiling so the OTHER preflight check
-        # doesn't pre-empt the one under test — 1.5**10 / 0.5 ≈ 113×
-        # base = 0.0113 BTC, well above the default 20× cumulative cap.
-        minimal_bot_config.dca.max_cumulative_size = 0.02
         eng = _make_engine(
             minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-            max_base_order_size=0.001,
         )
         try:
             assert eng is not None
         finally:
             eng._notify_queue.put(None)
             eng._notify_thread.join(timeout=5)
-
-    def test_preflight_rejects_just_above_50x(
-        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-    ):
-        """1.5× × 11 orders → 1.5**10 = 57.7× base, above 50×. This is
-        the exact config from the bug report that motivated the bump;
-        the test pins that the cap is still meaningful — not toothless
-        — at its new value."""
-        minimal_bot_config.dca.base_order_size = 0.0001
-        minimal_bot_config.dca.multiplier = 1.5
-        minimal_bot_config.dca.max_orders = 11
-        minimal_bot_config.dca.max_cumulative_size = 0.1
-        with pytest.raises(ValueError, match="Worst-case DCA"):
-            _make_engine(
-                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-                max_base_order_size=0.001,
-            )
-
-    def test_preflight_accepts_legit_cumulative_ladder(
-        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-    ):
-        """Conservative ladder with NO explicit max_cumulative_size —
-        relies on the DEFAULT_CUMULATIVE_MULTIPLIER=150 fallback. With
-        base=0.0001, mult=1.5, max_orders=10 the cumulative is
-        sum(1.5**i for i in range(10)) ≈ 113× base ≈ 0.01133 BTC,
-        under the 150× default = 0.015 BTC. Pre-v24 (20× default) this
-        was refused; now it boots cleanly."""
-        minimal_bot_config.dca.base_order_size = 0.0001
-        minimal_bot_config.dca.multiplier = 1.5
-        minimal_bot_config.dca.max_orders = 10
-        # Explicitly leave max_cumulative_size unset so we exercise the
-        # default-fallback branch.
-        minimal_bot_config.dca.max_cumulative_size = None
-        eng = _make_engine(
-            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-            max_base_order_size=0.001,
-        )
-        try:
-            assert eng is not None
-        finally:
-            eng._notify_queue.put(None)
-            eng._notify_thread.join(timeout=5)
-
-    def test_preflight_rejects_above_150x_cumulative(
-        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-    ):
-        """Cumulative-only rejection: mult=1.3 × 15 orders puts the
-        worst-case single order at 1.3**14 ≈ 39.4× base (below 50×, so
-        the first preflight check passes) while the cumulative sum
-        ≈ 167× base overshoots the 150× default. Proves the cumulative
-        cap is still load-bearing after the bump, independent of the
-        per-order cap."""
-        minimal_bot_config.dca.base_order_size = 0.0001
-        minimal_bot_config.dca.multiplier = 1.3
-        minimal_bot_config.dca.max_orders = 15
-        minimal_bot_config.dca.max_cumulative_size = None
-        with pytest.raises(ValueError, match="Cumulative DCA"):
-            _make_engine(
-                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
-                max_base_order_size=0.001,
-            )
 
 
 # ── Dry-run order execution ─────────────────────────────────────────────────

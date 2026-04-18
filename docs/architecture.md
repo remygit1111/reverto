@@ -31,13 +31,14 @@
 │ + StateIO (v22)  │    │ + ClockMonitor   │
 │                  │◄───┤ + OrderReconcile │
 │  - tick loop     │    │                  │
-│  - DCA caps      │    │  - DCA preflight │
-│  - TP/SL checks  │    │  - dry-run log   │
-│  - sentinels     │    │  - skew gate     │
-│  - guards:       │    │  - reconcile/N   │
-│    liquidation   │    └──────────────────┘
-│    drawdown      │
-│    schedule      │
+│  - DCA per-tick  │    │  - dry-run log   │
+│  - TP/SL checks  │    │  - skew gate     │
+│  - sentinels     │    │  - reconcile/N   │
+│  - guards:       │    └──────────────────┘
+│    liquidation   │
+│    drawdown      │     (config caps removed v25 —
+│    schedule      │      wizard advisory warnings
+│    balance       │      via /validate-config)
 └────────┬─────────┘
          │ writes
          ▼

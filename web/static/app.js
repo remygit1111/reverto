@@ -2791,6 +2791,13 @@ function nbRenderReview() {
 
   $('nb-review').innerHTML = `
     ${warnings}
+    <div id="nb-review-profile" class="review-summary" aria-live="polite">
+      <div class="review-summary-placeholder muted">Analysing configuration…</div>
+    </div>
+    <div id="nb-review-warnings" class="review-warnings hidden" aria-live="polite">
+      <h4>Configuration notes</h4>
+      <ul></ul>
+    </div>
     <div class="review-section">
       <div class="review-section-title">General</div>
       <div class="review-row"><span class="review-key">Name</span><span>${safeText(nbState.name) || '—'}</span></div>
@@ -2823,6 +2830,121 @@ function nbRenderReview() {
       <div class="review-row"><span class="review-key">Total position</span><span>${totalSize.toFixed(4)} ${unit}</span></div>
     </div>
   `;
+  nbScheduleValidation();
+}
+
+
+// ── Backend-backed config validation (advisory) ───────────────────────────────
+// Debounced so rapid input changes in the wizard don't hammer the endpoint.
+// The backend is the single source of truth for warning thresholds; mirroring
+// the math in JS would guarantee drift between the two.
+
+let _nbValidateTimer = null;
+let _nbValidateSeq = 0;
+
+function nbScheduleValidation() {
+  if (_nbValidateTimer) clearTimeout(_nbValidateTimer);
+  _nbValidateTimer = setTimeout(nbRunValidation, 300);
+}
+
+async function nbRunValidation() {
+  _nbValidateTimer = null;
+  const seq = ++_nbValidateSeq;
+
+  let payload;
+  try {
+    payload = nbBuildBotConfig();
+  } catch (e) {
+    _nbRenderValidationError('Invalid form state — fix the inputs above.');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/bots/validate-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    // Drop stale responses — the user may have typed again since this
+    // request left. Without the seq guard the last-rendered warnings
+    // aren't guaranteed to match the last submitted payload.
+    if (seq !== _nbValidateSeq) return;
+    if (res.status === 401) { _handle401(); return; }
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.json()).detail || ''; } catch (e) {}
+      _nbRenderValidationError(detail || `HTTP ${res.status}`);
+      return;
+    }
+    const data = await res.json();
+    _nbRenderValidation(data);
+  } catch (e) {
+    if (seq !== _nbValidateSeq) return;
+    _nbRenderValidationError(e.message || 'Network error');
+  }
+}
+
+function _nbRenderValidation(data) {
+  const s = data.summary || {};
+  const profileEl = $('nb-review-profile');
+  if (profileEl) {
+    const bos = Number(s.base_order_size) || 0;
+    const worst = Number(s.worst_case_dca) || 0;
+    const worstMult = Number(s.worst_case_multiple) || 0;
+    const cum = Number(s.cumulative_position) || 0;
+    const cumMult = Number(s.cumulative_multiple) || 0;
+    const modeClass = s.mode === 'live' ? 'mode-live' : 'mode-paper';
+    profileEl.innerHTML = `
+      <div class="summary-row">
+        <span class="label">Mode</span>
+        <span class="value ${modeClass}">${safeText((s.mode || '—').toUpperCase())}</span>
+      </div>
+      <div class="summary-row">
+        <span class="label">Base order size</span>
+        <span class="value">${bos.toFixed(8)} BTC</span>
+      </div>
+      <div class="summary-row">
+        <span class="label">Worst-case DCA order</span>
+        <span class="value">${worst.toFixed(8)} BTC
+          <span class="multiple">(${worstMult.toFixed(1)}× base)</span>
+        </span>
+      </div>
+      <div class="summary-row">
+        <span class="label">Cumulative position</span>
+        <span class="value">${cum.toFixed(8)} BTC
+          <span class="multiple">(${cumMult.toFixed(1)}× base)</span>
+        </span>
+      </div>
+    `;
+  }
+
+  const warnEl = $('nb-review-warnings');
+  if (!warnEl) return;
+  const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+  if (warnings.length === 0) {
+    warnEl.classList.add('hidden');
+    return;
+  }
+  warnEl.classList.remove('hidden');
+  const ul = warnEl.querySelector('ul');
+  if (ul) {
+    ul.innerHTML = warnings.map(w => {
+      const icon = w.level === 'high' ? '⚠️' : 'ℹ️';
+      const cls = w.level === 'high' ? 'warning-high' : 'warning-medium';
+      return `<li class="${cls}"><strong>${icon}</strong> ${safeText(w.message || '')}</li>`;
+    }).join('');
+  }
+}
+
+function _nbRenderValidationError(msg) {
+  const profileEl = $('nb-review-profile');
+  if (profileEl) {
+    profileEl.innerHTML =
+      `<div class="review-summary-placeholder muted">Config analysis unavailable: ${safeText(msg)}</div>`;
+  }
+  const warnEl = $('nb-review-warnings');
+  if (warnEl) warnEl.classList.add('hidden');
 }
 
 function _nbSerializeIndicator(i) {

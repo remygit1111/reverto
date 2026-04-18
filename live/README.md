@@ -13,15 +13,47 @@ to paper mode.
 
 ## Safety rails
 
+Reverto layers runtime guards (enforced while trading) on top of
+advisory configuration warnings (surfaced at setup time). The v25
+refactor removed every static configuration cap from `LiveEngine` —
+the engine now boots any well-formed ladder; risk surfaces to the
+operator in the wizard's Review step instead of a `ValueError`.
+
+### Runtime guards (always on)
+
 | Rail | Where | Effect |
 |------|-------|--------|
-| Max base order size | `LiveEngine.__init__` preflight | Refuses bots whose DCA base order size exceeds the cap (default `0.001 BTC`). Raises `ValueError` before the notify worker starts. |
-| Worst-case DCA cap | `LiveEngine._preflight` (`MAX_DCA_SIZE_VS_BASE = 50`) | Refuses configs whose final DCA order exceeds `50× base_order_size`. Accepts conservative ladders (e.g. `mult=1.5 × max_orders=10` → `38×`), rejects geometric-growth explosions (e.g. `mult=2.0 × max_orders=10` → `512×`). |
-| Cumulative position cap | `LiveEngine._preflight` (`DEFAULT_CUMULATIVE_MULTIPLIER = 150`) | Refuses configs whose summed base + every DCA exceeds `dca.max_cumulative_size` (or default `150× base` when unset). Accepts conservative ladders (`mult=1.5 × max_orders=10` → `113×`), rejects explosions (`mult=2.0 × max_orders=10` → `1023×`, `mult=1.3 × max_orders=15` → `167×`). Override per bot via `dca.max_cumulative_size` in the YAML. |
-| Drawdown guard | `core/drawdown_guard.py` + `BotConfig.drawdown_guard` | Pauses new entries (or stops the engine entirely) once equity drops `max_drawdown_pct` from peak. |
+| Per-tick DCA cap | `PaperEngine._monitor_open_deals` | At most one DCA order is placed per tick, across all open deals. Blocks flash-crash cascades that would otherwise chain 5+ DCAs on a single candle. |
+| Balance guard | `PaperEngine._deduct_balance` | Every fee debit pre-checks balance; insufficient-funds logs + notifies and refuses the order instead of going negative. The real brake on a runaway ladder. |
+| Drawdown guard | `core/drawdown_guard.py` + `BotConfig.drawdown_guard` | Pauses new entries (or stops the engine entirely) once equity drops `max_drawdown_pct` from peak. Peak is persisted in `state.json`. |
+| Clock-skew monitor | `LiveEngine._tick` + `ClockMonitor` | Skips order placement when the local clock drifts beyond `clock_skew_tolerance` (default 5 s). Fail-open on fetch errors. |
+| Liquidation guard | `core/liquidation_guard.py` | Detects positions approaching liquidation distance and emergency-closes. |
 | Hard mode check | `main_live.py` rejects non-`live` configs; `main_paper.py` rejects `live` configs | A misconfigured bot can never boot under the wrong runner. |
 | Dry-run default | `LiveEngine(dry_run=True)` + `main_live.py --dry-run` | Real-order path raises `NotImplementedError`. Flipping off dry-run is a deliberate opt-in. |
 | Confirmation prompt | `main_live.py` stdin `y/N` | Skipped when `DRY_RUN=1` is set or `--dry-run` is on. |
+| Emergency stop | Portal → `POST /api/emergency-stop` | SIGTERMs every running bot from the portal menu. |
+
+### Configuration advisory (wizard Review step)
+
+`POST /api/bots/validate-config` analyses a bot YAML and returns
+advisory warnings + a numeric summary. The wizard renders them above
+the Save button so the operator sees the ladder shape before saving.
+Nothing blocks the save; the operator decides.
+
+| Warning | Threshold | Level |
+|---------|-----------|-------|
+| Worst-case DCA order | `> 50×` base | high |
+| Worst-case DCA order | `> 20×` base | medium |
+| Cumulative position  | `> 150×` base | high |
+| Cumulative position  | `> 100×` base | medium |
+| Live-mode base order size | `> 0.001 BTC` | high |
+| Aggressive multiplier × many orders | `multiplier ≥ 2.0 AND max_orders ≥ 8` | high |
+| Live mode without drawdown guard | `mode=live AND drawdown_guard.enabled=false` | medium |
+
+Example: `mult=1.5 × max_orders=10` (worst 38× / cumulative 113× base)
+boots with no warnings. `mult=2.0 × max_orders=10` (worst 512× /
+cumulative 1023× base) boots, but the wizard shows two high-severity
+warnings + flags the aggressive multiplier pattern.
 
 ## Usage
 

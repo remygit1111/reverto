@@ -110,44 +110,9 @@ class TestDcaCascadeCap:
         assert deal.dca_count == 3
 
 
-class TestCumulativeNotionalCap:
-
-    def test_cap_blocks_dca_once_cumulative_exceeds(self, crashy_config, tmp_path):
-        """With a deliberately tight max_cumulative_size, DCA stops
-        adding orders once `sum(order.size) + next_dca >` cap."""
-        crashy_config.dca.max_cumulative_size = 0.003  # 3× base only
-        crashy_config.dca.multiplier = 1.0
-        crashy_config.dca.max_orders = 10
-
-        notifier = MagicMock()
-        for m in [
-            "notify_startup", "notify_entry", "notify_dca",
-            "notify_take_profit", "notify_stop_loss", "notify_error",
-            "notify_stop", "notify_shutdown", "notify_restart",
-        ]:
-            setattr(notifier, m, MagicMock())
-        exchange = MagicMock()
-
-        eng = PaperEngine(
-            config=crashy_config,
-            exchange=exchange, notifier=notifier,
-            initial_balance_btc=0.1,
-            state_file=str(tmp_path / "cap.state.json"),
-            slug="capbot",
-        )
-        try:
-            eng._open_deal(60_000.0)
-            deal = next(iter(eng.state.get_open_deals_snapshot().values()))
-
-            # Drive 5 ticks — enough to hit the 3× cap twice over.
-            for _ in range(5):
-                eng._monitor_open_deals(40_000.0)
-
-            total_size = sum(o.size for o in deal.orders)
-            # Base + ≤2 DCA orders = 0.003; the 3rd DCA would push it
-            # above the cap and must be refused.
-            assert total_size <= 0.003 + 1e-9
-            assert deal.dca_count <= 2
-        finally:
-            eng._notify_queue.put(None)
-            eng._notify_thread.join(timeout=5)
+# NOTE: The former TestCumulativeNotionalCap class was removed in the
+# v25 refactor. Paper/live engines no longer block DCA orders against a
+# cumulative-size cap at runtime — ladder risk is surfaced as advisory
+# wizard warnings instead. The remaining runtime brakes are the per-tick
+# DCA cap (still exercised above by TestDcaCascadeCap) and the
+# balance guard (refuses DCA fees once the account can't fund them).

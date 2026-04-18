@@ -1177,6 +1177,76 @@ tr:hover td { background: rgba(128,128,128,.04); }
 }
 .review-row .review-key { color: var(--muted); }
 
+/* ── Wizard Review & Save — summary + advisory warnings ─────────────────── */
+/* The summary panel and the warnings block are populated by
+   /api/bots/validate-config (debounced) so the operator sees the
+   computed worst-case / cumulative sizes before committing the
+   config. Warnings are advisory, never blocking. */
+.review-summary {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.review-summary-placeholder {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+.review-summary .summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.review-summary .summary-row:last-child { border-bottom: none; }
+.review-summary .summary-row .label { color: var(--muted); }
+.review-summary .summary-row .value.mode-live {
+  color: var(--amber);
+  font-weight: 600;
+}
+.review-summary .summary-row .multiple {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin-left: 6px;
+}
+
+.review-warnings {
+  background: rgba(255, 179, 71, .08);
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.review-warnings.hidden { display: none; }
+.review-warnings h4 {
+  margin: 0 0 8px 0;
+  color: var(--amber);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.review-warnings ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.review-warnings li {
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.review-warnings li:last-child { border-bottom: none; }
+.review-warnings li.warning-high   { color: var(--trigger-red); }
+.review-warnings li.warning-medium { color: var(--amber); }
+
 /* ── Wizard collapsible sections ────────────────────────────────────────── */
 .wizard-section {
   background: var(--surface);

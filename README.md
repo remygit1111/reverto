@@ -57,9 +57,11 @@ make live BOT=<slug>       # Phase-3 real orders (refused until Phase 3 lands)
 
 ## Safety rails
 
-- **DCA preflight** — live bots whose worst-case DCA exceeds 50× the
-  base order or whose cumulative position exceeds 150× are refused
-  at construction time.
+- **Config advisory (wizard)** — the portal wizard's Review step calls
+  `POST /api/bots/validate-config` and surfaces advisory warnings for
+  risky DCA ladders (worst-case > 50× base, cumulative > 150× base,
+  live-mode base > 0.001 BTC, etc.). Nothing blocks the save — runtime
+  guards do the actual braking.
 - **Drawdown guard** — peak is persisted to `state.json` so restarts
   don't reset the kill-switch baseline.
 - **Balance guard** — every fee debit pre-checks balance; insufficient
