@@ -14,12 +14,22 @@ from config.models import BotConfig, IndicatorConfig
 from strategies.indicators.rsi import calculate_rsi, check_rsi_signal
 from strategies.indicators.ema import calculate_ema
 from strategies.indicators.macd import calculate_macd, check_macd_signal
-from strategies.indicators.bollinger import check_bollinger_signal
-from strategies.indicators.parabolic_sar import check_parabolic_sar_signal
-from strategies.indicators.supertrend import check_supertrend_signal
-from strategies.indicators.market_structure import check_market_structure_signal
-from strategies.indicators.support_resistance import check_support_resistance_signal
-from strategies.indicators.qfl import check_qfl_signal
+from strategies.indicators.bollinger import (
+    calculate_bollinger_bands, check_bollinger_signal,
+)
+from strategies.indicators.parabolic_sar import (
+    calculate_parabolic_sar, check_parabolic_sar_signal,
+)
+from strategies.indicators.supertrend import (
+    calculate_supertrend, check_supertrend_signal,
+)
+from strategies.indicators.market_structure import (
+    _swing_points, check_market_structure_signal,
+)
+from strategies.indicators.support_resistance import (
+    find_support_resistance, check_support_resistance_signal,
+)
+from strategies.indicators.qfl import calculate_qfl_series, check_qfl_signal
 
 logger = logging.getLogger(__name__)
 
@@ -218,17 +228,30 @@ class IndicatorEngine:
         self,
         closes_per_tf: dict[str, list[float]],
         bot_timeframe: str,
+        highs_per_tf: dict[str, list[float]] | None = None,
+        lows_per_tf: dict[str, list[float]] | None = None,
     ) -> dict:
         """
         Returns current indicator values on the bot's primary timeframe
-        for the dashboard. Indicators on overridden timeframes are NOT
-        currently shown separately — they'd need a multi-tf UI.
+        for the dashboard + per-tick log line. Indicators on overridden
+        timeframes are NOT currently shown separately — they'd need a
+        multi-tf UI.
+
+        Uses hardcoded default parameters (BB period 20, PSAR 0.02/0.20,
+        Supertrend 10/3.0, S&R left/right 15, QFL 36/8, MS lookback 3).
+        TODO: read these from the actual indicator group config so
+        snapshot values match what the bot evaluates. Blocks the spec's
+        "later PR" — documented in commit 20d8a6b (v25 advisory split).
         """
         closes = closes_per_tf.get(bot_timeframe)
         if not closes:
             return {}
+        highs = (highs_per_tf or {}).get(bot_timeframe)
+        lows = (lows_per_tf or {}).get(bot_timeframe)
 
-        snapshot = {}
+        snapshot: dict = {}
+
+        # ── Close-only indicators ────────────────────────────────────
         try:
             snapshot["rsi_14"] = calculate_rsi(closes, 14)
         except Exception as e:
@@ -245,6 +268,93 @@ class IndicatorEngine:
             snapshot["macd_histogram"] = macd["histogram"]
         except Exception as e:
             logger.warning(f"MACD calculation failed: {e}")
+
+        # Bollinger %B — normalised position of price inside the bands.
+        # 0 = at lower band, 1 = at upper band. Can overshoot <0 / >1
+        # when price pokes outside the envelope.
+        try:
+            bands = calculate_bollinger_bands(closes, period=20, multiplier=2.0)
+            upper, lower = bands["upper"], bands["lower"]
+            if upper > lower:
+                snapshot["bb_pct_b"] = (closes[-1] - lower) / (upper - lower)
+        except Exception as e:
+            logger.debug(f"BB snapshot skipped: {e}")
+
+        # Market structure — classify the most recent swing relative to
+        # the prior one of the same type. HH/LH come from swing highs,
+        # HL/LL from swing lows. Whichever swing is most recent wins.
+        try:
+            ms_highs, ms_lows = _swing_points(closes, lookback=3)
+            last_high = ms_highs[-1] if ms_highs else None
+            last_low = ms_lows[-1] if ms_lows else None
+            if last_high is not None and (
+                last_low is None or last_high[0] > last_low[0]
+            ):
+                prev = ms_highs[-2] if len(ms_highs) >= 2 else None
+                if prev is not None:
+                    snapshot["market_structure"] = (
+                        "HH" if last_high[1] > prev[1] else "LH"
+                    )
+            elif last_low is not None:
+                prev = ms_lows[-2] if len(ms_lows) >= 2 else None
+                if prev is not None:
+                    snapshot["market_structure"] = (
+                        "HL" if last_low[1] > prev[1] else "LL"
+                    )
+        except Exception as e:
+            logger.debug(f"MarketStructure snapshot skipped: {e}")
+
+        # ── HLC-backed indicators (need highs + lows too) ────────────
+        if highs and lows and len(highs) == len(lows) == len(closes):
+            try:
+                psar_series = calculate_parabolic_sar(
+                    highs, lows, closes,
+                    initial_af=0.02, max_af=0.20,
+                )
+                if psar_series:
+                    sar, trend = psar_series[-1]
+                    snapshot["psar"] = sar
+                    snapshot["psar_trend"] = "bull" if trend == 1 else "bear"
+            except Exception as e:
+                logger.debug(f"PSAR snapshot skipped: {e}")
+
+            try:
+                st_series = calculate_supertrend(
+                    highs, lows, closes,
+                    atr_period=10, multiplier=3.0,
+                )
+                if st_series:
+                    st_val, st_trend = st_series[-1]
+                    snapshot["supertrend"] = st_val
+                    snapshot["supertrend_dir"] = (
+                        "up" if st_trend == 1 else "down"
+                    )
+            except Exception as e:
+                logger.debug(f"Supertrend snapshot skipped: {e}")
+
+            try:
+                active_sup, active_res = find_support_resistance(
+                    highs, lows, closes,
+                    left_bars=15, right_bars=15,
+                )
+                if active_sup:
+                    snapshot["sr_support"] = active_sup[0]
+                if active_res:
+                    snapshot["sr_resistance"] = active_res[0]
+            except Exception as e:
+                logger.debug(f"S&R snapshot skipped: {e}")
+
+            try:
+                qfl = calculate_qfl_series(
+                    highs, lows, closes,
+                    base_periods=36, pump_periods=8,
+                )
+                base_last = qfl["base"][-1] if qfl.get("base") else None
+                if base_last is not None:
+                    snapshot["qfl_base"] = base_last
+            except Exception as e:
+                logger.debug(f"QFL snapshot skipped: {e}")
+
         return snapshot
 
     # ------------------------------------------------------------------
