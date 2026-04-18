@@ -1,0 +1,240 @@
+"""Regression tests for web/routes/chart.py.
+
+Focus: the /api/price fallback path must only surface state from the
+REQUESTING user's bots. Before the audit-v24 cleanup commit the
+fallback iterated every bot in the registry regardless of owner —
+Phase-1 harmless (one user) but a cross-user leak once Phase-3
+sessions land.
+
+Strategy: monkeypatch ``webapp.registry.all`` to return a test-
+controlled list of fake BotInfo objects per user_id, and
+monkeypatch the Bitget ticker. This isolates the test from the
+real filesystem + live parity bots (rsi_paper_test /
+rsi_real_test) which are NOT touched.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+os.environ["REVERTO_API_KEY"] = "testkey-for-pytest"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pytest
+from fastapi.testclient import TestClient
+
+from core.user import User
+from web import app as webapp
+
+
+# ── Fakes ──────────────────────────────────────────────────────────────────
+
+
+class _FakeBot:
+    """Minimal stand-in for BotInfo. Only ``read_state`` is consulted
+    by the /api/price fallback path."""
+
+    def __init__(self, slug: str, user_id: int, current_price: float | None):
+        self.slug = slug
+        self.user_id = user_id
+        self._price = current_price
+
+    def read_state(self) -> dict:
+        if self._price is None:
+            return {}
+        return {"current_price": self._price}
+
+
+def _install_registry(monkeypatch, bots_by_user: dict[int, list[_FakeBot]]) -> None:
+    """Replace webapp.registry.all with an async lambda that returns
+    the fake bots for a given user_id."""
+    async def _fake_all(user_id=None):
+        if user_id is None:
+            # Phase-2 registry returns flat list when user_id is None,
+            # but /api/price always passes user_id so this branch is
+            # dead; assert to catch regressions that drop the filter.
+            raise AssertionError(
+                "registry.all() called without user_id — "
+                "cross-user leak regression",
+            )
+        return list(bots_by_user.get(int(user_id), []))
+    monkeypatch.setattr(webapp.registry, "all", _fake_all)
+
+
+@pytest.fixture
+def client():
+    return TestClient(webapp.app)
+
+
+@pytest.fixture
+def session(client):
+    """Logged-in session cookie — /api/price is behind the auth
+    middleware so without this the TestClient gets 401 before we
+    even reach the ticker fallback."""
+    token = webapp._create_session_cookie("admin")
+    client.cookies.set("reverto_session", token)
+    return client
+
+
+@pytest.fixture
+def ticker_fails(monkeypatch):
+    """Force the Bitget ticker path to raise so /api/price lands in
+    the fallback branch — which is the branch under test."""
+    def _boom(*a, **kw):
+        raise RuntimeError("bitget ticker unavailable in test")
+    monkeypatch.setattr(
+        webapp._bitget_client, "fetch_ticker", _boom,
+    )
+
+
+# ── The isolation invariant ────────────────────────────────────────────────
+
+
+class TestPriceFallbackUserScoping:
+
+    def test_user_1_cannot_see_user_2_state(
+        self, session, ticker_fails, monkeypatch,
+    ):
+        """User 2 has a bot with a distinctive price; user 1 has no
+        bots. Bitget ticker fails. User 1's fallback must NOT reach
+        user 2's state — 99999.99 must not appear anywhere in the
+        response body."""
+        _install_registry(monkeypatch, {
+            1: [],  # user 1 has no bots
+            2: [_FakeBot("other_bot", user_id=2, current_price=99999.99)],
+        })
+
+        r = session.get("/api/price")
+        # 503 because user 1 has no bots + ticker is down.
+        assert r.status_code == 503, (
+            f"expected 503, got {r.status_code}: {r.text}"
+        )
+        assert "99999.99" not in r.text
+        assert "99999" not in r.text
+
+    def test_user_1_sees_own_state(
+        self, session, ticker_fails, monkeypatch,
+    ):
+        """Positive path: user 1 has a bot with current_price=50000.
+        Bitget fails. The fallback finds user 1's bot and returns
+        its price with source=bot."""
+        _install_registry(monkeypatch, {
+            1: [_FakeBot("my_bot", user_id=1, current_price=50_000.0)],
+        })
+
+        r = session.get("/api/price")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["price"] == 50_000.0
+        assert body["source"] == "bot"
+        assert body["pair"] == "BTC/USD"
+
+    def test_user_1_fallback_picks_own_even_when_user_2_exists(
+        self, session, ticker_fails, monkeypatch,
+    ):
+        """Both users have bot-state with a price. User 1 must see
+        HIS OWN price back, not user 2's. Guards against a future
+        refactor that accidentally widens registry.all's scope."""
+        _install_registry(monkeypatch, {
+            1: [_FakeBot("my_bot", user_id=1, current_price=50_000.0)],
+            2: [_FakeBot("their_bot", user_id=2, current_price=99_999.99)],
+        })
+
+        r = session.get("/api/price")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["price"] == 50_000.0
+        assert body["price"] != 99_999.99
+
+
+class TestPriceFallbackWhenUser2Requests:
+    """Mirror of the above from the other side: a user 2 session
+    must see THEIR OWN fallback, not user 1's. Phase-1 only has
+    user 1 in the DB so we simulate user 2 via dependency override."""
+
+    def test_user_2_fallback_scoped_to_user_2(
+        self, client, ticker_fails, monkeypatch,
+    ):
+        _install_registry(monkeypatch, {
+            1: [_FakeBot("u1_bot", user_id=1, current_price=50_000.0)],
+            2: [_FakeBot("u2_bot", user_id=2, current_price=99_999.99)],
+        })
+
+        client.cookies.set(
+            "reverto_session", webapp._create_session_cookie("admin"),
+        )
+        # Pretend the resolved session is user 2 without needing the
+        # DB to carry that row — the /api/price handler only reads
+        # user.id off the injected User.
+        webapp.app.dependency_overrides[webapp._request_user] = (
+            lambda: User(id=2, username="bob")
+        )
+        try:
+            r = client.get("/api/price")
+        finally:
+            webapp.app.dependency_overrides.clear()
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["price"] == 99_999.99
+        assert body["price"] != 50_000.0
+
+
+# ── 503 fallback contract ──────────────────────────────────────────────────
+
+
+class TestPriceFallback503:
+
+    def test_503_when_no_ticker_and_no_bots(
+        self, session, ticker_fails, monkeypatch,
+    ):
+        """Caller has no bots AND ticker is down — 503 not 200 with
+        a bogus price=0.0 (the pre-cleanup behaviour)."""
+        _install_registry(monkeypatch, {1: []})
+        r = session.get("/api/price")
+        assert r.status_code == 503
+        assert "price unavailable" in r.text.lower()
+
+    def test_503_when_bots_have_no_current_price(
+        self, session, ticker_fails, monkeypatch,
+    ):
+        """Bots exist but their state.json has no current_price
+        (fresh-booted bot, first tick not yet landed). Still 503 —
+        we refuse to fabricate a number out of thin air."""
+        _install_registry(monkeypatch, {
+            1: [_FakeBot("fresh", user_id=1, current_price=None)],
+        })
+        r = session.get("/api/price")
+        assert r.status_code == 503
+
+
+# ── Ticker happy path still works ──────────────────────────────────────────
+
+
+class TestPriceTickerPath:
+
+    def test_ticker_succeeds_returns_bitget_source(
+        self, session, monkeypatch,
+    ):
+        """When Bitget responds we never touch the registry at all —
+        the scoping change must not regress the happy path."""
+        monkeypatch.setattr(
+            webapp._bitget_client, "fetch_ticker",
+            lambda *a, **kw: {"last": 71_234.5, "close": 71_234.5},
+        )
+        # Also install a tripwire registry so a regression that makes
+        # the happy path walk registry.all() would explode loudly.
+        async def _should_not_be_called(user_id=None):
+            raise AssertionError(
+                "registry.all must not be touched when ticker works",
+            )
+        monkeypatch.setattr(
+            webapp.registry, "all", _should_not_be_called,
+        )
+
+        r = session.get("/api/price")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["price"] == 71_234.5
+        assert body["source"] == "bitget"

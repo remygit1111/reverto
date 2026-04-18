@@ -20,9 +20,10 @@ import asyncio
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 import web.app as webapp
+from core.user import User
 from web.app import (
     _bitget_client,
     _CANDLES_CACHE_LARGE_THRESHOLD,
@@ -41,6 +42,7 @@ from web.app import (
     _normalize_chart_pair,
     _parse_iso_utc,
     _price_lock,
+    _request_user,
     limiter,
     registry,
 )
@@ -52,20 +54,37 @@ router = APIRouter(tags=["chart"])
 
 @router.get("/api/price")
 @limiter.limit("30/minute")
-async def api_price(request: Request):
+async def api_price(
+    request: Request, user: User = Depends(_request_user),
+):
     """Always-on BTC price endpoint. See web/app.py docstring (moved)
-    for the rate-limit rationale."""
+    for the rate-limit rationale.
+
+    Fallback scope: when the Bitget ticker fetch fails we try to
+    surface a price from the caller's OWN bots' state.json files.
+    Filtering on ``user.id`` prevents cross-user leakage — Phase-1
+    has a single user so the old unfiltered ``registry.all()`` was
+    harmless, but with Phase-3 sessions it would have leaked another
+    user's current_price.
+    """
     try:
         async with _price_lock:
             ticker = await asyncio.to_thread(_bitget_client.fetch_ticker, "BTCUSD")
         price = ticker.get("last") or ticker.get("close") or 0.0
         return {"price": price, "pair": "BTC/USD", "source": "bitget"}
     except Exception:
-        for bot in await registry.all():
+        for bot in await registry.all(user_id=user.id):
             state = bot.read_state()
             if state.get("current_price"):
                 return {"price": state["current_price"], "pair": "BTC/USD", "source": "bot"}
-        return {"price": 0.0, "pair": "BTC/USD", "source": "unavailable"}
+        # No fallback available within this user's scope. Previously
+        # we returned {"price": 0.0, "source": "unavailable"} — the
+        # frontend treated that as a real quote and painted an
+        # empty chart. 503 is the right signal: upstream is down +
+        # no cached backup.
+        raise HTTPException(
+            status_code=503, detail="price unavailable",
+        )
 
 
 @router.get("/api/chart/{pair}/{timeframe}")
