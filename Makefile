@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:

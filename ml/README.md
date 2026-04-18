@@ -28,14 +28,22 @@ The ML extras are optional — add them to your venv only when you
 want to run training or the analysis notebook:
 
 ```bash
-.venv/bin/pip install \
-    optuna xgboost lightgbm scikit-learn joblib \
-    jupyter matplotlib seaborn plotly
+.venv/bin/pip install -r requirements-ml.txt
 ```
 
-`scikit-learn`, `joblib`, `numpy`, `pandas` are already part of the
-base requirements (used by the regime classifier and feature
-pipeline even without the full extras).
+Or individually:
+
+```bash
+.venv/bin/pip install \
+    optuna xgboost lightgbm scikit-learn joblib \
+    jupyter matplotlib seaborn plotly \
+    numba llvmlite scipy
+```
+
+`numpy` and `pandas` are already part of the base requirements, so
+feature / regime code stays importable even without the extras above
+(the ML entry-points each fail-open when their optional dep is
+missing — see the "Fail-open safety net" table below).
 
 ## Usage
 
