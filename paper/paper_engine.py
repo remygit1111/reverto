@@ -92,6 +92,33 @@ _TF_SECONDS = {
 }
 
 
+def _collect_active_indicator_types(config: BotConfig) -> set[str]:
+    """Return the set of uppercased indicator types referenced by the
+    bot config — entry groups, TP groups, and the legacy flat
+    entry.indicators list. Used to filter the per-tick indicator log
+    line so a RSI-only bot doesn't see EMA/MACD noise."""
+    active: set[str] = set()
+
+    def _add(indicators):
+        for ind in indicators or []:
+            itype = getattr(ind, "type", None)
+            if isinstance(itype, str) and itype.strip():
+                active.add(itype.strip().upper())
+
+    entry = getattr(config, "entry", None)
+    if entry is not None:
+        _add(getattr(entry, "indicators", None))
+        for group in getattr(entry, "indicator_groups", None) or []:
+            _add(getattr(group, "indicators", None))
+
+    tp = getattr(config, "take_profit", None)
+    if tp is not None:
+        for group in getattr(tp, "indicator_groups", None) or []:
+            _add(getattr(group, "indicators", None))
+
+    return active
+
+
 class PaperEngine:
     """
     Paper trading engine for Reverto.
@@ -131,6 +158,12 @@ class PaperEngine:
         self.state            = PaperState(initial_balance_btc)
         self.guard            = ScheduleGuard(config.schedule)
         self.indicator_engine = IndicatorEngine(config)
+        # Set of uppercased indicator types that the bot is actually
+        # configured to use — drives which values land in the per-tick
+        # "Indicators —" log line. Computed once at construction (config
+        # is immutable for the bot's lifetime) so the hot path just does
+        # a set lookup.
+        self._active_indicator_types: set[str] = _collect_active_indicator_types(config)
         self.liq_guard        = LiquidationGuard(config, notifier)
         # Drawdown guard defaults to a disabled config, so bots without
         # the drawdown_guard YAML key behave identically to pre-Phase-1.
@@ -986,6 +1019,41 @@ class PaperEngine:
             else:
                 logger.warning("Unknown deal sentinel action: %s", action)
 
+    def _format_indicator_log(self) -> str | None:
+        """Build the per-tick "Indicators —" log line, restricted to the
+        indicator types this bot actually uses.
+
+        Returns None when nothing useful would be printed — either the
+        snapshot hasn't been populated yet (first ticks, insufficient
+        candle history) or the bot is configured exclusively with
+        indicators whose values don't land in the snapshot today (e.g.
+        PARABOLIC_SAR, BOLLINGER). A silent tick is preferable to a
+        misleading "?" placeholder.
+        """
+        snap = self._last_snapshot
+        if not snap:
+            return None
+        active = self._active_indicator_types
+        parts: list[str] = []
+
+        if "RSI" in active and "rsi_14" in snap:
+            parts.append(f"RSI: {snap['rsi_14']:.2f}")
+        # EMA_CROSS isn't a first-class indicator type in the engine
+        # taxonomy, but configs that do compute EMA9/EMA21 benefit from
+        # seeing both values together. Support the alias so operators
+        # who hand-roll an entry on that pair see them.
+        if "EMA_CROSS" in active:
+            if "ema_9" in snap:
+                parts.append(f"EMA9: {snap['ema_9']:.2f}")
+            if "ema_21" in snap:
+                parts.append(f"EMA21: {snap['ema_21']:.2f}")
+        if "MACD" in active and "macd_histogram" in snap:
+            parts.append(f"MACD hist: {snap['macd_histogram']:.4f}")
+
+        if not parts:
+            return None
+        return "Indicators — " + " | ".join(parts)
+
     def _check_entry(self, price: float):
         """Check if conditions are met to start a new deal."""
         # Use snapshot to avoid holding the lock during the check
@@ -997,12 +1065,9 @@ class PaperEngine:
             logger.warning("No candle data for bot timeframe %s — skipping entry", bot_tf)
             return
 
-        logger.info(
-            f"Indicators — RSI: {self._last_snapshot.get('rsi_14','?')} | "
-            f"EMA9: {self._last_snapshot.get('ema_9','?')} | "
-            f"EMA21: {self._last_snapshot.get('ema_21','?')} | "
-            f"MACD hist: {self._last_snapshot.get('macd_histogram','?')}"
-        )
+        indicator_log = self._format_indicator_log()
+        if indicator_log:
+            logger.info(indicator_log)
 
         triggered, trigger_info = self.indicator_engine.check_entry_signal(
             self._closes_per_tf, bot_tf,
