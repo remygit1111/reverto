@@ -203,6 +203,50 @@ class TestLiveEnginePreflights:
                 max_base_order_size=0.001,
             )
 
+    def test_preflight_accepts_legit_cumulative_ladder(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """Conservative ladder with NO explicit max_cumulative_size —
+        relies on the DEFAULT_CUMULATIVE_MULTIPLIER=150 fallback. With
+        base=0.0001, mult=1.5, max_orders=10 the cumulative is
+        sum(1.5**i for i in range(10)) ≈ 113× base ≈ 0.01133 BTC,
+        under the 150× default = 0.015 BTC. Pre-v24 (20× default) this
+        was refused; now it boots cleanly."""
+        minimal_bot_config.dca.base_order_size = 0.0001
+        minimal_bot_config.dca.multiplier = 1.5
+        minimal_bot_config.dca.max_orders = 10
+        # Explicitly leave max_cumulative_size unset so we exercise the
+        # default-fallback branch.
+        minimal_bot_config.dca.max_cumulative_size = None
+        eng = _make_engine(
+            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+            max_base_order_size=0.001,
+        )
+        try:
+            assert eng is not None
+        finally:
+            eng._notify_queue.put(None)
+            eng._notify_thread.join(timeout=5)
+
+    def test_preflight_rejects_above_150x_cumulative(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """Cumulative-only rejection: mult=1.3 × 15 orders puts the
+        worst-case single order at 1.3**14 ≈ 39.4× base (below 50×, so
+        the first preflight check passes) while the cumulative sum
+        ≈ 167× base overshoots the 150× default. Proves the cumulative
+        cap is still load-bearing after the bump, independent of the
+        per-order cap."""
+        minimal_bot_config.dca.base_order_size = 0.0001
+        minimal_bot_config.dca.multiplier = 1.3
+        minimal_bot_config.dca.max_orders = 15
+        minimal_bot_config.dca.max_cumulative_size = None
+        with pytest.raises(ValueError, match="Cumulative DCA"):
+            _make_engine(
+                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+                max_base_order_size=0.001,
+            )
+
 
 # ── Dry-run order execution ─────────────────────────────────────────────────
 
