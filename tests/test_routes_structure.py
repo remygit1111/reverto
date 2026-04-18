@@ -23,7 +23,10 @@ class TestRouteModulesImportable:
     refactor accidentally drops the router, this catches it before
     the routes silently vanish from the app."""
 
-    @pytest.mark.parametrize("modname", ["admin", "drawdown"])
+    @pytest.mark.parametrize("modname", [
+        "admin", "auth", "backtest", "bots", "chart",
+        "deals", "drawdown", "exchanges",
+    ])
     def test_module_importable_and_has_router(self, modname):
         from fastapi import APIRouter
         module = __import__(f"web.routes.{modname}", fromlist=["router"])
@@ -38,13 +41,32 @@ class TestRoutesRegistered:
     the regression at import-time."""
 
     MIGRATED_PATHS: set[str] = {
-        "/healthz",
-        "/readyz",
-        "/metrics",
-        "/api/emergency-stop",
-        "/api/portal/restart",
-        "/api/portal/status",
+        # admin
+        "/healthz", "/readyz", "/metrics",
+        "/api/emergency-stop", "/api/portal/restart", "/api/portal/status",
+        # auth
+        "/auth/login", "/auth/logout", "/auth/status",
+        "/api/auth/change-password",
+        # backtest
+        "/api/backtest/save", "/api/backtest/runs",
+        "/api/backtest/runs/{run_id}",
+        # bots
+        "/api/bots", "/api/bots/{slug}",
+        "/api/bots/{slug}/start", "/api/bots/{slug}/stop",
+        "/api/bots/{slug}/restart", "/api/bots/{slug}/deal/start",
+        "/api/bots/{slug}/config",
+        # chart
+        "/api/price", "/api/chart/{pair}/{timeframe}",
+        "/api/candles/{pair}/{timeframe}",
+        # deals
+        "/api/db/deals", "/api/db/deals/{deal_id}/orders", "/api/db/stats",
+        "/api/bots/{slug}/deals/{deal_id}",
+        "/api/db/annotations", "/api/db/annotations/all",
+        "/api/db/annotations/{ann_id}",
+        # drawdown
         "/api/bots/{slug}/drawdown/reset",
+        # exchanges
+        "/api/exchanges", "/api/exchanges/{name}/keys",
     }
 
     def test_all_migrated_paths_registered(self):
@@ -52,10 +74,10 @@ class TestRoutesRegistered:
         missing = self.MIGRATED_PATHS - registered
         assert not missing, f"migrated routes missing from app: {missing}"
 
-    def test_non_migrated_paths_still_present(self):
-        """Sanity: a few of the routes that STAYED in web/app.py are
-        still present — confirms the extraction didn't accidentally
-        delete sibling routes."""
+    def test_index_and_websockets_still_present(self):
+        """Sanity: the index page and WS endpoints stayed in web/app.py
+        (WebSocket routes don't migrate cleanly through include_router
+        with the BaseHTTPMiddleware auth pattern)."""
         registered = {r.path for r in app.routes if hasattr(r, "path")}
-        for path in ["/api/bots", "/api/price", "/auth/login"]:
+        for path in ["/", "/ws/logs/{slug}", "/ws/state"]:
             assert path in registered, f"{path} vanished after extraction"
