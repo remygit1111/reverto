@@ -22,8 +22,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
 from config.config_loader import load_bot_config
 from config.models import BotConfig
 from core import credentials
@@ -33,7 +31,7 @@ from notifications.telegram import TelegramNotifier
 import bcrypt
 import ccxt
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -876,78 +874,7 @@ def _compute_summary(bots: list[dict]) -> dict:
     }
 
 
-@app.get("/api/bots")
-@limiter.limit("120/minute")
-async def get_bots(request: Request):
-    bots = [b.read_state() for b in await registry.all()]
-
-    all_open = []
-    for b in bots:
-        for d in b.get("open_deals", []):
-            d["bot_name"] = b.get("bot_name", b.get("slug"))
-            d["bot_slug"] = b.get("slug")
-            d["exchange"]  = b.get("exchange")
-            all_open.append(d)
-
-    summary = _compute_summary(bots)
-    # Backwards-compat: existing /api/bots callers expected exactly
-    # the 4 keys below. closed_deals is extra in the new helper but
-    # additive keys are safe (SPA reads by name).
-    return {
-        "bots": bots,
-        "summary": {
-            "total_pnl_btc": summary["total_pnl_btc"],
-            "active_bots":   summary["active_bots"],
-            "total_bots":    summary["total_bots"],
-            "open_deals":    summary["open_deals"],
-        },
-        "all_open_deals": all_open,
-    }
-
-
-@app.get("/api/bots/{slug}")
-@limiter.limit("120/minute")
-async def get_bot(slug: str, request: Request):
-    bot = await registry.get(slug)
-    if not bot:
-        return {"error": f"Unknown bot: {slug}"}
-    return bot.read_state()
-
-
-@app.post("/api/bots/{slug}/start")
-@limiter.limit("20/minute")
-async def api_start(slug: str, request: Request, actor: str = Depends(_request_actor)):
-    _audit("bot_start", slug, actor)
-    return await start_bot(slug)
-
-@app.post("/api/bots/{slug}/stop")
-@limiter.limit("20/minute")
-async def api_stop(slug: str, request: Request, actor: str = Depends(_request_actor)):
-    _audit("bot_stop", slug, actor)
-    return await stop_bot(slug)
-
-@app.post("/api/bots/{slug}/restart")
-@limiter.limit("20/minute")
-async def api_restart(slug: str, request: Request, actor: str = Depends(_request_actor)):
-    _audit("bot_restart", slug, actor)
-    return await restart_bot(slug)
-
-@app.post("/api/bots/{slug}/deal/start")
-@limiter.limit("5/minute")
-async def api_deal_start(slug: str, request: Request, actor: str = Depends(_request_actor)):
-    """Manual deal trigger — writes a sentinel file that the running
-    paper engine consumes on its next tick to force-open a deal."""
-    bot = await registry.get(slug)
-    if not bot:
-        raise HTTPException(status_code=404, detail=f"Unknown bot: {slug}")
-    trigger = LOG_DIR / f"{slug}.manual_trigger"
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        trigger.write_text("", encoding="utf-8")
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write trigger: {e}")
-    _audit("bot_manual_deal", slug, actor)
-    return {"ok": True}
+# Bot read + lifecycle routes: moved to web/routes/bots.py.
 
 
 # ── Ops endpoints — health checks + Prometheus ──────────────────────────────
@@ -1207,102 +1134,7 @@ def _validate_bot_payload(payload: dict) -> BotConfig:
         raise ValueError(str(e)) from e
 
 
-@app.post("/api/bots")
-@limiter.limit("20/minute")
-async def create_bot(
-    body: dict,
-    request: Request,
-    actor: str = Depends(_request_actor),
-):
-    """Maak een nieuwe bot YAML aan. Slug komt uit de bot naam."""
-    try:
-        cfg = _validate_bot_payload(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid config: {e}")
-
-    try:
-        slug = slugify(cfg.name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    path = _bot_yaml_path(slug)
-    if path.exists():
-        raise HTTPException(status_code=409, detail=f"Bot {slug} already exists")
-
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    inner = body.get("bot", body)
-    path.write_text(
-        yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
-    await registry.invalidate()
-    _audit("bot_create", slug, actor)
-    return {"ok": True, "slug": slug}
-
-
-@app.get("/api/bots/{slug}/config")
-@limiter.limit("60/minute")
-async def get_bot_config(
-    slug: str,
-    request: Request,
-    actor: str = Depends(_request_actor),
-):
-    path = _bot_yaml_path(slug)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Bot not found")
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as e:
-        raise HTTPException(status_code=500, detail=f"YAML parse error: {e}")
-    return raw
-
-
-@app.put("/api/bots/{slug}/config")
-@limiter.limit("10/minute")
-async def update_bot_config(
-    slug: str,
-    body: dict,
-    request: Request,
-    actor: str = Depends(_request_actor),
-):
-    path = _bot_yaml_path(slug)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Bot not found")
-    try:
-        _validate_bot_payload(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid config: {e}")
-
-    inner = body.get("bot", body)
-    path.write_text(
-        yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
-    _audit("bot_update", slug, actor)
-    return {"ok": True, "slug": slug}
-
-
-@app.delete("/api/bots/{slug}")
-@limiter.limit("10/minute")
-async def delete_bot(
-    slug: str,
-    request: Request,
-    actor: str = Depends(_request_actor),
-):
-    bot = await registry.get(slug)
-    if bot is None:
-        raise HTTPException(status_code=404, detail="Bot not found")
-    if bot.running:
-        raise HTTPException(
-            status_code=409, detail="Bot is running — stop it before deleting"
-        )
-    path = _bot_yaml_path(slug)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="YAML not found")
-    path.unlink()
-    await registry.invalidate()
-    _audit("bot_delete", slug, actor)
-    return {"ok": True, "slug": slug}
+# Bot CRUD routes: moved to web/routes/bots.py.
 
 
 # ── WebSocket log streaming ───────────────────────────────────────────────────
@@ -1592,6 +1424,7 @@ async def tail_logs():
 from web.routes import admin as _admin_routes  # noqa: E402
 from web.routes import auth as _auth_routes  # noqa: E402
 from web.routes import backtest as _backtest_routes  # noqa: E402
+from web.routes import bots as _bots_routes  # noqa: E402
 from web.routes import chart as _chart_routes  # noqa: E402
 from web.routes import deals as _deals_routes  # noqa: E402
 from web.routes import drawdown as _drawdown_routes  # noqa: E402
@@ -1600,6 +1433,7 @@ from web.routes import exchanges as _exchanges_routes  # noqa: E402
 app.include_router(_admin_routes.router)
 app.include_router(_auth_routes.router)
 app.include_router(_backtest_routes.router)
+app.include_router(_bots_routes.router)
 app.include_router(_chart_routes.router)
 app.include_router(_deals_routes.router)
 app.include_router(_drawdown_routes.router)
