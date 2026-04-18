@@ -88,3 +88,5 @@ make live BOT=<slug>       # Phase-3 real orders (refused until Phase 3 lands)
 - [Architecture](docs/architecture.md) — process model + tick flow.
 - [Runbook](docs/runbook.md) — startup checklist, emergency procedures,
   credential rotation, common error fixes.
+- [Deployment](docs/deployment.md) — bare-metal + Docker + Kubernetes.
+- [Alert rules](docs/alerts.yml) — Prometheus alert template.
