@@ -2423,6 +2423,49 @@ html.compact .modal-card { padding: 19px; }
   opacity: 0.9;
 }
 
+/* ── Bot detail — drawdown guard panel ───────────────────────────────────── */
+.bot-detail-drawdown {
+  margin: 1.25rem 0;
+  padding: 14px 16px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.bot-detail-drawdown.hidden {
+  display: none;
+}
+.bot-detail-drawdown h3 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: var(--text);
+}
+.bot-detail-drawdown .drawdown-info {
+  margin: 8px 0 12px 0;
+}
+.bot-detail-drawdown .drawdown-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.bot-detail-drawdown .drawdown-row:last-child {
+  border-bottom: none;
+}
+.bot-detail-drawdown .drawdown-row .label {
+  color: var(--muted);
+  font-weight: 500;
+}
+.bot-detail-drawdown .drawdown-row .value {
+  font-family: var(--mono);
+  color: var(--text);
+}
+.bot-detail-drawdown .drawdown-row .status-value.status-danger {
+  color: var(--trigger-red);
+  font-weight: 600;
+}
+
 /* ── Print styles ──────────────────────────────────────────────────────────
    Operators occasionally need a hard-copy snapshot (compliance, post-mortem
    packs, printed trade journals). Default to: white background, black text,

@@ -1296,6 +1296,53 @@ document.addEventListener('click', e => {
   else if (['start', 'stop', 'restart'].includes(action)) botAction(slug, action, el);
 });
 
+// Bot-detail view: the reset button doesn't carry a data-slug (we're
+// already scoped to currentSlug). Handle it via a second delegated
+// listener that reads currentSlug at click-time.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action="reset-drawdown-detail"]');
+  if (!btn) return;
+  const slug = (typeof currentSlug !== 'undefined' && currentSlug) || null;
+  if (slug) {
+    handleResetDrawdown(slug);
+    e.stopPropagation();
+  }
+});
+
+// Keep the bot-detail drawdown panel in sync with the latest state
+// fetched from /api/bots/{slug}. Called from fetchDetail() below.
+function updateBotDetailDrawdown(state) {
+  const panel = document.getElementById('bot-detail-drawdown-status');
+  if (!panel) return;
+  const guard = (state && state.drawdown_guard) || null;
+  const triggered = guard && guard.triggered;
+  const paused = state && state.paused_by_drawdown;
+  // Only show the panel if the bot actually writes a drawdown_guard
+  // blob — pre-v20 state files or bots with the guard disabled should
+  // not see this section at all.
+  const hasGuard = guard !== null && guard !== undefined;
+  if (!hasGuard) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  const statusEl = panel.querySelector('.status-value');
+  const peakEl   = panel.querySelector('.peak-value');
+  const reasonEl = panel.querySelector('.reason-value');
+  if (triggered || paused) {
+    statusEl.textContent = 'TRIGGERED — new entries paused';
+    statusEl.classList.add('status-danger');
+  } else {
+    statusEl.textContent = 'Active (monitoring)';
+    statusEl.classList.remove('status-danger');
+  }
+  const peak = guard.peak_value;
+  peakEl.textContent = (peak !== null && peak !== undefined)
+    ? (Number(peak).toFixed(8) + ' BTC')
+    : '—';
+  reasonEl.textContent = guard.trigger_reason || '—';
+}
+
 // ── Delete bot ───────────────────────────────────────────────────────────────
 async function deleteBot(slug, name) {
   if (!confirm(`Delete bot '${name}'? This cannot be undone.`)) return;
@@ -2969,6 +3016,8 @@ async function fetchDetail(slug) {
     if (_r.status === 401) { _handle401(); return; }
     const b = await _r.json();
     _lastDetailState = b;
+
+    updateBotDetailDrawdown(b);
 
     if (b.current_price) $('hdr-price').textContent = fmtPrice(b.current_price);
     $('hdr-pair').textContent = b.pair || 'BTC/USD';
