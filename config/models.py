@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal, Optional
 from enum import Enum
 
+from core.drawdown_guard import DrawdownGuardConfig
+
 _NAME_RE = re.compile(r"^[a-zA-Z0-9 \-_]+$")
 
 
@@ -208,6 +210,11 @@ class BotConfig(BaseModel):
     ml: MLConfig = MLConfig()
     schedule: ScheduleConfig = ScheduleConfig()
     telegram: TelegramConfig = TelegramConfig()
+    # Drawdown guard — defaults to disabled so existing YAMLs stay valid
+    # without modification. Defined in core/drawdown_guard.py to keep the
+    # guard + its config colocated; re-exported here via the BotConfig
+    # schema for YAML loaders.
+    drawdown_guard: DrawdownGuardConfig = Field(default_factory=DrawdownGuardConfig)
 
     @field_validator("name")
     @classmethod

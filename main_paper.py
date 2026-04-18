@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from config.config_loader import load_bot_config
+from config.models import Mode
 from exchanges.public_exchange import PublicExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import PaperEngine
@@ -80,6 +81,19 @@ def main() -> None:
     )
 
     config = load_bot_config(str(config_path))
+
+    # Hard mode check — a bot configured as live MUST NOT run under the
+    # paper runner. The paper engine simulates fills internally and never
+    # places real orders, so letting a live bot boot here would silently
+    # turn a live config into an unattended paper run.
+    if config.mode == Mode.LIVE:
+        logger.error(
+            "Bot %s is configured as LIVE mode. "
+            "Cannot start in paper runner. Use main_live.py instead.",
+            slug,
+        )
+        sys.exit(1)
+
     exchange = PublicExchange(config.exchange.value)
     notifier = TelegramNotifier(notify_on=config.telegram.notify_on)
 

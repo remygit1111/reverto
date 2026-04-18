@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -96,3 +96,19 @@ beep:
 
 notebook:
 	.venv/bin/jupyter notebook --no-browser --port=8888
+
+# ── Live trading (Phase 1: dry-run only) ─────────────────────────────────────
+# live      — launch a LIVE bot with interactive confirmation
+# live-dry  — DRY_RUN=1 + --dry-run, no confirmation prompt, no real orders
+#
+# Both targets require BOT=<slug> so nothing can boot by accident.
+
+live:
+	@echo "⚠  Live trading requires explicit bot slug"
+	@echo "Usage: make live BOT=slug_here"
+	@test -n "$(BOT)" || (echo "BOT= required" && exit 1)
+	$(PYTHON) main_live.py --bot $(BOT)
+
+live-dry:
+	@test -n "$(BOT)" || (echo "BOT= required" && exit 1)
+	DRY_RUN=1 $(PYTHON) main_live.py --bot $(BOT) --dry-run
