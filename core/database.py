@@ -14,10 +14,24 @@
 # additionally serialised with a module-level lock (SQLite WAL allows
 # concurrent reads but serialises writers anyway; the lock just keeps the
 # Python side well-behaved under the portal's async + engine's threaded use).
+#
+# Multi-tenant foundation (Fase 1, SCHEMA_VERSION = 3):
+#   A ``users`` table was introduced and every OWNED table (deals, orders,
+#   chart_annotations, backtest_runs) gained a NOT NULL FK on users(id).
+#   Phase 1 only seeds one admin row (id=1); Phase 2 will wire session-
+#   based user resolution. The migration from older schemas is destructive
+#   (drop + recreate) — by design, because the pre-MT schema had no
+#   user_id column and back-filling every historical row with user_id=1
+#   before adding the NOT NULL constraint would have required a second
+#   migration step with its own failure modes. See docs/architecture.md
+#   "Multi-tenant foundation (Fase 1)".
 
+import logging
 import sqlite3
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path(__file__).parent.parent
 _DB_PATH: Path = _BASE_DIR / "logs" / "reverto.db"
@@ -27,10 +41,25 @@ _DB_PATH: Path = _BASE_DIR / "logs" / "reverto.db"
 _connection_cache = threading.local()
 
 
+# ── Schema definitions ─────────────────────────────────────────────────────
+# Ordered: users first (everything else FK-references it).
+
 _SCHEMA_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        username    TEXT NOT NULL UNIQUE,
+        active      INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """,
+    # Seed the single admin user. INSERT OR IGNORE keeps init_db
+    # idempotent — re-running against a populated DB is a no-op.
+    "INSERT OR IGNORE INTO users (id, username) VALUES (1, 'admin')",
     """
     CREATE TABLE IF NOT EXISTS deals (
         id          TEXT PRIMARY KEY,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         bot_slug    TEXT NOT NULL,
         bot_name    TEXT NOT NULL,
         side        TEXT NOT NULL DEFAULT 'long',
@@ -54,6 +83,7 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS orders (
         id          TEXT PRIMARY KEY,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         deal_id     TEXT NOT NULL REFERENCES deals(id),
         -- ON DELETE CASCADE intentionally omitted: save_deal() uses
         -- INSERT OR REPLACE which internally DELETEs then re-INSERTs
@@ -69,14 +99,10 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         created_at  TEXT DEFAULT (datetime('now'))
     )
     """,
-    # indicator_snapshots table removed — it was defined but never written
-    # to by any code path. Indicator data lives in state.json as a dict
-    # snapshot per tick (paper_engine._last_snapshot). If time-series
-    # indicator storage is needed in the future, re-add the table with an
-    # appropriate write path in the engine.
     """
     CREATE TABLE IF NOT EXISTS chart_annotations (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         bot_slug    TEXT NOT NULL,
         type        TEXT NOT NULL,
         timeframe   TEXT NOT NULL,
@@ -89,14 +115,10 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         created_at  TEXT DEFAULT (datetime('now'))
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_deals_bot_slug ON deals(bot_slug)",
-    "CREATE INDEX IF NOT EXISTS idx_deals_status ON deals(status)",
-    "CREATE INDEX IF NOT EXISTS idx_orders_deal_id ON orders(deal_id)",
-    "CREATE INDEX IF NOT EXISTS idx_chart_annotations_bot_slug "
-    "ON chart_annotations(bot_slug)",
     """
     CREATE TABLE IF NOT EXISTS backtest_runs (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         bot_slug    TEXT NOT NULL,
         bot_name    TEXT NOT NULL,
         start_date  TEXT NOT NULL,
@@ -128,10 +150,34 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         created_at  TEXT DEFAULT (datetime('now'))
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_backtest_runs_bot_slug "
-    "ON backtest_runs(bot_slug)",
+    # Indexes — users lookup + every (user_id, bot_slug) hot query path.
+    "CREATE INDEX IF NOT EXISTS idx_deals_user_id ON deals(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_deals_user_bot ON deals(user_id, bot_slug)",
+    "CREATE INDEX IF NOT EXISTS idx_deals_status ON deals(status)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_deal_id ON orders(deal_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chart_annotations_user_id "
+    "ON chart_annotations(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chart_annotations_user_bot "
+    "ON chart_annotations(user_id, bot_slug)",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_runs_user_id "
+    "ON backtest_runs(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_runs_user_bot "
+    "ON backtest_runs(user_id, bot_slug)",
     "CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at "
     "ON backtest_runs(created_at DESC)",
+)
+
+
+# ── Owned tables (dropped during v<3→v3 migration) ─────────────────────────
+# Order matters: drop children before parents so FKs don't complain even
+# though we have foreign_keys=ON.
+_OWNED_TABLES: tuple[str, ...] = (
+    "orders",
+    "chart_annotations",
+    "backtest_runs",
+    "deals",
+    "users",  # dropped last + first to be recreated
 )
 
 
@@ -170,63 +216,64 @@ def get_db() -> sqlite3.Connection:
 
 
 # Schema version sentinel — stored in SQLite's built-in PRAGMA user_version.
-# Bump this whenever a new migration step is added below; _migrate_schema
-# only runs the steps up to the stored value and then writes the new one
-# so every operator's DB converges on the same shape without having to
-# re-scan the whole schema on every portal start.
-SCHEMA_VERSION = 2
+# Bump this whenever a schema change lands. _migrate_schema inspects the
+# stored value and applies the appropriate transition:
+#   * < 3  → destructive drop-and-recreate (multi-tenant foundation).
+#     Pre-MT deals/backtest_runs had no user_id column and the NOT NULL
+#     constraint can't be added without a full table rewrite anyway.
+#   * == 3 → no-op.
+SCHEMA_VERSION = 3
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    """Apply stepwise ALTER TABLE migrations on pre-existing DBs.
+    """Apply any pending migration to the current DB.
 
-    Uses PRAGMA user_version as a monotonic version pointer. Each `if
-    current < N` block is idempotent on its own — if the ALTER fails
-    because the column already exists (old install that predates the
-    version pointer), we swallow the OperationalError and move on,
-    then bump user_version so subsequent restarts skip the check
-    entirely.
-
-    Resilient on partial failures: a crash between ALTER and the
-    final user_version bump means the ALTER is re-attempted on next
-    start, and the try/except makes that safe.
+    v3 (multi-tenant foundation) is a CLEAN SLATE migration: older
+    schemas are dropped and recreated. We emit a WARNING level log so
+    operators see it in portal.log even at default verbosity; the
+    data-loss is intentional (documented in the module docstring and
+    docs/architecture.md, and guarded by scripts/reset_db.py which
+    backs up the old DB first).
     """
     current = conn.execute("PRAGMA user_version").fetchone()[0] or 0
-
-    # Step 1: v17 trigger metadata column (entry_trigger).
-    if current < 1:
-        try:
-            conn.execute(
-                "ALTER TABLE deals ADD COLUMN entry_trigger TEXT DEFAULT NULL"
-            )
-        except sqlite3.OperationalError:
-            # Column may already exist on installs that predate user_version.
-            pass
-
-    # Step 2: v17 trigger metadata column (exit_trigger).
-    if current < 2:
-        try:
-            conn.execute(
-                "ALTER TABLE deals ADD COLUMN exit_trigger TEXT DEFAULT NULL"
-            )
-        except sqlite3.OperationalError:
-            pass
-
-    # Future migrations land here as `if current < N:` blocks, and
-    # SCHEMA_VERSION is bumped in lock-step.
-
-    if current != SCHEMA_VERSION:
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    if current == SCHEMA_VERSION:
+        return
+    if current < SCHEMA_VERSION:
+        logger.warning(
+            "Multi-tenant schema migration: dropping owned tables from "
+            "schema v%d and recreating at v%d. All deal/order/annotation/"
+            "backtest history will be wiped. Run scripts/reset_db.py "
+            "first if you haven't already — it backs up the DB before "
+            "calling init_db().",
+            current, SCHEMA_VERSION,
+        )
+        for table in _OWNED_TABLES:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+    else:
+        # Future-you downgraded the code; we don't know the new tables.
+        # Refuse to touch the DB rather than lose data silently.
+        raise RuntimeError(
+            f"DB schema is at version {current}, code expects {SCHEMA_VERSION}. "
+            f"Roll forward the code or restore a matching DB snapshot.",
+        )
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def init_db() -> None:
-    """Create all tables + indexes in a single transaction. Idempotent.
-    Also runs _migrate_schema for pre-existing DBs missing newer columns."""
+    """Bring the DB up to the current schema version + seed admin user.
+
+    Migration-first: if the stored version is below SCHEMA_VERSION we
+    drop the owned tables BEFORE running _SCHEMA_STATEMENTS, so the
+    CREATE TABLE statements land on a clean slate. Idempotent at v3:
+    re-running against an already-migrated DB is a no-op (the
+    ``CREATE TABLE IF NOT EXISTS`` and ``INSERT OR IGNORE`` keep it
+    safe).
+    """
     conn = get_db()
     with conn:
+        _migrate_schema(conn)
         for stmt in _SCHEMA_STATEMENTS:
             conn.execute(stmt)
-        _migrate_schema(conn)
 
 
 def close_db() -> None:

@@ -24,10 +24,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core import deal_store
+from core.user import User
 from web.app import (
     _audit,
     _DEAL_ID_RE,
     _request_actor,
+    _request_user,
     limiter,
     LOG_DIR,
     registry,
@@ -55,13 +57,18 @@ async def api_db_deals(
     bot_slug: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 100,
+    user: User = Depends(_request_user),
 ):
     limit = max(1, min(1000, int(limit)))
+    uid = user.id
 
     def _query():
-        deals = deal_store.get_deals(bot_slug=bot_slug, status=status, limit=limit)
+        deals = deal_store.get_deals(
+            user_id=uid, bot_slug=bot_slug, status=status, limit=limit,
+        )
         return [
-            {"deal": d, "orders": deal_store.get_deal_orders(d["id"])}
+            {"deal": d,
+             "orders": deal_store.get_deal_orders(d["id"], user_id=uid)}
             for d in deals
         ]
 
@@ -70,14 +77,23 @@ async def api_db_deals(
 
 @router.get("/api/db/deals/{deal_id}/orders")
 @limiter.limit("60/minute")
-async def api_db_deal_orders(deal_id: str, request: Request):
-    return await asyncio.to_thread(deal_store.get_deal_orders, deal_id)
+async def api_db_deal_orders(
+    deal_id: str, request: Request,
+    user: User = Depends(_request_user),
+):
+    return await asyncio.to_thread(
+        deal_store.get_deal_orders, deal_id, user.id,
+    )
 
 
 @router.get("/api/db/stats")
 @limiter.limit("60/minute")
-async def api_db_stats(request: Request, bot_slug: Optional[str] = None):
-    return await asyncio.to_thread(deal_store.compute_stats, bot_slug)
+async def api_db_stats(
+    request: Request,
+    bot_slug: Optional[str] = None,
+    user: User = Depends(_request_user),
+):
+    return await asyncio.to_thread(deal_store.compute_stats, user.id, bot_slug)
 
 
 # ── Deal management sentinels ───────────────────────────────────────────────
@@ -96,6 +112,7 @@ class DealEditBody(BaseModel):
 async def api_deal_get(
     slug: str, deal_id: str, request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     _validate_deal_id(deal_id)
     bot = await registry.get(slug)
@@ -104,11 +121,15 @@ async def api_deal_get(
         for d in state.get("open_deals", []):
             if d.get("id") == deal_id:
                 return {"deal": d, "orders": d.get("orders", [])}
-    rows = await asyncio.to_thread(deal_store.get_deals, bot_slug=slug)
+    rows = await asyncio.to_thread(
+        deal_store.get_deals, user_id=user.id, bot_slug=slug,
+    )
     deal = next((d for d in rows if d["id"] == deal_id), None)
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
-    orders = await asyncio.to_thread(deal_store.get_deal_orders, deal_id)
+    orders = await asyncio.to_thread(
+        deal_store.get_deal_orders, deal_id, user.id,
+    )
     return {"deal": deal, "orders": orders}
 
 
@@ -186,19 +207,25 @@ async def api_db_annotations_create(
     body: AnnotationBody,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
-    new_id = await asyncio.to_thread(
-        deal_store.save_annotation,
-        body.bot_slug,
-        body.type,
-        body.timeframe,
-        body.x1,
-        body.y1,
-        body.x2,
-        body.y2,
-        body.label,
-        body.color,
-    )
+    uid = user.id
+
+    def _insert():
+        return deal_store.save_annotation(
+            body.bot_slug,
+            body.type,
+            body.timeframe,
+            body.x1,
+            user_id=uid,
+            y1=body.y1,
+            x2=body.x2,
+            y2=body.y2,
+            label=body.label,
+            color=body.color,
+        )
+
+    new_id = await asyncio.to_thread(_insert)
     return {"id": new_id}
 
 
@@ -208,8 +235,11 @@ async def api_db_annotations_list(
     request: Request,
     bot_slug: str,
     timeframe: Optional[str] = None,
+    user: User = Depends(_request_user),
 ):
-    return await asyncio.to_thread(deal_store.list_annotations, bot_slug, timeframe)
+    return await asyncio.to_thread(
+        deal_store.list_annotations, bot_slug, user.id, timeframe,
+    )
 
 
 @router.delete("/api/db/annotations/all")
@@ -219,11 +249,12 @@ async def api_db_annotations_delete_all(
     bot_slug: str,
     timeframe: Optional[str] = None,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     """Registered BEFORE the {ann_id} catch-all so FastAPI routes the
     literal `/all` path here instead of parsing "all" as an int."""
     removed = await asyncio.to_thread(
-        deal_store.delete_annotations_for, bot_slug, timeframe,
+        deal_store.delete_annotations_for, bot_slug, user.id, timeframe,
     )
     _audit("annotations_clear", bot_slug, actor)
     return {"ok": True, "removed": removed}
@@ -235,7 +266,8 @@ async def api_db_annotations_delete(
     ann_id: int,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
-    if not await asyncio.to_thread(deal_store.delete_annotation, ann_id):
+    if not await asyncio.to_thread(deal_store.delete_annotation, ann_id, user.id):
         raise HTTPException(status_code=404, detail="Annotation not found")
     return {"ok": True}

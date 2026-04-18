@@ -4,6 +4,10 @@
 #
 # Each test gets a fresh DB in tmp_path via the autouse db_path fixture —
 # the real logs/reverto.db is never touched.
+#
+# Post-MT (schema v3): every deal_store call takes user_id as a keyword
+# argument. These tests pin user_id=1 (admin seed) throughout; tests
+# specifically for cross-user isolation live in test_user_model.py.
 
 import os
 import sys
@@ -15,6 +19,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import database, deal_store
 from paper.paper_state import PaperDeal, PaperOrder
+
+
+_UID = 1  # seeded admin row
 
 
 @pytest.fixture(autouse=True)
@@ -50,14 +57,14 @@ def test_init_db_creates_tables():
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
     }
-    for t in ("deals", "orders", "chart_annotations", "backtest_runs"):
+    for t in ("users", "deals", "orders", "chart_annotations", "backtest_runs"):
         assert t in names
 
 
 def test_save_and_get_deal_roundtrip():
     d = _deal("PAPER-0001", 80000.0)
-    deal_store.save_deal(d, bot_slug="tb", bot_name="tb")
-    rows = deal_store.get_deals(bot_slug="tb")
+    deal_store.save_deal(d, bot_slug="tb", bot_name="tb", user_id=_UID)
+    rows = deal_store.get_deals(user_id=_UID, bot_slug="tb")
     assert len(rows) == 1
     row = rows[0]
     assert row["id"] == "PAPER-0001"
@@ -65,16 +72,17 @@ def test_save_and_get_deal_roundtrip():
     assert row["initial_price"] == pytest.approx(80000.0)
     assert row["total_size"] == pytest.approx(0.001)
     assert row["bot_name"] == "tb"
+    assert row["user_id"] == _UID
 
 
 def test_close_deal_updates_status():
     d = _deal("PAPER-0002", 80000.0)
-    deal_store.save_deal(d, "tb", "tb")
+    deal_store.save_deal(d, "tb", "tb", user_id=_UID)
     deal_store.close_deal(
         "PAPER-0002", close_price=82400.0, close_reason="tp",
-        pnl_btc=0.00003, pnl_pct=3.0,
+        pnl_btc=0.00003, pnl_pct=3.0, user_id=_UID,
     )
-    rows = deal_store.get_deals(status="closed")
+    rows = deal_store.get_deals(user_id=_UID, status="closed")
     assert len(rows) == 1
     r = rows[0]
     assert r["status"] == "closed"
@@ -86,13 +94,13 @@ def test_close_deal_updates_status():
 
 def test_save_and_get_orders():
     d = _deal("PAPER-0003", 80000.0)
-    deal_store.save_deal(d, "tb", "tb")
+    deal_store.save_deal(d, "tb", "tb", user_id=_UID)
     o1 = _order(1, 80000.0, 0.001, "base")
     o2 = _order(2, 78000.0, 0.002, "dca")
-    deal_store.save_order(o1, "PAPER-0003", "tb", fee_btc=0.0000006)
-    deal_store.save_order(o2, "PAPER-0003", "tb", fee_btc=0.0000012)
+    deal_store.save_order(o1, "PAPER-0003", "tb", user_id=_UID, fee_btc=0.0000006)
+    deal_store.save_order(o2, "PAPER-0003", "tb", user_id=_UID, fee_btc=0.0000012)
 
-    orders = deal_store.get_deal_orders("PAPER-0003")
+    orders = deal_store.get_deal_orders("PAPER-0003", user_id=_UID)
     assert [o["order_number"] for o in orders] == [1, 2]
     assert orders[0]["order_type"] == "base"
     assert orders[1]["order_type"] == "dca"
@@ -100,43 +108,43 @@ def test_save_and_get_orders():
 
 
 def test_get_deals_filters():
-    deal_store.save_deal(_deal("PAPER-0001"), "bot_a", "A")
-    deal_store.save_deal(_deal("PAPER-0002"), "bot_b", "B")
+    deal_store.save_deal(_deal("PAPER-0001"), "bot_a", "A", user_id=_UID)
+    deal_store.save_deal(_deal("PAPER-0002"), "bot_b", "B", user_id=_UID)
     d3 = _deal("PAPER-0003", is_open=False)
     d3.close_reason = "tp"
     d3.closed_at = datetime.now(UTC)
-    deal_store.save_deal(d3, "bot_a", "A")
+    deal_store.save_deal(d3, "bot_a", "A", user_id=_UID)
 
-    assert len(deal_store.get_deals(bot_slug="bot_a")) == 2
-    assert len(deal_store.get_deals(bot_slug="bot_b")) == 1
-    assert len(deal_store.get_deals(status="open")) == 2
-    assert len(deal_store.get_deals(status="closed")) == 1
+    assert len(deal_store.get_deals(user_id=_UID, bot_slug="bot_a")) == 2
+    assert len(deal_store.get_deals(user_id=_UID, bot_slug="bot_b")) == 1
+    assert len(deal_store.get_deals(user_id=_UID, status="open")) == 2
+    assert len(deal_store.get_deals(user_id=_UID, status="closed")) == 1
 
 
 def test_annotation_crud():
     new_id = deal_store.save_annotation(
         bot_slug="tb", type_="line", timeframe="1h",
-        x1=1_700_000_000, y1=80000.0, label="entry",
+        x1=1_700_000_000, user_id=_UID, y1=80000.0, label="entry",
     )
     assert new_id > 0
-    items = deal_store.list_annotations("tb")
+    items = deal_store.list_annotations("tb", user_id=_UID)
     assert len(items) == 1
     assert items[0]["label"] == "entry"
     assert items[0]["timeframe"] == "1h"
 
     # filter by timeframe
-    assert len(deal_store.list_annotations("tb", timeframe="1h")) == 1
-    assert len(deal_store.list_annotations("tb", timeframe="4h")) == 0
+    assert len(deal_store.list_annotations("tb", user_id=_UID, timeframe="1h")) == 1
+    assert len(deal_store.list_annotations("tb", user_id=_UID, timeframe="4h")) == 0
 
-    assert deal_store.delete_annotation(new_id) is True
-    assert deal_store.list_annotations("tb") == []
+    assert deal_store.delete_annotation(new_id, user_id=_UID) is True
+    assert deal_store.list_annotations("tb", user_id=_UID) == []
     # second delete is a no-op
-    assert deal_store.delete_annotation(new_id) is False
+    assert deal_store.delete_annotation(new_id, user_id=_UID) is False
 
 
 def test_compute_stats_basic():
     # No deals → zeros + note
-    empty = deal_store.compute_stats()
+    empty = deal_store.compute_stats(user_id=_UID)
     assert empty["total_deals"] == 0
     assert empty.get("note") == "no deals"
 
@@ -148,13 +156,14 @@ def test_compute_stats_basic():
         d.close_price = 80000.0
         d.pnl_btc = pnl
         d.pnl_pct = pnl * 100
-        deal_store.save_deal(d, "tb", "tb")
+        deal_store.save_deal(d, "tb", "tb", user_id=_UID)
         # Attach an order with a fee so total_fees_btc is non-zero.
         deal_store.save_order(
-            _order(1, 80000.0), f"PAPER-{i:04d}", "tb", fee_btc=0.0000006,
+            _order(1, 80000.0), f"PAPER-{i:04d}", "tb",
+            user_id=_UID, fee_btc=0.0000006,
         )
 
-    stats = deal_store.compute_stats("tb")
+    stats = deal_store.compute_stats(user_id=_UID, bot_slug="tb")
     assert stats["total_deals"] == 3
     assert stats["wins"] == 2
     assert stats["losses"] == 1
@@ -199,14 +208,20 @@ def test_save_and_fetch_backtest_runs():
         "timeframe":  "1h",
         "initial_balance_btc": 0.1,
     }
-    row_id = deal_store.save_backtest_run("btc", "BTC bot", params, _sample_summary())
+    row_id = deal_store.save_backtest_run(
+        "btc", "BTC bot", params, _sample_summary(), user_id=_UID,
+    )
     assert row_id > 0
 
     # Second run so we can assert ordering
-    deal_store.save_backtest_run("btc", "BTC bot", params, _sample_summary())
-    deal_store.save_backtest_run("eth", "ETH bot", params, _sample_summary())
+    deal_store.save_backtest_run(
+        "btc", "BTC bot", params, _sample_summary(), user_id=_UID,
+    )
+    deal_store.save_backtest_run(
+        "eth", "ETH bot", params, _sample_summary(), user_id=_UID,
+    )
 
-    btc_runs = deal_store.get_backtest_runs("btc")
+    btc_runs = deal_store.get_backtest_runs("btc", user_id=_UID)
     assert len(btc_runs) == 2
     # id desc ordering
     assert btc_runs[0]["id"] > btc_runs[1]["id"]
@@ -218,7 +233,7 @@ def test_save_and_fetch_backtest_runs():
     assert btc_runs[0]["profit_factor"] == pytest.approx(1.8)
     assert btc_runs[0]["total_deals"] == 12
 
-    all_runs = deal_store.get_all_backtest_runs()
+    all_runs = deal_store.get_all_backtest_runs(user_id=_UID)
     assert len(all_runs) == 3
     # Mixed-slug query returns rows from both bots
     assert {r["bot_slug"] for r in all_runs} == {"btc", "eth"}
@@ -271,9 +286,9 @@ def test_entry_trigger_persistence():
     }
     d = _deal("PAPER-TR1", 80000.0)
     d.entry_trigger = trigger
-    deal_store.save_deal(d, "tb", "tb")
+    deal_store.save_deal(d, "tb", "tb", user_id=_UID)
 
-    rows = deal_store.get_deals(bot_slug="tb")
+    rows = deal_store.get_deals(user_id=_UID, bot_slug="tb")
     assert len(rows) == 1
     assert rows[0]["entry_trigger"] == trigger
 
@@ -281,13 +296,13 @@ def test_entry_trigger_persistence():
 def test_exit_trigger_persistence():
     """close_deal() with exit_trigger writes structured reason; get_deals() decodes it."""
     d = _deal("PAPER-TR2", 80000.0)
-    deal_store.save_deal(d, "tb", "tb")
+    deal_store.save_deal(d, "tb", "tb", user_id=_UID)
     deal_store.close_deal(
         "PAPER-TR2", close_price=82400.0, close_reason="tp",
-        pnl_btc=0.00003, pnl_pct=3.0,
+        pnl_btc=0.00003, pnl_pct=3.0, user_id=_UID,
         exit_trigger={"type": "indicator_tp", "group_name": "TP Group 1"},
     )
-    rows = deal_store.get_deals(status="closed")
+    rows = deal_store.get_deals(user_id=_UID, status="closed")
     assert rows[0]["exit_trigger"] == {
         "type": "indicator_tp", "group_name": "TP Group 1",
     }
@@ -303,9 +318,9 @@ def test_trigger_roundtrip_replay():
     d2.close_price = 83430.0
     d2.close_reason = "tp"
 
-    deal_store.replay_deals_in_transaction([d1, d2], "tb", "tb")
+    deal_store.replay_deals_in_transaction([d1, d2], "tb", "tb", user_id=_UID)
 
-    rows = {r["id"]: r for r in deal_store.get_deals(bot_slug="tb")}
+    rows = {r["id"]: r for r in deal_store.get_deals(user_id=_UID, bot_slug="tb")}
     assert rows["PAPER-TR3"]["entry_trigger"]["group_name"] == "ASAP"
     assert rows["PAPER-TR4"]["entry_trigger"]["indicators"] == ["RSI"]
     assert rows["PAPER-TR4"]["exit_trigger"] == {"type": "price_tp"}
@@ -316,8 +331,8 @@ def test_trigger_null_when_missing():
     d = _deal("PAPER-TR5", 80000.0)
     assert d.entry_trigger is None
     assert d.exit_trigger is None
-    deal_store.save_deal(d, "tb", "tb")
-    rows = deal_store.get_deals(bot_slug="tb")
+    deal_store.save_deal(d, "tb", "tb", user_id=_UID)
+    rows = deal_store.get_deals(user_id=_UID, bot_slug="tb")
     assert rows[0]["entry_trigger"] is None
     assert rows[0]["exit_trigger"] is None
 
@@ -382,7 +397,7 @@ bot:
     assert cfg2.take_profit.indicator_groups[0].indicators[0].threshold == "above_70"
 
 
-# ── Schema migration (audit v18 MED) ─────────────────────────────────────────
+# ── Schema migration ─────────────────────────────────────────────────────────
 
 def test_migrate_schema_sets_user_version():
     """init_db() bumps PRAGMA user_version to SCHEMA_VERSION on a
@@ -390,7 +405,7 @@ def test_migrate_schema_sets_user_version():
     conn = database.get_db()
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     assert version == database.SCHEMA_VERSION
-    assert database.SCHEMA_VERSION >= 2
+    assert database.SCHEMA_VERSION >= 3
 
 
 def test_migrate_schema_idempotent():
@@ -402,14 +417,12 @@ def test_migrate_schema_idempotent():
     assert conn.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
 
 
-def test_migrate_schema_adds_trigger_columns_on_legacy_db(tmp_path):
-    """Simulate a pre-v17 DB (no entry_trigger/exit_trigger columns,
-    user_version=0) and verify _migrate_schema adds both columns and
-    bumps the version pointer."""
+def test_migrate_from_pre_mt_schema_drops_and_recreates(tmp_path):
+    """Pre-MT DB (user_version < 3, no user_id column) must be wiped
+    clean by init_db so every table lands at v3 with the FK. The
+    migration is destructive by design — ALTER TABLE can't add a
+    NOT NULL FK on an existing table that has rows."""
     legacy_db = tmp_path / "legacy.db"
-
-    # Rebuild a minimal "old" deals table without the trigger columns,
-    # write user_version=0 explicitly to pretend we predate v17.
     import sqlite3
     raw = sqlite3.connect(str(legacy_db))
     raw.execute(
@@ -425,48 +438,126 @@ def test_migrate_schema_adds_trigger_columns_on_legacy_db(tmp_path):
         )
         """
     )
-    raw.execute("PRAGMA user_version = 0")
+    raw.execute(
+        "INSERT INTO deals (id, bot_slug, bot_name, status, opened_at, "
+        "initial_price, total_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("LEGACY-1", "tb", "tb", "open", "2024-01-01T00:00:00Z",
+         80000.0, 0.001),
+    )
+    raw.execute("PRAGMA user_version = 2")
     raw.commit()
     raw.close()
 
-    # Hand the path to the module + re-init.
     database.set_db_path(legacy_db)
     database.init_db()
 
     conn = database.get_db()
+    # Schema rebuilt: deals.user_id now exists, legacy row is gone,
+    # users admin seed is in place.
     cols = {row[1] for row in conn.execute("PRAGMA table_info(deals)").fetchall()}
-    assert "entry_trigger" in cols
-    assert "exit_trigger" in cols
+    assert "user_id" in cols
     assert conn.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
+    assert conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT username FROM users WHERE id = 1"
+    ).fetchone()[0] == "admin"
 
 
-def test_migrate_schema_tolerates_existing_columns(tmp_path):
-    """Legacy DB that already has the trigger columns but user_version=0
-    (e.g. someone ran an older migration manually) must not crash on
-    ALTER — the try/except swallows OperationalError, version bumps."""
-    legacy_db = tmp_path / "partial.db"
+def test_migrate_refuses_future_schema(tmp_path):
+    """If the stored version is NEWER than SCHEMA_VERSION we refuse
+    to run — the code may be rolled back but the DB isn't, and
+    silently touching a schema we don't understand is worse than
+    crashing at startup."""
+    future_db = tmp_path / "future.db"
     import sqlite3
-    raw = sqlite3.connect(str(legacy_db))
-    raw.execute(
-        """
-        CREATE TABLE deals (
-            id TEXT PRIMARY KEY,
-            bot_slug TEXT NOT NULL,
-            bot_name TEXT NOT NULL,
-            status TEXT NOT NULL,
-            opened_at TEXT NOT NULL,
-            initial_price REAL NOT NULL,
-            total_size REAL NOT NULL,
-            entry_trigger TEXT,
-            exit_trigger TEXT
-        )
-        """
-    )
-    raw.execute("PRAGMA user_version = 0")
+    raw = sqlite3.connect(str(future_db))
+    raw.execute(f"PRAGMA user_version = {database.SCHEMA_VERSION + 1}")
     raw.commit()
     raw.close()
 
-    database.set_db_path(legacy_db)
-    database.init_db()  # must not raise
+    database.set_db_path(future_db)
+    with pytest.raises(RuntimeError, match="schema is at version"):
+        database.init_db()
+
+
+# ── Users table contract ─────────────────────────────────────────────────────
+
+def test_admin_user_seeded():
+    """init_db must always leave users(id=1, username='admin') in place."""
     conn = database.get_db()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
+    row = conn.execute(
+        "SELECT username, active FROM users WHERE id = 1"
+    ).fetchone()
+    assert row is not None
+    assert row["username"] == "admin"
+    assert row["active"] == 1
+
+
+def test_deals_requires_user_id_fk():
+    """deals.user_id is NOT NULL — raw INSERT without it must raise."""
+    import sqlite3 as _sqlite3
+    conn = database.get_db()
+    with pytest.raises(_sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO deals (id, bot_slug, bot_name, status, opened_at, "
+            "initial_price, total_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("X", "tb", "tb", "open", "2024-01-01T00:00:00Z", 80000.0, 0.001),
+        )
+
+
+def test_deals_fk_enforced_for_unknown_user():
+    """deals.user_id FK → users(id). Unknown user_id must raise (foreign
+    key enforcement is on via PRAGMA foreign_keys=ON)."""
+    import sqlite3 as _sqlite3
+    conn = database.get_db()
+    with pytest.raises(_sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO deals (id, user_id, bot_slug, bot_name, status, "
+            "opened_at, initial_price, total_size) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("X", 999, "tb", "tb", "open",
+             "2024-01-01T00:00:00Z", 80000.0, 0.001),
+        )
+
+
+def test_user_bot_index_present():
+    """The (user_id, bot_slug) composite index must exist — that's the
+    hot query path for every per-bot read in deal_store."""
+    conn = database.get_db()
+    idx_names = {
+        r["name"]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    assert "idx_deals_user_bot" in idx_names
+    assert "idx_backtest_runs_user_bot" in idx_names
+    assert "idx_chart_annotations_user_bot" in idx_names
+
+
+def test_username_unique_constraint():
+    """UNIQUE on users.username so username collisions fail fast at
+    insert time instead of surfacing as silent "wrong row" bugs later."""
+    import sqlite3 as _sqlite3
+    conn = database.get_db()
+    with pytest.raises(_sqlite3.IntegrityError):
+        conn.execute("INSERT INTO users (username) VALUES ('admin')")
+
+
+def test_deals_user_isolation():
+    """Two users each own one deal with the same bot_slug. get_deals
+    for user A must not leak user B's row — this is the core multi-
+    tenant safety guarantee."""
+    conn = database.get_db()
+    conn.execute("INSERT INTO users (id, username) VALUES (2, 'bob')")
+    conn.commit()
+
+    d_admin = _deal("P-ADM", 80000.0)
+    d_bob   = _deal("P-BOB", 80000.0)
+    deal_store.save_deal(d_admin, "shared_slug", "bot", user_id=1)
+    deal_store.save_deal(d_bob,   "shared_slug", "bot", user_id=2)
+
+    rows_admin = deal_store.get_deals(user_id=1, bot_slug="shared_slug")
+    rows_bob   = deal_store.get_deals(user_id=2, bot_slug="shared_slug")
+    assert [r["id"] for r in rows_admin] == ["P-ADM"]
+    assert [r["id"] for r in rows_bob]   == ["P-BOB"]

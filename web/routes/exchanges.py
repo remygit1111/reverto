@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core import credentials
-from web.app import _audit, _request_actor, limiter
+from core.user import User
+from web.app import _audit, _request_actor, _request_user, limiter
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,14 @@ class ExchangeKeysBody(BaseModel):
 
 @router.get("/api/exchanges")
 @limiter.limit("60/minute")
-async def list_exchanges(request: Request):
+async def list_exchanges(
+    request: Request,
+    user: User = Depends(_request_user),
+):
     """Welke exchanges Reverto kent en of er credentials voor opgeslagen zijn."""
     return {
         "exchanges": [
-            {"name": name, "has_keys": credentials.has_keys(name)}
+            {"name": name, "has_keys": credentials.has_keys(name, user.id)}
             for name in _KNOWN_EXCHANGES
         ]
     }
@@ -47,10 +51,11 @@ async def save_exchange_keys(
     body: ExchangeKeysBody,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     if name not in _KNOWN_EXCHANGES:
         raise HTTPException(status_code=404, detail="Unknown exchange")
-    credentials.save_keys(name, body.api_key, body.api_secret)
+    credentials.save_keys(name, body.api_key, body.api_secret, user.id)
     _audit("exchange_keys_set", name, actor)
     return {"ok": True, "exchange": name}
 
@@ -61,10 +66,11 @@ async def delete_exchange_keys(
     name: str,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     if name not in _KNOWN_EXCHANGES:
         raise HTTPException(status_code=404, detail="Unknown exchange")
-    removed = credentials.delete_keys(name)
+    removed = credentials.delete_keys(name, user.id)
     if not removed:
         raise HTTPException(status_code=404, detail="No keys stored for exchange")
     _audit("exchange_keys_delete", name, actor)

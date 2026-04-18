@@ -4,6 +4,31 @@ Operational procedures for running Reverto in paper or (Phase-3+) live
 mode. Follow these instead of hunting through source when something
 needs attention.
 
+## Database reset (multi-tenant migration)
+
+Voor de migratie van pre-MT (schema ≤ 2) naar v3 is een eenmalige
+DB reset vereist. Het v3 schema voegt een `users` tabel toe en
+plaatst een `user_id NOT NULL FK` op elke owned tabel — die kan niet
+idempotent toegevoegd worden aan bestaande rijen, dus we gooien
+owned tabellen weg en herbouwen ze.
+
+```bash
+make reset-db    # backupt logs/reverto.db + *.state.json naar .pre_mt.<ts>
+make start       # portal boot, init_db() herbouwt op v3
+```
+
+Bot YAML configs (`config/bots/*.yaml`) worden NIET aangeraakt —
+die overleven de reset en worden door de portal vers gelezen. De
+backup-files in `logs/` blijven staan totdat de operator ze expliciet
+opruimt; de `.pre_mt.<timestamp>` suffix maakt ze sorteerbaar en
+voorkomt dat herhaalde resets elkaar overschrijven.
+
+De migratie kicks in automatisch zodra `init_db()` een DB detecteert
+met `PRAGMA user_version < 3`. Als je dat pad liever zelf in de
+hand houdt, draai eerst `make reset-db` zodat er geen rijen zijn
+om kwijt te raken. De `_migrate_schema` warning-log signaleert de
+drop expliciet.
+
 ## Startup checklist (fresh machine)
 
 ```bash

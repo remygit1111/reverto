@@ -209,6 +209,8 @@ def main() -> None:
         manual_trigger_file=str(manual_trigger_file),
         slug=slug,
         dry_run=args.dry_run,
+        # TODO Phase 2: resolve user_id from bot YAML folder layout.
+        user_id=1,
     )
 
     _install_signal_handlers(engine)
@@ -230,7 +232,9 @@ def _authenticated_exchange(name: str):
     to set ``BITGET_PASSPHRASE`` alongside the saved keys.
     """
     from core.credentials import get_keys
-    keys = get_keys(name)
+    # TODO Phase 2: resolve user_id from bot YAML folder layout. For
+    # now every live bot shares the admin credential store.
+    keys = get_keys(name, user_id=1)
     if not keys:
         return None
 

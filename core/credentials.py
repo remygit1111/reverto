@@ -83,8 +83,18 @@ def _write_store(store: dict) -> None:
         pass
 
 
-def save_keys(exchange: str, api_key: str, api_secret: str) -> None:
-    """Versleutel en sla een api_key + api_secret paar op voor `exchange`."""
+def save_keys(
+    exchange: str, api_key: str, api_secret: str, user_id: int,
+) -> None:
+    """Versleutel en sla een api_key + api_secret paar op voor `exchange`.
+
+    ``user_id`` is reserved for Phase 2 per-user credential isolation
+    — today every user shares the same ``logs/credentials.json`` store
+    encrypted with the global Fernet key. Requiring the argument now
+    means Phase 2 can swap the storage layout without another round
+    of signature changes at every call site. See docs/architecture.md.
+    """
+    del user_id  # unused in Phase 1; see docstring.
     f = _fernet()
     store = _read_store()
     store[exchange] = {
@@ -95,8 +105,14 @@ def save_keys(exchange: str, api_key: str, api_secret: str) -> None:
     logger.info("Credentials opgeslagen voor %s", exchange)
 
 
-def get_keys(exchange: str) -> Optional[dict]:
-    """Decrypt en retourneer {'api_key': ..., 'api_secret': ...} of None."""
+def get_keys(exchange: str, user_id: int) -> Optional[dict]:
+    """Decrypt en retourneer {'api_key': ..., 'api_secret': ...} of None.
+
+    See ``save_keys`` for the Phase-1 user_id semantics — the argument
+    is mandatory but currently ignored; Phase 2 wires it to per-user
+    key files.
+    """
+    del user_id  # unused in Phase 1; see save_keys docstring.
     store = _read_store()
     entry = store.get(exchange)
     if not entry:
@@ -112,13 +128,15 @@ def get_keys(exchange: str) -> Optional[dict]:
         return None
 
 
-def has_keys(exchange: str) -> bool:
+def has_keys(exchange: str, user_id: int) -> bool:
     """True als er een entry bestaat voor `exchange` (decrypt niet getest)."""
+    del user_id  # unused in Phase 1; see save_keys docstring.
     return exchange in _read_store()
 
 
-def list_exchanges_with_keys() -> list[str]:
+def list_exchanges_with_keys(user_id: int) -> list[str]:
     """Lijst van exchange namen waarvoor credentials zijn opgeslagen."""
+    del user_id  # unused in Phase 1; see save_keys docstring.
     return sorted(_read_store().keys())
 
 
@@ -262,7 +280,10 @@ def rotate_fernet_key(
         old_store = _read_store()
         plaintext: dict[str, dict[str, str]] = {}
         for name in old_store:
-            decrypted = get_keys(name)
+            # Phase 1 uses a single global key file, so user_id is
+            # ignored inside get_keys — pass the admin id for symmetry.
+            # Phase 2 will make rotate_fernet_key itself user-scoped.
+            decrypted = get_keys(name, user_id=1)
             if decrypted is None:
                 raise RuntimeError(
                     f"Cannot rotate — credentials for {name!r} failed to decrypt "
@@ -327,9 +348,13 @@ def rotate_fernet_key(
     }
 
 
-def delete_keys(exchange: str) -> bool:
+def delete_keys(exchange: str, user_id: int) -> bool:
     """Verwijder credentials voor `exchange`. Retourneert True als er
-    iets verwijderd is."""
+    iets verwijderd is.
+
+    ``user_id`` is mandatory for Phase-1 callsite parity; the Phase-2
+    per-user store will actually use it."""
+    del user_id  # unused in Phase 1; see save_keys docstring.
     store = _read_store()
     if exchange not in store:
         return False

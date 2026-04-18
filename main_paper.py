@@ -117,6 +117,9 @@ def main() -> None:
         state_file=str(state_file),
         manual_trigger_file=str(manual_trigger_file),
         slug=slug,
+        # TODO Phase 2: resolve user_id from the bot YAML folder layout
+        # (one folder per user). For now every bot belongs to admin.
+        user_id=1,
     )
 
     _install_signal_handlers(engine)

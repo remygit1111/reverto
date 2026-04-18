@@ -30,7 +30,7 @@ class TestRotationLock:
 
     def test_second_rotation_refused_while_first_holds_lock(self, routed_store):
         key, store = routed_store
-        creds.save_keys("bitget", "a", "b")
+        creds.save_keys("bitget", "a", "b", user_id=1)
 
         # Acquire the lock manually — simulating another in-progress rotation.
         cm = creds._rotation_lock(key)
@@ -45,7 +45,7 @@ class TestRotationLock:
         """After a successful rotate the lock file is gone, so a second
         rotate succeeds."""
         key, store = routed_store
-        creds.save_keys("bitget", "a", "b")
+        creds.save_keys("bitget", "a", "b", user_id=1)
 
         creds.rotate_fernet_key(credentials_file=store, keyfile=key)
         # Immediate second call must succeed.
@@ -60,7 +60,7 @@ class TestTimestampedBackups:
 
     def test_each_rotation_creates_a_fresh_backup(self, routed_store):
         key, store = routed_store
-        creds.save_keys("bitget", "a", "b")
+        creds.save_keys("bitget", "a", "b", user_id=1)
 
         creds.rotate_fernet_key(credentials_file=store, keyfile=key)
         time.sleep(1.1)  # ensure the timestamp strftime differs
@@ -78,7 +78,7 @@ class TestBackupRetention:
 
     def test_cleanup_removes_only_old_backups(self, routed_store):
         key, store = routed_store
-        creds.save_keys("bitget", "a", "b")
+        creds.save_keys("bitget", "a", "b", user_id=1)
 
         # Create a rotate + two fake "old" backup files.
         creds.rotate_fernet_key(credentials_file=store, keyfile=key)
@@ -104,7 +104,7 @@ class TestCrashRecovery:
         """Regression pin: the rotation flips the key file first so a
         crash between the two replaces is recoverable from the .bak."""
         key, store = routed_store
-        creds.save_keys("bitget", "a", "b")
+        creds.save_keys("bitget", "a", "b", user_id=1)
         original_key = key.read_bytes()
 
         # Monkeypatch os.replace to capture ordering.
