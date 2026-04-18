@@ -131,6 +131,37 @@ class TestLiveEnginePreflights:
             eng._notify_queue.put(None)
             eng._notify_thread.join(timeout=5)
 
+    def test_rejects_dca_multiplier_explosion(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """multiplier=2.0 + max_orders=10 makes the last DCA order
+        0.001 × 2^9 = 0.512 BTC — 512× the base-order cap. The preflight
+        must refuse this even when base_order_size itself is tiny."""
+        minimal_bot_config.dca.base_order_size = 0.001
+        minimal_bot_config.dca.multiplier = 2.0
+        minimal_bot_config.dca.max_orders = 10
+        with pytest.raises(ValueError, match="Worst-case DCA"):
+            _make_engine(
+                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+                max_base_order_size=0.001,
+            )
+
+    def test_rejects_cumulative_explosion(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """Per-order worst-case under the ceiling, but the SUM of base
+        + every DCA order exceeds max_cumulative_size → refused."""
+        minimal_bot_config.dca.base_order_size = 0.001
+        minimal_bot_config.dca.multiplier = 1.5
+        minimal_bot_config.dca.max_orders = 6  # worst DCA ≈ 0.0076 (7.6x)
+        # Tight explicit cap — cumulative with 6 orders exceeds 0.005.
+        minimal_bot_config.dca.max_cumulative_size = 0.005
+        with pytest.raises(ValueError, match="Cumulative DCA"):
+            _make_engine(
+                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+                max_base_order_size=0.01,
+            )
+
 
 # ── Dry-run order execution ─────────────────────────────────────────────────
 
@@ -208,6 +239,27 @@ class TestDryRunOrderExecution:
 
 
 # ── Inheritance / bookkeeping ───────────────────────────────────────────────
+
+class TestDryRunImmutability:
+
+    def test_dry_run_property_read_only(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """Re-assignment via the property surface must fail. An AttributeError
+        is the acceptable outcome — anything that lets Phase-3 real orders
+        flow through a mutated flag is not."""
+        eng = _make_engine(
+            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+            dry_run=True,
+        )
+        try:
+            with pytest.raises(AttributeError):
+                eng.dry_run = False  # type: ignore[misc]
+            assert eng.dry_run is True
+        finally:
+            eng._notify_queue.put(None)
+            eng._notify_thread.join(timeout=5)
+
 
 class TestLiveEngineInheritsPaperBehaviour:
 

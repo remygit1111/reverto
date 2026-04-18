@@ -54,6 +54,10 @@ class DCAConfig(BaseModel):
     multiplier: float = Field(default=1.0, gt=0, le=10)
     step_scale: float = Field(default=1.0, gt=0, le=5)
     taker_fee: float = Field(default=0.0006, ge=0, le=0.01)
+    # Optional ceiling on total position size (sum of base + every DCA).
+    # None = no cap (paper default). Strongly recommended for live bots —
+    # the LiveEngine preflight + the per-deal DCA path both honour this.
+    max_cumulative_size: Optional[float] = Field(default=None, gt=0)
 
 
 class IndicatorConfig(BaseModel):

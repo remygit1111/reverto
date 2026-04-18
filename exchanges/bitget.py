@@ -4,6 +4,7 @@
 
 import logging
 import time
+import uuid
 from typing import Optional
 
 import ccxt
@@ -21,7 +22,19 @@ from exchanges.base_exchange import (
 logger = logging.getLogger(__name__)
 
 
-def _with_order_retries(op_name: str, fn, *args, **kwargs):
+def _generate_client_order_id() -> str:
+    """Generate an idempotency key for an order placement.
+
+    Each physical order attempt reuses the SAME client_order_id across
+    retries. That lets Bitget recognise a retried placement as
+    duplicate-of-an-already-accepted-order instead of accepting both —
+    the canonical fix for the 'rate-limited on confirmation → retry
+    double-places' race.
+    """
+    return f"reverto-{uuid.uuid4().hex[:16]}"
+
+
+def _with_order_retries(op_name: str, fn, *args, client=None, symbol=None, **kwargs):
     """Run a ccxt order call with exponential backoff on rate-limit
     errors and translate the terminal failure mode into a Reverto
     domain exception.
@@ -30,10 +43,47 @@ def _with_order_retries(op_name: str, fn, *args, **kwargs):
     /api/candles fetcher and Bitget's observed recovery window for a
     fresh burst. NetworkError is surfaced immediately — retrying a
     DNS / socket timeout just piles up dangling orders.
+
+    Idempotency: if ``client`` and ``symbol`` are passed, a
+    ``clientOrderId`` is injected into ``params`` and reused across
+    retries. Before each retry (attempt > 0) we check whether the
+    exchange already has an order with that id and short-circuit the
+    retry to return the existing order. This prevents the classic
+    "rate-limited on confirmation → retry places a duplicate" race.
     """
+    client_order_id: Optional[str] = None
+    if client is not None:
+        params = kwargs.get("params") or {}
+        client_order_id = params.get("clientOrderId") or _generate_client_order_id()
+        params["clientOrderId"] = client_order_id
+        kwargs["params"] = params
+
     last_rate_err: Exception | None = None
     for attempt in range(3):
         try:
+            # Idempotency check: before a retry, ask the exchange whether
+            # it already has an order with our clientOrderId. If yes, the
+            # previous attempt actually landed even though we never saw
+            # the confirmation — return it instead of placing again.
+            #
+            # We require the response to be a dict with a recognised
+            # status so stubbed tests (and exchanges that return empty
+            # dicts for "not found") don't trigger a false positive.
+            if attempt > 0 and client is not None and client_order_id and symbol:
+                try:
+                    existing = client.fetch_order(client_order_id, symbol)
+                except Exception:
+                    existing = None
+                if (
+                    isinstance(existing, dict)
+                    and existing.get("status") in {"open", "closed", "filled", "partial"}
+                ):
+                    logger.warning(
+                        "Bitget %s: idempotency hit for %s — returning existing order",
+                        op_name, client_order_id,
+                    )
+                    return existing
+
             return fn(*args, **kwargs)
         except ccxt.InsufficientFunds as e:
             raise InsufficientFundsError(str(e)[:200]) from e
@@ -89,15 +139,19 @@ class BitgetExchange(BaseExchange):
         return self.SYMBOL_MAP.get(symbol, symbol)
 
     def get_ticker(self, symbol: str) -> Ticker:
-        data = self.client.fetch_ticker(self._symbol(symbol))
+        data = self.client.fetch_ticker(self._symbol(symbol)) or {}
+        # Safe dict access — a malformed ccxt response (or an exchange
+        # API change) previously crashed with KeyError on data["bid"].
+        # Every top-level field now defaults to 0.0 / None on missing.
+        info = data.get("info") or {}
         return Ticker(
             symbol=symbol,
-            bid=data["bid"] or 0.0,
-            ask=data["ask"] or 0.0,
-            last=data["last"] or 0.0,
-            mark_price=data.get("info", {}).get("markPrice"),
-            funding_rate=data.get("info", {}).get("fundingRate"),
-            timestamp=data["timestamp"]
+            bid=float(data.get("bid") or 0.0),
+            ask=float(data.get("ask") or 0.0),
+            last=float(data.get("last") or 0.0),
+            mark_price=info.get("markPrice"),
+            funding_rate=info.get("fundingRate"),
+            timestamp=data.get("timestamp") or 0,
         )
 
     def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 200) -> list:
@@ -134,6 +188,7 @@ class BitgetExchange(BaseExchange):
             "place_market_order",
             self.client.create_order,
             self._symbol(symbol), "market", side, amount,
+            client=self.client, symbol=self._symbol(symbol),
         )
         return self._parse_order(raw, symbol)
 
@@ -142,6 +197,7 @@ class BitgetExchange(BaseExchange):
             "place_limit_order",
             self.client.create_order,
             self._symbol(symbol), "limit", side, amount, price,
+            client=self.client, symbol=self._symbol(symbol),
         )
         return self._parse_order(raw, symbol)
 

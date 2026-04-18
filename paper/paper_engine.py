@@ -32,6 +32,15 @@ logger = logging.getLogger(__name__)
 # depth at the engine boundary.
 _DEAL_ID_RE = re.compile(r"^[A-Z]+-\d{1,6}$")
 
+# At most one DCA order per deal per tick. Without this, a flash crash
+# that drives price through multiple DCA-spacing levels in a single
+# 10-second window would fire every level sequentially — turning a
+# 1.2x multiplier with 10 max orders into a 1.2^9 = 5.16x base-size
+# order that was never the operator's intent. Capping at 1/tick lets
+# the operator see the first DCA in the state file and react before
+# the next one fires on the following tick.
+MAX_DCA_PER_TICK = 1
+
 # Ensure the SQLite schema exists before any engine instance writes to it.
 # Paper bots run as subprocesses launched by the portal, so they can't rely
 # on the portal's own init_db() having run in their process space.
@@ -259,6 +268,30 @@ class PaperEngine:
     # DB ledger helpers — NEVER raise; DB failures must not kill the tick.
     # ------------------------------------------------------------------
 
+    def _deduct_balance(self, amount: float, reason: str) -> bool:
+        """Safe balance debit with pre-flight insufficient-funds check.
+
+        Returns True if the deduction succeeded, False if balance was too
+        low. Every engine path that used to do ``balance_btc -= fee``
+        directly now routes through here — on paper the net effect is the
+        same (no exchange ever rejects), but the check logs clearly when
+        a bot would have tripped an InsufficientFunds in live mode. For
+        Phase 3 live this becomes a hard gate that prevents accidental
+        over-spending.
+        """
+        if self.state.balance_btc < amount:
+            logger.error(
+                "InsufficientFunds: need %.8f BTC for %s, have %.8f",
+                amount, reason, self.state.balance_btc,
+            )
+            self._notify(
+                self.notifier.notify_error, self.config.name,
+                f"Insufficient balance: {reason}",
+            )
+            return False
+        self.state.balance_btc -= amount
+        return True
+
     def _db_save_deal(self, deal: PaperDeal) -> None:
         if not self._bot_slug:
             return
@@ -351,6 +384,10 @@ class PaperEngine:
                 for d in list(reversed(closed_deals_snap))[:50]
             ],
             "indicators": self._last_snapshot,
+            # Persist drawdown guard so a restart doesn't reset the peak
+            # and silently disable the kill-switch for the next leg down.
+            "drawdown_guard":      self.drawdown_guard.to_dict(),
+            "paused_by_drawdown":  self._paused_by_drawdown,
         }
 
         try:
@@ -398,6 +435,19 @@ class PaperEngine:
                 self._fees_paid_btc = float(data["fees_paid_btc"])
             except (TypeError, ValueError):
                 pass
+
+        # Restore drawdown guard peak + triggered state. Critical for live —
+        # without this every bot-restart would silently reset the drawdown
+        # baseline to the current balance, disabling the kill-switch at
+        # exactly the moment the operator needs it most.
+        dd_data = data.get("drawdown_guard")
+        if isinstance(dd_data, dict):
+            try:
+                self.drawdown_guard.from_dict(dd_data)
+            except Exception as e:
+                logger.warning("drawdown_guard restore failed: %s", e)
+        if data.get("paused_by_drawdown"):
+            self._paused_by_drawdown = True
 
         # Closed deal history.
         closed_loaded = 0
@@ -596,9 +646,20 @@ class PaperEngine:
             # Write state for portal after every tick
             self._write_state(price, is_open)
 
+        except NotImplementedError:
+            # LiveEngine's _place_market_order raises this when the
+            # operator flipped dry_run off before Phase 3. The whole
+            # point is to make real-order refusal LOUD — never swallow
+            # it into the tick-loop retry.
+            raise
         except Exception as e:
-            logger.error(f"Tick error: {e}")
-            self._notify(self.notifier.notify_error, self.config.name, str(e))
+            # Truncate exception strings before logging / notifying:
+            # ccxt errors can contain rate-limit payload or partial
+            # credential fragments, and str(e) without bound would send
+            # them verbatim to Telegram.
+            msg = str(e)[:200]
+            logger.error(f"Tick error: {msg}")
+            self._notify(self.notifier.notify_error, self.config.name, msg)
 
     # ------------------------------------------------------------------
     # Schedule transition detection
@@ -931,7 +992,7 @@ class PaperEngine:
                 deal.exit_trigger = exit_trigger
                 self.state.close_deal(deal_id, price, "manual")
                 fee = self._calc_fee(exit_size)
-                self.state.balance_btc -= fee
+                self._deduct_balance(fee, f"manual_close:{deal_id}")
                 self._fees_paid_btc += fee
                 self._db_close_deal(
                     deal_id, price, "manual", pnl_btc, pnl_pct,
@@ -989,11 +1050,25 @@ class PaperEngine:
             order_type="base"
         )
 
+        # Side comes from the bot config (`direction`) so short-bots
+        # actually open short positions. Hardcoding "long" here silently
+        # turned every short config into a long run — a real money-loss
+        # bug for live trading. The isinstance check keeps tests that
+        # pass MagicMock configs working — a stubbed config returns a
+        # MagicMock for every attribute, so we only honour `direction`
+        # when it's actually a string.
+        direction = getattr(self.config, "direction", "long")
+        side = (
+            direction
+            if isinstance(direction, str) and direction in ("long", "short")
+            else "long"
+        )
+
         deal = PaperDeal(
             id=deal_id,
             bot_name=self.config.name,
             symbol=self.config.pair,
-            side="long",
+            side=side,
             leverage=self.config.leverage.size,
             orders=[base_order],
             entry_trigger=entry_trigger if isinstance(entry_trigger, dict) else None,
@@ -1001,7 +1076,7 @@ class PaperEngine:
 
         self.state.open_deal(deal)
         fee = self._calc_fee(base_order.size)
-        self.state.balance_btc -= fee
+        self._deduct_balance(fee, f"entry_fee:{deal_id}")
         self._fees_paid_btc    += fee
         self._db_save_deal(deal)
         self._db_save_order(base_order, deal.id, fee)
@@ -1021,10 +1096,19 @@ class PaperEngine:
     # ------------------------------------------------------------------
 
     def _monitor_open_deals(self, price: float):
-        """Monitor all open deals for DCA, TP and SL conditions."""
-        # Use snapshot so we iterate a stable copy while the state lock
-        # is only held briefly during the snapshot, not the full loop.
+        """Monitor all open deals for DCA, TP and SL conditions.
+
+        Per-tick DCA cap: at most MAX_DCA_PER_TICK deals get a DCA order
+        on any single tick. A flash crash that drives price through
+        several DCA-spacing levels in one 10-second window would otherwise
+        fire every level back-to-back — the operator only sees the
+        aggregate position size after the damage is done. Capping at
+        1/tick lets each DCA land in state.json before the next one
+        fires, giving both the operator and the drawdown guard a chance
+        to see the deteriorating position.
+        """
         snapshot = self.state.get_open_deals_snapshot()
+        dca_count_this_tick = 0
         for deal_id, deal in snapshot.items():
             self._check_tp(deal, price)
             if deal_id not in self.state.open_deals:
@@ -1032,7 +1116,14 @@ class PaperEngine:
             self._check_sl(deal, price)
             if deal_id not in self.state.open_deals:
                 continue
-            self._check_dca(deal, price)
+            if dca_count_this_tick >= MAX_DCA_PER_TICK:
+                logger.debug(
+                    "Per-tick DCA cap reached (%d); deferring %s",
+                    MAX_DCA_PER_TICK, deal_id,
+                )
+                continue
+            if self._check_dca(deal, price):
+                dca_count_this_tick += 1
 
     def _check_tp(self, deal: PaperDeal, price: float):
         """Check if take profit target has been reached.
@@ -1093,7 +1184,7 @@ class PaperEngine:
             deal.exit_trigger = exit_trigger
             self.state.close_deal(deal.id, fill_price, "tp")
             fee = self._calc_fee(exit_size)
-            self.state.balance_btc -= fee
+            self._deduct_balance(fee, f"tp_fee:{deal.id}")
             self._fees_paid_btc    += fee
             self._db_close_deal(
                 deal.id, fill_price, "tp", pnl_btc, pnl_pct,
@@ -1145,7 +1236,7 @@ class PaperEngine:
                 deal.exit_trigger = exit_trigger
                 self.state.close_deal(deal.id, price, "tp")
                 fee = self._calc_fee(exit_size)
-                self.state.balance_btc -= fee
+                self._deduct_balance(fee, f"tp_indicator_fee:{deal.id}")
                 self._fees_paid_btc += fee
                 self._db_close_deal(
                     deal.id, price, "tp", pnl_btc, pnl_pct,
@@ -1217,7 +1308,7 @@ class PaperEngine:
             deal.exit_trigger = exit_trigger
             self.state.close_deal(deal.id, fill_price, "sl")
             fee = self._calc_fee(exit_size)
-            self.state.balance_btc -= fee
+            self._deduct_balance(fee, f"sl_fee:{deal.id}")
             self._fees_paid_btc    += fee
             self._db_close_deal(
                 deal.id, fill_price, "sl", pnl_btc, pnl_pct,
@@ -1239,17 +1330,19 @@ class PaperEngine:
                 self.config.name, deal.symbol, fill_price, pnl_btc, pnl_pct,
             )
 
-    def _check_dca(self, deal: PaperDeal, price: float):
-        """Check if a DCA order should be placed."""
+    def _check_dca(self, deal: PaperDeal, price: float) -> bool:
+        """Check if a DCA order should be placed. Returns True iff one
+        was actually placed this tick (so the caller can enforce the
+        per-tick DCA cap across multiple open deals)."""
         if not getattr(self.config.dca, 'enabled', True):
-            return
+            return False
         if not deal._dca_enabled:
-            return
+            return False
         # max_orders=0 means "base order only, never DCA".
         if self.config.dca.max_orders <= 1:
-            return
+            return False
         if deal.dca_count >= self.config.dca.max_orders - 1:
-            return
+            return False
 
         last_order_price = deal.orders[-1].price
         step = self.config.dca.order_spacing_pct * (
@@ -1261,6 +1354,25 @@ class PaperEngine:
             multiplier = self.config.dca.multiplier ** deal.dca_count
             dca_size   = round(self.config.dca.base_order_size * multiplier, 8)
 
+            # Cumulative notional cap — flash-crash + geometric DCA can
+            # otherwise snowball into a position multiples larger than
+            # the operator sized for. Default cap = 20x base if the
+            # operator didn't set max_cumulative_size explicitly.
+            current_notional = sum(o.size for o in deal.orders)
+            new_notional = current_notional + dca_size
+            configured_cap = getattr(self.config.dca, "max_cumulative_size", None)
+            # Accept only numeric caps — tests that pass a MagicMock
+            # config end up with a MagicMock here and would otherwise
+            # break the > comparison.
+            if not isinstance(configured_cap, (int, float)) or configured_cap <= 0:
+                configured_cap = self.config.dca.base_order_size * 20.0
+            if new_notional > configured_cap:
+                logger.warning(
+                    "DCA blocked for %s: notional %.8f > cap %.8f",
+                    deal.id, new_notional, configured_cap,
+                )
+                return False
+
             dca_order = PaperOrder(
                 order_number=deal.dca_count + 2,
                 price=price,
@@ -1270,7 +1382,7 @@ class PaperEngine:
             )
             deal.orders.append(dca_order)
             fee = self._calc_fee(dca_size)
-            self.state.balance_btc -= fee
+            self._deduct_balance(fee, f"dca_fee:{deal.id}")
             self._fees_paid_btc    += fee
             self._db_save_order(dca_order, deal.id, fee)
             self._db_save_deal(deal)
@@ -1286,6 +1398,8 @@ class PaperEngine:
                 dca_order.order_number,
                 deal.avg_entry_price,
             )
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Liquidation guard
