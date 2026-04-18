@@ -2384,3 +2384,37 @@ html.compact .modal-card { padding: 19px; }
 }
 .sw-day-picks.hidden, .sw-hour-range.hidden { display: none; }
 .sw-hour-range { margin: 8px 0 4px 0; }
+
+/* ── Print styles ──────────────────────────────────────────────────────────
+   Operators occasionally need a hard-copy snapshot (compliance, post-mortem
+   packs, printed trade journals). Default to: white background, black text,
+   hide everything interactive, keep deal/bt cards from splitting across
+   page breaks, and annotate links with their href so the printout is
+   self-contained. */
+@media print {
+  .no-print,
+  .chart-toolbar,
+  .nav-tabs,
+  .hbtn,
+  .btn,
+  .btn-accent,
+  .modal-overlay,
+  header.top-bar,
+  nav {
+    display: none !important;
+  }
+  body {
+    background: #ffffff;
+    color: #000000;
+  }
+  .card,
+  .bt-section,
+  .deal-card {
+    page-break-inside: avoid;
+    border: 1px solid #cccccc;
+  }
+  a::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+  }
+}

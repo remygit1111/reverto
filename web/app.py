@@ -740,6 +740,9 @@ _PUBLIC_PATHS = {
     "/",
     "/favicon.ico",
     "/health",
+    "/healthz",
+    "/readyz",
+    "/metrics",
     "/auth/status",
     "/auth/login",
     "/auth/logout",
@@ -1057,6 +1060,54 @@ async def api_deal_start(slug: str, request: Request, actor: str = Depends(_requ
         raise HTTPException(status_code=500, detail=f"Failed to write trigger: {e}")
     _audit("bot_manual_deal", slug, actor)
     return {"ok": True}
+
+
+# ── Ops endpoints — health checks + Prometheus ──────────────────────────────
+
+@app.get("/healthz")
+async def healthz(request: Request):
+    """Liveness probe — no auth, no rate limit. Always returns 200 as
+    long as the portal process is actually answering. Use as Kubernetes
+    livenessProbe so the orchestrator doesn't restart healthy portals."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pid": os.getpid(),
+    }
+
+
+@app.get("/readyz")
+async def readyz(request: Request):
+    """Readiness probe — no auth, no rate limit. Verifies the SQLite
+    ledger is reachable. A 503 here tells an orchestrator not to send
+    new requests yet (DB migration in progress, disk full, etc.)."""
+    try:
+        from core.database import get_db
+        conn = get_db()
+        conn.execute("SELECT 1")
+        return {"status": "ready"}
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "error": str(e)[:200]},
+        )
+
+
+@app.get("/metrics")
+async def metrics(request: Request):
+    """Prometheus scrape endpoint — no auth, no rate limit.
+
+    Scraping is expected to be gated at the network layer (firewall,
+    ingress ACL) rather than the application layer: Prometheus
+    service-accounts don't carry user sessions and operators would
+    otherwise have to share the API key with the monitoring stack.
+    """
+    from fastapi.responses import Response as _Response
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    return _Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
 
 
 @app.post("/api/emergency-stop")

@@ -140,3 +140,101 @@ class OrderReconciler:
         """Drop every pending order without reconciling. Used on engine
         shutdown so the reconciler doesn't outlive the engine process."""
         self._pending.clear()
+
+
+# ── Phase 3 scaffolding: position reconciliation ────────────────────────────
+
+class PositionReconciler:
+    """Compare the engine's local open-deal state against the exchange's
+    reported positions.
+
+    Detects two classes of drift:
+      1. Size mismatch — local thinks 0.01 BTC open, exchange reports
+         0.02 (missed a manual trade on the exchange, or a partial fill
+         the engine didn't record).
+      2. Phantom position — exchange has a position the engine has no
+         record of, or vice versa.
+
+    Phase 1 returns a "not_implemented" sentinel when the exchange
+    client doesn't expose fetch_positions; wire the real comparison in
+    Phase 3 once live orders actually flow.
+    """
+
+    def __init__(self, exchange: Any, state: Any, symbol: str) -> None:
+        self.exchange = exchange
+        self.state = state
+        self.symbol = symbol
+
+    def reconcile(self) -> dict:
+        """Run one reconciliation cycle and return a JSON-safe report."""
+        try:
+            positions = self.exchange.fetch_positions([self.symbol])
+        except NotImplementedError:
+            return {"status": "not_implemented", "phase": 1}
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:200]}
+
+        open_deals = getattr(self.state, "open_deals", None) or []
+        if isinstance(open_deals, dict):
+            open_deals = list(open_deals.values())
+
+        local_size = sum(getattr(d, "total_size", 0.0) for d in open_deals)
+        exchange_size = 0.0
+        for pos in positions or []:
+            if not isinstance(pos, dict):
+                continue
+            try:
+                exchange_size += float(pos.get("contracts") or 0.0)
+            except (TypeError, ValueError):
+                continue
+
+        discrepancies: list[dict] = []
+        if abs(local_size - exchange_size) > 1e-8:
+            discrepancies.append({
+                "type": "size_mismatch",
+                "local": local_size,
+                "exchange": exchange_size,
+                "delta": exchange_size - local_size,
+            })
+
+        status = "ok" if not discrepancies else "mismatch"
+        return {
+            "status": status,
+            "local_deals": len(open_deals),
+            "exchange_positions": len(positions or []),
+            "discrepancies": discrepancies,
+        }
+
+
+# ── Phase 3 scaffolding: partial fill handling ──────────────────────────────
+
+def classify_partial_fill(
+    filled: float,
+    requested: float,
+    accept_threshold: float = 0.95,
+    abandon_threshold: float = 0.10,
+) -> str:
+    """Bucket a partial fill into one of three action categories.
+
+    ``accept``   — the fill is close enough to the requested size that
+                   the engine should treat the order as complete and
+                   proceed with state updates.
+    ``partial``  — meaningful fill but not full; the engine should
+                   adjust the deal size down to ``filled`` and not
+                   retry the remainder.
+    ``abandon``  — less than ``abandon_threshold`` of the size landed;
+                   the engine should cancel any remainder and treat
+                   the whole thing as a failed entry.
+
+    Thresholds are parameterised so a Phase-3 strategy can tune based
+    on instrument / liquidity profile. The defaults (95% / 10%) are
+    a reasonable starting point for BTC inverse perps.
+    """
+    if requested <= 0:
+        return "abandon"
+    ratio = filled / requested
+    if ratio >= accept_threshold:
+        return "accept"
+    if ratio < abandon_threshold:
+        return "abandon"
+    return "partial"

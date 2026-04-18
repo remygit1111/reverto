@@ -579,8 +579,14 @@
       <div class="wizard-section-body">
         <div class="form-grid">
           <div class="form-row form-row-wide">
-            <label>Bot name</label>
-            <input id="nb-name" type="text" maxlength="100" placeholder="e.g. BTC-DCA-Slow">
+            <label for="nb-name">Bot name</label>
+            <input id="nb-name" name="name" type="text" maxlength="100"
+                   required aria-required="true"
+                   aria-describedby="nb-name-hint"
+                   placeholder="e.g. BTC-DCA-Slow">
+            <span id="nb-name-hint" class="form-hint">
+              1–100 chars, letters / digits / spaces / - / _ only.
+            </span>
           </div>
           <div class="form-row">
             <label>Exchange</label>
@@ -644,8 +650,15 @@
           </div>
         </div>
         <div class="form-row">
-          <label>Base order size (<span id="nb-base-unit-label">BTC</span>)</label>
-          <input id="nb-base-size" type="number" step="0.0001" min="0" value="0.001">
+          <label for="nb-base-size">Base order size (<span id="nb-base-unit-label">BTC</span>)</label>
+          <input id="nb-base-size" name="base_order_size"
+                 type="number" step="0.0001" min="0.0001" value="0.001"
+                 required aria-required="true"
+                 aria-describedby="nb-base-size-hint">
+          <span id="nb-base-size-hint" class="form-hint">
+            Size of the first order when the entry signal fires.
+            Live bots are capped by <code>max_base_order_size</code>.
+          </span>
         </div>
 
         <div class="section-title mt-16">Indicators</div>
