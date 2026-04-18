@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install ruff pip-audit
+
+      - name: Lint (ruff)
+        run: .venv/bin/ruff check .
+
+      - name: Tests (pytest)
+        run: .venv/bin/pytest -q
+
+      - name: Security audit (pip-audit)
+        # Non-fatal — reports but does not block the pipeline yet so
+        # CVE announcements on transitive deps don't stop everyone's
+        # PRs overnight. Flip `continue-on-error` to false once the
+        # team has a process for upgrading flagged deps promptly.
+        continue-on-error: true
+        run: .venv/bin/pip-audit --disable-pip

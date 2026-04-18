@@ -351,6 +351,11 @@ def _audit(action: str, slug: str = "-", key_hint: str = "-") -> None:
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
 _DEAL_ID_RE = re.compile(r"^[A-Z]+-\d{1,6}$")
 
+# Validator for slugs that come straight off the URL — the slugify()
+# helper above cleans wizard input, but path-parameter slugs must be
+# checked before they hit Path() construction to block `../` escapes.
+_BOT_SLUG_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
 
 def slugify(name: str) -> str:
     """Zet een vrije bot-naam om naar een veilig filename stem.
@@ -1052,6 +1057,90 @@ async def api_deal_start(slug: str, request: Request, actor: str = Depends(_requ
         raise HTTPException(status_code=500, detail=f"Failed to write trigger: {e}")
     _audit("bot_manual_deal", slug, actor)
     return {"ok": True}
+
+
+@app.post("/api/emergency-stop")
+@limiter.limit("5/minute")
+async def api_emergency_stop(request: Request, actor: str = Depends(_request_actor)):
+    """Stop every running bot immediately.
+
+    Audit-logged and rate-limited. Intended as the big red button a
+    panicking operator can hit without hunting for individual bot
+    stop endpoints. Uses the existing ``stop_bot(slug)`` plumbing so
+    SIGTERM + notify-drain still happens per bot — we're not pulling
+    the rug out from under any in-flight order logic.
+    """
+    _audit("emergency_stop", "-", actor)
+    logger.error("EMERGENCY STOP requested by %s", actor)
+
+    stopped: list[str] = []
+    failed: list[dict] = []
+    for bot in await registry.all():
+        if not bot.running:
+            continue
+        try:
+            result = await stop_bot(bot.slug)
+            if result.get("ok"):
+                stopped.append(bot.slug)
+            else:
+                failed.append({"slug": bot.slug, "error": result.get("error")})
+        except Exception as e:
+            failed.append({"slug": bot.slug, "error": str(e)[:200]})
+
+    return {
+        "ok": True,
+        "stopped_bots": stopped,
+        "failed": failed,
+        "triggered_by": actor,
+    }
+
+
+@app.post("/api/bots/{slug}/drawdown/reset")
+@limiter.limit("10/minute")
+async def api_drawdown_reset(slug: str, request: Request, actor: str = Depends(_request_actor)):
+    """Clear the drawdown guard's triggered state for a bot.
+
+    Writes a fresh ``drawdown_guard`` blob to the bot's state.json; on
+    the next tick the engine's _load_state path picks up the cleared
+    state. The engine itself also exposes guard.reset() in-process,
+    but the portal can't call that across the subprocess boundary —
+    state.json is the shared contract.
+
+    Only accepts well-formed slugs to block a `{slug}="../secrets"`
+    style path-escape through the LOG_DIR composition.
+    """
+    if not _BOT_SLUG_RE.match(slug):
+        raise HTTPException(status_code=400, detail="Invalid slug")
+
+    bot = await registry.get(slug)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Unknown bot")
+
+    state_file = bot.state_file
+    if not state_file.exists():
+        raise HTTPException(status_code=404, detail="Bot state not found")
+
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise HTTPException(status_code=500, detail=f"State unreadable: {str(e)[:100]}")
+
+    data["drawdown_guard"] = {
+        "peak_value": None,
+        "triggered": False,
+        "trigger_reason": None,
+    }
+    data["paused_by_drawdown"] = False
+
+    # Atomic rewrite — same pattern as the engine's own writer so we
+    # don't race with an in-progress state.json refresh.
+    tmp = state_file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(state_file)
+
+    _audit("drawdown_reset", slug, actor)
+    logger.warning("Drawdown guard reset for %s by %s", slug, actor)
+    return {"ok": True, "bot": slug}
 
 
 @app.post("/api/portal/restart")

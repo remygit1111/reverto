@@ -121,3 +121,79 @@ class TestDrawdownGuard:
         from pydantic import ValidationError
         with pytest.raises(ValidationError):
             DrawdownGuardConfig(action="annihilate")  # type: ignore[arg-type]
+
+
+class TestDrawdownGuardPersistence:
+    """Persistence is the fix for the v20 HIGH-LIVE finding: a bot
+    restart would otherwise reset _peak_value to None, silently
+    disabling the kill-switch for the next leg down."""
+
+    def test_to_dict_captures_state(self):
+        g = DrawdownGuard(DrawdownGuardConfig(enabled=True, max_drawdown_pct=10.0))
+        g.update(100.0)
+        g.update(90.0)  # triggers
+        blob = g.to_dict()
+        assert blob["peak_value"] == 100.0
+        assert blob["triggered"] is True
+        assert "Drawdown" in blob["trigger_reason"]
+
+    def test_roundtrip_restores_state(self):
+        """to_dict → from_dict round-trip preserves every critical field
+        so a restarted engine sees the same peak + triggered state."""
+        g1 = DrawdownGuard(DrawdownGuardConfig(enabled=True, max_drawdown_pct=5.0))
+        g1.update(100.0)
+        g1.update(94.0)  # triggers
+        blob = g1.to_dict()
+
+        g2 = DrawdownGuard(DrawdownGuardConfig(enabled=True, max_drawdown_pct=5.0))
+        g2.from_dict(blob)
+
+        assert g2.peak_value == 100.0
+        assert g2.is_triggered is True
+        assert g2.trigger_reason == g1.trigger_reason
+
+        # New update() call must see the triggered state and short-
+        # circuit to True without re-anchoring the peak.
+        assert g2.update(200.0) is True
+        assert g2.peak_value == 100.0
+
+    def test_from_dict_ignores_missing_keys(self):
+        """Older state.json snapshots (pre-persistence) produce empty
+        or partial dicts. from_dict must treat those as 'no data' and
+        reset to a clean slate without raising."""
+        g = DrawdownGuard(DrawdownGuardConfig(enabled=True, max_drawdown_pct=10.0))
+        g.from_dict({})
+        assert g.peak_value is None
+        assert g.is_triggered is False
+
+    def test_from_dict_handles_null_peak(self):
+        g = DrawdownGuard(DrawdownGuardConfig(enabled=True, max_drawdown_pct=10.0))
+        g.from_dict({"peak_value": None, "triggered": False, "trigger_reason": None})
+        assert g.peak_value is None
+
+
+class TestDrawdownGuardThreadSafety:
+    """The guard now takes an internal lock on update() / reset() /
+    to_dict() / from_dict(). Spin up a few threads and verify no
+    exception/inconsistent state emerges."""
+
+    def test_concurrent_updates_do_not_raise(self):
+        import threading
+
+        g = DrawdownGuard(DrawdownGuardConfig(enabled=True, max_drawdown_pct=50.0))
+
+        def worker(values):
+            for v in values:
+                g.update(v)
+
+        t1 = threading.Thread(target=worker, args=(list(range(100, 200)),))
+        t2 = threading.Thread(target=worker, args=(list(range(150, 250)),))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Peak must be monotonically non-decreasing; the exact value
+        # depends on thread interleave but must be at least 249.
+        assert g.peak_value is not None
+        assert g.peak_value >= 249

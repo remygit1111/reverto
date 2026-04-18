@@ -13,6 +13,7 @@ import argparse
 import atexit
 import logging
 import os
+import re
 import signal as _signal
 import sys
 from pathlib import Path
@@ -22,6 +23,19 @@ from config.models import Mode
 from exchanges.public_exchange import PublicExchange
 from live.live_engine import DEFAULT_MAX_BASE_ORDER_SIZE_BTC, LiveEngine
 from notifications.telegram import TelegramNotifier
+
+# Bot slugs drive config file resolution + PID/state paths. A value like
+# "../../etc/passwd" would otherwise escape config/bots/.
+_BOT_SLUG_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+# DRY_RUN environment values treated as truthy. Case-insensitive match
+# so CI systems that set DRY_RUN=true or DRY_RUN=yes work without
+# surprising the operator at a non-TTY container start.
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "y", "on"})
+
+
+def _env_is_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUE_ENV_VALUES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,8 +79,8 @@ def _require_confirmation(dry_run: bool) -> None:
     workflow non-interactive. A real live launch (``dry_run=False``)
     will still prompt until Phase 3 flips this to default-confirm.
     """
-    if os.environ.get("DRY_RUN") == "1":
-        logger.info("DRY_RUN=1 — skipping confirmation prompt")
+    if _env_is_truthy("DRY_RUN"):
+        logger.info("DRY_RUN set — skipping confirmation prompt")
         return
     if dry_run:
         logger.info("dry-run enabled — skipping confirmation prompt")
@@ -115,12 +129,25 @@ def main() -> None:
     if args.config:
         config_path = Path(args.config)
     elif args.bot:
+        # Regex-validate the slug BEFORE constructing the Path so a
+        # "../../etc/passwd" style value never reaches the filesystem.
+        if not _BOT_SLUG_RE.match(args.bot):
+            logger.error(
+                "Invalid bot slug %r — must match %s",
+                args.bot, _BOT_SLUG_RE.pattern,
+            )
+            sys.exit(1)
         config_path = Path("config/bots") / f"{args.bot}.yaml"
     else:
         parser.error("Specify either --config or --bot")
         return
 
     slug = config_path.stem
+    if not _BOT_SLUG_RE.match(slug):
+        logger.error(
+            "Invalid bot slug derived from config path: %r", slug,
+        )
+        sys.exit(1)
 
     base_dir = Path(__file__).parent
     log_dir = base_dir / "logs"
@@ -156,7 +183,29 @@ def main() -> None:
     _print_live_banner(slug, config, args.dry_run, args.max_base_order_size)
     _require_confirmation(args.dry_run)
 
-    exchange = PublicExchange(config.exchange.value)
+    # Exchange selection — Phase 1 dry-run is fine with the read-only
+    # PublicExchange (no real orders reach it anyway). Phase 3 real
+    # orders REQUIRE an authenticated client. The branch below already
+    # refuses to boot a real-order run without credentials, so operators
+    # can't accidentally ship a live bot against a public-only client.
+    dry_run_effective = args.dry_run or _env_is_truthy("DRY_RUN")
+    if dry_run_effective:
+        exchange = PublicExchange(config.exchange.value)
+        logger.info(
+            "Using PublicExchange (dry-run) — real orders are not possible"
+        )
+    else:
+        exchange = _authenticated_exchange(config.exchange.value)
+        if exchange is None:
+            logger.error(
+                "Live mode requires exchange credentials — configure via "
+                "the portal (Exchanges → Add Keys) before launching."
+            )
+            sys.exit(1)
+        logger.warning(
+            "Using AUTHENTICATED %s client — real orders WILL be placed",
+            config.exchange.value,
+        )
     notifier = TelegramNotifier(notify_on=config.telegram.notify_on)
 
     try:
@@ -179,6 +228,41 @@ def main() -> None:
     _install_signal_handlers(engine)
 
     engine.start()
+
+
+def _authenticated_exchange(name: str):
+    """Build an authenticated exchange client for live (non-dry-run) use.
+
+    Loads credentials through ``core.credentials.get_keys``. Returns
+    None when no credentials are saved — the caller must refuse to
+    boot in that case.
+
+    Only Bitget is wired today; Kraken follows the same shape once
+    implemented. Passphrase is pulled from an env var because the
+    current credentials.get_keys() only returns api_key / api_secret
+    — rather than touch that schema mid-phase we expect Bitget users
+    to set ``BITGET_PASSPHRASE`` alongside the saved keys.
+    """
+    from core.credentials import get_keys
+    keys = get_keys(name)
+    if not keys:
+        return None
+
+    if name == "bitget":
+        from exchanges.bitget import BitgetExchange
+        passphrase = os.environ.get("BITGET_PASSPHRASE", "")
+        if not passphrase:
+            logger.error("BITGET_PASSPHRASE env var is required for live Bitget")
+            return None
+        return BitgetExchange(
+            api_key=keys["api_key"],
+            api_secret=keys["api_secret"],
+            passphrase=passphrase,
+            paper=False,
+        )
+
+    logger.error("Live trading not yet wired for exchange %r", name)
+    return None
 
 
 def _install_signal_handlers(engine: LiveEngine) -> None:

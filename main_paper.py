@@ -10,6 +10,7 @@ import argparse
 import atexit
 import logging
 import os
+import re
 import signal as _signal
 import sys
 from pathlib import Path
@@ -19,6 +20,11 @@ from config.models import Mode
 from exchanges.public_exchange import PublicExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import PaperEngine
+
+# Bot slugs come via CLI and become filenames / state paths. Constrain
+# them to `[A-Za-z0-9_-]+` so a malformed --config or bot name can never
+# traverse out of config/bots/ via `..` or absolute paths.
+_BOT_SLUG_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 # Logging setup — local time. stdout/stderr are typically redirected by
 # the portal to logs/{slug}.log via subprocess.Popen, so basicConfig on
@@ -57,6 +63,12 @@ def main() -> None:
     # everything — BotInfo.pid_file, log_file, state_file — on this stem,
     # so renaming the bot inside the YAML must not break the mapping.
     slug = config_path.stem
+    if not _BOT_SLUG_RE.match(slug):
+        logger.error(
+            "Invalid bot slug %r — must match %s",
+            slug, _BOT_SLUG_RE.pattern,
+        )
+        sys.exit(1)
 
     base_dir = Path(__file__).parent
     log_dir = base_dir / "logs"
@@ -82,15 +94,14 @@ def main() -> None:
 
     config = load_bot_config(str(config_path))
 
-    # Hard mode check — a bot configured as live MUST NOT run under the
-    # paper runner. The paper engine simulates fills internally and never
-    # places real orders, so letting a live bot boot here would silently
-    # turn a live config into an unattended paper run.
-    if config.mode == Mode.LIVE:
+    # Hard mode check — this runner is strictly for Mode.PAPER. Previously
+    # we only rejected Mode.LIVE which let Mode.BACKTEST slip through as
+    # a paper run; now anything that isn't explicitly PAPER is refused.
+    if config.mode != Mode.PAPER:
         logger.error(
-            "Bot %s is configured as LIVE mode. "
-            "Cannot start in paper runner. Use main_live.py instead.",
-            slug,
+            "Bot %s has mode=%s; main_paper.py only accepts PAPER. "
+            "Use main_live.py for live, main_backtest.py for backtest.",
+            slug, config.mode.value,
         )
         sys.exit(1)
 

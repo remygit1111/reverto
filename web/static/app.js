@@ -137,6 +137,29 @@ async function handleLogout() {
   location.reload();
 }
 
+// Emergency stop — one request, server iterates every running bot and
+// SIGTERMs it. Confirmation is a blocking native confirm() because
+// there's no modal infrastructure for a single-purpose dialog here
+// and a stray click on the profile menu should NEVER trip this.
+async function handleEmergencyStop() {
+  toggleProfileMenu(false);
+  const ok = window.confirm(
+    'Are you sure? This will STOP ALL running bots. ' +
+    'Open positions on the exchange are NOT closed automatically.'
+  );
+  if (!ok) return;
+  try {
+    const res = await fetch('/api/emergency-stop', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    const stopped = (data.stopped_bots || []).join(', ') || 'none';
+    const failed = (data.failed || []).length;
+    alert(`Emergency stop complete. Stopped: ${stopped}. Failed: ${failed}.`);
+    location.reload();
+  } catch (e) {
+    alert('Emergency stop request failed: ' + (e && e.message || e));
+  }
+}
+
 // ── Profile / Settings / dropdown menu ───────────────────────────────────────
 // _cachedUsername is populated from /auth/status so the profile initial
 // and the Profile modal username field stay in sync without re-fetching
@@ -5628,6 +5651,8 @@ function setupEventListeners() {
   });
   $('profile-menu-profile').addEventListener('click', showProfileModal);
   $('profile-menu-settings').addEventListener('click', showSettingsModal);
+  const emergencyBtn = $('profile-menu-emergency-stop');
+  if (emergencyBtn) emergencyBtn.addEventListener('click', handleEmergencyStop);
   $('profile-menu-logout').addEventListener('click', handleLogout);
   _installProfileOutsideClickHandler();
 

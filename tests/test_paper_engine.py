@@ -239,3 +239,91 @@ class TestPaperEngineInit:
         finally:
             eng._notify_queue.put(None)
             eng._notify_thread.join(timeout=5)
+
+
+# ── Balance guard + side + DCA caps (v20 P0 fixes) ──────────────────────────
+
+class TestBalanceGuard:
+    """The `_deduct_balance` helper refuses to let balance_btc go
+    negative; on paper the effect is cosmetic (balance just doesn't
+    go down), but for live trading this becomes the insufficient-funds
+    gate that blocks a crash-cascade."""
+
+    def test_deduct_with_sufficient_balance(self, engine):
+        engine.state.balance_btc = 0.001
+        assert engine._deduct_balance(0.0005, "test") is True
+        assert engine.state.balance_btc == pytest.approx(0.0005)
+
+    def test_deduct_rejects_when_insufficient(self, engine):
+        engine.state.balance_btc = 0.0001
+        assert engine._deduct_balance(0.001, "big-fee") is False
+        # Balance unchanged on refusal — no partial deducts.
+        assert engine.state.balance_btc == pytest.approx(0.0001)
+        # Notifier was asked to surface the error.
+        # The notify call is queued async; give the daemon a moment.
+        engine._notify_queue.join()
+        engine.notifier.notify_error.assert_called()
+
+
+class TestSideFromDirection:
+    """_open_deal used to hardcode side='long'. Now it honours
+    BotConfig.direction so short-bots actually open short positions."""
+
+    def test_long_direction_opens_long(self, engine):
+        engine.config.direction = "long"
+        engine._open_deal(50_000.0)
+        deals = engine.state.get_open_deals_snapshot()
+        assert len(deals) == 1
+        assert list(deals.values())[0].side == "long"
+
+    def test_short_direction_opens_short(self, engine):
+        engine.config.direction = "short"
+        engine._open_deal(50_000.0)
+        deals = engine.state.get_open_deals_snapshot()
+        assert len(deals) == 1
+        assert list(deals.values())[0].side == "short"
+
+
+class TestDrawdownGuardPersistedToState:
+    """v20 HIGH-LIVE fix: guard state must survive engine restart via
+    state.json. Simulate a run that triggers the guard, dump state,
+    rehydrate a fresh engine, confirm the guard is still triggered."""
+
+    def test_drawdown_persisted_across_restart(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        from core.drawdown_guard import DrawdownGuardConfig
+
+        state_file = tmp_path / "dd.state.json"
+        minimal_bot_config.drawdown_guard = DrawdownGuardConfig(
+            enabled=True, max_drawdown_pct=5.0, metric="balance",
+        )
+
+        eng1 = PaperEngine(
+            config=minimal_bot_config, exchange=mock_exchange,
+            notifier=mock_notifier, initial_balance_btc=0.1,
+            state_file=str(state_file), slug="ddbot",
+        )
+        try:
+            # Drive the guard to triggered via balance-metric updates.
+            eng1.drawdown_guard.update(0.1)   # peak
+            eng1.drawdown_guard.update(0.09)  # >10% from 0.1 ... actually 10%, trigger
+            assert eng1.drawdown_guard.is_triggered
+            eng1._paused_by_drawdown = True
+            eng1._write_state(50_000.0, is_open=True)
+        finally:
+            eng1._notify_queue.put(None)
+            eng1._notify_thread.join(timeout=5)
+
+        eng2 = PaperEngine(
+            config=minimal_bot_config, exchange=mock_exchange,
+            notifier=mock_notifier, initial_balance_btc=0.1,
+            state_file=str(state_file), slug="ddbot",
+        )
+        try:
+            assert eng2.drawdown_guard.is_triggered is True
+            assert eng2.drawdown_guard.peak_value == pytest.approx(0.1)
+            assert eng2._paused_by_drawdown is True
+        finally:
+            eng2._notify_queue.put(None)
+            eng2._notify_thread.join(timeout=5)
