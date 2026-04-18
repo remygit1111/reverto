@@ -58,6 +58,38 @@ dit nu starten zonder via `make live-dry` te hoeven.
 Alternatief blijft `make live-dry BOT=<slug>` voor ops-flows zonder
 portal.
 
+## Parity testing
+
+Om te verifiëren dat het paper engine een betrouwbare proxy is voor
+live trading, draai een paper bot en een live-dry bot parallel met
+identieke strategie config (alleen `mode` en `name` verschillen).
+Na ≥ 1 week produceert `scripts/parity_compare.py` een side-by-side
+diff van de deals:
+
+```bash
+make parity-compare PAPER=rsi_paper_test LIVE=rsi_real_test
+# of met een ingekorte periode:
+make parity-compare PAPER=rsi_paper_test LIVE=rsi_real_test SINCE=2026-04-18
+```
+
+Het rapport (Markdown op stdout, JSON met `--json`) toont:
+
+- **Summary** — aantal deals per bot, matched pairs, match rate,
+  gemiddelde timing Δ / price Δ / PnL Δ, PnL-correlatie (≥ 10 pairs).
+- **Flags** — per-pair warnings (`timing_warn > 30s`, `price_warn
+  > 10 bp`, `pnl_warn > 0.5 pp`, `exit_mismatch`, `dca_mismatch`).
+- **Unmatched tables** — deals die uitsluitend in één engine
+  voorkwamen; bruikbaar om entry-filter flakiness op te sporen.
+- **Interpretation** — gedrempelde één-regel-oordelen zodat je niet
+  handmatig elke metric hoeft te interpreteren.
+
+Matching algoritme: greedy nearest-neighbour op `opened_at`, venster
+standaard 120 s (`--window` om te tweaken). Elk live deal kan maar
+één keer gematcht worden.
+
+Het script is side-effect-free (alleen SELECTs) — draai het op een
+productie-DB zonder risico.
+
 ## Emergency stop
 
 Portal → profile menu → **🛑 Emergency stop**. Confirm the dialog.
