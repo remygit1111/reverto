@@ -16,11 +16,14 @@
 #     Dat is by design — Fernet beschermt alleen tegen losse JSON dumps,
 #     casual git pushes en log scrapers.
 
+import fcntl
 import json
 import logging
 import os
 import shutil
 import stat
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -152,27 +155,101 @@ def load_encrypted(path: Path) -> Optional[dict]:
         return None
 
 
+@contextmanager
+def _rotation_lock(keyfile: Path):
+    """Process-level advisory lock around key rotation.
+
+    Two concurrent ``rotate_fernet_key`` calls used to be able to both
+    generate fresh keys and overwrite each other in unpredictable
+    order, leaving the credentials file decrypted under whichever key
+    lost the race. An fcntl advisory lock on a sentinel file gates
+    the critical section; second caller gets a clear error instead of
+    silent corruption.
+    """
+    lock_file = keyfile.with_suffix(keyfile.suffix + ".lock")
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_file.touch(mode=0o600)
+    fd = open(lock_file, "w")
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as e:
+            raise RuntimeError(
+                "Another Fernet rotation is already running. "
+                "Wait for it to finish before retrying."
+            ) from e
+        yield
+    finally:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fd.close()
+        try:
+            lock_file.unlink()
+        except OSError:
+            pass
+
+
+def cleanup_old_backups(
+    keyfile: Optional[Path] = None,
+    retention_days: int = 7,
+) -> list[str]:
+    """Delete timestamped Fernet backups older than ``retention_days``.
+
+    Backups are created by ``rotate_fernet_key`` as
+    ``.credentials.key.bak.YYYYMMDDHHMMSS``. Over time they accumulate
+    — a hobbyist rotating monthly ends up with hundreds of files. This
+    helper is safe to call at the end of each rotation or from a cron
+    job.
+    """
+    keyfile = keyfile or _KEY_FILE
+    cutoff = time.time() - retention_days * 86400
+    removed: list[str] = []
+    for backup in keyfile.parent.glob(keyfile.name + ".bak.*"):
+        try:
+            if backup.stat().st_mtime < cutoff:
+                backup.unlink()
+                removed.append(backup.name)
+                logger.info("Removed old Fernet backup: %s", backup.name)
+        except OSError as e:
+            logger.warning(
+                "Failed to remove %s: %s", backup, str(e)[:200],
+            )
+    return removed
+
+
 def rotate_fernet_key(
     credentials_file: Optional[Path] = None,
     keyfile: Optional[Path] = None,
+    retention_days: int = 7,
 ) -> dict:
     """Rotate the Fernet master key that protects every credential entry.
 
-    Steps (each failure path is safe — a partial state leaves the old
-    key + old ciphertext intact):
+    Commit-order contract (critical for recoverability):
+      1. Load every credential under the OLD key.
+      2. Snapshot the old key to a timestamped backup
+         (``.key.bak.YYYYMMDDHHMMSS``) — keyed copies are stored so
+         multiple rotations don't overwrite the rollback image.
+      3. Generate a fresh key and re-encrypt the credential values in
+         memory under it.
+      4. Write BOTH new ciphertext (tmp) AND new key (tmp) to disk.
+      5. ``os.replace`` the key file FIRST, then the creds file. Why
+         this order?  If we crash between the two replaces:
+           * key: NEW, creds: OLD  → `get_keys` returns None (InvalidToken).
+             Recovery = restore latest .bak.* over the key file, then
+             either re-run rotation or continue running with the old
+             key unchanged.  The creds on disk are still valid.
+           * If we instead wrote creds first and crashed: creds: NEW
+             (already encrypted with new key), key: OLD  → unrecoverable,
+             since the new key lived only in memory.
+         Writing the key first is the only order where the intermediate
+         state is at least RECOVERABLE from the backup file.
+      6. Sweep backups older than ``retention_days`` so the directory
+         doesn't grow without bound.
 
-      1. Load all credentials under the OLD key into memory.
-      2. Copy the old key to ``<keyfile>.key.bak`` so the operator has
-         a 7-day rollback window before rotating offsite backups too.
-      3. Generate a fresh Fernet key.
-      4. Re-encrypt every credential value with the new key in memory.
-      5. Atomically replace the key file, THEN the credentials file.
-         Order matters: if we replace creds first and crash before the
-         key flip, the next read would try to decrypt new-cipher with
-         the old key and fail.
-
-    Returns a summary dict the operator (or portal UI) can surface so
-    they know what was rotated and where the backup landed.
+    The whole function runs inside a file-level advisory lock so
+    concurrent rotations fail fast instead of corrupting state.
     """
     keyfile = keyfile or _KEY_FILE
     credentials_file = credentials_file or _STORE_FILE
@@ -180,65 +257,73 @@ def rotate_fernet_key(
     if not keyfile.exists():
         raise FileNotFoundError(f"No master key at {keyfile} — nothing to rotate")
 
-    # 1. Load everything under the old key. `get_keys` returns plaintext
-    # per exchange so we can re-encrypt with the new key.
-    old_store = _read_store()
-    plaintext: dict[str, dict[str, str]] = {}
-    for name in old_store:
-        decrypted = get_keys(name)
-        if decrypted is None:
-            raise RuntimeError(
-                f"Cannot rotate — credentials for {name!r} failed to decrypt "
-                "under the current master key. Fix the key/cipher mismatch first."
-            )
-        plaintext[name] = decrypted
+    with _rotation_lock(keyfile):
+        # 1. Load everything under the old key.
+        old_store = _read_store()
+        plaintext: dict[str, dict[str, str]] = {}
+        for name in old_store:
+            decrypted = get_keys(name)
+            if decrypted is None:
+                raise RuntimeError(
+                    f"Cannot rotate — credentials for {name!r} failed to decrypt "
+                    "under the current master key. Fix the key/cipher mismatch first."
+                )
+            plaintext[name] = decrypted
 
-    # 2. Backup the old key BEFORE we overwrite it.
-    backup_path = keyfile.with_suffix(keyfile.suffix + ".bak")
-    shutil.copy2(keyfile, backup_path)
-    try:
-        os.chmod(backup_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass
+        # 2. Timestamped backup so multiple rotations preserve history.
+        # Include microseconds so two rotations in the same second don't
+        # collide on the same filename. 20 char suffix fits in typical
+        # filesystem name limits and stays lexicographically sortable.
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+        backup_path = keyfile.with_suffix(keyfile.suffix + f".bak.{timestamp}")
+        shutil.copy2(keyfile, backup_path)
+        try:
+            os.chmod(backup_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        except OSError:
+            pass
 
-    # 3 + 4. Fresh key, re-encrypt everything under it.
-    new_key = Fernet.generate_key()
-    new_fernet = Fernet(new_key)
-    new_store: dict[str, dict[str, str]] = {}
-    for name, pt in plaintext.items():
-        new_store[name] = {
-            k: new_fernet.encrypt(v.encode("utf-8")).decode("ascii")
-            for k, v in pt.items()
-        }
+        # 3 + 4. Fresh key, re-encrypt everything under it (in memory).
+        new_key = Fernet.generate_key()
+        new_fernet = Fernet(new_key)
+        new_store: dict[str, dict[str, str]] = {}
+        for name, pt in plaintext.items():
+            new_store[name] = {
+                k: new_fernet.encrypt(v.encode("utf-8")).decode("ascii")
+                for k, v in pt.items()
+            }
 
-    # 5. Atomic key file replacement.
-    tmp_key = keyfile.with_suffix(keyfile.suffix + ".tmp")
-    tmp_key.write_bytes(new_key)
-    try:
-        os.chmod(tmp_key, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
-    os.replace(tmp_key, keyfile)
+        # 5. Write both tmp files BEFORE committing either.
+        tmp_key = keyfile.with_suffix(keyfile.suffix + ".tmp")
+        tmp_key.write_bytes(new_key)
+        try:
+            os.chmod(tmp_key, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
 
-    # Then atomic creds replacement. If this raises, the key has
-    # already rotated but the creds are still under the old key —
-    # operator must restore from .bak.
-    tmp_creds = credentials_file.with_suffix(credentials_file.suffix + ".tmp")
-    tmp_creds.write_text(json.dumps(new_store, indent=2), encoding="utf-8")
-    try:
-        os.chmod(tmp_creds, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
-    os.replace(tmp_creds, credentials_file)
+        tmp_creds = credentials_file.with_suffix(credentials_file.suffix + ".tmp")
+        tmp_creds.write_text(json.dumps(new_store, indent=2), encoding="utf-8")
+        try:
+            os.chmod(tmp_creds, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+        # Commit key first, then creds. A crash between the two leaves
+        # NEW-key + OLD-creds — recoverable by restoring the .bak.* file.
+        os.replace(tmp_key, keyfile)
+        os.replace(tmp_creds, credentials_file)
+
+        # 6. Retention cleanup.
+        removed = cleanup_old_backups(keyfile, retention_days)
 
     logger.warning(
-        "Fernet master key rotated. Backup at %s. Rotated keys: %s",
-        backup_path, list(new_store),
+        "Fernet master key rotated. Backup at %s. Rotated keys: %s. Removed old backups: %d",
+        backup_path, list(new_store), len(removed),
     )
     return {
         "rotated_at": datetime.now(timezone.utc).isoformat(),
         "backup_path": str(backup_path),
         "keys_rotated": sorted(new_store.keys()),
+        "backups_removed": removed,
     }
 
 

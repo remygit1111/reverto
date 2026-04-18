@@ -25,6 +25,7 @@ the `self.exchange.fetch_order` path on line ~120.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -78,16 +79,23 @@ class OrderReconciler:
         self.poll_interval = poll_interval
         self.max_age_seconds = max_age_seconds
         self._pending: dict[str, PendingOrder] = {}
+        # Phase 3 will run reconcile() in a dedicated thread while the
+        # tick loop keeps calling track_order(). A plain dict would
+        # raise RuntimeError on concurrent mutation during iteration —
+        # the lock makes the two operations coexist cleanly.
+        self._lock = threading.Lock()
 
     def track_order(self, order: PendingOrder) -> None:
         """Register a freshly-placed order for reconciliation polling."""
-        self._pending[order.client_order_id] = order
+        with self._lock:
+            self._pending[order.client_order_id] = order
 
     def get_pending(self) -> list[PendingOrder]:
         """Snapshot of currently-tracked orders. Callers must not mutate
         the returned list — use ``track_order`` to add and ``reconcile``
         to remove entries."""
-        return list(self._pending.values())
+        with self._lock:
+            return list(self._pending.values())
 
     def reconcile(self, now: Optional[float] = None) -> list[PendingOrder]:
         """Advance each pending order one reconciliation cycle.
@@ -98,18 +106,24 @@ class OrderReconciler:
 
         Phase 1 implementation: timeout check only. Phase 3 wires the
         commented-out fetch_order branch below.
+
+        Locking strategy: we grab a snapshot under the lock, do the
+        per-order checks OUTSIDE the lock (network I/O in Phase 3),
+        then commit deletions back under the lock. This keeps
+        track_order() unblocked during the slow parts.
         """
         now = now if now is not None else time.time()
         completed: list[PendingOrder] = []
 
-        for coid, pending in list(self._pending.items()):
-            age = now - pending.placed_at
+        with self._lock:
+            snapshot = list(self._pending.items())
 
+        for coid, pending in snapshot:
+            age = now - pending.placed_at
             if age > self.max_age_seconds:
                 pending.status = "timeout"
                 pending.error = f"No confirmation after {age:.1f}s"
                 completed.append(pending)
-                del self._pending[coid]
                 logger.error(
                     "Order %s TIMEOUT — manual reconcile needed (deal=%s)",
                     coid, pending.deal_id,
@@ -126,20 +140,25 @@ class OrderReconciler:
             #         pending.fill_price = status.get("average")
             #         pending.filled_size = status.get("filled")
             #         completed.append(pending)
-            #         del self._pending[coid]
             #     elif status.get("status") == "canceled":
             #         pending.status = "cancelled"
             #         completed.append(pending)
-            #         del self._pending[coid]
             # except Exception as e:
             #     pending.error = str(e)[:200]
+
+        # Commit removals under the lock to avoid racing a concurrent
+        # track_order() that might be adding the same client_order_id.
+        with self._lock:
+            for p in completed:
+                self._pending.pop(p.client_order_id, None)
 
         return completed
 
     def clear(self) -> None:
         """Drop every pending order without reconciling. Used on engine
         shutdown so the reconciler doesn't outlive the engine process."""
-        self._pending.clear()
+        with self._lock:
+            self._pending.clear()
 
 
 # ── Phase 3 scaffolding: position reconciliation ────────────────────────────

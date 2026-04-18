@@ -62,18 +62,43 @@ def _with_order_retries(op_name: str, fn, *args, client=None, symbol=None, **kwa
     for attempt in range(3):
         try:
             # Idempotency check: before a retry, ask the exchange whether
-            # it already has an order with our clientOrderId. If yes, the
-            # previous attempt actually landed even though we never saw
-            # the confirmation — return it instead of placing again.
+            # it already has an order with our clientOrderId.
             #
-            # We require the response to be a dict with a recognised
-            # status so stubbed tests (and exchanges that return empty
-            # dicts for "not found") don't trigger a false positive.
+            # Exception handling here is precise on purpose:
+            #   * OrderNotFound — expected; the previous attempt DIDN'T
+            #     land. Safe to proceed with the retry.
+            #   * NetworkError  — the exchange's fetch_order timed out or
+            #     DNS-failed. We DON'T KNOW whether the prior attempt
+            #     landed. Re-raising as ExchangeNetworkError forces the
+            #     caller (OrderReconciler in Phase 3) to resolve it —
+            #     blindly retrying could double-place an order that
+            #     already exists.
+            #   * Everything else — log and proceed cautiously; stub
+            #     responses from tests and malformed exchange replies
+            #     should not crash the retry loop.
             if attempt > 0 and client is not None and client_order_id and symbol:
+                existing = None
                 try:
                     existing = client.fetch_order(client_order_id, symbol)
-                except Exception:
+                except ccxt.OrderNotFound:
+                    # Expected path — no duplicate exists on the exchange.
                     existing = None
+                except ccxt.NetworkError as e:
+                    logger.error(
+                        "Bitget %s: idempotency fetch_order failed with NetworkError "
+                        "— order state UNKNOWN for %s",
+                        op_name, client_order_id,
+                    )
+                    raise ExchangeNetworkError(
+                        f"Cannot verify order {client_order_id}: {str(e)[:200]}"
+                    ) from e
+                except Exception as e:
+                    logger.warning(
+                        "Bitget %s: idempotency check failed (%s) — proceeding",
+                        op_name, str(e)[:200],
+                    )
+                    existing = None
+
                 if (
                     isinstance(existing, dict)
                     and existing.get("status") in {"open", "closed", "filled", "partial"}

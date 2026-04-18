@@ -2385,6 +2385,44 @@ html.compact .modal-card { padding: 19px; }
 .sw-day-picks.hidden, .sw-hour-range.hidden { display: none; }
 .sw-hour-range { margin: 8px 0 4px 0; }
 
+/* ── Bot state badges (drawdown / clock skew) ────────────────────────────── */
+.state-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 10px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.state-badge.badge-danger {
+  background: rgba(239, 83, 80, 0.14);
+  color: var(--trigger-red);
+  border: 1px solid rgba(239, 83, 80, 0.35);
+}
+.state-badge.badge-warning {
+  background: rgba(240, 160, 80, 0.14);
+  color: #e88a1c;
+  border: 1px solid rgba(240, 160, 80, 0.35);
+}
+.state-badge .btn-small {
+  margin-left: auto;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.state-badge .btn-warning {
+  background: var(--trigger-red);
+  color: #ffffff;
+}
+.state-badge .btn-warning:hover {
+  opacity: 0.9;
+}
+
 /* ── Print styles ──────────────────────────────────────────────────────────
    Operators occasionally need a hard-copy snapshot (compliance, post-mortem
    packs, printed trade journals). Default to: white background, black text,

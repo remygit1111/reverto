@@ -417,6 +417,10 @@ class PaperEngine:
             # and silently disable the kill-switch for the next leg down.
             "drawdown_guard":      self.drawdown_guard.to_dict(),
             "paused_by_drawdown":  self._paused_by_drawdown,
+            # Clock-skew pause lives on LiveEngine only — attribute may
+            # be absent on pure PaperEngine. getattr keeps paper runs
+            # from introducing a spurious state field.
+            "paused_by_clock_skew": getattr(self, "_paused_by_clock_skew", False),
         }
 
         try:
@@ -757,10 +761,10 @@ class PaperEngine:
             self._tick_error_count += 1
             try:
                 from web import metrics as _m
-                _m.record_tick_error(
-                    self._bot_slug or "unknown",
-                    type(e).__name__,
-                )
+                # Pass the exception itself — classify_error maps it to
+                # a bounded-cardinality label so Prometheus doesn't grow
+                # a time-series per exception subclass.
+                _m.record_tick_error(self._bot_slug or "unknown", e)
             except Exception:
                 pass
             # First N errors: log the full traceback for debugging.

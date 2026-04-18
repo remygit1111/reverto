@@ -59,10 +59,11 @@ class TestRotateFernetKey:
 
         result = creds.rotate_fernet_key(credentials_file=store, keyfile=key)
 
-        backup = key.with_suffix(key.suffix + ".bak")
-        assert backup.exists()
-        assert backup.read_bytes() == old_key_bytes
-        assert result["backup_path"] == str(backup)
+        # Backup filename is timestamped — glob for the expected pattern.
+        backups = list(key.parent.glob(key.name + ".bak.*"))
+        assert len(backups) == 1, f"expected 1 backup, got {backups}"
+        assert backups[0].read_bytes() == old_key_bytes
+        assert result["backup_path"] == str(backups[0])
 
     def test_refuses_when_key_missing(self, routed_store):
         """No key file → nothing to rotate."""
