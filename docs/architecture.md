@@ -93,6 +93,59 @@ web/
   in `web/app.py` omdat `include_router` niet cleanly met
   `BaseHTTPMiddleware` + async WS auth samenwerkt.
 
+## Multi-tenant foundation (Fase 1)
+
+Reverto is voorbereid op multi-tenant deployment. Schema versie 3
+introduceert een `users` tabel en elke OWNED tabel (`deals`, `orders`,
+`chart_annotations`, `backtest_runs`) heeft een `user_id INTEGER NOT
+NULL REFERENCES users(id)` kolom + een composite index op
+`(user_id, bot_slug)`.
+
+Voor Fase 1 draait alles op `user_id=1` (de geseede admin row). De
+request-laag resolvt via `_request_user` in `web/app.py` die een
+`User` instance retourneert; Fase 2 zal die lookup aan de session
+cookie hangen. Het store-interface (`core/deal_store.py`) vereist
+`user_id` expliciet op elke functie — er zijn geen stille defaults.
+Die keuze voorkomt dat een toekomstige callsite per ongeluk cross-
+user data lekt.
+
+### Tabellen met user_id FK
+
+| Tabel              | Index                                |
+|--------------------|--------------------------------------|
+| deals              | idx_deals_user_id, idx_deals_user_bot |
+| orders             | idx_orders_user_id                    |
+| chart_annotations  | idx_chart_annotations_user_id, idx_chart_annotations_user_bot |
+| backtest_runs      | idx_backtest_runs_user_id, idx_backtest_runs_user_bot |
+
+### Migration contract
+
+Van pre-MT (SCHEMA_VERSION ≤ 2) naar v3 is een **destructive drop +
+recreate** — een `ALTER TABLE` die een NOT NULL FK kolom toevoegt
+aan een bestaande tabel met rijen is in SQLite een volledige
+table-rewrite met zijn eigen failure modes. `_migrate_schema` logt
+een WARNING, dropt owned tabellen in FK-safe volgorde en laat
+`_SCHEMA_STATEMENTS` het v3 schema installeren. `scripts/reset_db.py`
+backupt `logs/reverto.db` + elke `*.state.json` naar `.pre_mt.<ts>`
+voordat de eerste boot op v3 plaatsvindt.
+
+### User resolution (engines)
+
+`PaperEngine.__init__` en `LiveEngine.__init__` krijgen `user_id=1`
+als default; `main_paper.py` en `main_live.py` geven het expliciet
+mee. Elke `deal_store` call binnen de engine gebruikt
+`self.user_id`. Fase 2 zal de user afleiden uit de bot-YAML folder
+(per-user directory layout) zonder verdere signature-wijzigingen.
+
+### Credentials (Fase 1 = global)
+
+`core/credentials.py` heeft `user_id` verplicht gemaakt maar gebruikt
+het nog niet — Phase 1 deelt één `logs/credentials.json` + één
+Fernet master key tussen alle users. Het verplicht houden van het
+argument voorkomt dat Phase 2 (per-user key files) opnieuw elk
+callsite moet aanpassen.
+
+
 ## Persistence layer (post-v22 refactor)
 
 ```

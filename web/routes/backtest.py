@@ -16,7 +16,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core import deal_store
-from web.app import _audit, _request_actor, limiter
+from core.user import User
+from web.app import _audit, _request_actor, _request_user, limiter
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ async def api_backtest_save(
     body: BacktestSaveBody,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     """Persist one completed backtest run.
 
@@ -47,6 +49,7 @@ async def api_backtest_save(
     run_id = await asyncio.to_thread(
         deal_store.save_backtest_run,
         body.slug, body.name, body.params, body.summary,
+        user.id,
     )
     return {"ok": True, "id": run_id}
 
@@ -58,6 +61,7 @@ async def api_backtest_runs(
     slug: Optional[str] = None,
     limit: int = 100,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     """Return recent backtest runs, optionally filtered by bot slug."""
     if limit < 1:
@@ -66,11 +70,11 @@ async def api_backtest_runs(
         limit = 500
     if slug:
         runs = await asyncio.to_thread(
-            deal_store.get_backtest_runs, slug, limit,
+            deal_store.get_backtest_runs, slug, user.id, limit,
         )
     else:
         runs = await asyncio.to_thread(
-            deal_store.get_all_backtest_runs, limit,
+            deal_store.get_all_backtest_runs, user.id, limit,
         )
     return {"runs": runs}
 
@@ -81,8 +85,11 @@ async def api_backtest_run_delete(
     run_id: int,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
-    deleted = await asyncio.to_thread(deal_store.delete_backtest_run, run_id)
+    deleted = await asyncio.to_thread(
+        deal_store.delete_backtest_run, run_id, user.id,
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="Run not found")
     _audit("backtest_delete", str(run_id), actor)

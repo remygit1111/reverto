@@ -34,10 +34,24 @@ def temp_db(tmp_path):
     """
     db_file = tmp_path / "test.db"
     conn = sqlite3.connect(db_file)
+    # Users table + admin seed so the FK in deals/orders/backtest_runs
+    # resolves; otherwise the NOT NULL / REFERENCES pair fails every
+    # insert with IntegrityError.
+    conn.execute(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            active INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    conn.execute("INSERT INTO users (id, username) VALUES (1, 'admin')")
     conn.execute(
         """
         CREATE TABLE deals (
             id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
             bot_slug TEXT,
             bot_name TEXT,
             side TEXT,
@@ -75,12 +89,12 @@ class TestLoadDealHistory:
         have no realised pnl so they cannot be trained on."""
         conn = sqlite3.connect(temp_db)
         conn.execute(
-            "INSERT INTO deals (id, bot_slug, status, closed_at, pnl_pct) "
-            "VALUES ('D-1', 'mybot', 'closed', 1000, 2.5)"
+            "INSERT INTO deals (id, user_id, bot_slug, status, closed_at, pnl_pct) "
+            "VALUES ('D-1', 1, 'mybot', 'closed', 1000, 2.5)"
         )
         conn.execute(
-            "INSERT INTO deals (id, bot_slug, status, closed_at, pnl_pct) "
-            "VALUES ('D-2', 'mybot', 'open', NULL, NULL)"
+            "INSERT INTO deals (id, user_id, bot_slug, status, closed_at, pnl_pct) "
+            "VALUES ('D-2', 1, 'mybot', 'open', NULL, NULL)"
         )
         conn.commit()
         conn.close()
@@ -92,12 +106,12 @@ class TestLoadDealHistory:
     def test_filters_by_bot_slug(self, temp_db):
         conn = sqlite3.connect(temp_db)
         conn.execute(
-            "INSERT INTO deals (id, bot_slug, status, closed_at, pnl_pct) "
-            "VALUES ('D-1', 'bot_a', 'closed', 1000, 2.5)"
+            "INSERT INTO deals (id, user_id, bot_slug, status, closed_at, pnl_pct) "
+            "VALUES ('D-1', 1, 'bot_a', 'closed', 1000, 2.5)"
         )
         conn.execute(
-            "INSERT INTO deals (id, bot_slug, status, closed_at, pnl_pct) "
-            "VALUES ('D-2', 'bot_b', 'closed', 2000, 1.5)"
+            "INSERT INTO deals (id, user_id, bot_slug, status, closed_at, pnl_pct) "
+            "VALUES ('D-2', 1, 'bot_b', 'closed', 2000, 1.5)"
         )
         conn.commit()
         conn.close()
@@ -110,12 +124,12 @@ class TestLoadDealHistory:
         """Chronological ordering is required for TimeSeriesSplit later."""
         conn = sqlite3.connect(temp_db)
         conn.execute(
-            "INSERT INTO deals (id, bot_slug, status, closed_at, opened_at, pnl_pct) "
-            "VALUES ('D-2', 'mybot', 'closed', 2000, 2000, 1.5)"
+            "INSERT INTO deals (id, user_id, bot_slug, status, closed_at, opened_at, pnl_pct) "
+            "VALUES ('D-2', 1, 'mybot', 'closed', 2000, 2000, 1.5)"
         )
         conn.execute(
-            "INSERT INTO deals (id, bot_slug, status, closed_at, opened_at, pnl_pct) "
-            "VALUES ('D-1', 'mybot', 'closed', 1500, 1000, 2.5)"
+            "INSERT INTO deals (id, user_id, bot_slug, status, closed_at, opened_at, pnl_pct) "
+            "VALUES ('D-1', 1, 'mybot', 'closed', 1500, 1000, 2.5)"
         )
         conn.commit()
         conn.close()
@@ -191,22 +205,23 @@ class TestRunPipeline:
 
 def _seed_closed_deal(
     db_file, deal_id: str, bot_slug: str, opened_at: float, pnl_pct: float,
+    user_id: int = 1,
 ):
     """Insert a minimal closed deal row for pipeline integration tests."""
     conn = sqlite3.connect(db_file)
     conn.execute(
         """
         INSERT INTO deals (
-            id, bot_slug, bot_name, side, status, close_reason,
+            id, user_id, bot_slug, bot_name, side, status, close_reason,
             opened_at, closed_at, initial_price, avg_entry, close_price,
             total_size, leverage, pnl_btc, pnl_pct,
             entry_trigger, exit_trigger
-        ) VALUES (?, ?, ?, 'long', 'closed', 'take_profit',
+        ) VALUES (?, ?, ?, ?, 'long', 'closed', 'take_profit',
                   ?, ?, 80000.0, 80000.0, 81000.0, 0.001, 1, 0.000001, ?,
                   NULL, NULL)
         """,
         (
-            deal_id, bot_slug, bot_slug,
+            deal_id, user_id, bot_slug, bot_slug,
             opened_at, opened_at + 3600,
             pnl_pct,
         ),

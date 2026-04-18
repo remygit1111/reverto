@@ -36,13 +36,20 @@ logger = logging.getLogger(__name__)
 
 # ── Step 1: load deal history ────────────────────────────────────────────────
 
-def load_deal_history(db_path: str, bot_slug: str) -> pd.DataFrame:
+def load_deal_history(
+    db_path: str, bot_slug: str, user_id: int = 1,
+) -> pd.DataFrame:
     """Read the closed-deals ledger for a single bot.
 
     Only closed deals are returned — open deals don't yet have a
     realised pnl_btc / pnl_pct to train on. Sorted by opened_at so
     later time-series cross-validation in training can use a
     chronological split without re-sorting.
+
+    ``user_id`` is required by the multi-tenant schema (v3+).
+    Defaults to 1 (admin) so the Phase-1 cron wiring doesn't have
+    to know about sessions yet; Phase 2 will read it from the bot's
+    owning user folder.
     """
     conn = sqlite3.connect(db_path)
     try:
@@ -50,11 +57,11 @@ def load_deal_history(db_path: str, bot_slug: str) -> pd.DataFrame:
             """
             SELECT *
               FROM deals
-             WHERE bot_slug = ? AND closed_at IS NOT NULL
+             WHERE user_id = ? AND bot_slug = ? AND closed_at IS NOT NULL
              ORDER BY opened_at
             """,
             conn,
-            params=[bot_slug],
+            params=[user_id, bot_slug],
         )
     finally:
         conn.close()

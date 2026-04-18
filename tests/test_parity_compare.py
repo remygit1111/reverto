@@ -57,17 +57,18 @@ def _seed_deal(
     dca_orders: int = 0,
 ):
     """Raw INSERT — bypasses PaperDeal/save_deal so tests stay compact
-    and don't depend on the full engine type surface."""
+    and don't depend on the full engine type surface. Uses user_id=1
+    (the seeded admin) throughout, matching parity_compare's default."""
     conn = get_db()
     with conn:
         conn.execute(
             """
             INSERT INTO deals (
-                id, bot_slug, bot_name, side, status, close_reason,
+                id, user_id, bot_slug, bot_name, side, status, close_reason,
                 opened_at, closed_at, initial_price, avg_entry,
                 close_price, total_size, leverage, pnl_btc, pnl_pct,
                 peak_price, entry_trigger, exit_trigger
-            ) VALUES (?, ?, ?, 'long', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+            ) VALUES (?, 1, ?, ?, 'long', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
             """,
             (
                 deal_id, bot_slug, bot_slug, status, close_reason,
@@ -87,9 +88,9 @@ def _seed_deal(
             conn.execute(
                 """
                 INSERT INTO orders (
-                    id, deal_id, bot_slug, order_number, order_type,
+                    id, user_id, deal_id, bot_slug, order_number, order_type,
                     price, size, fee_btc, placed_at
-                ) VALUES (?, ?, ?, ?, 'dca', ?, ?, 0, ?)
+                ) VALUES (?, 1, ?, ?, ?, 'dca', ?, ?, 0, ?)
                 """,
                 (
                     f"{deal_id}-dca-{i}",

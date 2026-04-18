@@ -65,7 +65,7 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     return dt
 
 
-def _dca_counts_by_deal(bot_slug: str) -> dict[str, int]:
+def _dca_counts_by_deal(bot_slug: str, user_id: int) -> dict[str, int]:
     """Single-query aggregate of DCA order counts per deal for a bot.
 
     One query is cheaper than N per-deal round-trips; the result is a
@@ -77,19 +77,21 @@ def _dca_counts_by_deal(bot_slug: str) -> dict[str, int]:
         """
         SELECT deal_id, COUNT(*) AS n
         FROM orders
-        WHERE bot_slug = ? AND order_type = 'dca'
+        WHERE user_id = ? AND bot_slug = ? AND order_type = 'dca'
         GROUP BY deal_id
         """,
-        (bot_slug,),
+        (user_id, bot_slug),
     ).fetchall()
     return {row["deal_id"]: int(row["n"]) for row in rows}
 
 
-def _load_bot_deals(slug: str, since: Optional[datetime]) -> list[dict]:
+def _load_bot_deals(
+    slug: str, since: Optional[datetime], user_id: int = 1,
+) -> list[dict]:
     """Pull deals + DCA counts for one bot. Filters by opened_at >= since
     in Python so we don't have to re-shape the deal_store SQL."""
-    raw = get_deals(bot_slug=slug, limit=100_000)
-    dca = _dca_counts_by_deal(slug)
+    raw = get_deals(user_id=user_id, bot_slug=slug, limit=100_000)
+    dca = _dca_counts_by_deal(slug, user_id=user_id)
 
     out: list[dict] = []
     for d in raw:

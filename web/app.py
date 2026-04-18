@@ -26,6 +26,7 @@ from config.config_loader import load_bot_config
 from config.models import BotConfig, Mode
 from core import credentials
 from core.database import init_db as _init_db
+from core.user import User, get_default_user
 from notifications.telegram import TelegramNotifier
 
 import bcrypt
@@ -303,6 +304,22 @@ def _request_actor(request: Request) -> str:
         hint = hashlib.sha256(provided.encode("utf-8")).hexdigest()[:8]
         return f"apikey:{hint}"
     return "-"
+
+
+def _request_user(request: Request) -> User:
+    """FastAPI dependency — resolve the request to a User instance.
+
+    Phase 1 of the multi-tenant migration: always returns the admin
+    user (id=1). Phase 2 will read the user_id from the session cookie
+    and hydrate via ``core.user.get_user_by_id``. Routes that already
+    take ``Depends(_request_actor)`` keep working — that dependency is
+    still the source of truth for audit-log strings. Use
+    ``Depends(_request_user)`` whenever you need the full User object
+    (e.g. to pass user_id into deal_store calls).
+    """
+    # TODO Phase 2: look up session → user_id → get_user_by_id.
+    # For now, every authenticated request is admin.
+    return get_default_user()
 
 # Module-level ccxt client — reused across /api/price calls so we don't pay
 # instantiation overhead on every request.

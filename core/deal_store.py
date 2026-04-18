@@ -9,6 +9,15 @@
 # Every function commits its own transaction. Writes hold a module-level
 # lock so the portal's async routes and the engine's monitor thread do
 # not interleave writes on top of each other.
+#
+# Multi-tenant contract (Phase 1):
+#   Every public function takes ``user_id`` as a required argument.
+#   This is deliberately defaults-free — the classic mistake in a multi-
+#   tenant system is a query that forgets its tenant filter and leaks
+#   another user's data. Making the argument mandatory forces every
+#   call site through review. Phase 1 always passes ``user_id=1``
+#   (admin), but the wiring is ready for Phase 2 session-based
+#   resolution without another refactor.
 
 import json
 import threading
@@ -56,7 +65,9 @@ def _decode_trigger(value: Optional[str]) -> Optional[dict]:
 
 # ── Deals / orders ───────────────────────────────────────────────────────────
 
-def save_deal(deal: "PaperDeal", bot_slug: str, bot_name: str) -> None:
+def save_deal(
+    deal: "PaperDeal", bot_slug: str, bot_name: str, user_id: int,
+) -> None:
     """INSERT OR REPLACE the given deal row.
 
     Called on open, on every DCA (so avg_entry + total_size stay current),
@@ -73,14 +84,15 @@ def save_deal(deal: "PaperDeal", bot_slug: str, bot_name: str) -> None:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO deals (
-                    id, bot_slug, bot_name, side, status, close_reason,
+                    id, user_id, bot_slug, bot_name, side, status, close_reason,
                     opened_at, closed_at, initial_price, avg_entry,
                     close_price, total_size, leverage, pnl_btc, pnl_pct,
                     peak_price, entry_trigger, exit_trigger
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deal.id,
+                    user_id,
                     bot_slug,
                     bot_name,
                     deal.side,
@@ -103,9 +115,7 @@ def save_deal(deal: "PaperDeal", bot_slug: str, bot_name: str) -> None:
 
 
 def replay_deals_in_transaction(
-    deals: list,
-    bot_slug: str,
-    bot_name: str,
+    deals: list, bot_slug: str, bot_name: str, user_id: int,
 ) -> int:
     """Bulk-INSERT-OR-REPLACE a list of PaperDeal objects + their orders
     inside a single SQLite transaction.
@@ -128,14 +138,15 @@ def replay_deals_in_transaction(
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO deals (
-                        id, bot_slug, bot_name, side, status, close_reason,
+                        id, user_id, bot_slug, bot_name, side, status, close_reason,
                         opened_at, closed_at, initial_price, avg_entry,
                         close_price, total_size, leverage, pnl_btc, pnl_pct,
                         peak_price, entry_trigger, exit_trigger
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         deal.id,
+                        user_id,
                         bot_slug,
                         bot_name,
                         deal.side,
@@ -161,12 +172,13 @@ def replay_deals_in_transaction(
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO orders (
-                            id, deal_id, bot_slug, order_number, order_type,
+                            id, user_id, deal_id, bot_slug, order_number, order_type,
                             price, size, fee_btc, placed_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             order_id,
+                            user_id,
                             deal.id,
                             bot_slug,
                             order.order_number,
@@ -184,6 +196,7 @@ def save_order(
     order: "PaperOrder",
     deal_id: str,
     bot_slug: str,
+    user_id: int,
     fee_btc: float = 0.0,
 ) -> None:
     """INSERT OR REPLACE a single order row under its parent deal."""
@@ -196,12 +209,13 @@ def save_order(
             conn.execute(
                 """
                 INSERT OR REPLACE INTO orders (
-                    id, deal_id, bot_slug, order_number, order_type,
+                    id, user_id, deal_id, bot_slug, order_number, order_type,
                     price, size, fee_btc, placed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order_id,
+                    user_id,
                     deal_id,
                     bot_slug,
                     order.order_number,
@@ -220,15 +234,16 @@ def close_deal(
     close_reason: str,
     pnl_btc: float,
     pnl_pct: float,
+    user_id: int,
     closed_at: Optional[str] = None,
     exit_trigger: Optional[dict] = None,
 ) -> None:
-    """Mark a deal closed in the ledger. No-op if the row does not exist.
+    """Mark a deal closed in the ledger. No-op if the row does not
+    exist or belongs to a different user.
 
-    `exit_trigger`, when provided, is stored as a JSON blob next to the
-    close_reason — callers use the dict to record a richer structured
-    reason (type, matched indicator group, etc.) for the portal's deal
-    history panel.
+    The ``WHERE id = ? AND user_id = ?`` clause is the per-row tenant
+    guard — a miswired caller that passes the wrong user_id gets a
+    silent no-op instead of clobbering another tenant's deal.
     """
     closed_at_iso = closed_at or _now_iso()
     encoded = _encode_trigger(exit_trigger)
@@ -245,34 +260,33 @@ def close_deal(
                        pnl_pct = ?,
                        closed_at = ?,
                        exit_trigger = COALESCE(?, exit_trigger)
-                 WHERE id = ?
+                 WHERE id = ? AND user_id = ?
                 """,
                 (close_price, close_reason, pnl_btc, pnl_pct, closed_at_iso,
-                 encoded, deal_id),
+                 encoded, deal_id, user_id),
             )
 
 
 def get_deals(
+    user_id: int,
     bot_slug: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 100,
 ) -> list[dict]:
-    """Return deal rows filtered by optional bot_slug + status.
+    """Return deal rows filtered by ``user_id`` (required) + optional
+    bot_slug + status.
 
     Rows come back as plain dicts (all columns) sorted by opened_at DESC.
     """
     conn = get_db()
-    query = "SELECT * FROM deals"
-    clauses: list[str] = []
-    params: list[object] = []
+    query = "SELECT * FROM deals WHERE user_id = ?"
+    params: list[object] = [user_id]
     if bot_slug is not None:
-        clauses.append("bot_slug = ?")
+        query += " AND bot_slug = ?"
         params.append(bot_slug)
     if status is not None:
-        clauses.append("status = ?")
+        query += " AND status = ?"
         params.append(status)
-    if clauses:
-        query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY opened_at DESC LIMIT ?"
     params.append(int(limit))
     rows = conn.execute(query, params).fetchall()
@@ -285,24 +299,29 @@ def get_deals(
     return out
 
 
-def get_deal_orders(deal_id: str) -> list[dict]:
-    """Return all orders for a deal, sorted by order_number ASC."""
+def get_deal_orders(deal_id: str, user_id: int) -> list[dict]:
+    """Return all orders for a deal, sorted by order_number ASC.
+    Filters by ``user_id`` as a second line of defence — even though
+    deal_id is a PK, callers that fetched a foreign deal_id and then
+    asked us for its orders would otherwise leak the other tenant's
+    order rows."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM orders WHERE deal_id = ? ORDER BY order_number ASC",
-        (deal_id,),
+        "SELECT * FROM orders WHERE deal_id = ? AND user_id = ? "
+        "ORDER BY order_number ASC",
+        (deal_id, user_id),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_deals(limit: int = 500) -> list[dict]:
-    """Shortcut for get_deals(None, None, limit)."""
-    return get_deals(None, None, limit)
+def get_all_deals(user_id: int, limit: int = 500) -> list[dict]:
+    """Shortcut for get_deals(user_id, None, None, limit)."""
+    return get_deals(user_id, None, None, limit)
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
-def compute_stats(bot_slug: Optional[str] = None) -> dict:
+def compute_stats(user_id: int, bot_slug: Optional[str] = None) -> dict:
     """Aggregate stats across closed deals.
 
     Returns a flat dict with totals, win rate, best/worst deal PnL, and
@@ -313,12 +332,15 @@ def compute_stats(bot_slug: Optional[str] = None) -> dict:
 
     if bot_slug is not None:
         deal_rows = conn.execute(
-            "SELECT id, pnl_btc FROM deals WHERE status = 'closed' AND bot_slug = ?",
-            (bot_slug,),
+            "SELECT id, pnl_btc FROM deals "
+            "WHERE user_id = ? AND status = 'closed' AND bot_slug = ?",
+            (user_id, bot_slug),
         ).fetchall()
     else:
         deal_rows = conn.execute(
-            "SELECT id, pnl_btc FROM deals WHERE status = 'closed'",
+            "SELECT id, pnl_btc FROM deals "
+            "WHERE user_id = ? AND status = 'closed'",
+            (user_id,),
         ).fetchall()
 
     total = len(deal_rows)
@@ -343,12 +365,15 @@ def compute_stats(bot_slug: Optional[str] = None) -> dict:
     best = max(pnls)
     worst = min(pnls)
 
-    # Fees across every order belonging to the matched deals.
+    # Fees across every order belonging to the matched deals. user_id
+    # filter on orders is belt-and-braces — the deal_id IN (...) clause
+    # is already scoped to this user via the deal_rows lookup above.
     ids = [r["id"] for r in deal_rows]
     placeholders = ",".join("?" * len(ids))
     fee_row = conn.execute(
-        f"SELECT COALESCE(SUM(fee_btc), 0) AS total FROM orders WHERE deal_id IN ({placeholders})",
-        ids,
+        f"SELECT COALESCE(SUM(fee_btc), 0) AS total FROM orders "
+        f"WHERE deal_id IN ({placeholders}) AND user_id = ?",
+        ids + [user_id],
     ).fetchone()
     total_fees = float(fee_row["total"] or 0.0)
 
@@ -371,6 +396,7 @@ def save_annotation(
     type_: str,
     timeframe: str,
     x1: int,
+    user_id: int,
     y1: Optional[float] = None,
     x2: Optional[int] = None,
     y2: Optional[float] = None,
@@ -395,42 +421,50 @@ def save_annotation(
             cur = conn.execute(
                 """
                 INSERT INTO chart_annotations (
-                    bot_slug, type, timeframe, x1, y1, x2, y2, label, color
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    user_id, bot_slug, type, timeframe, x1, y1, x2, y2, label, color
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (bot_slug, type_, timeframe, x1, y1, x2, y2, label, color),
+                (user_id, bot_slug, type_, timeframe,
+                 x1, y1, x2, y2, label, color),
             )
             return int(cur.lastrowid or 0)
 
 
 def list_annotations(
     bot_slug: str,
+    user_id: int,
     timeframe: Optional[str] = None,
 ) -> list[dict]:
     """Return all annotations for a bot, optionally filtered by timeframe."""
     conn = get_db()
     if timeframe is None:
         rows = conn.execute(
-            "SELECT * FROM chart_annotations WHERE bot_slug = ? ORDER BY id ASC",
-            (bot_slug,),
+            "SELECT * FROM chart_annotations WHERE user_id = ? AND bot_slug = ? "
+            "ORDER BY id ASC",
+            (user_id, bot_slug),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM chart_annotations WHERE bot_slug = ? AND timeframe = ? "
+            "SELECT * FROM chart_annotations WHERE user_id = ? "
+            "AND bot_slug = ? AND timeframe = ? "
             "ORDER BY id ASC",
-            (bot_slug, timeframe),
+            (user_id, bot_slug, timeframe),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def delete_annotation(ann_id: int) -> bool:
-    """Delete an annotation by id. Returns True if a row was removed."""
+def delete_annotation(ann_id: int, user_id: int) -> bool:
+    """Delete an annotation by id. Returns True if a row was removed.
+    The user_id filter makes a no-op out of cross-tenant delete
+    attempts — returning False leaks only the information that an
+    annotation with that id either doesn't exist or doesn't belong
+    to this user, which is the same response either way."""
     with _write_lock:
         conn = get_db()
         with conn:
             cur = conn.execute(
-                "DELETE FROM chart_annotations WHERE id = ?",
-                (ann_id,),
+                "DELETE FROM chart_annotations WHERE id = ? AND user_id = ?",
+                (ann_id, user_id),
             )
             return cur.rowcount > 0
 
@@ -438,6 +472,7 @@ def delete_annotation(ann_id: int) -> bool:
 # ── Backtest runs ────────────────────────────────────────────────────────────
 
 _BACKTEST_COLS = (
+    "user_id",
     "bot_slug", "bot_name", "start_date", "end_date", "timeframe",
     "initial_balance_btc", "final_balance_btc",
     "total_pnl_btc", "total_pnl_pct",
@@ -467,7 +502,7 @@ def _to_float(v) -> Optional[float]:
 
 
 def save_backtest_run(
-    bot_slug: str, bot_name: str, params: dict, summary: dict
+    bot_slug: str, bot_name: str, params: dict, summary: dict, user_id: int,
 ) -> int:
     """Persist one completed backtest run and return its row id.
 
@@ -478,6 +513,7 @@ def save_backtest_run(
     """
     s = summary or {}
     row = {
+        "user_id": user_id,
         "bot_slug": bot_slug,
         "bot_name": bot_name,
         "start_date": params.get("start_date", ""),
@@ -520,39 +556,44 @@ def save_backtest_run(
             return int(cur.lastrowid)
 
 
-def get_backtest_runs(bot_slug: str, limit: int = 50) -> list[dict]:
+def get_backtest_runs(bot_slug: str, user_id: int, limit: int = 50) -> list[dict]:
     """Return the N most recent backtest runs for a single bot."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM backtest_runs WHERE bot_slug = ? "
+        "SELECT * FROM backtest_runs WHERE user_id = ? AND bot_slug = ? "
         "ORDER BY id DESC LIMIT ?",
-        (bot_slug, limit),
+        (user_id, bot_slug, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_backtest_runs(limit: int = 100) -> list[dict]:
-    """Return the N most recent backtest runs across every bot."""
+def get_all_backtest_runs(user_id: int, limit: int = 100) -> list[dict]:
+    """Return the N most recent backtest runs for this user."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?",
-        (limit,),
+        "SELECT * FROM backtest_runs WHERE user_id = ? "
+        "ORDER BY id DESC LIMIT ?",
+        (user_id, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def delete_backtest_run(run_id: int) -> bool:
-    """Delete a single backtest run by ID. Returns True if a row was deleted."""
+def delete_backtest_run(run_id: int, user_id: int) -> bool:
+    """Delete a single backtest run by ID. Returns True if a row was
+    deleted. The user_id filter makes cross-tenant deletes a no-op."""
     with _write_lock:
         conn = get_db()
         with conn:
             cur = conn.execute(
-                "DELETE FROM backtest_runs WHERE id = ?", (run_id,),
+                "DELETE FROM backtest_runs WHERE id = ? AND user_id = ?",
+                (run_id, user_id),
             )
             return cur.rowcount > 0
 
 
-def delete_annotations_for(bot_slug: str, timeframe: Optional[str] = None) -> int:
+def delete_annotations_for(
+    bot_slug: str, user_id: int, timeframe: Optional[str] = None,
+) -> int:
     """Bulk-delete annotations for a bot, optionally scoped to a timeframe.
 
     Returns the number of rows removed. Used by the "Clear all" toolbar
@@ -564,12 +605,13 @@ def delete_annotations_for(bot_slug: str, timeframe: Optional[str] = None) -> in
         with conn:
             if timeframe is None:
                 cur = conn.execute(
-                    "DELETE FROM chart_annotations WHERE bot_slug = ?",
-                    (bot_slug,),
+                    "DELETE FROM chart_annotations WHERE user_id = ? AND bot_slug = ?",
+                    (user_id, bot_slug),
                 )
             else:
                 cur = conn.execute(
-                    "DELETE FROM chart_annotations WHERE bot_slug = ? AND timeframe = ?",
-                    (bot_slug, timeframe),
+                    "DELETE FROM chart_annotations WHERE user_id = ? "
+                    "AND bot_slug = ? AND timeframe = ?",
+                    (user_id, bot_slug, timeframe),
                 )
             return cur.rowcount

@@ -210,14 +210,16 @@ class TestDbLedgerIntegration:
         engine._check_tp(deal, 82400.0)
         assert deal.id not in engine.state.open_deals
 
-        rows = deal_store.get_deals(bot_slug="integration_bot", status="closed")
+        rows = deal_store.get_deals(
+            user_id=1, bot_slug="integration_bot", status="closed",
+        )
         assert len(rows) == 1
         row = rows[0]
         assert row["id"] == deal.id
         assert row["close_reason"] == "tp"
         assert row["pnl_btc"] == pytest.approx(expected_pnl, rel=1e-9)
 
-        orders = deal_store.get_deal_orders(deal.id)
+        orders = deal_store.get_deal_orders(deal.id, user_id=1)
         assert len(orders) == 2
         assert orders[0]["order_type"] == "base"
         assert orders[1]["order_type"] == "dca"

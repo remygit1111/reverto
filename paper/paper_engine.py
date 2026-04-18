@@ -136,7 +136,14 @@ class PaperEngine:
         state_file: str = None,
         manual_trigger_file: str = None,
         slug: str | None = None,
+        user_id: int = 1,
     ):
+        # Multi-tenant foundation (Phase 1): the engine owns a user_id
+        # that it passes into every deal_store call so rows land with
+        # the right tenant FK. Default 1 (admin) keeps all existing
+        # callers working without edits; main_paper.py / main_live.py
+        # pass it explicitly when the runner knows the bot's owner.
+        self.user_id = int(user_id)
         self.config           = config
         # Bot slug drives the DB ledger rows. Prefer the explicit arg from
         # main_paper.py (YAML filename stem). Fall back to deriving it from
@@ -265,7 +272,9 @@ class PaperEngine:
         if not self._bot_slug:
             return
         try:
-            deal_store.save_deal(deal, self._bot_slug, self.config.name)
+            deal_store.save_deal(
+                deal, self._bot_slug, self.config.name, user_id=self.user_id,
+            )
         except Exception as e:
             logger.warning("deal_store.save_deal failed: %s", e)
 
@@ -273,7 +282,10 @@ class PaperEngine:
         if not self._bot_slug:
             return
         try:
-            deal_store.save_order(order, deal_id, self._bot_slug, fee_btc=fee)
+            deal_store.save_order(
+                order, deal_id, self._bot_slug,
+                user_id=self.user_id, fee_btc=fee,
+            )
         except Exception as e:
             logger.warning("deal_store.save_order failed: %s", e)
 
@@ -287,6 +299,7 @@ class PaperEngine:
         try:
             deal_store.close_deal(
                 deal_id, close_price, reason, pnl_btc, pnl_pct,
+                user_id=self.user_id,
                 exit_trigger=exit_trigger,
             )
         except Exception as e:
@@ -465,6 +478,7 @@ class PaperEngine:
                 )
                 migrated = deal_store.replay_deals_in_transaction(
                     deals_to_replay, self._bot_slug, self.config.name,
+                    user_id=self.user_id,
                 )
                 if migrated:
                     logger.info(

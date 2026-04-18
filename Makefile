@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -125,3 +125,10 @@ parity-compare:
 	@test -n "$(PAPER)" || (echo "Usage: make parity-compare PAPER=<slug> LIVE=<slug> [SINCE=YYYY-MM-DD]" && exit 1)
 	@test -n "$(LIVE)"  || (echo "Usage: make parity-compare PAPER=<slug> LIVE=<slug> [SINCE=YYYY-MM-DD]" && exit 1)
 	$(PYTHON) scripts/parity_compare.py --paper $(PAPER) --live $(LIVE) $(if $(SINCE),--since $(SINCE),)
+
+# ── Multi-tenant migration helper ────────────────────────────────────────────
+# reset-db  — destructive: backups logs/reverto.db + every *.state.json
+#             to .pre_mt.<timestamp> and removes the originals. Run once
+#             before the first boot on the new v3 schema.
+reset-db:
+	$(PYTHON) scripts/reset_db.py

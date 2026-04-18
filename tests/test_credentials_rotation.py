@@ -31,11 +31,11 @@ class TestRotateFernetKey:
         """After rotate, get_keys must return the same plaintext values
         under the new master key."""
         key, store = routed_store
-        creds.save_keys("bitget", "api_abc", "secret_xyz")
-        creds.save_keys("kraken", "k_api", "k_secret")
+        creds.save_keys("bitget", "api_abc", "secret_xyz", user_id=1)
+        creds.save_keys("kraken", "k_api", "k_secret", user_id=1)
 
         # Sanity: before rotate.
-        before = creds.get_keys("bitget")
+        before = creds.get_keys("bitget", user_id=1)
         assert before == {"api_key": "api_abc", "api_secret": "secret_xyz"}
 
         old_key_bytes = key.read_bytes()
@@ -45,16 +45,16 @@ class TestRotateFernetKey:
         assert key.read_bytes() != old_key_bytes
 
         # Plaintext survives the round-trip.
-        assert creds.get_keys("bitget") == {
+        assert creds.get_keys("bitget", user_id=1) == {
             "api_key": "api_abc", "api_secret": "secret_xyz",
         }
-        assert creds.get_keys("kraken") == {
+        assert creds.get_keys("kraken", user_id=1) == {
             "api_key": "k_api", "api_secret": "k_secret",
         }
 
     def test_backup_file_created(self, routed_store):
         key, store = routed_store
-        creds.save_keys("bitget", "a", "b")
+        creds.save_keys("bitget", "a", "b", user_id=1)
         old_key_bytes = key.read_bytes()
 
         result = creds.rotate_fernet_key(credentials_file=store, keyfile=key)
@@ -76,7 +76,7 @@ class TestRotateFernetKey:
         """After rotate, the stored ciphertext bytes must differ — if
         they don't we silently didn't re-encrypt."""
         key, store = routed_store
-        creds.save_keys("bitget", "a", "b")
+        creds.save_keys("bitget", "a", "b", user_id=1)
         ct_before = json.loads(store.read_text())["bitget"]["api_key"]
 
         creds.rotate_fernet_key(credentials_file=store, keyfile=key)
@@ -86,8 +86,8 @@ class TestRotateFernetKey:
 
     def test_result_summary_shape(self, routed_store):
         key, store = routed_store
-        creds.save_keys("bitget", "a", "b")
-        creds.save_keys("kraken", "c", "d")
+        creds.save_keys("bitget", "a", "b", user_id=1)
+        creds.save_keys("kraken", "c", "d", user_id=1)
         result = creds.rotate_fernet_key(credentials_file=store, keyfile=key)
         assert result["keys_rotated"] == ["bitget", "kraken"]
         assert "rotated_at" in result

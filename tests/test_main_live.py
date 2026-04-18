@@ -71,14 +71,14 @@ class TestAuthenticatedExchange:
     than attempting real orders against a read-only client."""
 
     def test_no_credentials_returns_none(self, monkeypatch):
-        monkeypatch.setattr("core.credentials.get_keys", lambda _: None)
+        monkeypatch.setattr("core.credentials.get_keys", lambda _name, user_id=1: None)
         assert main_live._authenticated_exchange("bitget") is None
 
     def test_bitget_requires_passphrase_env(self, monkeypatch):
         """Even with saved keys, BITGET_PASSPHRASE must be set for live."""
         monkeypatch.setattr(
             "core.credentials.get_keys",
-            lambda _: {"api_key": "a", "api_secret": "b"},
+            lambda _name, user_id=1: {"api_key": "a", "api_secret": "b"},
         )
         monkeypatch.delenv("BITGET_PASSPHRASE", raising=False)
         assert main_live._authenticated_exchange("bitget") is None
@@ -86,6 +86,6 @@ class TestAuthenticatedExchange:
     def test_unknown_exchange_returns_none(self, monkeypatch):
         monkeypatch.setattr(
             "core.credentials.get_keys",
-            lambda _: {"api_key": "a", "api_secret": "b"},
+            lambda _name, user_id=1: {"api_key": "a", "api_secret": "b"},
         )
         assert main_live._authenticated_exchange("ftx") is None
