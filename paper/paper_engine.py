@@ -3,7 +3,6 @@
 # Writes state to logs/{slug}.state.json after every tick so the
 # web portal can read it without shared memory.
 
-import json
 import queue
 import re
 import threading
@@ -16,11 +15,19 @@ from core.schedule_guard import ScheduleGuard
 from exchanges.base_exchange import BaseExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
+from paper.state_io import StateIO, deal_to_dict, dict_to_deal
 from strategies.indicator_engine import IndicatorEngine
 from core.liquidation_guard import LiquidationGuard
 from core.drawdown_guard import DrawdownGuard, DrawdownGuardConfig
 from core import deal_store
 from core.database import init_db as _init_db
+
+# Backwards-compatible aliases for the deal-serialisation helpers. Tests
+# and other external callers import these from paper.paper_engine; they
+# were extracted to paper.state_io as part of the v22 StateIO refactor
+# but must keep the same import path.
+_deal_to_dict = deal_to_dict
+_dict_to_deal = dict_to_deal
 
 logger = logging.getLogger(__name__)
 
@@ -85,110 +92,6 @@ _TF_SECONDS = {
 }
 
 
-def _deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
-    """Convert a PaperDeal to a JSON-serialisable dict."""
-    # For closed deals the realised PnL has already been stamped onto the
-    # deal at close_deal() time; reuse it instead of re-deriving from a
-    # current_price the caller may not have. For open deals we still need
-    # an unrealised PnL based on the live tick price.
-    if not deal.is_open:
-        pnl_btc = deal.pnl_btc
-        pnl_pct = deal.pnl_pct
-    elif current_price:
-        pnl_btc, pnl_pct = deal.calculate_pnl(current_price)
-    else:
-        pnl_btc, pnl_pct = 0.0, 0.0
-    return {
-        "id":              deal.id,
-        "bot_name":        deal.bot_name,
-        "symbol":          deal.symbol,
-        "side":            deal.side,
-        "leverage":        deal.leverage,
-        "order_count":     len(deal.orders),
-        "entry_price":     round(deal.orders[0].price, 2) if deal.orders else 0.0,
-        "avg_entry_price": round(deal.avg_entry_price, 2),
-        "total_size":      deal.total_size,
-        "pnl_btc":         round(pnl_btc, 8),
-        "pnl_pct":         round(pnl_pct, 4),
-        "opened_at":       deal.opened_at.isoformat() if deal.opened_at else None,
-        "closed_at":       deal.closed_at.isoformat() if deal.closed_at else None,
-        "close_price":     deal.close_price,
-        "close_reason":    deal.close_reason,
-        "is_open":         deal.is_open,
-        "_peak_price":     deal._peak_price,  # persist trailing stop peak
-        "_tp_override":    deal._tp_override,
-        "_sl_override":    deal._sl_override,
-        "_dca_enabled":    deal._dca_enabled,
-        "entry_trigger":   deal.entry_trigger,
-        "exit_trigger":    deal.exit_trigger,
-        # Full order list — required to reconstruct the deal on restart.
-        # The dashboard only reads order_count, so adding this list is
-        # backwards-compatible with the frontend.
-        "orders": [
-            {
-                "order_number": o.order_number,
-                "price":        o.price,
-                "size":         o.size,
-                "timestamp":    o.timestamp.isoformat() if o.timestamp else None,
-                "order_type":   o.order_type,
-            }
-            for o in deal.orders
-        ],
-    }
-
-
-def _dict_to_deal(d: dict) -> PaperDeal:
-    """Reconstruct a PaperDeal (with orders) from a state-file dict.
-
-    Used at startup to restore deals that survived a previous run. Only
-    fields that affect engine logic are restored; cosmetic fields like
-    rounded prices are recomputed from the order list.
-    """
-    def _parse_dt(value):
-        if not value:
-            return None
-        try:
-            return datetime.fromisoformat(value)
-        except ValueError:
-            return None
-
-    orders = [
-        PaperOrder(
-            order_number=int(o.get("order_number", 1)),
-            price=float(o.get("price", 0.0)),
-            size=float(o.get("size", 0.0)),
-            timestamp=_parse_dt(o.get("timestamp")) or datetime.now(UTC),
-            order_type=str(o.get("order_type", "base")),
-        )
-        for o in d.get("orders", [])
-    ]
-
-    deal = PaperDeal(
-        id=str(d["id"]),
-        bot_name=str(d.get("bot_name", "")),
-        symbol=str(d.get("symbol", "")),
-        side=str(d.get("side", "long")),
-        leverage=int(d.get("leverage", 1)),
-        orders=orders,
-        is_open=bool(d.get("is_open", True)),
-        opened_at=_parse_dt(d.get("opened_at")) or datetime.now(UTC),
-        closed_at=_parse_dt(d.get("closed_at")),
-        close_price=d.get("close_price"),
-        close_reason=d.get("close_reason"),
-        pnl_btc=float(d.get("pnl_btc", 0.0)),
-        pnl_pct=float(d.get("pnl_pct", 0.0)),
-    )
-    deal._peak_price = float(d.get("_peak_price", 0.0))
-    deal._tp_override = d.get("_tp_override")
-    deal._sl_override = d.get("_sl_override")
-    deal._dca_enabled = d.get("_dca_enabled", True)
-    et = d.get("entry_trigger")
-    deal.entry_trigger = et if isinstance(et, dict) else None
-    xt = d.get("exit_trigger")
-    deal.exit_trigger = xt if isinstance(xt, dict) else None
-    return deal
-
-
 class PaperEngine:
     """
     Paper trading engine for Reverto.
@@ -244,6 +147,10 @@ class PaperEngine:
 
         # State file for portal communication
         self._state_file = Path(state_file) if state_file else None
+        # StateIO owns the atomic read/write primitives + orphan .tmp
+        # cleanup. PaperEngine still builds the snapshot dict and
+        # restores its own members from load() output.
+        self._state_io = StateIO(self._state_file, self._bot_slug or "")
         # Manual-trigger sentinel file — the web portal writes this path
         # when the operator clicks "Start Deal". The engine deletes it on
         # the next tick and opens a deal regardless of schedule / filters.
@@ -376,13 +283,11 @@ class PaperEngine:
     # ------------------------------------------------------------------
 
     def _write_state(self, price: float, is_open: bool):
-        """Write current engine state to JSON file for the web portal."""
+        """Build the state snapshot and delegate the atomic write to StateIO."""
         if not self._state_file:
             return
 
         summary = self.state.summary()
-
-        # Use snapshot to avoid holding the state lock while building JSON
         open_deals_snap  = self.state.get_open_deals_snapshot()
         closed_deals_snap = self.state.get_closed_deals_snapshot()
 
@@ -405,11 +310,11 @@ class PaperEngine:
             "started_at":          self._started_at.isoformat() if self._started_at else None,
             "updated_at":          datetime.now(UTC).isoformat(),
             "open_deals": [
-                _deal_to_dict(d, price)
+                deal_to_dict(d, price)
                 for d in open_deals_snap.values()
             ],
             "closed_deals": [
-                _deal_to_dict(d)
+                deal_to_dict(d)
                 for d in list(reversed(closed_deals_snap))[:CLOSED_DEALS_UI_CAP]
             ],
             "indicators": self._last_snapshot,
@@ -423,12 +328,7 @@ class PaperEngine:
             "paused_by_clock_skew": getattr(self, "_paused_by_clock_skew", False),
         }
 
-        try:
-            tmp = self._state_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
-            tmp.replace(self._state_file)  # atomic write
-        except Exception as e:
-            logger.debug(f"State write failed: {e}")
+        self._state_io.write(snapshot)
 
     def _load_state(self):
         """Restore engine state from a previously written state file.
@@ -439,46 +339,13 @@ class PaperEngine:
         and any open deal that was in flight when the bot stopped — so
         that the engine resumes monitoring it instead of silently
         forgetting it.
+
+        Orphan .tmp cleanup and raw JSON parsing live in StateIO.load();
+        this method owns only the "what to do with the restored dict"
+        half of the contract.
         """
-        # Orphan-tmp cleanup: a SIGKILL mid-write leaves a sibling
-        # <slug>.state.tmp behind. Over time those accumulate in logs/
-        # and — worse — a readable but corrupt .tmp can confuse an
-        # operator inspecting the directory. Swept on every engine
-        # start before any file work happens.
-        if self._state_file is not None:
-            parent = self._state_file.parent
-            stem = self._state_file.name  # e.g. "bot.state.json"
-            try:
-                for orphan in parent.glob("*.tmp"):
-                    # Only touch tmps that look like our own state siblings;
-                    # other modules in the same dir write their own .tmp
-                    # files (e.g. .credentials.json.tmp) and we must not
-                    # sweep those.
-                    if orphan.name.startswith(stem):
-                        try:
-                            orphan.unlink()
-                            logger.warning(
-                                "Removed orphan state tmp: %s", orphan,
-                            )
-                        except OSError as e:
-                            logger.warning(
-                                "Failed to remove %s: %s", orphan, e,
-                            )
-            except OSError:
-                # Directory unreadable — e.g. state_file pointing at a
-                # tmp_path that was deleted. Nothing to sweep.
-                pass
-
-        if not self._state_file or not self._state_file.exists():
-            return
-
-        try:
-            data = json.loads(self._state_file.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning(
-                "State file %s exists but could not be parsed (%s) — "
-                "starting clean", self._state_file, e,
-            )
+        data = self._state_io.load()
+        if data is None:
             return
 
         # Balance + fees: persisted floats survive a restart as-is.
@@ -578,31 +445,15 @@ class PaperEngine:
                 )
 
     def _clear_state(self):
+        """Mark the bot as stopped in its state file.
+
+        Delegates to StateIO.mark_stopped() which preserves the original
+        "read, overwrite running/current_price, atomic rewrite" semantic
+        — not a plain unlink, since the portal polls the file to detect
+        stopped bots. Failures are logged (not swallowed) so a broken
+        stop path stays visible.
         """
-        Mark bot as stopped in the state file.
-        Uses atomic tmp+replace to prevent JSON corruption on SIGKILL.
-        """
-        if not self._state_file:
-            return
-        try:
-            if self._state_file.exists():
-                data = json.loads(self._state_file.read_text(encoding="utf-8"))
-            else:
-                data = {}
-            data["running"]       = False
-            data["current_price"] = 0.0
-            tmp = self._state_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp.replace(self._state_file)  # atomic
-        except Exception as e:
-            # Used to swallow silently; a failed _clear_state leaves the
-            # state.json flagged `running: true` and the portal then
-            # can't tell a crashed bot from a healthy one. Logging keeps
-            # the failure visible without killing the stop path.
-            logger.warning(
-                "Failed to clear state for %s: %s",
-                self._bot_slug or "unknown", str(e)[:200],
-            )
+        self._state_io.mark_stopped()
 
     # ------------------------------------------------------------------
     # Main loop
