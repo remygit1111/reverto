@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 # depth at the engine boundary.
 _DEAL_ID_RE = re.compile(r"^[A-Z]+-\d{1,6}$")
 
+# ═══ Tick-loop tuning constants ═════════════════════════════════════════════
+# Previously scattered magic numbers; hoisted here so operators and
+# readers can tweak them in one place.
+
 # At most one DCA order per deal per tick. Without this, a flash crash
 # that drives price through multiple DCA-spacing levels in a single
 # 10-second window would fire every level sequentially — turning a
@@ -40,6 +44,27 @@ _DEAL_ID_RE = re.compile(r"^[A-Z]+-\d{1,6}$")
 # the operator see the first DCA in the state file and react before
 # the next one fires on the following tick.
 MAX_DCA_PER_TICK = 1
+
+# Max seconds to wait for the notify queue to drain on stop(). The
+# worker is a daemon thread, so anything still queued after this
+# budget is silently dropped — operators trading off "last notification
+# delivered" vs. "engine actually exits within portal.stop's timeout".
+NOTIFY_DRAIN_TIMEOUT_S = 15
+
+# Wick-simulation TTL bounds. Clamp the derived (poll_interval * 2)
+# TTL so a misconfigured poll_interval can't starve or over-refresh
+# the cache.
+WICK_TTL_MIN_S = 5.0
+WICK_TTL_MAX_S = 30.0
+
+# Number of closed deals embedded into state.json for the UI to render.
+# The DB ledger keeps the full history; this cap is about JSON bloat.
+CLOSED_DEALS_UI_CAP = 50
+
+# Rate-limit tick-error tracebacks so a broken exchange call can't
+# spam the logs. First N errors log full stack; after that only the
+# truncated exception string.
+TICK_ERROR_TRACEBACK_LIMIT = 5
 
 # Ensure the SQLite schema exists before any engine instance writes to it.
 # Paper bots run as subprocesses launched by the portal, so they can't rely
@@ -249,6 +274,10 @@ class PaperEngine:
 
         self.running = False
         self._started_at: datetime = None
+        # Counter used to rate-limit tick-error tracebacks. Reset is
+        # intentionally never done — we want cumulative-per-run so
+        # spam doesn't re-appear after a single transient recovery.
+        self._tick_error_count: int = 0
 
         # Notification queue + worker — verhindert dat een trage Telegram
         # call de tick-loop blokkeert (TP/SL/DCA detectie kritisch op timing).
@@ -381,7 +410,7 @@ class PaperEngine:
             ],
             "closed_deals": [
                 _deal_to_dict(d)
-                for d in list(reversed(closed_deals_snap))[:50]
+                for d in list(reversed(closed_deals_snap))[:CLOSED_DEALS_UI_CAP]
             ],
             "indicators": self._last_snapshot,
             # Persist drawdown guard so a restart doesn't reset the peak
@@ -407,6 +436,35 @@ class PaperEngine:
         that the engine resumes monitoring it instead of silently
         forgetting it.
         """
+        # Orphan-tmp cleanup: a SIGKILL mid-write leaves a sibling
+        # <slug>.state.tmp behind. Over time those accumulate in logs/
+        # and — worse — a readable but corrupt .tmp can confuse an
+        # operator inspecting the directory. Swept on every engine
+        # start before any file work happens.
+        if self._state_file is not None:
+            parent = self._state_file.parent
+            stem = self._state_file.name  # e.g. "bot.state.json"
+            try:
+                for orphan in parent.glob("*.tmp"):
+                    # Only touch tmps that look like our own state siblings;
+                    # other modules in the same dir write their own .tmp
+                    # files (e.g. .credentials.json.tmp) and we must not
+                    # sweep those.
+                    if orphan.name.startswith(stem):
+                        try:
+                            orphan.unlink()
+                            logger.warning(
+                                "Removed orphan state tmp: %s", orphan,
+                            )
+                        except OSError as e:
+                            logger.warning(
+                                "Failed to remove %s: %s", orphan, e,
+                            )
+            except OSError:
+                # Directory unreadable — e.g. state_file pointing at a
+                # tmp_path that was deleted. Nothing to sweep.
+                pass
+
         if not self._state_file or not self._state_file.exists():
             return
 
@@ -532,8 +590,15 @@ class PaperEngine:
             tmp = self._state_file.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
             tmp.replace(self._state_file)  # atomic
-        except Exception:
-            pass
+        except Exception as e:
+            # Used to swallow silently; a failed _clear_state leaves the
+            # state.json flagged `running: true` and the portal then
+            # can't tell a crashed bot from a healthy one. Logging keeps
+            # the failure visible without killing the stop path.
+            logger.warning(
+                "Failed to clear state for %s: %s",
+                self._bot_slug or "unknown", str(e)[:200],
+            )
 
     # ------------------------------------------------------------------
     # Main loop
@@ -586,7 +651,7 @@ class PaperEngine:
         # without being duplicated here.
         self._notify(self.notifier.notify_shutdown, self.config.name)
         self._notify_queue.put(None)  # sentinel
-        self._notify_thread.join(timeout=15)
+        self._notify_thread.join(timeout=NOTIFY_DRAIN_TIMEOUT_S)
 
     # ------------------------------------------------------------------
     # Main tick
@@ -594,6 +659,20 @@ class PaperEngine:
 
     def _tick(self):
         """Single iteration of the main loop."""
+        # Prometheus instrumentation — best-effort. Failure to record
+        # metrics must never kill the tick.
+        try:
+            from web import metrics as _m
+            _m.record_tick(
+                self._bot_slug or "unknown", self.config.mode.value,
+            )
+            _tick_ctx = _m.tick_duration_seconds.labels(
+                bot_slug=self._bot_slug or "unknown",
+            ).time()
+            _tick_ctx.__enter__()
+        except Exception:
+            _tick_ctx = None
+
         try:
             ticker = self.exchange.get_ticker(self.config.pair)
 
@@ -646,6 +725,23 @@ class PaperEngine:
             # Write state for portal after every tick
             self._write_state(price, is_open)
 
+            # Post-tick metric updates. Outside the metrics try so a
+            # broken metric.set() doesn't hide a real tick error.
+            try:
+                from web import metrics as _m
+                slug = self._bot_slug or "unknown"
+                _m.set_balance(slug, self.state.balance_btc)
+                _m.set_open_deals(
+                    slug, len(self.state.get_open_deals_snapshot()),
+                )
+                peak = self.drawdown_guard.peak_value
+                if peak and peak > 0:
+                    equity = self._current_equity_btc(price)
+                    dd_pct = max(0.0, (peak - equity) / peak * 100)
+                    _m.set_drawdown_pct(slug, dd_pct)
+            except Exception:
+                pass
+
         except NotImplementedError:
             # LiveEngine's _place_market_order raises this when the
             # operator flipped dry_run off before Phase 3. The whole
@@ -658,8 +754,34 @@ class PaperEngine:
             # credential fragments, and str(e) without bound would send
             # them verbatim to Telegram.
             msg = str(e)[:200]
-            logger.error(f"Tick error: {msg}")
+            self._tick_error_count += 1
+            try:
+                from web import metrics as _m
+                _m.record_tick_error(
+                    self._bot_slug or "unknown",
+                    type(e).__name__,
+                )
+            except Exception:
+                pass
+            # First N errors: log the full traceback for debugging.
+            # After that fall back to the short message so a broken
+            # exchange endpoint can't flood the log.
+            if self._tick_error_count <= TICK_ERROR_TRACEBACK_LIMIT:
+                logger.exception(
+                    "Tick error (%d/%d): %s",
+                    self._tick_error_count, TICK_ERROR_TRACEBACK_LIMIT, msg,
+                )
+            else:
+                logger.error(
+                    "Tick error #%d: %s", self._tick_error_count, msg,
+                )
             self._notify(self.notifier.notify_error, self.config.name, msg)
+        finally:
+            if _tick_ctx is not None:
+                try:
+                    _tick_ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Schedule transition detection
@@ -759,7 +881,7 @@ class PaperEngine:
         # 5-second TTL by default — enough to dedupe rapid ticks but
         # short enough that a freshly broken wick lands within ~1 tick
         # of the real exchange event.
-        ttl = max(5.0, min(self.poll_interval * 2.0, 30.0))
+        ttl = max(WICK_TTL_MIN_S, min(self.poll_interval * 2.0, WICK_TTL_MAX_S))
         if now - self._wick_candle_fetched_at < ttl:
             return
         tf = self.config.timeframe

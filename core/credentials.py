@@ -19,7 +19,9 @@
 import json
 import logging
 import os
+import shutil
 import stat
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -148,6 +150,96 @@ def load_encrypted(path: Path) -> Optional[dict]:
     except (InvalidToken, ValueError, OSError, json.JSONDecodeError) as e:
         logger.error("Kan encrypted file %s niet lezen: %s", path, e)
         return None
+
+
+def rotate_fernet_key(
+    credentials_file: Optional[Path] = None,
+    keyfile: Optional[Path] = None,
+) -> dict:
+    """Rotate the Fernet master key that protects every credential entry.
+
+    Steps (each failure path is safe — a partial state leaves the old
+    key + old ciphertext intact):
+
+      1. Load all credentials under the OLD key into memory.
+      2. Copy the old key to ``<keyfile>.key.bak`` so the operator has
+         a 7-day rollback window before rotating offsite backups too.
+      3. Generate a fresh Fernet key.
+      4. Re-encrypt every credential value with the new key in memory.
+      5. Atomically replace the key file, THEN the credentials file.
+         Order matters: if we replace creds first and crash before the
+         key flip, the next read would try to decrypt new-cipher with
+         the old key and fail.
+
+    Returns a summary dict the operator (or portal UI) can surface so
+    they know what was rotated and where the backup landed.
+    """
+    keyfile = keyfile or _KEY_FILE
+    credentials_file = credentials_file or _STORE_FILE
+
+    if not keyfile.exists():
+        raise FileNotFoundError(f"No master key at {keyfile} — nothing to rotate")
+
+    # 1. Load everything under the old key. `get_keys` returns plaintext
+    # per exchange so we can re-encrypt with the new key.
+    old_store = _read_store()
+    plaintext: dict[str, dict[str, str]] = {}
+    for name in old_store:
+        decrypted = get_keys(name)
+        if decrypted is None:
+            raise RuntimeError(
+                f"Cannot rotate — credentials for {name!r} failed to decrypt "
+                "under the current master key. Fix the key/cipher mismatch first."
+            )
+        plaintext[name] = decrypted
+
+    # 2. Backup the old key BEFORE we overwrite it.
+    backup_path = keyfile.with_suffix(keyfile.suffix + ".bak")
+    shutil.copy2(keyfile, backup_path)
+    try:
+        os.chmod(backup_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass
+
+    # 3 + 4. Fresh key, re-encrypt everything under it.
+    new_key = Fernet.generate_key()
+    new_fernet = Fernet(new_key)
+    new_store: dict[str, dict[str, str]] = {}
+    for name, pt in plaintext.items():
+        new_store[name] = {
+            k: new_fernet.encrypt(v.encode("utf-8")).decode("ascii")
+            for k, v in pt.items()
+        }
+
+    # 5. Atomic key file replacement.
+    tmp_key = keyfile.with_suffix(keyfile.suffix + ".tmp")
+    tmp_key.write_bytes(new_key)
+    try:
+        os.chmod(tmp_key, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+    os.replace(tmp_key, keyfile)
+
+    # Then atomic creds replacement. If this raises, the key has
+    # already rotated but the creds are still under the old key —
+    # operator must restore from .bak.
+    tmp_creds = credentials_file.with_suffix(credentials_file.suffix + ".tmp")
+    tmp_creds.write_text(json.dumps(new_store, indent=2), encoding="utf-8")
+    try:
+        os.chmod(tmp_creds, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+    os.replace(tmp_creds, credentials_file)
+
+    logger.warning(
+        "Fernet master key rotated. Backup at %s. Rotated keys: %s",
+        backup_path, list(new_store),
+    )
+    return {
+        "rotated_at": datetime.now(timezone.utc).isoformat(),
+        "backup_path": str(backup_path),
+        "keys_rotated": sorted(new_store.keys()),
+    }
 
 
 def delete_keys(exchange: str) -> bool:

@@ -141,6 +141,33 @@ async function handleLogout() {
 // SIGTERMs it. Confirmation is a blocking native confirm() because
 // there's no modal infrastructure for a single-purpose dialog here
 // and a stray click on the profile menu should NEVER trip this.
+// Global Escape-key handler — closes the top-most visible modal.
+//
+// Before this there was only a per-modal keydown binding (swModal),
+// so every other modal (wizard, API key, settings, deal-edit, ...)
+// swallowed Escape silently. This single handler walks the known
+// "visible modal" class set, grabs the last one in DOM order
+// (top-most), and triggers its close button — or falls back to
+// stripping the visibility classes directly.
+function handleGlobalEscape(e) {
+  if (e.key !== 'Escape') return;
+  const modals = Array.from(document.querySelectorAll(
+    '.modal.show, .modal-overlay.show, .modal.visible'
+  ));
+  if (modals.length === 0) return;
+  const top = modals[modals.length - 1];
+  const closeBtn = top.querySelector(
+    '[data-action="close"], .modal-close, .close-btn, [data-close-modal]'
+  );
+  if (closeBtn) {
+    closeBtn.click();
+  } else {
+    top.classList.remove('show', 'visible');
+  }
+  e.preventDefault();
+}
+document.addEventListener('keydown', handleGlobalEscape);
+
 async function handleEmergencyStop() {
   toggleProfileMenu(false);
   const ok = window.confirm(
