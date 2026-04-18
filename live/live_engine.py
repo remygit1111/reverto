@@ -33,6 +33,7 @@ from typing import Optional
 from config.models import BotConfig
 from core.clock_monitor import ClockMonitor
 from exchanges.base_exchange import BaseExchange
+from live.order_reconciliation import OrderReconciler
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import PaperEngine
 
@@ -69,6 +70,13 @@ DEFAULT_CUMULATIVE_MULTIPLIER = 20.0
 # OOM's a long-running process. 10k entries ≈ a quarter of a year of
 # typical activity, plenty for forensic review without risking memory.
 LIVE_ORDER_LOG_MAXLEN = 10_000
+
+# How often the OrderReconciler runs. Counted in tick iterations (not
+# seconds) so a fast poll_interval automatically tightens the cadence.
+# At the default 10s tick + 5 = every 50s, well under the reconciler's
+# 60s timeout so slow-confirmation orders are still caught before the
+# timeout path fires.
+RECONCILE_EVERY_N_TICKS = 5
 
 
 class LiveEngine(PaperEngine):
@@ -131,6 +139,18 @@ class LiveEngine(PaperEngine):
         )
         self._paused_by_clock_skew: bool = False
 
+        # Order reconciler — Phase 1 scaffolding runs the timeout pass
+        # only (the commented-out fetch_order branch lights up in
+        # Phase 3). We tick it every RECONCILE_EVERY_N_TICKS iterations
+        # so pending-order tracking is already wired + tested before
+        # real orders go live.
+        self.order_reconciler = OrderReconciler(
+            exchange=self._live_exchange,
+            poll_interval=2.0,
+            max_age_seconds=60.0,
+        )
+        self._reconcile_tick_counter: int = 0
+
         logger.warning(
             "LiveEngine initialised — dry_run=%s base_order_size=%s max=%s skew_tol=%ss",
             dry_run, config.dca.base_order_size, max_base_order_size,
@@ -171,6 +191,45 @@ class LiveEngine(PaperEngine):
             logger.info("Clock skew back within tolerance (%.2fs) — resuming", skew)
         self._paused_by_clock_skew = False
         super()._tick()
+
+        # Periodic reconciler pass. In Phase 1 this only surfaces
+        # timeout-pending orders; Phase 3 wires the real fetch_order
+        # branch. Running it here (not inside super()._tick) keeps
+        # PaperEngine tick semantics untouched.
+        self._reconcile_tick_counter += 1
+        if self._reconcile_tick_counter >= RECONCILE_EVERY_N_TICKS:
+            self._reconcile_tick_counter = 0
+            self._run_reconciliation()
+
+    def _run_reconciliation(self) -> None:
+        """Advance the OrderReconciler one cycle and notify on terminal
+        states (currently only ``timeout`` — Phase 3 adds filled /
+        cancelled / failed).
+
+        Exceptions are logged with full traceback but never propagate:
+        reconciler issues must not kill the tick loop.
+        """
+        try:
+            completed = self.order_reconciler.reconcile()
+        except Exception as e:
+            logger.exception("Reconciliation error: %s", str(e)[:200])
+            return
+
+        if not completed:
+            return
+
+        logger.info("Reconciler completed %d orders", len(completed))
+        for order in completed:
+            if order.status == "timeout":
+                logger.error(
+                    "Order %s timed out — manual reconcile needed",
+                    order.client_order_id,
+                )
+                self._notify(
+                    self.notifier.notify_error,
+                    self.config.name,
+                    f"Order timeout: {order.client_order_id}",
+                )
 
     @staticmethod
     def _preflight(config: BotConfig, max_base_order_size: float) -> None:
