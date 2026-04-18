@@ -1208,6 +1208,7 @@ function renderBotCard(b) {
   const drawdownTriggered = b.drawdown_guard && b.drawdown_guard.triggered;
   const pausedByDrawdown = b.paused_by_drawdown || drawdownTriggered;
   const pausedBySkew = b.paused_by_clock_skew;
+  const isLive = (b.mode || '').toLowerCase() === 'live';
   let stateBadge = '';
   if (pausedByDrawdown) {
     const reason = (b.drawdown_guard && b.drawdown_guard.trigger_reason) || '';
@@ -1222,6 +1223,14 @@ function renderBotCard(b) {
     stateBadge = `<div class="state-badge badge-warning" role="status"
         aria-label="Clock skew detected">
       🕐 CLOCK SKEW — orders paused
+    </div>`;
+  } else if (isLive && running) {
+    // Phase 1: live bots can only run in dry-run mode. The badge keeps
+    // that explicit on the overview so operators never confuse a
+    // paper bot's "Running" pill with a real-money run.
+    stateBadge = `<div class="state-badge badge-dry-run" role="status"
+        aria-label="Bot running in dry-run mode">
+      🟡 DRY RUN — no real orders placed
     </div>`;
   }
 
@@ -1269,7 +1278,10 @@ function renderBotCard(b) {
       ${running
         ? `<button class="btn-sm btn-stop"    data-action="stop"    data-slug="${safeText(b.slug)}">■ Stop</button>
            <button class="btn-sm btn-restart" data-action="restart" data-slug="${safeText(b.slug)}">↺ Restart</button>`
-        : `<button class="btn-sm btn-start"   data-action="start"   data-slug="${safeText(b.slug)}">▶ Start</button>`
+        : (isLive
+            ? `<button class="btn-sm btn-warning" data-action="start-dry-run" data-slug="${safeText(b.slug)}"
+                       title="Spawn main_live.py --dry-run (no real orders)">▶ Start dry-run</button>`
+            : `<button class="btn-sm btn-start"   data-action="start"   data-slug="${safeText(b.slug)}">▶ Start</button>`)
       }
       <button class="btn-sm btn-open" data-action="open" data-slug="${safeText(b.slug)}">Open →</button>
     </div>
@@ -1293,6 +1305,18 @@ document.addEventListener('click', e => {
   if (action === 'open') openBot(slug);
   else if (action === 'delete') deleteBot(slug, el.dataset.name || slug);
   else if (action === 'reset-drawdown') { handleResetDrawdown(slug); e.stopPropagation(); }
+  else if (action === 'start-dry-run') {
+    // Extra prompt because this launches a LIVE-mode bot (dry-run only
+    // under Phase 1, but the runner class is the real one). Mirror the
+    // confirmation pattern used for emergency-stop.
+    const ok = confirm(
+      `Start "${slug}" in DRY-RUN mode?\n\n` +
+      `This spawns main_live.py with --dry-run. No real orders will be ` +
+      `placed — Phase 1 refuses real execution — but the bot will use ` +
+      `the live exchange client for market data.`
+    );
+    if (ok) botAction(slug, 'start-dry-run', el);
+  }
   else if (['start', 'stop', 'restart'].includes(action)) botAction(slug, action, el);
 });
 

@@ -609,6 +609,11 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .btn-restart:hover{ background: rgba(255,179,71,.1); }
 .btn-open   { border-color: var(--border); color: var(--muted); }
 .btn-open:hover   { border-color: var(--text); color: var(--text); }
+/* Phase-1 live dry-run launch button — amber signals "real runner,
+   simulated execution". Distinct from .btn-restart so operators can
+   tell the two amber-ish buttons apart at a glance. */
+.btn-sm.btn-warning { border-color: var(--amber); color: var(--amber); }
+.btn-sm.btn-warning:hover { background: rgba(255,179,71,.12); }
 
 .all-deals-section { padding: 0 20px 20px; }
 
@@ -2406,6 +2411,13 @@ html.compact .modal-card { padding: 19px; }
   background: rgba(240, 160, 80, 0.14);
   color: #e88a1c;
   border: 1px solid rgba(240, 160, 80, 0.35);
+}
+/* Dry-run badge — live-mode bot running under Phase 1 dry-run. Yellow
+   not orange so it's distinguishable from the clock-skew warning. */
+.state-badge.badge-dry-run {
+  background: rgba(255, 213, 79, 0.14);
+  color: #c9a227;
+  border: 1px solid rgba(255, 213, 79, 0.40);
 }
 .state-badge .btn-small {
   margin-left: auto;

@@ -8,8 +8,9 @@ Routes:
   PUT    /api/bots/{slug}/config          — overwrite YAML
   DELETE /api/bots/{slug}                 — delete YAML (bot must be stopped)
   POST   /api/bots/{slug}/start           — spawn main_paper.py subprocess
+  POST   /api/bots/{slug}/start-dry-run   — spawn main_live.py --dry-run
   POST   /api/bots/{slug}/stop            — SIGTERM running bot
-  POST   /api/bots/{slug}/restart         — stop + start
+  POST   /api/bots/{slug}/restart         — stop + start (mode-aware)
   POST   /api/bots/{slug}/deal/start      — write manual-trigger sentinel
 
 NOT migrated (still in web/app.py): WebSocket endpoints (/ws/logs/{slug},
@@ -38,6 +39,7 @@ from web.app import (
     restart_bot,
     slugify,
     start_bot,
+    start_bot_dry_run,
     stop_bot,
 )
 
@@ -93,6 +95,17 @@ async def get_bot(slug: str, request: Request):
 async def api_start(slug: str, request: Request, actor: str = Depends(_request_actor)):
     _audit("bot_start", slug, actor)
     return await start_bot(slug)
+
+
+@router.post("/api/bots/{slug}/start-dry-run")
+@limiter.limit("20/minute")
+async def api_start_dry_run(
+    slug: str, request: Request, actor: str = Depends(_request_actor),
+):
+    """Phase-1 launcher: boot a live-mode bot via main_live.py with the
+    dry-run flag set. Refuses paper-mode bots at the helper level."""
+    _audit("bot_start_dry_run", slug, actor)
+    return await start_bot_dry_run(slug)
 
 
 @router.post("/api/bots/{slug}/stop")
