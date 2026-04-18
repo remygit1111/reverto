@@ -61,11 +61,16 @@ DEFAULT_MAX_BASE_ORDER_SIZE_BTC = 0.001
 # and still rejects anything approaching the fat-finger regime.
 MAX_DCA_SIZE_VS_BASE = 50.0
 
-# Default cumulative-position ceiling when the operator didn't set
-# max_cumulative_size explicitly. 20 × base_order_size is a deliberately
-# generous default — operators serious about live trading should pin a
-# tighter value via the YAML.
-DEFAULT_CUMULATIVE_MULTIPLIER = 20.0
+# Default cumulative-position ceiling (summed base + every DCA order)
+# when the operator didn't set dca.max_cumulative_size explicitly.
+# Scaled to match the 50× worst-case single-order cap: for a typical
+# conservative ladder (mult=1.5 × 10 orders) the cumulative is 113×
+# base, so a 20× default would preempt every legitimate config. 150×
+# accepts 1.3–1.5 multipliers over 10–12 levels while still rejecting
+# geometric explosions (mult=2.0 × 10 → cumulative 1023× base; mult=1.8
+# × 10 → 358×; mult=1.5 × 12 → 258×). Operators serious about live
+# trading should still pin a tighter value per-bot via the YAML.
+DEFAULT_CUMULATIVE_MULTIPLIER = 150.0
 
 # Bounded order-log ring buffer. A 24/7 bot can emit thousands of DCA
 # entries per month; an unbounded list grows monotonically and eventually
@@ -243,7 +248,8 @@ class LiveEngine(PaperEngine):
              within MAX_DCA_SIZE_VS_BASE × base — prevents geometric
              growth blowing past the cap.
           3. Cumulative position size across all DCA orders stays within
-             config.dca.max_cumulative_size (or default 20x base).
+             config.dca.max_cumulative_size (or default 150× base via
+             DEFAULT_CUMULATIVE_MULTIPLIER).
         """
         bos = config.dca.base_order_size
         if bos > max_base_order_size:
