@@ -1080,32 +1080,7 @@ def _check_db_sync_blocking() -> None:
     conn.execute("SELECT 1").fetchone()
 
 
-@app.get("/api/price")
-@limiter.limit("30/minute")
-async def api_price(request: Request):
-    """
-    Always-on BTC price endpoint — fetches directly from Bitget
-    regardless of whether any bot is running.
-
-    Rate-limited to 30/min per IP — the underlying ccxt.fetch_ticker
-    call is a blocking HTTP round-trip against Bitget, and the endpoint
-    is public (no auth gate). Without the limit a single misbehaving
-    tab or hostile client can trivially saturate the shared ccxt client.
-    """
-    try:
-        # ccxt is blocking — push it to a worker thread so the event loop stays free.
-        # _price_lock serialiseert concurrent calls op de gedeelde ccxt client.
-        async with _price_lock:
-            ticker = await asyncio.to_thread(_bitget_client.fetch_ticker, "BTCUSD")
-        price = ticker.get("last") or ticker.get("close") or 0.0
-        return {"price": price, "pair": "BTC/USD", "source": "bitget"}
-    except Exception:
-        # Fall back to first running bot's price if available
-        for bot in await registry.all():
-            state = bot.read_state()
-            if state.get("current_price"):
-                return {"price": state["current_price"], "pair": "BTC/USD", "source": "bot"}
-        return {"price": 0.0, "pair": "BTC/USD", "source": "unavailable"}
+# /api/price moved to web/routes/chart.py.
 
 
 # ── Chart OHLCV endpoint ──────────────────────────────────────────────────────
@@ -1155,86 +1130,7 @@ def _normalize_chart_pair(raw: str) -> str:
     return s
 
 
-@app.get("/api/chart/{pair}/{timeframe}")
-@limiter.limit("40/minute")
-async def api_chart(
-    request: Request, pair: str, timeframe: str, limit: int = 200,
-):
-    """Public OHLCV endpoint backing the dashboard's live candlestick chart.
-
-    Wraps PublicExchange("bitget").get_ohlcv() with input validation, a
-    60-second per-key in-memory cache, and a stable JSON shape that
-    Lightweight Charts can consume directly (UTCTimestamp seconds).
-
-    Rate-limited to 40/min per IP — every cache miss triggers a live
-    Bitget fetch, and the dashboard polls this endpoint whenever the
-    timeframe or pair selector changes. Higher than /api/price because
-    the cache absorbs most repeats; still bounded to block trivially
-    hostile scans of the (pair × tf × limit) key space.
-    """
-    if timeframe not in _CHART_TIMEFRAMES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"timeframe must be one of {', '.join(_CHART_TIMEFRAMES)}",
-        )
-    if limit < 10 or limit > 500:
-        raise HTTPException(
-            status_code=400, detail="limit must be between 10 and 500"
-        )
-
-    normalized = _normalize_chart_pair(pair)
-    key = (normalized, timeframe, limit)
-    now = time.time()
-
-    # Cache hit/miss under the lock — OrderedDict.move_to_end + pop
-    # are not atomic with get, so two concurrent requests on the same
-    # expired entry would otherwise race on the pop + refetch path.
-    async with _chart_lock:
-        cached = _chart_cache.get(key)
-        if cached:
-            if cached[0] > now:
-                # Fresh hit — bump recency and return.
-                _chart_cache.move_to_end(key)
-                return cached[1]
-            # Expired — drop and fall through to refetch.
-            _chart_cache.pop(key, None)
-
-    # Fetch OUTSIDE the lock. Concurrent cache-misses on different keys
-    # (pair × tf × limit) now parallelise through asyncio.to_thread
-    # instead of serialising through _chart_lock. If two concurrent
-    # requests hit the same missing key they both fetch and both
-    # write-back — that is acceptable duplication, the cached payload
-    # is identical either way.
-    try:
-        from exchanges.public_exchange import PublicExchange
-        client = PublicExchange("bitget")
-        raw = await asyncio.to_thread(
-            client.get_ohlcv, normalized, timeframe, limit
-        )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Exchange error: {str(e)[:200]}")
-
-    payload = [
-        {
-            "time":   int(c[0] // 1000),
-            "open":   float(c[1]),
-            "high":   float(c[2]),
-            "low":    float(c[3]),
-            "close":  float(c[4]),
-            "volume": float(c[5]) if len(c) > 5 and c[5] is not None else 0.0,
-        }
-        for c in raw
-    ]
-    ttl = _CHART_CACHE_TTL.get(timeframe, _CHART_CACHE_TTL_DEFAULT)
-    async with _chart_lock:
-        _chart_cache[key] = (now + ttl, payload)
-        _chart_cache.move_to_end(key)
-        # Bound the cache: evict the eldest entry once we cross the cap so
-        # the dict can never grow unbounded under a hostile or misbehaving
-        # client walking the limit parameter.
-        while len(_chart_cache) > _CHART_CACHE_MAX:
-            _chart_cache.popitem(last=False)
-    return payload
+# /api/chart/{pair}/{timeframe} moved to web/routes/chart.py.
 
 
 # ── Candle range endpoint (for client-side backtester) ───────────────────────
@@ -1396,124 +1292,7 @@ async def _fetch_ohlcv_range(
     return [bars[k] for k in sorted(bars.keys())]
 
 
-@app.get("/api/candles/{pair}/{timeframe}")
-@limiter.limit("20/minute")
-async def api_candles(
-    request: Request,
-    pair: str,
-    timeframe: str,
-    start: str,
-    end: str,
-    limit: int = 5000,
-):
-    """Public OHLCV range endpoint backing the client-side backtester.
-
-    Paginates ccxt under the hood (1000-bar max per request) until the
-    full [start, end] range is covered, dedupes on timestamp, returns
-    the same {time, open, high, low, close, volume} shape as
-    /api/chart. Cached for 5 minutes per (pair, tf, start, end, limit).
-    """
-    if timeframe not in _CHART_TIMEFRAMES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"timeframe must be one of {', '.join(_CHART_TIMEFRAMES)}",
-        )
-    if limit < 100:
-        limit = 100
-    if limit > _CANDLES_MAX_BARS:
-        limit = _CANDLES_MAX_BARS
-
-    try:
-        start_dt = _parse_iso_utc(start)
-        end_dt = _parse_iso_utc(end)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"invalid timestamp: {e}")
-    if start_dt >= end_dt:
-        raise HTTPException(status_code=400, detail="start must be before end")
-
-    tf_s = _TF_SECONDS[timeframe]
-    span_s = (end_dt - start_dt).total_seconds()
-    bar_count = int(span_s / tf_s)
-    # Clamp the range to at most _CANDLES_MAX_BARS candles by trimming
-    # `start` forward — the backtester only needs the tail of the
-    # requested window if the operator asked for too much history.
-    if bar_count > limit:
-        trim_bars = bar_count - limit
-        start_dt = start_dt.fromtimestamp(
-            start_dt.timestamp() + trim_bars * tf_s, tz=timezone.utc
-        )
-
-    normalized = _normalize_chart_pair(pair)
-    start_iso = start_dt.isoformat()
-    end_iso = end_dt.isoformat()
-    key = (normalized, timeframe, start_iso, end_iso, limit)
-    now = time.time()
-
-    # Atomic hit/miss against _candles_cache — OrderedDict mutations
-    # under concurrent requests would otherwise race on pop + refetch.
-    async with _candles_lock:
-        cached = _candles_cache.get(key)
-        if cached:
-            if cached[0] > now:
-                _candles_cache.move_to_end(key)
-                return cached[1]
-            _candles_cache.pop(key, None)
-
-    start_ms = int(start_dt.timestamp() * 1000)
-    end_ms = int(end_dt.timestamp() * 1000)
-
-    # Paginated fetch lives OUTSIDE the lock. _fetch_ohlcv_range walks
-    # `since` forward over many ccxt requests with a 0.15s sleep per
-    # page — for a 300k-bar range that was blocking _candles_lock for
-    # 45+ seconds and stalling every other /api/candles request.
-    # Concurrent fetches for different keys now run in parallel; if
-    # two requests hit the same missing key the duplicate pagination
-    # is acceptable cost for much better responsiveness on distinct
-    # ranges.
-    try:
-        from exchanges.public_exchange import PublicExchange
-        client = PublicExchange("bitget")
-        raw = await _fetch_ohlcv_range(
-            client, normalized, timeframe, start_ms, end_ms
-        )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Exchange error: {str(e)[:200]}")
-
-    payload = [
-        {
-            "time":   int(c[0] // 1000),
-            "open":   float(c[1]),
-            "high":   float(c[2]),
-            "low":    float(c[3]),
-            "close":  float(c[4]),
-            "volume": float(c[5]) if len(c) > 5 and c[5] is not None else 0.0,
-        }
-        for c in raw
-    ]
-    gaps = 0
-    if len(payload) >= 2:
-        for j in range(1, len(payload)):
-            if payload[j]["time"] - payload[j - 1]["time"] > tf_s * 2:
-                gaps += 1
-    if gaps:
-        logger.warning(
-            "Candle data has %d gaps for %s %s (%d bars, %s→%s)",
-            gaps, normalized, timeframe, len(payload),
-            start_dt.isoformat(), end_dt.isoformat(),
-        )
-
-    ttl = (
-        _CANDLES_CACHE_TTL_LARGE
-        if limit > _CANDLES_CACHE_LARGE_THRESHOLD
-        else _CANDLES_CACHE_TTL
-    )
-    result = {"candles": payload, "gaps": gaps}
-    async with _candles_lock:
-        _candles_cache[key] = (now + ttl, result)
-        _candles_cache.move_to_end(key)
-        while len(_candles_cache) > _CANDLES_CACHE_MAX:
-            _candles_cache.popitem(last=False)
-    return result
+# /api/candles/{pair}/{timeframe} moved to web/routes/chart.py.
 
 
 # ── Exchange credentials API ──────────────────────────────────────────────────
@@ -2130,11 +1909,13 @@ async def api_db_annotations_delete(
 # same pattern.
 from web.routes import admin as _admin_routes  # noqa: E402
 from web.routes import backtest as _backtest_routes  # noqa: E402
+from web.routes import chart as _chart_routes  # noqa: E402
 from web.routes import drawdown as _drawdown_routes  # noqa: E402
 from web.routes import exchanges as _exchanges_routes  # noqa: E402
 
 app.include_router(_admin_routes.router)
 app.include_router(_backtest_routes.router)
+app.include_router(_chart_routes.router)
 app.include_router(_drawdown_routes.router)
 app.include_router(_exchanges_routes.router)
 
