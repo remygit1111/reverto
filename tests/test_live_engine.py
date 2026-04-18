@@ -281,3 +281,107 @@ class TestLiveEngineInheritsPaperBehaviour:
         finally:
             eng._notify_queue.put(None)
             eng._notify_thread.join(timeout=5)
+
+
+class TestLiveEngineReconcilerWiring:
+    """OrderReconciler must be instantiated, invoked every
+    RECONCILE_EVERY_N_TICKS, and the timeout branch must surface as an
+    operator notification — all without blocking the tick loop."""
+
+    def test_reconciler_attached(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        eng = _make_engine(
+            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+        )
+        try:
+            assert eng.order_reconciler is not None
+            # Tick counter starts fresh.
+            assert eng._reconcile_tick_counter == 0
+            # Reconciler is backed by the engine's exchange client.
+            assert eng.order_reconciler.exchange is mock_exchange
+        finally:
+            eng._notify_queue.put(None)
+            eng._notify_thread.join(timeout=5)
+
+    def test_run_reconciliation_called_every_n_ticks(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """After RECONCILE_EVERY_N_TICKS ticks, _run_reconciliation
+        fires exactly once and the counter resets to 0."""
+        from live.live_engine import RECONCILE_EVERY_N_TICKS
+
+        eng = _make_engine(
+            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+        )
+        try:
+            calls = {"n": 0}
+
+            def spy():
+                calls["n"] += 1
+            eng._run_reconciliation = spy
+
+            for _ in range(RECONCILE_EVERY_N_TICKS):
+                eng._tick()
+
+            assert calls["n"] == 1, (
+                f"expected 1 reconciler call after {RECONCILE_EVERY_N_TICKS}"
+                f" ticks, got {calls['n']}"
+            )
+            assert eng._reconcile_tick_counter == 0
+        finally:
+            eng._notify_queue.put(None)
+            eng._notify_thread.join(timeout=5)
+
+    def test_timeout_order_triggers_notification(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """A PendingOrder older than max_age_seconds must surface as a
+        notify_error call through the engine's notify queue."""
+        import time as _time
+        from live.order_reconciliation import PendingOrder
+
+        eng = _make_engine(
+            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+        )
+        try:
+            # Seed a pending order well past the 60s timeout budget.
+            eng.order_reconciler.track_order(PendingOrder(
+                client_order_id="stale-coid",
+                deal_id="PAPER-0001",
+                side="buy",
+                size=0.0005,
+                placed_at=_time.time() - 120.0,
+            ))
+
+            notified = []
+            eng._notify = lambda fn, name, msg: notified.append(msg)
+
+            eng._run_reconciliation()
+
+            assert any(
+                "timeout" in n.lower() or "stale-coid" in n
+                for n in notified
+            ), f"no timeout notification, got {notified}"
+        finally:
+            eng._notify_queue.put(None)
+            eng._notify_thread.join(timeout=5)
+
+    def test_reconciliation_exception_does_not_crash_tick(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """If the reconciler raises, _run_reconciliation must swallow +
+        log rather than letting the exception propagate into the tick."""
+        eng = _make_engine(
+            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+        )
+        try:
+            def _boom(*a, **kw):
+                raise RuntimeError("simulated reconciler failure")
+            eng.order_reconciler.reconcile = _boom
+
+            # Must not raise.
+            eng._run_reconciliation()
+        finally:
+            eng._notify_queue.put(None)
+            eng._notify_thread.join(timeout=5)
