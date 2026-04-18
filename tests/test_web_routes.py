@@ -732,3 +732,94 @@ class TestStartDryRun:
         # endpoint surfaces that as 200 with the ok flag.
         assert r.status_code == 200
         assert r.json().get("ok") is False
+
+
+# ── API contract: bot.mode must mirror the YAML ───────────────────────────────
+
+class TestApiBotsReturnsMode:
+    """Pins the GET /api/bots contract: the authoritative mode lives in
+    the YAML, not in logs/<slug>.state.json. A live-mode bot that has
+    never started MUST still surface as mode=live so the overview UI
+    can render the orange "Start dry-run" button instead of the green
+    paper one. Regression test for the bug where _default_state()
+    hardcoded mode=paper for never-started bots."""
+
+    def test_live_yaml_without_state_returns_mode_live(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        # Seed a live-mode YAML via the create endpoint. No bot
+        # subprocess runs, so logs/<slug>.state.json never appears —
+        # this is the exact scenario the bug report hit.
+        payload = _make_payload()
+        payload["bot"]["mode"] = "live"
+        assert auth_client.post("/api/bots", json=payload).status_code == 200
+
+        # Defensive: make sure no stale state file is laying around
+        # from a previous test run (autouse fixture removes the YAML
+        # but not the state file).
+        state_file = f"logs/{_TEST_SLUG}.state.json"
+        if os.path.exists(state_file):
+            os.remove(state_file)
+
+        try:
+            r = auth_client.get("/api/bots")
+            assert r.status_code == 200
+            bots = {b["slug"]: b for b in r.json()["bots"]}
+            assert _TEST_SLUG in bots, f"bot not listed: {list(bots)}"
+            assert bots[_TEST_SLUG]["mode"] == "live", (
+                f"mode must reflect YAML, got {bots[_TEST_SLUG]['mode']!r}"
+            )
+        finally:
+            auth_client.delete(f"/api/bots/{_TEST_SLUG}")
+
+    def test_paper_yaml_returns_mode_paper(self, auth_client):
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        assert auth_client.post(
+            "/api/bots", json=_make_payload(),
+        ).status_code == 200
+
+        try:
+            r = auth_client.get("/api/bots")
+            assert r.status_code == 200
+            bots = {b["slug"]: b for b in r.json()["bots"]}
+            assert bots[_TEST_SLUG]["mode"] == "paper"
+        finally:
+            auth_client.delete(f"/api/bots/{_TEST_SLUG}")
+
+    def test_yaml_mode_wins_over_state_file(self, auth_client):
+        """If the YAML was edited from paper to live but the engine has
+        not yet re-written state.json, the UI must already see 'live'."""
+        import json as _json
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        # Create a live YAML.
+        payload = _make_payload()
+        payload["bot"]["mode"] = "live"
+        assert auth_client.post("/api/bots", json=payload).status_code == 200
+
+        # Plant a stale state.json that still says mode=paper.
+        os.makedirs("logs", exist_ok=True)
+        state_file = f"logs/{_TEST_SLUG}.state.json"
+        with open(state_file, "w") as fh:
+            _json.dump({
+                "bot_name": "Pytest Route Check",
+                "mode": "paper",
+                "exchange": "bitget",
+                "pair": "BTC/USD",
+            }, fh)
+
+        try:
+            r = auth_client.get("/api/bots")
+            assert r.status_code == 200
+            bots = {b["slug"]: b for b in r.json()["bots"]}
+            assert bots[_TEST_SLUG]["mode"] == "live", (
+                "YAML mode must win over lagging state.json"
+            )
+        finally:
+            if os.path.exists(state_file):
+                os.remove(state_file)
+            auth_client.delete(f"/api/bots/{_TEST_SLUG}")
