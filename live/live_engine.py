@@ -7,9 +7,15 @@ still a dry-run: every "order" is logged to an in-memory list and a
 synthetic fill dict is returned so the engine's internal bookkeeping
 stays consistent.
 
-Phase 1 safety rails:
-  * ``max_base_order_size`` pre-flight — refuse bots with an oversized
-    DCA base order before the engine even boots.
+Safety posture:
+  * Runtime guards are the real defence: per-tick DCA cap, balance
+    guard, drawdown guard, clock-skew monitor, liquidation guard,
+    emergency-stop endpoint. These all live in PaperEngine or in
+    sibling modules and keep running regardless of config values.
+  * Static configuration caps have been removed — any ladder the
+    operator can express in YAML boots. Risk analysis surfaces to
+    the operator as advisory warnings in the portal wizard's Review
+    step (see ``/api/bots/validate-config``), not as hard refusals.
   * ``dry_run=True`` default — the only path that ever reaches ccxt
     is the explicit ``dry_run=False`` branch, which still raises
     NotImplementedError until Phase 3 wires it up.
@@ -44,33 +50,6 @@ logger = logging.getLogger(__name__)
 # seconds from the server clock; 5s is a conservative default that
 # doesn't trip on normal NTP jitter but catches broken clocks.
 DEFAULT_CLOCK_SKEW_TOLERANCE_S = 5.0
-
-# Hard cap on the base order size any live bot is allowed to boot with
-# by default. Operators can bump it via the main_live.py CLI flag if
-# they know what they're doing, but the default keeps an accidental
-# fat-finger config from placing a bigger order than intended.
-DEFAULT_MAX_BASE_ORDER_SIZE_BTC = 0.001
-
-# Worst-case DCA order size ceiling expressed as a multiple of the base
-# order. Catches geometric-growth fat-finger configs (mult=2.0 × 10
-# orders → 512× base) while still allowing conservative ladders that
-# intentionally scale into drawdown. The v20 audit set this to 10×,
-# which refused legitimate 1.3–1.6 multipliers at max_orders ≥ 8 even
-# though those are deliberate, not explosions. 50× accommodates those
-# (e.g. mult=1.5 × 10 orders → 38× base, mult=1.4 × 11 orders → 29×)
-# and still rejects anything approaching the fat-finger regime.
-MAX_DCA_SIZE_VS_BASE = 50.0
-
-# Default cumulative-position ceiling (summed base + every DCA order)
-# when the operator didn't set dca.max_cumulative_size explicitly.
-# Scaled to match the 50× worst-case single-order cap: for a typical
-# conservative ladder (mult=1.5 × 10 orders) the cumulative is 113×
-# base, so a 20× default would preempt every legitimate config. 150×
-# accepts 1.3–1.5 multipliers over 10–12 levels while still rejecting
-# geometric explosions (mult=2.0 × 10 → cumulative 1023× base; mult=1.8
-# × 10 → 358×; mult=1.5 × 12 → 258×). Operators serious about live
-# trading should still pin a tighter value per-bot via the YAML.
-DEFAULT_CUMULATIVE_MULTIPLIER = 150.0
 
 # Bounded order-log ring buffer. A 24/7 bot can emit thousands of DCA
 # entries per month; an unbounded list grows monotonically and eventually
@@ -109,14 +88,8 @@ class LiveEngine(PaperEngine):
         manual_trigger_file: Optional[str] = None,
         slug: Optional[str] = None,
         dry_run: bool = True,
-        max_base_order_size: float = DEFAULT_MAX_BASE_ORDER_SIZE_BTC,
         clock_skew_tolerance: float = DEFAULT_CLOCK_SKEW_TOLERANCE_S,
     ) -> None:
-        # Pre-flight safety rails: run BEFORE super().__init__ so a
-        # misconfigured bot never starts a notify worker, touches the
-        # state file, or initialises a DB row.
-        self._preflight(config, max_base_order_size)
-
         super().__init__(
             config=config,
             exchange=exchange,
@@ -133,7 +106,6 @@ class LiveEngine(PaperEngine):
         # property. Making it mutable invited accidental monkey-patching
         # that would silently enable real orders; the property blocks that.
         self.__dry_run = dry_run
-        self._max_base_order_size = max_base_order_size
         # Bounded order-log ring buffer (see LIVE_ORDER_LOG_MAXLEN). Older
         # entries are dropped automatically once the buffer fills up.
         self._live_order_log: deque = deque(maxlen=LIVE_ORDER_LOG_MAXLEN)
@@ -158,10 +130,28 @@ class LiveEngine(PaperEngine):
         )
         self._reconcile_tick_counter: int = 0
 
+        # Config profile: logged for forensic context, never enforced.
+        # The portal wizard's Review step surfaces the same numbers as
+        # advisory warnings via /api/bots/validate-config; here we just
+        # want the values present in portal.log so a post-mortem can
+        # cross-reference what the operator actually booted with.
+        bos = config.dca.base_order_size
+        multiplier = config.dca.multiplier
+        max_orders = max(config.dca.max_orders, 1)
+        worst_dca = bos * (multiplier ** max(max_orders - 1, 0))
+        cumulative = sum(
+            bos * (multiplier ** i) for i in range(max_orders)
+        )
+        base_multiple = worst_dca / bos if bos > 0 else 0.0
+        cum_multiple = cumulative / bos if bos > 0 else 0.0
         logger.warning(
-            "LiveEngine initialised — dry_run=%s base_order_size=%s max=%s skew_tol=%ss",
-            dry_run, config.dca.base_order_size, max_base_order_size,
-            clock_skew_tolerance,
+            "LiveEngine initialised — dry_run=%s skew_tol=%ss | "
+            "config profile: base=%.8f BTC, worst_dca=%.8f (%.1f× base), "
+            "cumulative=%.8f (%.1f× base), max_orders=%d, multiplier=%s",
+            dry_run, clock_skew_tolerance, bos,
+            worst_dca, base_multiple,
+            cumulative, cum_multiple,
+            max_orders, multiplier,
         )
 
     # ------------------------------------------------------------------
@@ -237,63 +227,6 @@ class LiveEngine(PaperEngine):
                     self.config.name,
                     f"Order timeout: {order.client_order_id}",
                 )
-
-    @staticmethod
-    def _preflight(config: BotConfig, max_base_order_size: float) -> None:
-        """Refuse dangerous DCA configs before the engine boots.
-
-        Checks:
-          1. base_order_size <= max_base_order_size (fat-finger cap).
-          2. Worst-case DCA order (multiplier ** (max_orders-1)) stays
-             within MAX_DCA_SIZE_VS_BASE × base — prevents geometric
-             growth blowing past the cap.
-          3. Cumulative position size across all DCA orders stays within
-             config.dca.max_cumulative_size (or default 150× base via
-             DEFAULT_CUMULATIVE_MULTIPLIER).
-        """
-        bos = config.dca.base_order_size
-        if bos > max_base_order_size:
-            raise ValueError(
-                f"Base order size {bos} exceeds max allowed "
-                f"{max_base_order_size} for live trading. "
-                f"Adjust config or raise --max-base-order-size."
-            )
-
-        multiplier = config.dca.multiplier
-        max_orders = max(config.dca.max_orders, 1)
-        worst_dca = bos * (multiplier ** max(max_orders - 1, 0))
-
-        if worst_dca > bos * MAX_DCA_SIZE_VS_BASE:
-            raise ValueError(
-                f"Worst-case DCA order size {worst_dca:.8f} BTC exceeds "
-                f"{MAX_DCA_SIZE_VS_BASE}× base ({bos}). "
-                f"multiplier={multiplier}, max_orders={max_orders}. "
-                f"Reduce multiplier or max_orders before live trading."
-            )
-
-        # Cumulative (base + every DCA) cap. Operator-set value wins;
-        # otherwise we fall back to DEFAULT_CUMULATIVE_MULTIPLIER × base.
-        cumulative_size = sum(
-            bos * (multiplier ** i) for i in range(max_orders)
-        )
-        configured_cap = getattr(config.dca, "max_cumulative_size", None)
-        cumulative_cap = (
-            configured_cap
-            if configured_cap is not None
-            else bos * DEFAULT_CUMULATIVE_MULTIPLIER
-        )
-
-        if cumulative_size > cumulative_cap:
-            raise ValueError(
-                f"Cumulative DCA position size {cumulative_size:.8f} BTC "
-                f"exceeds cap {cumulative_cap:.8f} BTC. "
-                f"Configure dca.max_cumulative_size or reduce multiplier/max_orders."
-            )
-
-        logger.warning(
-            "LiveEngine preflight OK: base=%s worst_dca=%.8f cumulative=%.8f cap=%.8f",
-            bos, worst_dca, cumulative_size, cumulative_cap,
-        )
 
     # ------------------------------------------------------------------
     # Order execution — Phase 1: dry-run only
@@ -375,10 +308,9 @@ class LiveEngine(PaperEngine):
 
         Intentionally no setter: once the engine has been constructed
         with dry_run=True, the only way to switch to real orders is to
-        instantiate a fresh engine (which goes through the preflight
-        again). A mutable attribute could be flipped via monkey-patch
-        or stray assignment — too easy a foot-gun for something that
-        guards real money."""
+        instantiate a fresh engine. A mutable attribute could be
+        flipped via monkey-patch or stray assignment — too easy a
+        foot-gun for something that guards real money."""
         return self.__dry_run
 
     # Alias preserved for backwards compatibility with tests / portal

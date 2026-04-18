@@ -1331,24 +1331,13 @@ class PaperEngine:
             multiplier = self.config.dca.multiplier ** deal.dca_count
             dca_size   = round(self.config.dca.base_order_size * multiplier, 8)
 
-            # Cumulative notional cap — flash-crash + geometric DCA can
-            # otherwise snowball into a position multiples larger than
-            # the operator sized for. Default cap = 20x base if the
-            # operator didn't set max_cumulative_size explicitly.
-            current_notional = sum(o.size for o in deal.orders)
-            new_notional = current_notional + dca_size
-            configured_cap = getattr(self.config.dca, "max_cumulative_size", None)
-            # Accept only numeric caps — tests that pass a MagicMock
-            # config end up with a MagicMock here and would otherwise
-            # break the > comparison.
-            if not isinstance(configured_cap, (int, float)) or configured_cap <= 0:
-                configured_cap = self.config.dca.base_order_size * 20.0
-            if new_notional > configured_cap:
-                logger.warning(
-                    "DCA blocked for %s: notional %.8f > cap %.8f",
-                    deal.id, new_notional, configured_cap,
-                )
-                return False
+            # No config-driven cumulative cap here by design. Ladder sizing
+            # is an operator decision surfaced as advisory warnings in the
+            # portal wizard (see /api/bots/validate-config). The real
+            # runtime brakes are the per-tick DCA cap above and the
+            # balance guard in _deduct_balance, which refuses DCA fees
+            # once the account can't fund them — so a runaway ladder
+            # stops at insufficient-funds, not at an arbitrary multiple.
 
             dca_order = PaperOrder(
                 order_number=deal.dca_count + 2,

@@ -823,3 +823,114 @@ class TestApiBotsReturnsMode:
             if os.path.exists(state_file):
                 os.remove(state_file)
             auth_client.delete(f"/api/bots/{_TEST_SLUG}")
+
+
+# ── /api/bots/validate-config (advisory warnings, no enforcement) ─────────────
+
+class TestValidateConfigEndpoint:
+    """Pins the advisory-warnings contract that replaced the
+    LiveEngine preflight caps. Every test here verifies that the
+    endpoint RETURNS information rather than blocking — a user
+    saving a dangerous config still gets a 200 with warnings, the
+    POST /api/bots path + start path keep accepting it."""
+
+    def test_route_registered(self):
+        routes = [
+            r for r in app.routes
+            if getattr(r, "path", "") == "/api/bots/validate-config"
+            and "POST" in getattr(r, "methods", set())
+        ]
+        assert len(routes) == 1
+
+    def test_unauthenticated_is_401(self):
+        client = TestClient(webapp.app)
+        client.cookies.clear()
+        r = client.post("/api/bots/validate-config", json=_make_payload())
+        assert r.status_code == 401
+
+    def test_explosive_dca_emits_high_warnings(self, auth_client):
+        """mult=2.0 × 10 orders → worst 512× base, cumulative 1023×
+        base. Pre-v25 this was refused at LiveEngine.__init__; now it
+        must parse successfully AND surface at least one high-level
+        warning so the wizard flags the risk."""
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        payload = _make_payload()
+        payload["bot"]["mode"] = "live"
+        payload["bot"]["dca"]["base_order_size"] = 0.001
+        payload["bot"]["dca"]["multiplier"] = 2.0
+        payload["bot"]["dca"]["max_orders"] = 10
+
+        r = auth_client.post("/api/bots/validate-config", json=payload)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        warnings = data["warnings"]
+        assert any(w["level"] == "high" for w in warnings), warnings
+        s = data["summary"]
+        assert s["mode"] == "live"
+        assert s["worst_case_multiple"] > 50
+        assert s["cumulative_multiple"] > 150
+
+    def test_conservative_config_has_no_high_warnings(self, auth_client):
+        """Default _make_payload (mult=1.5, max_orders=5) → worst 5.06×
+        base, cumulative 7.59× base. Both well under the high-warning
+        thresholds (50× / 150×) so no high flag should fire. Also
+        under the medium thresholds (20× / 100×) so cumulative is
+        clean; the endpoint may still return an empty warnings list."""
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        r = auth_client.post("/api/bots/validate-config", json=_make_payload())
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert not any(w["level"] == "high" for w in data["warnings"]), (
+            data["warnings"]
+        )
+        s = data["summary"]
+        assert s["worst_case_multiple"] == pytest.approx(1.5 ** 4)
+        assert s["cumulative_multiple"] == pytest.approx(
+            sum(1.5 ** i for i in range(5))
+        )
+
+    def test_live_mode_large_base_warns(self, auth_client):
+        """Live bots with base > 0.001 BTC pick up a specific warning
+        pointing at dca.base_order_size."""
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        payload = _make_payload()
+        payload["bot"]["mode"] = "live"
+        payload["bot"]["dca"]["base_order_size"] = 0.01
+
+        r = auth_client.post("/api/bots/validate-config", json=payload)
+        assert r.status_code == 200
+        fields = [w["field"] for w in r.json()["warnings"]]
+        assert "dca.base_order_size" in fields
+
+    def test_malformed_config_is_400(self, auth_client):
+        """Missing required field → BotConfig validation → 400."""
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        # name is required; drop it.
+        bad = {"mode": "paper", "exchange": "bitget", "pair": "BTC/USD"}
+        r = auth_client.post("/api/bots/validate-config", json=bad)
+        assert r.status_code == 400
+        assert "Invalid config" in r.json().get("detail", "")
+
+    def test_endpoint_is_side_effect_free(self, auth_client):
+        """validate-config must NOT write any YAML, touch the registry,
+        or create state files. Repeat calls with a paper config + verify
+        no file lands in config/bots/."""
+        import pathlib
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        payload = _make_payload()
+        for _ in range(3):
+            r = auth_client.post("/api/bots/validate-config", json=payload)
+            assert r.status_code == 200
+        # Autouse fixture handles the cleanup, but assert that nothing
+        # was persisted in the first place.
+        assert not pathlib.Path(_TEST_YAML).exists()

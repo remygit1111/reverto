@@ -21,7 +21,7 @@ from pathlib import Path
 from config.config_loader import load_bot_config
 from config.models import Mode
 from exchanges.public_exchange import PublicExchange
-from live.live_engine import DEFAULT_MAX_BASE_ORDER_SIZE_BTC, LiveEngine
+from live.live_engine import LiveEngine
 from notifications.telegram import TelegramNotifier
 
 # Bot slugs drive config file resolution + PID/state paths. A value like
@@ -49,9 +49,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def _print_live_banner(
-    slug: str, config, dry_run: bool, max_size: float
-) -> None:
+def _print_live_banner(slug: str, config, dry_run: bool) -> None:
     """Operator-facing banner. Intentionally uses plain print (not
     logger) so it lands on stdout even when the engine is captured
     into a log file by the portal."""
@@ -67,7 +65,6 @@ def _print_live_banner(
         f"Exchange         : {config.exchange.value}\n"
         f"Pair             : {config.pair}\n"
         f"Base order size  : {config.dca.base_order_size} BTC\n"
-        f"Max allowed size : {max_size} BTC\n"
         f"Mode             : {mode_line}\n"
     )
 
@@ -114,12 +111,6 @@ def main() -> None:
         action="store_true",
         default=True,
         help="Phase 1: dry-run is forced on; no real orders placed",
-    )
-    parser.add_argument(
-        "--max-base-order-size",
-        type=float,
-        default=DEFAULT_MAX_BASE_ORDER_SIZE_BTC,
-        help="Refuse bots whose DCA base order size exceeds this cap",
     )
     args = parser.parse_args()
 
@@ -180,7 +171,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    _print_live_banner(slug, config, args.dry_run, args.max_base_order_size)
+    _print_live_banner(slug, config, args.dry_run)
     _require_confirmation(args.dry_run)
 
     # Exchange selection — Phase 1 dry-run is fine with the read-only
@@ -208,22 +199,17 @@ def main() -> None:
         )
     notifier = TelegramNotifier(notify_on=config.telegram.notify_on)
 
-    try:
-        engine = LiveEngine(
-            config=config,
-            exchange=exchange,
-            notifier=notifier,
-            initial_balance_btc=args.balance,
-            poll_interval=10,
-            state_file=str(state_file),
-            manual_trigger_file=str(manual_trigger_file),
-            slug=slug,
-            dry_run=args.dry_run,
-            max_base_order_size=args.max_base_order_size,
-        )
-    except ValueError as e:
-        logger.error("LiveEngine refused to start: %s", e)
-        sys.exit(1)
+    engine = LiveEngine(
+        config=config,
+        exchange=exchange,
+        notifier=notifier,
+        initial_balance_btc=args.balance,
+        poll_interval=10,
+        state_file=str(state_file),
+        manual_trigger_file=str(manual_trigger_file),
+        slug=slug,
+        dry_run=args.dry_run,
+    )
 
     _install_signal_handlers(engine)
 
