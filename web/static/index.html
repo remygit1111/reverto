@@ -959,6 +959,33 @@
       </div>
     </div>
 
+    <!-- Drawdown guard status — hidden until the bot's config enables it -->
+    <div id="bot-detail-drawdown-status"
+         class="bot-detail-drawdown hidden"
+         aria-live="polite">
+      <h3>Drawdown Guard</h3>
+      <div class="drawdown-info">
+        <div class="drawdown-row">
+          <span class="label">Status:</span>
+          <span class="value status-value">—</span>
+        </div>
+        <div class="drawdown-row">
+          <span class="label">Peak value:</span>
+          <span class="value peak-value">—</span>
+        </div>
+        <div class="drawdown-row">
+          <span class="label">Trigger reason:</span>
+          <span class="value reason-value">—</span>
+        </div>
+      </div>
+      <button class="hbtn hbtn-theme btn-danger"
+              data-action="reset-drawdown-detail"
+              aria-label="Reset drawdown guard for this bot"
+              type="button">
+        Reset Drawdown Guard
+      </button>
+    </div>
+
     <!-- Performance statistics -->
     <div class="section-title">Performance Statistics</div>
     <div class="perf-stats-grid" id="perf-stats-grid"></div>
