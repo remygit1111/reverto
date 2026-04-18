@@ -16,6 +16,8 @@ to paper mode.
 | Rail | Where | Effect |
 |------|-------|--------|
 | Max base order size | `LiveEngine.__init__` preflight | Refuses bots whose DCA base order size exceeds the cap (default `0.001 BTC`). Raises `ValueError` before the notify worker starts. |
+| Worst-case DCA cap | `LiveEngine._preflight` (`MAX_DCA_SIZE_VS_BASE = 50`) | Refuses configs whose final DCA order exceeds `50× base_order_size`. Accepts conservative ladders (e.g. `mult=1.5 × max_orders=10` → `38×`), rejects geometric-growth explosions (e.g. `mult=2.0 × max_orders=10` → `512×`). |
+| Cumulative position cap | `LiveEngine._preflight` (`DEFAULT_CUMULATIVE_MULTIPLIER = 20`) | Refuses configs whose summed base + every DCA exceeds `dca.max_cumulative_size` (or default `20× base` when unset). Catches ladders that fit per-order but blow the account across the series. |
 | Drawdown guard | `core/drawdown_guard.py` + `BotConfig.drawdown_guard` | Pauses new entries (or stops the engine entirely) once equity drops `max_drawdown_pct` from peak. |
 | Hard mode check | `main_live.py` rejects non-`live` configs; `main_paper.py` rejects `live` configs | A misconfigured bot can never boot under the wrong runner. |
 | Dry-run default | `LiveEngine(dry_run=True)` + `main_live.py --dry-run` | Real-order path raises `NotImplementedError`. Flipping off dry-run is a deliberate opt-in. |
