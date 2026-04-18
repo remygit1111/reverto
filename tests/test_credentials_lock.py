@@ -1,11 +1,15 @@
 """Tests for Fernet rotation locking + backup retention + reverse-order commit.
 
-Spec items:
-  * rotate_fernet_key uses _rotation_lock — concurrent rotations are refused.
+Spec items (Phase-2):
+  * rotate_fernet_key uses _rotation_lock — concurrent rotations on the
+    SAME user are refused.
   * Backups are timestamped (not a single .bak file).
   * cleanup_old_backups deletes backups older than retention_days.
+  * The replace order is key-before-creds so a crash mid-rotation
+    leaves a recoverable intermediate state.
 """
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -15,21 +19,26 @@ import pytest
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 
 from core import credentials as creds  # noqa: E402
+from core import paths  # noqa: E402
 
 
 @pytest.fixture
 def routed_store(tmp_path, monkeypatch):
-    key = tmp_path / ".credentials.key"
-    store = tmp_path / "credentials.json"
-    monkeypatch.setattr(creds, "_KEY_FILE", key)
-    monkeypatch.setattr(creds, "_STORE_FILE", store)
-    return key, store
+    """Redirect the Phase-2 filesystem tree at tmp_path. Returns the
+    per-user key Path for the test to assert on directly."""
+    monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(creds, "_BASE_DIR", tmp_path)
+    monkeypatch.setattr(creds, "_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(
+        creds, "_KEY_FILE", tmp_path / "logs" / ".credentials.key",
+    )
+    return paths.user_fernet_key_path(1)
 
 
 class TestRotationLock:
 
     def test_second_rotation_refused_while_first_holds_lock(self, routed_store):
-        key, store = routed_store
+        key = routed_store
         creds.save_keys("bitget", "a", "b", user_id=1)
 
         # Acquire the lock manually — simulating another in-progress rotation.
@@ -37,19 +46,19 @@ class TestRotationLock:
         cm.__enter__()
         try:
             with pytest.raises(RuntimeError, match="Another Fernet rotation"):
-                creds.rotate_fernet_key(credentials_file=store, keyfile=key)
+                creds.rotate_fernet_key(user_id=1)
         finally:
             cm.__exit__(None, None, None)
 
     def test_lock_released_after_successful_rotate(self, routed_store):
         """After a successful rotate the lock file is gone, so a second
         rotate succeeds."""
-        key, store = routed_store
+        key = routed_store
         creds.save_keys("bitget", "a", "b", user_id=1)
 
-        creds.rotate_fernet_key(credentials_file=store, keyfile=key)
+        creds.rotate_fernet_key(user_id=1)
         # Immediate second call must succeed.
-        creds.rotate_fernet_key(credentials_file=store, keyfile=key)
+        creds.rotate_fernet_key(user_id=1)
 
         # Two timestamped backups now (one from each rotation).
         backups = list(key.parent.glob(key.name + ".bak.*"))
@@ -59,12 +68,12 @@ class TestRotationLock:
 class TestTimestampedBackups:
 
     def test_each_rotation_creates_a_fresh_backup(self, routed_store):
-        key, store = routed_store
+        key = routed_store
         creds.save_keys("bitget", "a", "b", user_id=1)
 
-        creds.rotate_fernet_key(credentials_file=store, keyfile=key)
+        creds.rotate_fernet_key(user_id=1)
         time.sleep(1.1)  # ensure the timestamp strftime differs
-        creds.rotate_fernet_key(credentials_file=store, keyfile=key)
+        creds.rotate_fernet_key(user_id=1)
 
         backups = sorted(key.parent.glob(key.name + ".bak.*"))
         assert len(backups) == 2
@@ -77,18 +86,17 @@ class TestTimestampedBackups:
 class TestBackupRetention:
 
     def test_cleanup_removes_only_old_backups(self, routed_store):
-        key, store = routed_store
+        key = routed_store
         creds.save_keys("bitget", "a", "b", user_id=1)
 
-        # Create a rotate + two fake "old" backup files.
-        creds.rotate_fernet_key(credentials_file=store, keyfile=key)
+        # Create a rotate + one fake "old" backup file.
+        creds.rotate_fernet_key(user_id=1)
 
         old = key.with_suffix(key.suffix + ".bak.20200101000000")
         old.write_bytes(b"fake old key")
         # Push mtime 30 days into the past.
         past = time.time() - 30 * 86400
-        import os as _os
-        _os.utime(old, (past, past))
+        os.utime(old, (past, past))
 
         removed = creds.cleanup_old_backups(key, retention_days=7)
         assert old.name in removed
@@ -103,27 +111,27 @@ class TestCrashRecovery:
     def test_key_is_replaced_before_creds(self, routed_store, monkeypatch):
         """Regression pin: the rotation flips the key file first so a
         crash between the two replaces is recoverable from the .bak."""
-        key, store = routed_store
+        key = routed_store
         creds.save_keys("bitget", "a", "b", user_id=1)
+        enc_path = paths.exchange_creds_path(1, "bitget")
         original_key = key.read_bytes()
 
         # Monkeypatch os.replace to capture ordering.
-        import os as _os
         order: list[str] = []
-        real_replace = _os.replace
+        real_replace = os.replace
 
         def tracking_replace(src, dst):
             order.append(Path(dst).name)
             return real_replace(src, dst)
 
-        monkeypatch.setattr(_os, "replace", tracking_replace)
-        creds.rotate_fernet_key(credentials_file=store, keyfile=key)
+        monkeypatch.setattr(os, "replace", tracking_replace)
+        creds.rotate_fernet_key(user_id=1)
 
-        # Expect: key file flipped BEFORE creds file.
+        # Expect: key file flipped BEFORE any .enc file.
         key_idx = order.index(key.name)
-        store_idx = order.index(store.name)
-        assert key_idx < store_idx, (
-            "key must be replaced before creds — "
+        enc_idx = order.index(enc_path.name)
+        assert key_idx < enc_idx, (
+            "key must be replaced before any .enc — "
             "any other order leaves an unrecoverable intermediate state"
         )
         # And the bytes actually changed.

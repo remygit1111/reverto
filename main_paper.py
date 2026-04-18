@@ -17,6 +17,7 @@ from pathlib import Path
 
 from config.config_loader import load_bot_config
 from config.models import Mode
+from core import paths
 from exchanges.public_exchange import PublicExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import PaperEngine
@@ -46,9 +47,22 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     parser = argparse.ArgumentParser(description="Reverto paper trading engine")
     parser.add_argument(
+        "--bot",
+        default=None,
+        help="Bot slug — resolves to config/bots/<user-id>/<slug>.yaml",
+    )
+    parser.add_argument(
+        "--user-id",
+        type=int,
+        default=1,
+        help="User ID owning this bot (multi-tenant scope). Phase 1/2 "
+             "runs everything under user 1; leave at default unless "
+             "you know what you're doing.",
+    )
+    parser.add_argument(
         "--config",
-        default="config/bots/btc_paper.yaml",
-        help="Path to bot YAML config",
+        default=None,
+        help="Path to bot YAML config (overrides --bot).",
     )
     parser.add_argument(
         "--balance",
@@ -58,10 +72,25 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config_path = Path(args.config)
-    # Slug = YAML filename stem (never config.name). The portal keys
-    # everything — BotInfo.pid_file, log_file, state_file — on this stem,
-    # so renaming the bot inside the YAML must not break the mapping.
+    user_id = int(args.user_id)
+
+    if args.config:
+        config_path = Path(args.config)
+    elif args.bot:
+        if not _BOT_SLUG_RE.match(args.bot):
+            logger.error(
+                "Invalid bot slug %r — must match %s",
+                args.bot, _BOT_SLUG_RE.pattern,
+            )
+            sys.exit(1)
+        config_path = paths.bot_yaml_path(user_id, args.bot)
+    else:
+        parser.error("Specify either --config or --bot")
+        return
+
+    # Slug = YAML filename stem. The registry + every on-disk artifact
+    # keys off this stem, so renaming the bot inside the YAML must not
+    # break the mapping.
     slug = config_path.stem
     if not _BOT_SLUG_RE.match(slug):
         logger.error(
@@ -70,15 +99,10 @@ def main() -> None:
         )
         sys.exit(1)
 
-    base_dir = Path(__file__).parent
-    log_dir = base_dir / "logs"
-    pid_dir = log_dir / "pids"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    pid_dir.mkdir(parents=True, exist_ok=True)
-
-    pid_file = pid_dir / f"{slug}.pid"
-    state_file = log_dir / f"{slug}.state.json"
-    manual_trigger_file = log_dir / f"{slug}.manual_trigger"
+    # Phase-2 per-user filesystem layout via core.paths.
+    pid_file = paths.bot_pid_path(user_id, slug)
+    state_file = paths.bot_state_path(user_id, slug)
+    manual_trigger_file = paths.bot_manual_trigger_path(user_id, slug)
 
     # Write PID file early so the portal's start_bot() polling sees it
     # within the 3s starting-slot window. atexit removes it on a clean
@@ -88,8 +112,8 @@ def main() -> None:
     atexit.register(lambda: pid_file.exists() and pid_file.unlink())
 
     logger.info(
-        "Starting Reverto paper trading — slug=%s config=%s pid=%s",
-        slug, args.config, os.getpid(),
+        "Starting Reverto paper trading — slug=%s user=%d config=%s pid=%s",
+        slug, user_id, config_path, os.getpid(),
     )
 
     config = load_bot_config(str(config_path))
@@ -117,9 +141,7 @@ def main() -> None:
         state_file=str(state_file),
         manual_trigger_file=str(manual_trigger_file),
         slug=slug,
-        # TODO Phase 2: resolve user_id from the bot YAML folder layout
-        # (one folder per user). For now every bot belongs to admin.
-        user_id=1,
+        user_id=user_id,
     )
 
     _install_signal_handlers(engine)

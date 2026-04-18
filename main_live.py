@@ -20,6 +20,7 @@ from pathlib import Path
 
 from config.config_loader import load_bot_config
 from config.models import Mode
+from core import paths
 from exchanges.public_exchange import PublicExchange
 from live.live_engine import LiveEngine
 from notifications.telegram import TelegramNotifier
@@ -98,7 +99,13 @@ def main() -> None:
     parser.add_argument(
         "--bot",
         default=None,
-        help="Bot slug — resolves to config/bots/<slug>.yaml",
+        help="Bot slug — resolves to config/bots/<user-id>/<slug>.yaml",
+    )
+    parser.add_argument(
+        "--user-id",
+        type=int,
+        default=1,
+        help="User ID owning this bot (multi-tenant scope).",
     )
     parser.add_argument(
         "--balance",
@@ -113,22 +120,20 @@ def main() -> None:
         help="Phase 1: dry-run is forced on; no real orders placed",
     )
     args = parser.parse_args()
+    user_id = int(args.user_id)
 
-    # Config path resolution — --config wins, then --bot <slug>, then the
-    # paper-style fallback. This matches main_paper.py so operators can
-    # switch between runners without learning a second flag grammar.
+    # Config path resolution — --config wins, then --bot <slug>. The
+    # --bot path goes through core.paths so Phase-2 layout is enforced.
     if args.config:
         config_path = Path(args.config)
     elif args.bot:
-        # Regex-validate the slug BEFORE constructing the Path so a
-        # "../../etc/passwd" style value never reaches the filesystem.
         if not _BOT_SLUG_RE.match(args.bot):
             logger.error(
                 "Invalid bot slug %r — must match %s",
                 args.bot, _BOT_SLUG_RE.pattern,
             )
             sys.exit(1)
-        config_path = Path("config/bots") / f"{args.bot}.yaml"
+        config_path = paths.bot_yaml_path(user_id, args.bot)
     else:
         parser.error("Specify either --config or --bot")
         return
@@ -140,22 +145,16 @@ def main() -> None:
         )
         sys.exit(1)
 
-    base_dir = Path(__file__).parent
-    log_dir = base_dir / "logs"
-    pid_dir = log_dir / "pids"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    pid_dir.mkdir(parents=True, exist_ok=True)
-
-    pid_file = pid_dir / f"{slug}.pid"
-    state_file = log_dir / f"{slug}.state.json"
-    manual_trigger_file = log_dir / f"{slug}.manual_trigger"
+    pid_file = paths.bot_pid_path(user_id, slug)
+    state_file = paths.bot_state_path(user_id, slug)
+    manual_trigger_file = paths.bot_manual_trigger_path(user_id, slug)
 
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
     atexit.register(lambda: pid_file.exists() and pid_file.unlink())
 
     logger.info(
-        "Starting Reverto live trading — slug=%s config=%s pid=%s",
-        slug, str(config_path), os.getpid(),
+        "Starting Reverto live trading — slug=%s user=%d config=%s pid=%s",
+        slug, user_id, str(config_path), os.getpid(),
     )
 
     config = load_bot_config(str(config_path))
@@ -186,7 +185,7 @@ def main() -> None:
             "Using PublicExchange (dry-run) — real orders are not possible"
         )
     else:
-        exchange = _authenticated_exchange(config.exchange.value)
+        exchange = _authenticated_exchange(config.exchange.value, user_id)
         if exchange is None:
             logger.error(
                 "Live mode requires exchange credentials — configure via "
@@ -209,8 +208,7 @@ def main() -> None:
         manual_trigger_file=str(manual_trigger_file),
         slug=slug,
         dry_run=args.dry_run,
-        # TODO Phase 2: resolve user_id from bot YAML folder layout.
-        user_id=1,
+        user_id=user_id,
     )
 
     _install_signal_handlers(engine)
@@ -218,12 +216,12 @@ def main() -> None:
     engine.start()
 
 
-def _authenticated_exchange(name: str):
+def _authenticated_exchange(name: str, user_id: int):
     """Build an authenticated exchange client for live (non-dry-run) use.
 
-    Loads credentials through ``core.credentials.get_keys``. Returns
-    None when no credentials are saved — the caller must refuse to
-    boot in that case.
+    Loads credentials through ``core.credentials.get_keys`` under the
+    bot's owning user. Returns None when no credentials are saved —
+    the caller must refuse to boot in that case.
 
     Only Bitget is wired today; Kraken follows the same shape once
     implemented. Passphrase is pulled from an env var because the
@@ -232,9 +230,7 @@ def _authenticated_exchange(name: str):
     to set ``BITGET_PASSPHRASE`` alongside the saved keys.
     """
     from core.credentials import get_keys
-    # TODO Phase 2: resolve user_id from bot YAML folder layout. For
-    # now every live bot shares the admin credential store.
-    keys = get_keys(name, user_id=1)
+    keys = get_keys(name, user_id=user_id)
     if not keys:
         return None
 

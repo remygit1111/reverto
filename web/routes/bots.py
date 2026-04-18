@@ -28,15 +28,16 @@ import logging
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from core import paths
+from core.user import User
 from web.app import (
     _audit,
     _BOT_SLUG_RE,
     _bot_yaml_path,
     _compute_summary,
     _request_actor,
+    _request_user,
     _validate_bot_payload,
-    CONFIG_DIR,
-    LOG_DIR,
     limiter,
     registry,
     restart_bot,
@@ -63,8 +64,10 @@ router = APIRouter(tags=["bots"])
 
 @router.get("/api/bots")
 @limiter.limit("120/minute")
-async def get_bots(request: Request):
-    bots = [b.read_state() for b in await registry.all()]
+async def get_bots(
+    request: Request, user: User = Depends(_request_user),
+):
+    bots = [b.read_state() for b in await registry.all(user_id=user.id)]
 
     all_open = []
     for b in bots:
@@ -92,8 +95,10 @@ async def get_bots(request: Request):
 
 @router.get("/api/bots/{slug}")
 @limiter.limit("120/minute")
-async def get_bot(slug: str, request: Request):
-    bot = await registry.get(slug)
+async def get_bot(
+    slug: str, request: Request, user: User = Depends(_request_user),
+):
+    bot = await registry.get(user.id, slug)
     if not bot:
         return {"error": f"Unknown bot: {slug}"}
     return bot.read_state()
@@ -103,15 +108,21 @@ async def get_bot(slug: str, request: Request):
 
 @router.post("/api/bots/{slug}/start")
 @limiter.limit("20/minute")
-async def api_start(slug: str, request: Request, actor: str = Depends(_request_actor)):
+async def api_start(
+    slug: str, request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
+):
     _audit("bot_start", slug, actor)
-    return await start_bot(slug)
+    return await start_bot(user.id, slug)
 
 
 @router.post("/api/bots/{slug}/start-dry-run")
 @limiter.limit("20/minute")
 async def api_start_dry_run(
-    slug: str, request: Request, actor: str = Depends(_request_actor),
+    slug: str, request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     """Phase-1 launcher: boot a live-mode bot via main_live.py with the
     dry-run flag set. Refuses paper-mode bots at the helper level.
@@ -126,34 +137,45 @@ async def api_start_dry_run(
     if not _BOT_SLUG_RE.match(slug):
         raise HTTPException(status_code=400, detail="Invalid slug")
     _audit("bot_start_dry_run", slug, actor)
-    return await start_bot_dry_run(slug)
+    return await start_bot_dry_run(user.id, slug)
 
 
 @router.post("/api/bots/{slug}/stop")
 @limiter.limit("20/minute")
-async def api_stop(slug: str, request: Request, actor: str = Depends(_request_actor)):
+async def api_stop(
+    slug: str, request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
+):
     _audit("bot_stop", slug, actor)
-    return await stop_bot(slug)
+    return await stop_bot(user.id, slug)
 
 
 @router.post("/api/bots/{slug}/restart")
 @limiter.limit("20/minute")
-async def api_restart(slug: str, request: Request, actor: str = Depends(_request_actor)):
+async def api_restart(
+    slug: str, request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
+):
     _audit("bot_restart", slug, actor)
-    return await restart_bot(slug)
+    return await restart_bot(user.id, slug)
 
 
 @router.post("/api/bots/{slug}/deal/start")
 @limiter.limit("5/minute")
-async def api_deal_start(slug: str, request: Request, actor: str = Depends(_request_actor)):
+async def api_deal_start(
+    slug: str, request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
+):
     """Manual deal trigger — writes a sentinel file that the running
     paper engine consumes on its next tick to force-open a deal."""
-    bot = await registry.get(slug)
+    bot = await registry.get(user.id, slug)
     if not bot:
         raise HTTPException(status_code=404, detail=f"Unknown bot: {slug}")
-    trigger = LOG_DIR / f"{slug}.manual_trigger"
+    trigger = paths.bot_manual_trigger_path(user.id, slug)
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
         trigger.write_text("", encoding="utf-8")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to write trigger: {e}")
@@ -350,6 +372,7 @@ async def create_bot(
     body: dict,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     """Maak een nieuwe bot YAML aan. Slug komt uit de bot naam."""
     try:
@@ -362,11 +385,12 @@ async def create_bot(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    path = _bot_yaml_path(slug)
+    path = _bot_yaml_path(user.id, slug)
     if path.exists():
         raise HTTPException(status_code=409, detail=f"Bot {slug} already exists")
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # user_bots_dir ensures config/bots/<user_id>/ exists.
+    paths.user_bots_dir(user.id)
     inner = body.get("bot", body)
     path.write_text(
         yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
@@ -383,8 +407,9 @@ async def get_bot_config(
     slug: str,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
-    path = _bot_yaml_path(slug)
+    path = _bot_yaml_path(user.id, slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
     try:
@@ -401,8 +426,9 @@ async def update_bot_config(
     body: dict,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
-    path = _bot_yaml_path(slug)
+    path = _bot_yaml_path(user.id, slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
     try:
@@ -425,15 +451,16 @@ async def delete_bot(
     slug: str,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
-    bot = await registry.get(slug)
+    bot = await registry.get(user.id, slug)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found")
     if bot.running:
         raise HTTPException(
             status_code=409, detail="Bot is running — stop it before deleting",
         )
-    path = _bot_yaml_path(slug)
+    path = _bot_yaml_path(user.id, slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="YAML not found")
     path.unlink()

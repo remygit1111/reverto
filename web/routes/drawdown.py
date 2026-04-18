@@ -11,7 +11,10 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from web.app import _BOT_SLUG_RE, _audit, _request_actor, limiter, registry
+from core.user import User
+from web.app import (
+    _BOT_SLUG_RE, _audit, _request_actor, _request_user, limiter, registry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +24,9 @@ router = APIRouter(tags=["drawdown"])
 @router.post("/api/bots/{slug}/drawdown/reset")
 @limiter.limit("10/minute")
 async def api_drawdown_reset(
-    slug: str, request: Request, actor: str = Depends(_request_actor),
+    slug: str, request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     """Clear the drawdown guard's triggered state for a bot.
 
@@ -33,7 +38,7 @@ async def api_drawdown_reset(
     if not _BOT_SLUG_RE.match(slug):
         raise HTTPException(status_code=400, detail="Invalid slug")
 
-    bot = await registry.get(slug)
+    bot = await registry.get(user.id, slug)
     if not bot:
         raise HTTPException(status_code=404, detail="Unknown bot")
 

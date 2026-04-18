@@ -21,25 +21,41 @@ CLIENT = TestClient(app)
 AUTH = {"X-API-Key": "testkey-for-pytest"}
 JSON = {**AUTH, "Content-Type": "application/json"}
 
-# Use a slug that could never collide with a real bot
+# Use a slug that could never collide with a real bot.
+# Phase-2 layout: create_bot writes to config/bots/<user_id>/<slug>.yaml
+# so every test path lives under user 1.
 _TEST_SLUG = "pytest_route_check"
-_TEST_YAML = f"config/bots/{_TEST_SLUG}.yaml"
+_TEST_USER_ID = 1
+_TEST_YAML = f"config/bots/{_TEST_USER_ID}/{_TEST_SLUG}.yaml"
+_TEST_STATE = f"logs/{_TEST_USER_ID}/{_TEST_SLUG}.state.json"
+_TEST_PID = f"logs/{_TEST_USER_ID}/pids/{_TEST_SLUG}.pid"
+_TEST_LOG = f"logs/{_TEST_USER_ID}/{_TEST_SLUG}.log"
 
 
 @pytest.fixture(autouse=True)
 def _cleanup_yaml():
-    """Ensure the test bot YAML is gone before and after every test."""
-    if os.path.exists(_TEST_YAML):
-        os.remove(_TEST_YAML)
+    """Ensure test artefacts are gone before AND after every test.
+
+    The web.app TestClient was bound at import time with the real
+    BASE_DIR, so monkey-patching core.paths.BASE_DIR mid-test doesn't
+    redirect create_bot's output. Instead we let the tests write to
+    the Phase-2 location under config/bots/1/ and then sweep each
+    test's artefacts + any credentials side-files so the production
+    tree stays clean between runs.
+    """
+    def _sweep():
+        for path in (_TEST_YAML, _TEST_STATE, _TEST_PID, _TEST_LOG):
+            if os.path.exists(path):
+                os.remove(path)
+        # logs/credentials.json no longer exists in Phase 2, but clear
+        # it if a stray pre-MT test created one.
+        legacy = "logs/credentials.json"
+        if os.path.exists(legacy):
+            os.remove(legacy)
+
+    _sweep()
     yield
-    if os.path.exists(_TEST_YAML):
-        os.remove(_TEST_YAML)
-    # credentials files created by the auth path during tests. .auth.json
-    # is left in place because the bootstrap runs once at module import —
-    # removing it would not regenerate it, and removing .credentials.key
-    # would poison decryption on the next run. Only touch credentials.json.
-    if os.path.exists("logs/credentials.json"):
-        os.remove("logs/credentials.json")
+    _sweep()
 
 
 def _make_payload(name: str = "Pytest Route Check") -> dict:
@@ -486,6 +502,7 @@ class TestDealEndpoints:
             assert r.status_code == 422, f"Expected 422 for deal_id={bad_id!r}, got {r.status_code}"
 
     def test_patch_valid_deal_id_is_200(self, auth_client):
+        from core import paths
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.patch(
@@ -494,12 +511,13 @@ class TestDealEndpoints:
         )
         assert r.status_code == 200
         assert r.json().get("ok") is True
-        # Clean up sentinel
-        sentinel = webapp.LOG_DIR / "test.deal_edit_PAPER-0001"
+        # Clean up sentinel — Phase-2 layout puts it under logs/<user>/.
+        sentinel = paths.user_logs_dir(1) / "test.deal_edit_PAPER-0001"
         if sentinel.exists():
             sentinel.unlink()
 
     def test_delete_cancel_valid(self, auth_client):
+        from core import paths
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
@@ -508,11 +526,12 @@ class TestDealEndpoints:
         )
         assert r.status_code == 200
         assert r.json().get("action") == "cancel"
-        sentinel = webapp.LOG_DIR / "test.deal_cancel_PAPER-0002"
+        sentinel = paths.user_logs_dir(1) / "test.deal_cancel_PAPER-0002"
         if sentinel.exists():
             sentinel.unlink()
 
     def test_delete_close_valid(self, auth_client):
+        from core import paths
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
@@ -521,7 +540,7 @@ class TestDealEndpoints:
         )
         assert r.status_code == 200
         assert r.json().get("action") == "close"
-        sentinel = webapp.LOG_DIR / "test.deal_close_PAPER-0003"
+        sentinel = paths.user_logs_dir(1) / "test.deal_close_PAPER-0003"
         if sentinel.exists():
             sentinel.unlink()
 
@@ -687,9 +706,10 @@ class TestStartDryRun:
             captured["env"] = kw.get("env", {})
             captured["start_new_session"] = kw.get("start_new_session")
             # Drop a fake PID file so the post-spawn wait loop exits.
-            from web.app import PID_DIR
-            PID_DIR.mkdir(parents=True, exist_ok=True)
-            (PID_DIR / f"{_TEST_SLUG}.pid").write_text(str(_FakeProc.pid))
+            # Phase-2: pid file lives under logs/<user>/pids/.
+            from core import paths as _paths
+            pid_path = _paths.bot_pid_path(_TEST_USER_ID, _TEST_SLUG)
+            pid_path.write_text(str(_FakeProc.pid))
             return _FakeProc()
 
         monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
@@ -714,8 +734,8 @@ class TestStartDryRun:
             assert captured["start_new_session"] is True
         finally:
             # Remove fake PID + YAML so subsequent tests see a clean slate.
-            from web.app import PID_DIR
-            pid_file = PID_DIR / f"{_TEST_SLUG}.pid"
+            from core import paths as _paths
+            pid_file = _paths.bot_pid_path(_TEST_USER_ID, _TEST_SLUG)
             if pid_file.exists():
                 pid_file.unlink()
             auth_client.delete(f"/api/bots/{_TEST_SLUG}")
@@ -760,7 +780,7 @@ class TestStartDryRun:
         can't accidentally invoke subprocess.Popen with a traversal."""
         import asyncio
         from web.app import start_bot_dry_run
-        result = asyncio.run(start_bot_dry_run("../../etc/passwd"))
+        result = asyncio.run(start_bot_dry_run(1, "../../etc/passwd"))
         assert result["ok"] is False
         assert "Invalid bot slug" in result.get("error", "")
 
@@ -789,7 +809,7 @@ class TestApiBotsReturnsMode:
         # Defensive: make sure no stale state file is laying around
         # from a previous test run (autouse fixture removes the YAML
         # but not the state file).
-        state_file = f"logs/{_TEST_SLUG}.state.json"
+        state_file = _TEST_STATE
         if os.path.exists(state_file):
             os.remove(state_file)
 
@@ -833,8 +853,8 @@ class TestApiBotsReturnsMode:
         assert auth_client.post("/api/bots", json=payload).status_code == 200
 
         # Plant a stale state.json that still says mode=paper.
-        os.makedirs("logs", exist_ok=True)
-        state_file = f"logs/{_TEST_SLUG}.state.json"
+        os.makedirs(os.path.dirname(_TEST_STATE), exist_ok=True)
+        state_file = _TEST_STATE
         with open(state_file, "w") as fh:
             _json.dump({
                 "bot_name": "Pytest Route Check",

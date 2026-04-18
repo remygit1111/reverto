@@ -24,7 +24,7 @@ from typing import Optional
 
 from config.config_loader import load_bot_config
 from config.models import BotConfig, Mode
-from core import credentials
+from core import credentials, paths
 from core.database import init_db as _init_db
 from core.user import User, get_default_user
 from notifications.telegram import TelegramNotifier
@@ -332,6 +332,10 @@ _price_lock = asyncio.Lock()
 
 BASE_DIR   = Path(__file__).parent.parent
 STATIC_DIR = Path(__file__).parent / "static"
+# Legacy aliases — kept because existing callers import them. The
+# Phase-2 per-user dirs live under these paths but every new helper
+# goes through core.paths so the layout is declared in exactly one
+# place.
 CONFIG_DIR = BASE_DIR / "config" / "bots"
 LOG_DIR    = BASE_DIR / "logs"
 PID_DIR    = LOG_DIR / "pids"
@@ -390,16 +394,30 @@ def slugify(name: str) -> str:
 # ── Bot registry ──────────────────────────────────────────────────────────────
 
 class BotInfo:
-    def __init__(self, slug: str, config_file: str):
+    """Registry record for a single bot — scoped to (user_id, slug).
+
+    Phase-2 composite key: two users can own a bot with the same slug
+    without collision on the pid/state/log/trigger files, because every
+    path flows through ``core.paths`` which partitions by user_id.
+    """
+
+    def __init__(self, user_id: int, slug: str, config_file: str):
+        self.user_id     = int(user_id)
         self.slug        = slug
         self.config_file = config_file
 
     @property
-    def pid_file(self)   -> Path: return PID_DIR / f"{self.slug}.pid"
+    def pid_file(self)   -> Path:
+        return paths.bot_pid_path(self.user_id, self.slug)
     @property
-    def log_file(self)   -> Path: return LOG_DIR  / f"{self.slug}.log"
+    def log_file(self)   -> Path:
+        return paths.bot_log_path(self.user_id, self.slug)
     @property
-    def state_file(self) -> Path: return LOG_DIR  / f"{self.slug}.state.json"
+    def state_file(self) -> Path:
+        return paths.bot_state_path(self.user_id, self.slug)
+    @property
+    def manual_trigger_file(self) -> Path:
+        return paths.bot_manual_trigger_path(self.user_id, self.slug)
 
     @property
     def running(self) -> bool:
@@ -437,7 +455,7 @@ class BotInfo:
         visible on the next GET without touching the 5 s registry TTL.
         """
         try:
-            cfg_path = BASE_DIR / self.config_file
+            cfg_path = paths.bot_yaml_path(self.user_id, self.slug)
             raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError):
             return ""
@@ -519,6 +537,15 @@ class BotInfo:
 
 
 class BotRegistry:
+    """In-memory index of every bot YAML keyed on ``(user_id, slug)``.
+
+    Phase 2 introduces the composite key so two users can own a bot
+    with the same slug name without colliding. The scan walks
+    ``config/bots/<user_id>/*.yaml`` for every integer-named
+    subdirectory under ``config/bots/``; Phase 1's single-level layout
+    is no longer supported (the migration script moves it under 1/).
+    """
+
     # TTL voor de filesystem-glob in refresh(). Bij hoge API frequentie
     # (dashboard polls elke 5s, plus /api/price, plus tail_logs) voerde
     # iedere call een eigen glob uit — overbodig en duur op trage
@@ -526,31 +553,50 @@ class BotRegistry:
     _REFRESH_TTL = 5.0
 
     def __init__(self):
-        self._bots: dict[str, BotInfo] = {}
+        self._bots: dict[tuple[int, str], BotInfo] = {}
         self._lock = asyncio.Lock()
         self._last_refresh: float = 0.0
-        # In-progress starts per slug. Beschermt tegen dubbel-klik races
-        # waarbij main_paper.py nog geen PID file heeft geschreven en
-        # bot.running dus False retourneert voor beide kliks.
-        self._starting: set[str] = set()
+        # In-progress starts, keyed on (user_id, slug) so a dubble-klik
+        # for user 1/rsi_test and user 2/rsi_test don't block each other.
+        self._starting: set[tuple[int, str]] = set()
         # Initiële populatie: gebeurt vóór de event loop bestaat, dus
         # geen lock-contention mogelijk — direct synchroon vullen.
         self._refresh_locked()
         self._last_refresh = time.time()
 
+    def _scan_user_dirs(self) -> list[tuple[int, Path]]:
+        """Return a list of ``(user_id, user_dir)`` for every integer-
+        named subdirectory under CONFIG_DIR. Non-integer names (e.g.
+        leftover backup folders) are skipped with no warning — they're
+        not errors, just not user dirs."""
+        out: list[tuple[int, Path]] = []
+        if not CONFIG_DIR.exists():
+            return out
+        for child in sorted(CONFIG_DIR.iterdir()):
+            if not child.is_dir():
+                continue
+            try:
+                uid = int(child.name)
+            except ValueError:
+                continue
+            out.append((uid, child))
+        return out
+
     def _refresh_locked(self) -> None:
         """Voer de glob uit; caller moet de lock vasthouden (of init zijn)."""
-        current: set[str] = set()
-        if CONFIG_DIR.exists():
-            for f in sorted(CONFIG_DIR.glob("*.yaml")):
+        current: set[tuple[int, str]] = set()
+        for uid, user_dir in self._scan_user_dirs():
+            for f in sorted(user_dir.glob("*.yaml")):
                 slug = f.stem
-                current.add(slug)
-                if slug not in self._bots:
-                    self._bots[slug] = BotInfo(
+                key = (uid, slug)
+                current.add(key)
+                if key not in self._bots:
+                    self._bots[key] = BotInfo(
+                        user_id=uid,
                         slug=slug,
-                        config_file=str(f.relative_to(BASE_DIR))
+                        config_file=str(f.relative_to(BASE_DIR)),
                     )
-        for stale in [s for s in self._bots if s not in current]:
+        for stale in [k for k in self._bots if k not in current]:
             del self._bots[stale]
 
     async def refresh(self) -> None:
@@ -560,15 +606,22 @@ class BotRegistry:
             self._refresh_locked()
             self._last_refresh = time.time()
 
-    async def all(self) -> list[BotInfo]:
+    async def all(self, user_id: Optional[int] = None) -> list[BotInfo]:
+        """All bots across every user, or filtered to one user when
+        ``user_id`` is given. Phase-1 callers (no user context) still
+        work — they get the flat list."""
         await self.refresh()
         async with self._lock:
-            return list(self._bots.values())
+            if user_id is None:
+                return list(self._bots.values())
+            return [b for (uid, _), b in self._bots.items() if uid == user_id]
 
-    async def get(self, slug: str) -> Optional[BotInfo]:
+    async def get(self, user_id: int, slug: str) -> Optional[BotInfo]:
+        """Lookup by composite key. Returns None when the pair doesn't
+        exist in the registry."""
         await self.refresh()
         async with self._lock:
-            return self._bots.get(slug)
+            return self._bots.get((int(user_id), slug))
 
     async def invalidate(self) -> None:
         """Forceer een refresh bij de volgende all()/get() call.
@@ -576,19 +629,20 @@ class BotRegistry:
         async with self._lock:
             self._last_refresh = 0.0
 
-    async def begin_start(self, slug: str) -> bool:
-        """Claim de start-slot voor `slug`. Retourneert True als we
-        de slot kregen, False als er al een start in progress is."""
+    async def begin_start(self, user_id: int, slug: str) -> bool:
+        """Claim de start-slot voor (user_id, slug). Retourneert True
+        als we de slot kregen, False als er al een start in progress is."""
+        key = (int(user_id), slug)
         async with self._lock:
-            if slug in self._starting:
+            if key in self._starting:
                 return False
-            self._starting.add(slug)
+            self._starting.add(key)
             return True
 
-    async def end_start(self, slug: str) -> None:
-        """Release de start-slot voor `slug`. Idempotent."""
+    async def end_start(self, user_id: int, slug: str) -> None:
+        """Release de start-slot. Idempotent."""
         async with self._lock:
-            self._starting.discard(slug)
+            self._starting.discard((int(user_id), slug))
 
 
 registry = BotRegistry()
@@ -596,8 +650,8 @@ registry = BotRegistry()
 
 # ── Process control ───────────────────────────────────────────────────────────
 
-async def start_bot(slug: str) -> dict:
-    bot = await registry.get(slug)
+async def start_bot(user_id: int, slug: str) -> dict:
+    bot = await registry.get(user_id, slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
     if bot.running:
@@ -606,11 +660,11 @@ async def start_bot(slug: str) -> dict:
     # Claim de start-slot. Voorkomt dat een dubbel-klik (beide calls zien
     # bot.running=False omdat main_paper.py nog niet is opgestart) twee
     # subprocessen spawnt.
-    if not await registry.begin_start(slug):
+    if not await registry.begin_start(user_id, slug):
         return {"ok": False, "error": "Bot is already starting"}
 
     try:
-        PID_DIR.mkdir(parents=True, exist_ok=True)
+        paths.user_pid_dir(user_id)
 
         # Use absolute path to main_paper.py and same venv Python as portal
         env = os.environ.copy()
@@ -621,7 +675,7 @@ async def start_bot(slug: str) -> dict:
         with open(bot.log_file, "a") as log_out:
             proc = subprocess.Popen(
                 [PYTHON_BIN, str(BASE_DIR / "main_paper.py"),
-                 "--config", bot.config_file],
+                 "--bot", slug, "--user-id", str(user_id)],
                 cwd=str(BASE_DIR),
                 stdout=log_out,
                 stderr=log_out,
@@ -644,7 +698,7 @@ async def start_bot(slug: str) -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
     finally:
-        await registry.end_start(slug)
+        await registry.end_start(user_id, slug)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -659,8 +713,8 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
-async def stop_bot(slug: str) -> dict:
-    bot = await registry.get(slug)
+async def stop_bot(user_id: int, slug: str) -> dict:
+    bot = await registry.get(user_id, slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
     if not bot.running:
@@ -726,7 +780,7 @@ async def stop_bot(slug: str) -> dict:
     return {"ok": True, "message": f"{slug} stopped (PID {pid})"}
 
 
-async def start_bot_dry_run(slug: str) -> dict:
+async def start_bot_dry_run(user_id: int, slug: str) -> dict:
     """Spawn a LIVE-mode bot in dry-run via main_live.py.
 
     Phase 1 counterpart to start_bot(): uses main_live.py --bot <slug>
@@ -740,7 +794,7 @@ async def start_bot_dry_run(slug: str) -> dict:
     # gets a safe early-exit instead of reaching subprocess.Popen.
     if not _BOT_SLUG_RE.match(slug):
         return {"ok": False, "error": f"Invalid bot slug: {slug!r}"}
-    bot = await registry.get(slug)
+    bot = await registry.get(user_id, slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
     if bot.running:
@@ -762,11 +816,11 @@ async def start_bot_dry_run(slug: str) -> dict:
             ),
         }
 
-    if not await registry.begin_start(slug):
+    if not await registry.begin_start(user_id, slug):
         return {"ok": False, "error": "Bot is already starting"}
 
     try:
-        PID_DIR.mkdir(parents=True, exist_ok=True)
+        paths.user_pid_dir(user_id)
 
         env = os.environ.copy()
         env["PYTHONPATH"] = str(BASE_DIR)
@@ -778,7 +832,7 @@ async def start_bot_dry_run(slug: str) -> dict:
         with open(bot.log_file, "a") as log_out:
             proc = subprocess.Popen(
                 [PYTHON_BIN, str(BASE_DIR / "main_live.py"),
-                 "--bot", slug, "--dry-run"],
+                 "--bot", slug, "--user-id", str(user_id), "--dry-run"],
                 cwd=str(BASE_DIR),
                 stdout=log_out,
                 stderr=log_out,
@@ -800,11 +854,11 @@ async def start_bot_dry_run(slug: str) -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
     finally:
-        await registry.end_start(slug)
+        await registry.end_start(user_id, slug)
 
 
-async def restart_bot(slug: str) -> dict:
-    bot = await registry.get(slug)
+async def restart_bot(user_id: int, slug: str) -> dict:
+    bot = await registry.get(user_id, slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}
 
@@ -820,7 +874,7 @@ async def restart_bot(slug: str) -> dict:
         logger.warning("restart notify failed for %s: %s", slug, e)
 
     if bot.running:
-        stop_result = await stop_bot(slug)
+        stop_result = await stop_bot(user_id, slug)
         if not stop_result.get("ok"):
             return stop_result
 
@@ -837,8 +891,8 @@ async def restart_bot(slug: str) -> dict:
     # loading failed above, fall through to the paper path — that's the
     # historical behaviour.
     if cfg is not None and cfg.mode == Mode.LIVE:
-        return await start_bot_dry_run(slug)
-    return await start_bot(slug)
+        return await start_bot_dry_run(user_id, slug)
+    return await start_bot(user_id, slug)
 
 
 def _do_portal_restart():
@@ -1256,8 +1310,10 @@ async def _fetch_ohlcv_range(
 # ── Bot YAML beheer ───────────────────────────────────────────────────────────
 
 
-def _bot_yaml_path(slug: str) -> Path:
-    return CONFIG_DIR / f"{slug}.yaml"
+def _bot_yaml_path(user_id: int, slug: str) -> Path:
+    """Legacy helper — delegates to core.paths.bot_yaml_path so the
+    composite-key layout is defined in exactly one module."""
+    return paths.bot_yaml_path(user_id, slug)
 
 
 def _validate_bot_payload(payload: dict) -> BotConfig:
