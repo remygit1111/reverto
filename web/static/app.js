@@ -2124,12 +2124,15 @@ function nbAddIndicator(groupId) {
   nbRecompute();
 }
 function nbRemoveIndicator(groupId, idx) {
-  if (groupId != null) {
-    const g = nbState.indicatorGroups.find(g => g.id === groupId);
-    if (g) g.indicators.splice(idx, 1);
-  } else {
-    nbState.indicators.splice(idx, 1);
-  }
+  // Every indicator in the wizard lives in a group since the v17
+  // indicator-groups refactor — the original flat `nbState.indicators`
+  // path no longer exists. The else-branch below used to reference
+  // that stale path and would crash with a TypeError on any call that
+  // omitted groupId. Keeping the else intact for the no-op case so
+  // stray callers don't break either.
+  if (groupId == null) return;
+  const g = nbState.indicatorGroups.find(g => g.id === groupId);
+  if (g) g.indicators.splice(idx, 1);
   nbRenderIndicators();
   nbRecompute();
 }
@@ -5299,7 +5302,20 @@ function renderWizardOverlays() {
   const red    = _cssVar('--red',    '#ef5350');
   const amber  = _cssVar('--amber',  '#ffb347');
 
-  const indicators = Array.isArray(nbState.indicators) ? nbState.indicators : [];
+  // v17 moved the flat `nbState.indicators` array into per-group
+  // `nbState.indicatorGroups[].indicators`. This render function still
+  // read the old (now-undefined) path, so every add-indicator click
+  // silently rendered nothing on the wizard chart. Flatten both the
+  // entry groups AND the TP indicator groups so the operator can see
+  // every configured trigger while configuring. Sub-panes (RSI/MACD)
+  // are idempotent — the ensure-helpers short-circuit on the second
+  // indicator of the same type.
+  const entryGroups = Array.isArray(nbState.indicatorGroups) ? nbState.indicatorGroups : [];
+  const tpGroups    = Array.isArray(nbState.tpIndicatorGroups) ? nbState.tpIndicatorGroups : [];
+  const indicators = [
+    ...entryGroups.flatMap(g => (g && g.indicators) || []),
+    ...tpGroups.flatMap(g => (g && g.indicators) || []),
+  ];
 
   // Sub-charts: ensure / tear down based on whether the corresponding
   // indicator is currently configured. Each sub-chart is independent so
