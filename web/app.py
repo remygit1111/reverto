@@ -846,118 +846,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # ── Auth endpoints ────────────────────────────────────────────────────────────
 
 
-class LoginBody(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=512)
-
-
-class ChangePasswordBody(BaseModel):
-    current_password: str = Field(min_length=1, max_length=512)
-    new_password: str = Field(min_length=1, max_length=512)
-
-
-@app.post("/auth/login")
-@limiter.limit("5/minute")
-async def auth_login(body: LoginBody, request: Request):
-    auth = _load_auth() or {}
-    stored_hash = auth.get("password_hash", "")
-    stored_user = auth.get("username", "")
-    ok = False
-    if stored_user and stored_hash and body.username == stored_user:
-        try:
-            ok = bcrypt.checkpw(body.password.encode("utf-8"), stored_hash.encode("utf-8"))
-        except ValueError:
-            ok = False
-    if not ok:
-        # Damp brute force without blocking the event loop.
-        await asyncio.sleep(0.1)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    token = _create_session_cookie(stored_user)
-    resp = JSONResponse({"ok": True})
-    resp.set_cookie(
-        key=_SESSION_COOKIE,
-        value=token,
-        max_age=_SESSION_TTL,
-        httponly=True,
-        samesite="strict",
-        secure=_COOKIE_SECURE,
-        path="/",
-    )
-    _audit("auth_login", stored_user, "-")
-    return resp
-
-
-@app.post("/auth/logout")
-async def auth_logout():
-    # Server-side invalidation: bump the session epoch so every other
-    # browser holding a copy of the cookie is rejected on the next
-    # request, not just the one calling logout. itsdangerous tokens
-    # are stateless, so without this the cookie would stay valid until
-    # its TTL expired even though the user clicked "log out".
-    try:
-        _bump_session_epoch()
-    except Exception as e:
-        logger.warning("logout: failed to bump session epoch (%s)", e)
-    resp = JSONResponse({"ok": True})
-    resp.delete_cookie(_SESSION_COOKIE, path="/")
-    return resp
-
-
-@app.get("/auth/status")
-@limiter.limit("120/minute")
-async def auth_status(request: Request):
-    payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
-    if payload:
-        return {"authenticated": True, "username": payload.get("u")}
-    return {"authenticated": False, "username": None}
-
-
-@app.post("/api/auth/change-password")
-@limiter.limit("10/minute")
-async def auth_change_password(
-    body: ChangePasswordBody,
-    request: Request,
-    session: dict = Depends(_require_session),
-):
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
-    auth = _load_auth() or {}
-    stored_hash = auth.get("password_hash", "")
-    try:
-        ok = bool(stored_hash) and bcrypt.checkpw(
-            body.current_password.encode("utf-8"), stored_hash.encode("utf-8")
-        )
-    except ValueError:
-        ok = False
-    if not ok:
-        await asyncio.sleep(0.1)
-        raise HTTPException(status_code=401, detail="Current password is incorrect")
-    new_hash = bcrypt.hashpw(
-        body.new_password.encode("utf-8"), bcrypt.gensalt(rounds=12)
-    ).decode("utf-8")
-    auth["password_hash"] = new_hash
-    # Bump the session epoch so any other browser still authenticated
-    # under the old password is signed out on its next request. The
-    # current request's caller will need to log in again too — that's
-    # by design and matches what every other dashboard does on a
-    # password change.
-    try:
-        current_epoch = int(auth.get("session_epoch", 0))
-    except (TypeError, ValueError):
-        current_epoch = 0
-    auth["session_epoch"] = current_epoch + 1
-    _save_auth(auth)
-    # First change after bootstrap: drop the plaintext crib file so the
-    # initial password no longer sits on disk. Best-effort: a missing
-    # file is fine (user may have deleted it manually).
-    if _INITIAL_PW_FILE.exists():
-        try:
-            _INITIAL_PW_FILE.unlink()
-        except OSError:
-            pass
-    _audit("auth_change_password", session.get("u", "-"), "-")
-    return {"ok": True}
+# Auth routes: moved to web/routes/auth.py.
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1701,6 +1590,7 @@ async def tail_logs():
 # still live in this file; a follow-up pass can migrate them using the
 # same pattern.
 from web.routes import admin as _admin_routes  # noqa: E402
+from web.routes import auth as _auth_routes  # noqa: E402
 from web.routes import backtest as _backtest_routes  # noqa: E402
 from web.routes import chart as _chart_routes  # noqa: E402
 from web.routes import deals as _deals_routes  # noqa: E402
@@ -1708,6 +1598,7 @@ from web.routes import drawdown as _drawdown_routes  # noqa: E402
 from web.routes import exchanges as _exchanges_routes  # noqa: E402
 
 app.include_router(_admin_routes.router)
+app.include_router(_auth_routes.router)
 app.include_router(_backtest_routes.router)
 app.include_router(_chart_routes.router)
 app.include_router(_deals_routes.router)
