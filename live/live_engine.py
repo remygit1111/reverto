@@ -52,12 +52,14 @@ DEFAULT_CLOCK_SKEW_TOLERANCE_S = 5.0
 DEFAULT_MAX_BASE_ORDER_SIZE_BTC = 0.001
 
 # Worst-case DCA order size ceiling expressed as a multiple of the base
-# order. With base=0.001 and this set to 10x, a DCA multiplier that
-# would produce a final order above 0.01 BTC is refused at construction.
-# Catches geometric-growth configs (multiplier=2.0 + many max_orders)
-# that would otherwise exceed the operator's intent by orders of
-# magnitude. Applied on top of max_base_order_size.
-MAX_DCA_SIZE_VS_BASE = 10.0
+# order. Catches geometric-growth fat-finger configs (mult=2.0 × 10
+# orders → 512× base) while still allowing conservative ladders that
+# intentionally scale into drawdown. The v20 audit set this to 10×,
+# which refused legitimate 1.3–1.6 multipliers at max_orders ≥ 8 even
+# though those are deliberate, not explosions. 50× accommodates those
+# (e.g. mult=1.5 × 10 orders → 38× base, mult=1.4 × 11 orders → 29×)
+# and still rejects anything approaching the fat-finger regime.
+MAX_DCA_SIZE_VS_BASE = 50.0
 
 # Default cumulative-position ceiling when the operator didn't set
 # max_cumulative_size explicitly. 20 × base_order_size is a deliberately

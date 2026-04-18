@@ -162,6 +162,47 @@ class TestLiveEnginePreflights:
                 max_base_order_size=0.01,
             )
 
+    def test_preflight_accepts_legit_dca_ladder(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """Conservative 1.5× × 10 orders → 1.5**9 = 38.4× base, below
+        the 50× cap. Pre-v23 this was rejected at the 10× cap even
+        though it's a deliberate drawdown-scaling config; the bump
+        lets it through."""
+        minimal_bot_config.dca.base_order_size = 0.0001
+        minimal_bot_config.dca.multiplier = 1.5
+        minimal_bot_config.dca.max_orders = 10
+        # Generous cumulative ceiling so the OTHER preflight check
+        # doesn't pre-empt the one under test — 1.5**10 / 0.5 ≈ 113×
+        # base = 0.0113 BTC, well above the default 20× cumulative cap.
+        minimal_bot_config.dca.max_cumulative_size = 0.02
+        eng = _make_engine(
+            minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+            max_base_order_size=0.001,
+        )
+        try:
+            assert eng is not None
+        finally:
+            eng._notify_queue.put(None)
+            eng._notify_thread.join(timeout=5)
+
+    def test_preflight_rejects_just_above_50x(
+        self, minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+    ):
+        """1.5× × 11 orders → 1.5**10 = 57.7× base, above 50×. This is
+        the exact config from the bug report that motivated the bump;
+        the test pins that the cap is still meaningful — not toothless
+        — at its new value."""
+        minimal_bot_config.dca.base_order_size = 0.0001
+        minimal_bot_config.dca.multiplier = 1.5
+        minimal_bot_config.dca.max_orders = 11
+        minimal_bot_config.dca.max_cumulative_size = 0.1
+        with pytest.raises(ValueError, match="Worst-case DCA"):
+            _make_engine(
+                minimal_bot_config, mock_exchange, mock_notifier, tmp_path,
+                max_base_order_size=0.001,
+            )
+
 
 # ── Dry-run order execution ─────────────────────────────────────────────────
 

@@ -57,7 +57,7 @@ make live BOT=<slug>       # Phase-3 real orders (refused until Phase 3 lands)
 
 ## Safety rails
 
-- **DCA preflight** — live bots whose worst-case DCA exceeds 10× the
+- **DCA preflight** — live bots whose worst-case DCA exceeds 50× the
   base order or whose cumulative position exceeds 20× are refused
   at construction time.
 - **Drawdown guard** — peak is persisted to `state.json` so restarts
