@@ -717,6 +717,12 @@ async def start_bot_dry_run(slug: str) -> dict:
     The resulting subprocess writes the SAME PID/state/log files as
     the paper runner, so stop_bot/restart_bot work unchanged.
     """
+    # Defense-in-depth: the route handler validates slug via
+    # _BOT_SLUG_RE and main_live.py's own regex re-validates. Belt-
+    # and-braces here so any non-route caller (tests, scripts) still
+    # gets a safe early-exit instead of reaching subprocess.Popen.
+    if not _BOT_SLUG_RE.match(slug):
+        return {"ok": False, "error": f"Invalid bot slug: {slug!r}"}
     bot = await registry.get(slug)
     if not bot:
         return {"ok": False, "error": f"Unknown bot: {slug}"}

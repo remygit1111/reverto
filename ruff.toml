@@ -1,5 +1,10 @@
 # ruff.toml — Reverto linter configuratie
 line-length = 100
+# audit_out/ holds throwaway generator scripts for audit .docx reports
+# (see audit v23). They're not part of the shipped codebase and carry
+# long Dutch prose strings; excluding keeps the real code clean without
+# tangling the linter on disposable artefacts.
+exclude = ["audit_out"]
 
 [lint]
 select = ["E", "F", "W"]

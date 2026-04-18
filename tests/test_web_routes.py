@@ -733,6 +733,37 @@ class TestStartDryRun:
         assert r.status_code == 200
         assert r.json().get("ok") is False
 
+    def test_invalid_slug_shape_is_400(self, auth_client, monkeypatch):
+        """Slug with shell-metacharacters (or anything outside the
+        [A-Za-z0-9_-]+ regex) must fail fast with 400, never reaching
+        registry.get or subprocess.Popen. URL-encoded slashes get
+        normalised by httpx/Starlette into a different route, so the
+        realistic attack payload is something the regex rejects but
+        FastAPI keeps as the {slug} path param."""
+        def _fake_popen(*a, **kw):
+            raise AssertionError("Popen must not run for invalid slug")
+        monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
+
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        # Semicolon + dots aren't in _BOT_SLUG_RE but are kept intact
+        # as path params by FastAPI's URL router.
+        r = auth_client.post(
+            "/api/bots/bot;rm.-rf/start-dry-run",
+        )
+        assert r.status_code == 400, r.text
+        assert "Invalid slug" in r.json().get("detail", "")
+
+    def test_helper_rejects_invalid_slug_directly(self):
+        """start_bot_dry_run helper itself rejects bad slugs — belt-
+        and-braces so non-route callers (scripts, internal tooling)
+        can't accidentally invoke subprocess.Popen with a traversal."""
+        import asyncio
+        from web.app import start_bot_dry_run
+        result = asyncio.run(start_bot_dry_run("../../etc/passwd"))
+        assert result["ok"] is False
+        assert "Invalid bot slug" in result.get("error", "")
+
 
 # ── API contract: bot.mode must mirror the YAML ───────────────────────────────
 
@@ -934,3 +965,87 @@ class TestValidateConfigEndpoint:
         # Autouse fixture handles the cleanup, but assert that nothing
         # was persisted in the first place.
         assert not pathlib.Path(_TEST_YAML).exists()
+
+    def test_rejects_oversized_body(self, auth_client):
+        """Content-Length > MAX_CONFIG_BODY_BYTES → 413, body never
+        parsed. Guards against authenticated DoS via huge JSON."""
+        from web.routes.bots import MAX_CONFIG_BODY_BYTES
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        # Pad a valid payload past the cap. Using a giant filler key
+        # keeps the JSON syntactically parseable — the 413 must fire
+        # BEFORE the JSON parser runs.
+        payload = _make_payload()
+        payload["bot"]["_bloat"] = "x" * (MAX_CONFIG_BODY_BYTES + 1000)
+        r = auth_client.post("/api/bots/validate-config", json=payload)
+        assert r.status_code == 413
+        assert "too large" in r.json().get("detail", "").lower()
+
+    def test_rejects_invalid_content_length(self, auth_client):
+        """Malformed Content-Length header → 400, not 500."""
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        # httpx auto-populates Content-Length. Override it to garbage
+        # so the handler's int(header) raises and maps to 400.
+        r = auth_client.post(
+            "/api/bots/validate-config",
+            content=b'{"name": "x"}',
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": "not-a-number",
+            },
+        )
+        assert r.status_code == 400
+        assert "Content-Length" in r.json().get("detail", "")
+
+    def test_chunked_body_within_cap_is_accepted(self, auth_client):
+        """Clients without Content-Length (chunked transfer) still work
+        as long as the streamed body stays under the cap. The handler
+        reads lazily and only aborts once the limit is crossed."""
+        import json as _json
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        payload_bytes = _json.dumps(_make_payload()).encode("utf-8")
+
+        def _stream():
+            yield payload_bytes
+
+        r = auth_client.post(
+            "/api/bots/validate-config",
+            content=_stream(),
+            headers={
+                "Content-Type": "application/json",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert "warnings" in r.json()
+
+    def test_chunked_body_over_cap_rejected(self, auth_client):
+        """Chunked client streams > cap → 413 during streaming, no
+        OOM. Pin the streaming-path guard specifically."""
+        from web.routes.bots import MAX_CONFIG_BODY_BYTES
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        # Emit chunks totalling > cap.
+        bloat = b"x" * (MAX_CONFIG_BODY_BYTES // 2 + 100)
+
+        def _stream():
+            yield b'{"bot": {"filler": "'
+            yield bloat
+            yield bloat
+            yield b'"}}'
+
+        r = auth_client.post(
+            "/api/bots/validate-config",
+            content=_stream(),
+            headers={
+                "Content-Type": "application/json",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+        assert r.status_code == 413

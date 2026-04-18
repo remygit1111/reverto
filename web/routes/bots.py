@@ -22,6 +22,7 @@ the existing auth flow.
 
 from __future__ import annotations
 
+import json
 import logging
 
 import yaml
@@ -29,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from web.app import (
     _audit,
+    _BOT_SLUG_RE,
     _bot_yaml_path,
     _compute_summary,
     _request_actor,
@@ -45,6 +47,14 @@ from web.app import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Maximum request-body size for /api/bots/validate-config (bytes).
+# A fully-loaded bot YAML round-trips to ~4 KB of JSON; 64 KB gives
+# ~16× headroom for pathological configs while keeping an authenticated
+# DoS (30 reqs/min × n-megabyte bodies) bounded. The handler checks
+# Content-Length BEFORE awaiting the JSON body so oversized payloads
+# never land in memory.
+MAX_CONFIG_BODY_BYTES = 64 * 1024
 
 router = APIRouter(tags=["bots"])
 
@@ -104,7 +114,17 @@ async def api_start_dry_run(
     slug: str, request: Request, actor: str = Depends(_request_actor),
 ):
     """Phase-1 launcher: boot a live-mode bot via main_live.py with the
-    dry-run flag set. Refuses paper-mode bots at the helper level."""
+    dry-run flag set. Refuses paper-mode bots at the helper level.
+
+    Slug is regex-validated here for defense-in-depth parity with
+    ``main_live.py``'s own _BOT_SLUG_RE check — even though the
+    subprocess re-validates and the registry only knows slugs produced
+    by ``slugify()``, the extra layer makes path-traversal attempts
+    fail fast with a clean 400 instead of sliding into the registry
+    lookup path.
+    """
+    if not _BOT_SLUG_RE.match(slug):
+        raise HTTPException(status_code=400, detail="Invalid slug")
     _audit("bot_start_dry_run", slug, actor)
     return await start_bot_dry_run(slug)
 
@@ -260,13 +280,59 @@ def _config_warnings(cfg) -> tuple[list[dict], dict]:
 @router.post("/api/bots/validate-config")
 @limiter.limit("30/minute")
 async def validate_config(
-    body: dict,
     request: Request,
     actor: str = Depends(_request_actor),
 ):
     """Analyse a bot config and return advisory warnings + a numeric
     summary. Never enforces — the wizard renders the result so the
-    operator can adjust ladder/DCA parameters before saving."""
+    operator can adjust ladder/DCA parameters before saving.
+
+    Body-size cap: the handler refuses requests larger than
+    ``MAX_CONFIG_BODY_BYTES`` before reading the body, so an
+    authenticated client cannot DoS the process with giant JSON.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        # Fall back to consuming up to MAX+1 bytes so chunked-encoded
+        # clients (no Content-Length header) are still bounded — we
+        # read lazily and abort once the limit is crossed.
+        body_bytes = b""
+        async for chunk in request.stream():
+            body_bytes += chunk
+            if len(body_bytes) > MAX_CONFIG_BODY_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"Config body too large "
+                        f"(>{MAX_CONFIG_BODY_BYTES} bytes)"
+                    ),
+                )
+    else:
+        try:
+            cl_int = int(content_length)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="Invalid Content-Length",
+            )
+        if cl_int > MAX_CONFIG_BODY_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Config body too large "
+                    f"({cl_int} > {MAX_CONFIG_BODY_BYTES} bytes)"
+                ),
+            )
+        body_bytes = await request.body()
+
+    try:
+        body = json.loads(body_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=400, detail="Config must be a JSON object",
+        )
+
     try:
         cfg = _validate_bot_payload(body)
     except ValueError as e:
