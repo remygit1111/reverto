@@ -1208,7 +1208,14 @@ function renderBotCard(b) {
   const drawdownTriggered = b.drawdown_guard && b.drawdown_guard.triggered;
   const pausedByDrawdown = b.paused_by_drawdown || drawdownTriggered;
   const pausedBySkew = b.paused_by_clock_skew;
-  const isLive = (b.mode || '').toLowerCase() === 'live';
+  // Source mode from every plausible location — the API today returns
+  // it flat as b.mode (read from logs/<slug>.state.json), but legacy
+  // code and a hypothetical future nested shape both show up in the
+  // wild, so keep this read defensive. See test_api_bots_returns_mode_field.
+  const botMode = (
+    (b.config && b.config.mode) || b.mode || 'paper'
+  ).toString().toLowerCase();
+  const isLive = botMode === 'live';
   let stateBadge = '';
   if (pausedByDrawdown) {
     const reason = (b.drawdown_guard && b.drawdown_guard.trigger_reason) || '';
@@ -1244,7 +1251,7 @@ function renderBotCard(b) {
     </div>
     ${stateBadge}
     <div class="bot-card-meta">
-      ${safeText((b.exchange || '—').toUpperCase())} · ${safeText(b.pair || 'BTC/USD')} · ${safeText((b.mode || 'paper').toUpperCase())}
+      ${safeText((b.exchange || '—').toUpperCase())} · ${safeText(b.pair || 'BTC/USD')} · ${safeText(botMode.toUpperCase())}
       ${b.uptime ? '· ⏱ ' + safeText(b.uptime) : ''}
     </div>
     <div class="bot-card-stats">

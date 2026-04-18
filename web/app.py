@@ -31,6 +31,7 @@ from notifications.telegram import TelegramNotifier
 import bcrypt
 import ccxt
 import uvicorn
+import yaml
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -401,7 +402,36 @@ class BotInfo:
         except Exception:
             return None
 
+    def _resolve_yaml_mode(self) -> str:
+        """Read the authoritative mode straight from the bot YAML.
+
+        The state-file mode is lagging — it only exists after the engine's
+        first tick writes it, and the default-state fallback hardcodes
+        ``"paper"``. A live-mode bot that has never started therefore
+        surfaces as mode=paper in the /api/bots response, which flips
+        the UI (mode label, Start/Start-dry-run button, DRY RUN badge)
+        to the wrong path. The YAML is what main_paper.py / main_live.py
+        will actually load, so it is the single source of truth.
+
+        Returns "" on any failure so callers fall back to whatever the
+        state file says. One yaml.safe_load per bot per listing call is
+        cheap (config fits in <4 KB) and the results are not cached
+        because a YAML edit via PUT /api/bots/{slug}/config must be
+        visible on the next GET without touching the 5 s registry TTL.
+        """
+        try:
+            cfg_path = BASE_DIR / self.config_file
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            return ""
+        inner = raw.get("bot", raw) if isinstance(raw, dict) else None
+        if not isinstance(inner, dict):
+            return ""
+        mode = inner.get("mode")
+        return mode.lower() if isinstance(mode, str) else ""
+
     def read_state(self) -> dict:
+        yaml_mode = self._resolve_yaml_mode()
         try:
             # Bounded read — lees maximaal _MAX_STATE_FILE_SIZE + 1 bytes in
             # één open()+read() zodat er geen TOCTOU gat is tussen een
@@ -411,40 +441,46 @@ class BotInfo:
                 with open(self.state_file, "rb") as fh:
                     raw_bytes = fh.read(_MAX_STATE_FILE_SIZE + 1)
             except FileNotFoundError:
-                return self._default_state()
+                return self._default_state(yaml_mode=yaml_mode)
             except MemoryError:
                 logger.warning(
                     "State file %s triggered MemoryError, using defaults",
                     self.state_file,
                 )
-                return self._default_state()
+                return self._default_state(yaml_mode=yaml_mode)
 
             if len(raw_bytes) > _MAX_STATE_FILE_SIZE:
                 logger.warning(
                     "State file %s exceeds %d bytes, using defaults",
                     self.state_file, _MAX_STATE_FILE_SIZE,
                 )
-                return self._default_state()
+                return self._default_state(yaml_mode=yaml_mode)
 
             raw = json.loads(raw_bytes.decode("utf-8"))
             validated = BotStateModel.model_validate(raw).model_dump()
             validated["running"]     = self.running
             validated["slug"]        = self.slug
             validated["config_file"] = self.config_file
+            # YAML wins over state-file mode so that an operator-edited
+            # YAML (paper→live or vice versa) surfaces immediately in
+            # the UI instead of lagging behind the next tick's state
+            # write.
+            if yaml_mode:
+                validated["mode"] = yaml_mode
             return validated
         except ValidationError as e:
             logger.warning("State validation failed for %s: %s", self.slug, e)
         except Exception as e:
             logger.warning("State read failed for %s: %s", self.slug, type(e).__name__)
 
-        return self._default_state()
+        return self._default_state(yaml_mode=yaml_mode)
 
-    def _default_state(self) -> dict:
+    def _default_state(self, yaml_mode: str = "") -> dict:
         return {
             "slug":                self.slug,
             "config_file":         self.config_file,
             "bot_name":            self.slug,
-            "mode":                "paper",
+            "mode":                yaml_mode or "paper",
             "exchange":            "—",
             "pair":                "BTC/USD",
             "running":             self.running,
