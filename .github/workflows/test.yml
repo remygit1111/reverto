@@ -44,9 +44,21 @@ jobs:
             --cov-report=term-missing:skip-covered \
             --cov-fail-under=55
 
-      - name: Security audit (pip-audit)
-        # Non-fatal — reports but does not block the pipeline. Flip
-        # `continue-on-error: false` once direct-deps are actively
-        # monitored and responded to promptly.
+      - name: Security audit — direct deps (BLOCKING)
+        # A CVE in a pinned requirements*.txt dependency fails the
+        # build. Direct deps are under our control — we can bump the
+        # version, test, and re-run. Stop shipping known-vulnerable
+        # code before it ships.
+        run: |
+          .venv/bin/pip-audit \
+            --requirement requirements.txt \
+            --requirement requirements-ml.txt \
+            --strict
+
+      - name: Security audit — transitive deps (non-blocking)
+        # Transitive vulnerabilities surface in the run log without
+        # blocking PRs — a CVE in an indirect dep may require upstream
+        # coordination and shouldn't stall unrelated work. Reviewed
+        # quarterly; see docs/runbook.md "pip-audit strategie".
         continue-on-error: true
         run: .venv/bin/pip-audit --disable-pip
