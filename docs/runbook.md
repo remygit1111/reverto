@@ -146,6 +146,42 @@ Sample `/etc/logrotate.d/reverto`:
 | Deal opened on wrong side | Old YAML missing `direction`; engine used to default to `long` | Set `direction: long` or `direction: short` in YAML explicitly |
 | Every API call returns 401 | `REVERTO_API_KEY` env not set at portal start | Export and `make restart` (ephemeral key is discarded) |
 
+## CI / pip-audit strategie
+
+Het `.github/workflows/test.yml` draait twee aparte pip-audit passes:
+
+- **Direct deps (blocking)** — scant `requirements.txt` en
+  `requirements-ml.txt`. Een CVE in een expliciet gepinde dependency
+  faalt de build. Direct deps staan onder onze controle: versie bumpen,
+  tests draaien, committen is de standaard-respons.
+- **Transitive deps (non-blocking)** — volledige scan van de
+  geïnstalleerde site-packages. Transitive vulnerabilities kunnen
+  vaak upstream-coordinatie vereisen en mogen een PR niet blokkeren.
+  Output zichtbaar in de GitHub Actions logs; beoordeel elk kwartaal
+  of een upgrade nodig is.
+
+Handmatige scan vanaf je werkstation:
+
+```bash
+# Wat CI draait als "blocking":
+.venv/bin/pip-audit \
+    --requirement requirements.txt \
+    --requirement requirements-ml.txt \
+    --strict
+
+# Wat CI draait als "non-blocking":
+.venv/bin/pip-audit
+```
+
+Bij een blocking failure:
+
+1. Identificeer de kwetsbare package + versie.
+2. Kies de minimale versie die de CVE dicht (meestal vermeld in het
+   pip-audit rapport).
+3. Update `requirements.txt` of `requirements-ml.txt`.
+4. `.venv/bin/pip install -r requirements.txt` + `make test`.
+5. Commit met audit-ID in het bericht.
+
 ## Backup procedure
 
 Nightly cron (recommended):
