@@ -283,11 +283,26 @@ def _aggregates(pairs: list[Pair]) -> dict:
 
 
 def _interpretation(
-    match_rate: float, agg: dict, flag_counts: dict,
+    match_rate: float,
+    agg: dict,
+    flag_counts: dict,
+    total_paper: int = 0,
+    total_live: int = 0,
 ) -> list[str]:
     """Deterministic, thresholded one-liners. Caller turns these into
     bullets; empty list = nothing noteworthy."""
     out: list[str] = []
+
+    # Empty-state guard: when neither bot has produced any deals in
+    # the period, the match-rate branches below all collapse to
+    # "Low parity" which is misleading — there's nothing to compare.
+    # Surface a dedicated message so the operator knows to keep
+    # collecting data rather than chase a phantom divergence.
+    if total_paper == 0 and total_live == 0:
+        return [
+            "No deals yet in the period — wait for bots to generate "
+            "data before drawing conclusions.",
+        ]
 
     if match_rate >= 0.85:
         out.append(
@@ -515,7 +530,10 @@ def render_markdown(
             lines.append(f"_+{len(flagged) - 30} more flagged pairs (truncated)._")
             lines.append("")
 
-    interp = _interpretation(match_rate, agg, flag_counts)
+    interp = _interpretation(
+        match_rate, agg, flag_counts,
+        total_paper=len(paper_deals), total_live=len(live_deals),
+    )
     if interp:
         lines.append("## Interpretation")
         lines.append("")

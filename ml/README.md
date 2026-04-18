@@ -11,15 +11,38 @@ enough deal history has accumulated.
 ```
 ml/
 ├── __init__.py
+├── candle_loader.py     # load_candles_for_deal() — historical OHLCV + cache
 ├── features.py          # compute_features() — indicator/context features
 ├── market_regime.py     # KMeans regime classifier
 ├── entry_filter.py      # EntryFilter — XGBoost gate, fail-open
 ├── nightly_pipeline.py  # Cron-driven training + param search
 ├── models/              # Persisted classifiers (gitignored)
+├── candle_cache/        # Per-day CSV cache for ccxt fetches (gitignored)
 └── README.md
 
 notebooks/
 └── reverto_analysis.ipynb  # Exploratory deal / regime / feature analysis
+```
+
+### Candle loader
+
+`ml/candle_loader.py` resolves the OHLCV window that preceded a
+deal's entry via `exchanges.public_exchange.PublicExchange` (no
+credentials needed — public market data only). Results are cached
+as CSV in `ml/candle_cache/` at per-day granularity so repeated
+nightly runs hit the local cache instead of the Bitget API.
+
+- First run per day per (symbol, timeframe) = one ccxt fetch + cache write.
+- Subsequent runs on the same day = cache hit, zero API calls.
+- CSV (not parquet) keeps `requirements-ml.txt` free of the pyarrow
+  dependency and lets operators `less` a cache file when debugging.
+
+Force-refresh the cache (e.g. after a ccxt upgrade or suspected
+stale data):
+
+```python
+from ml.candle_loader import clear_cache
+clear_cache()
 ```
 
 ## Installation

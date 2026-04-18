@@ -9,8 +9,11 @@ data/
 ml/model_store/
 ml/models/
 ml/results_*.json
+ml/candle_cache/
 notebooks/.ipynb_checkpoints/
 *.log
 *:Zone.Identifier
 audit_*.docx
 audit_out/
+backups/
+parity_test_start.txt

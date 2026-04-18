@@ -202,6 +202,102 @@ def optimize_parameters(bot_slug: str, deals_df: pd.DataFrame) -> dict:
     }
 
 
+# ── Feature-store builder ───────────────────────────────────────────────────
+
+
+def _get_bot_symbol(bot_slug: str) -> str:
+    """Read the pair from a bot's YAML config. Falls back to BTC/USD
+    when the file is missing or malformed — the ML pipeline should
+    still try to produce SOMETHING rather than abort on a config typo."""
+    import yaml
+
+    config_path = (
+        Path(__file__).parent.parent / "config" / "bots" / f"{bot_slug}.yaml"
+    )
+    if not config_path.exists():
+        logger.warning("Bot config not found for %s — defaulting to BTC/USD", bot_slug)
+        return "BTC/USD"
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning("Bot config parse failed for %s (%s) — defaulting", bot_slug, e)
+        return "BTC/USD"
+    pair = (cfg.get("bot") or {}).get("pair") or "BTC/USD"
+    return str(pair)
+
+
+def _get_bot_timeframe(bot_slug: str) -> str:
+    """Same lookup pattern as _get_bot_symbol, for the candle
+    resolution. Defaults to 1h when unset — the bot's own default."""
+    import yaml
+
+    config_path = (
+        Path(__file__).parent.parent / "config" / "bots" / f"{bot_slug}.yaml"
+    )
+    if not config_path.exists():
+        return "1h"
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        return "1h"
+    return str((cfg.get("bot") or {}).get("timeframe") or "1h")
+
+
+def _build_feature_store(
+    deals_df: pd.DataFrame, bot_slug: str,
+) -> list[dict]:
+    """Iterate deals and build a list of feature dicts aligned with
+    ``deals_df`` order. Per-deal failures are logged + skipped so one
+    bad candle fetch doesn't torpedo the whole run.
+
+    The returned list is SHORTER than deals_df when some deals can't
+    be featurised (not enough candle history, fetch failure, etc.).
+    train_entry_filter pairs labels with features by enumerating
+    ``feature_store`` directly — it no longer needs to line up with
+    deals_df's index, so the shrink is safe.
+    """
+    from ml.candle_loader import load_candles_for_deal
+    from ml.features import compute_features
+
+    symbol = _get_bot_symbol(bot_slug)
+    timeframe = _get_bot_timeframe(bot_slug)
+    logger.info("Feature build: symbol=%s timeframe=%s", symbol, timeframe)
+
+    feature_store: list[dict] = []
+    for _, deal in deals_df.iterrows():
+        deal_dict = deal.to_dict()
+        try:
+            candles = load_candles_for_deal(
+                deal_dict,
+                symbol=symbol,
+                timeframe=timeframe,
+                lookback_periods=100,
+            )
+        except Exception as e:  # noqa: BLE001 — defensive catch-all
+            logger.debug(
+                "Candle load failed for deal %s: %s", deal_dict.get("id"), e,
+            )
+            continue
+        if not candles:
+            continue
+        try:
+            features = compute_features(candles, deal_dict)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "Feature compute failed for deal %s: %s", deal_dict.get("id"), e,
+            )
+            continue
+        if not features:
+            continue
+        features["deal_id"] = deal_dict.get("id")
+        features["pnl_pct"] = float(deal_dict.get("pnl_pct") or 0.0)
+        features["won"] = 1 if (deal_dict.get("pnl_pct") or 0) > 0 else 0
+        feature_store.append(features)
+    return feature_store
+
+
 # ── Pipeline runner ─────────────────────────────────────────────────────────
 
 def run_pipeline(bot_slug: str, db_path: str) -> dict:
@@ -227,15 +323,18 @@ def run_pipeline(bot_slug: str, db_path: str) -> dict:
         _persist_results(bot_slug, results)
         return results
 
-    # Candle loading + per-deal feature-store build is left as a
-    # follow-up — the database holds entry prices but not the raw
-    # OHLCV window. See nightly_pipeline docstring for the integration
-    # point. Feeding an empty list makes train_entry_filter return
-    # {skipped: True, insufficient_data} which downstream tools can
-    # treat as "not ready yet".
-    feature_store: list[dict] = []
-    logger.info("Feature engineering pending — candle loader not yet wired")
-    results["feature_engineering"] = "pending_candle_loader"
+    # Candle loading + per-deal feature-store build. Each deal gets
+    # re-fetched historical OHLCV via ml.candle_loader (CSV-cached so
+    # repeated runs don't hammer Bitget). Individual failures skip the
+    # deal rather than aborting the batch — a couple of missing
+    # candles shouldn't kill tonight's training.
+    feature_store = _build_feature_store(deals_df, bot_slug)
+    results["features_computed"] = len(feature_store)
+    results["features_skipped"] = int(len(deals_df)) - len(feature_store)
+    logger.info(
+        "Feature store: %d / %d deals produced features",
+        len(feature_store), len(deals_df),
+    )
 
     results["entry_filter"] = train_entry_filter(deals_df, feature_store)
     results["optimization"] = optimize_parameters(bot_slug, deals_df)

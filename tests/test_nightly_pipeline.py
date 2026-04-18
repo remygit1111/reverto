@@ -184,3 +184,155 @@ class TestRunPipeline:
         monkeypatch.setattr(nightly_pipeline, "_persist_results", fake_persist)
         run_pipeline("empty_bot", str(temp_db))
         assert results_file.exists()
+
+
+# ── Feature-store integration ───────────────────────────────────────────────
+
+
+def _seed_closed_deal(
+    db_file, deal_id: str, bot_slug: str, opened_at: float, pnl_pct: float,
+):
+    """Insert a minimal closed deal row for pipeline integration tests."""
+    conn = sqlite3.connect(db_file)
+    conn.execute(
+        """
+        INSERT INTO deals (
+            id, bot_slug, bot_name, side, status, close_reason,
+            opened_at, closed_at, initial_price, avg_entry, close_price,
+            total_size, leverage, pnl_btc, pnl_pct,
+            entry_trigger, exit_trigger
+        ) VALUES (?, ?, ?, 'long', 'closed', 'take_profit',
+                  ?, ?, 80000.0, 80000.0, 81000.0, 0.001, 1, 0.000001, ?,
+                  NULL, NULL)
+        """,
+        (
+            deal_id, bot_slug, bot_slug,
+            opened_at, opened_at + 3600,
+            pnl_pct,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestFeatureStoreIntegration:
+    """Pins the candle_loader wiring: run_pipeline must call the loader
+    for each deal, compute features, and surface the count. The
+    exchange is monkeypatched so no network I/O happens."""
+
+    @pytest.fixture
+    def _mock_fetch(self, monkeypatch, tmp_path):
+        """Stub ccxt + redirect the candle cache. Returns a canned 120-bar
+        OHLCV series that is strong enough for compute_features to pass
+        its MIN_CANDLES=78 gate."""
+        import ml.candle_loader as loader_mod
+
+        monkeypatch.setattr(
+            loader_mod, "CACHE_DIR", tmp_path / "candle_cache",
+        )
+
+        def _fake(symbol, timeframe, since_ms, limit=200):
+            # 120 hourly bars ending at a reference time. The absolute
+            # timestamps don't need to line up with the deal's
+            # opened_at because the loader filters by opened_at <=
+            # deal — we backdate the series so every bar is eligible.
+            base_ts = int(since_ms / 1000)
+            return [
+                {
+                    "timestamp": base_ts + i * 3600,
+                    "open":   80_000.0 + i * 5,
+                    "high":   80_050.0 + i * 5,
+                    "low":    79_950.0 + i * 5,
+                    "close":  80_020.0 + i * 5,
+                    "volume": 1.0,
+                }
+                for i in range(120)
+            ]
+        monkeypatch.setattr(loader_mod, "_fetch_candles_ccxt", _fake)
+        yield
+
+    @pytest.fixture
+    def _bot_config(self, tmp_path, monkeypatch):
+        """Create a config/bots/<slug>.yaml that _get_bot_symbol can find.
+        Point the helper at tmp_path so the real repo config isn't
+        needed."""
+        cfg_dir = tmp_path / "config" / "bots"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "pt_feat_bot.yaml").write_text(
+            "bot:\n  name: pt_feat_bot\n  mode: paper\n  pair: BTC/USD\n"
+            "  timeframe: 1h\n",
+        )
+        # Helper reads `Path(__file__).parent.parent / "config" / "bots"`.
+        # Patch the Path lookup by redirecting __file__ indirectly —
+        # simplest is to patch the two helpers to return fixed values.
+        from ml import nightly_pipeline
+        monkeypatch.setattr(
+            nightly_pipeline, "_get_bot_symbol",
+            lambda _slug: "BTC/USD",
+        )
+        monkeypatch.setattr(
+            nightly_pipeline, "_get_bot_timeframe",
+            lambda _slug: "1h",
+        )
+        yield
+
+    def test_pipeline_populates_feature_store(
+        self, temp_db, _mock_fetch, _bot_config, monkeypatch,
+    ):
+        """End-to-end: seed 5 closed deals, run pipeline, assert feature
+        engineering was kicked off and the result dict carries the
+        populated count."""
+        from ml import nightly_pipeline
+
+        # Bypass the real JSON-persist so the test doesn't write into
+        # the repo's ml/ directory.
+        monkeypatch.setattr(
+            nightly_pipeline, "_persist_results",
+            lambda slug, results: None,
+        )
+
+        base_ts = 1_750_000_000.0
+        for i in range(5):
+            _seed_closed_deal(
+                temp_db, f"D-{i}", "pt_feat_bot",
+                opened_at=base_ts + i * 86400,
+                pnl_pct=(0.5 if i % 2 == 0 else -0.3),
+            )
+
+        result = run_pipeline("pt_feat_bot", str(temp_db))
+        assert result["deals_loaded"] == 5
+        # features_computed key MUST be present — it's the contract
+        # that proves the candle loader was invoked.
+        assert "features_computed" in result
+        assert result["features_computed"] >= 1
+        # Entry filter should still skip (< 20 deals), but the reason
+        # must be insufficient_data — NOT "pending_candle_loader".
+        ef = result["entry_filter"]
+        assert ef.get("skipped") is True
+        assert ef.get("reason") == "insufficient_data"
+
+    def test_pipeline_survives_loader_exception(
+        self, temp_db, _bot_config, monkeypatch,
+    ):
+        """A ccxt error on one deal must NOT crash the whole run —
+        the pipeline logs + skips the deal and presses on."""
+        from ml import nightly_pipeline
+        import ml.candle_loader as loader_mod
+
+        monkeypatch.setattr(
+            nightly_pipeline, "_persist_results",
+            lambda slug, results: None,
+        )
+        # Every fetch blows up — feature_store ends up empty but
+        # run_pipeline still returns a shape-complete results dict.
+        monkeypatch.setattr(
+            loader_mod, "_fetch_candles_ccxt",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        _seed_closed_deal(
+            temp_db, "D-1", "pt_feat_bot", 1_750_000_000.0, 0.5,
+        )
+        result = run_pipeline("pt_feat_bot", str(temp_db))
+        assert result["features_computed"] == 0
+        assert "entry_filter" in result
