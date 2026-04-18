@@ -451,3 +451,17 @@ class TestRenderers:
             "flag_counts", "aggregates",
         ):
             assert key in payload
+
+    def test_empty_state_interpretation(self):
+        """Both bots with 0 deals must render the "no deals yet"
+        message, not the misleading "Low parity" branch."""
+        body = render_markdown(
+            "paper", "live", since=None,
+            paper_deals=[], live_deals=[], pairs=[],
+            unmatched_paper=[], unmatched_live=[],
+            window_s=120,
+        )
+        assert "No deals yet in the period" in body
+        # "Low parity" must NOT appear — that's the old behaviour we
+        # explicitly guarded against.
+        assert "Low parity" not in body
