@@ -327,3 +327,119 @@ class TestDrawdownGuardPersistedToState:
         finally:
             eng2._notify_queue.put(None)
             eng2._notify_thread.join(timeout=5)
+
+
+# ── Indicator log line filtering ────────────────────────────────────────────
+
+
+class TestIndicatorLogFiltering:
+    """The per-tick "Indicators —" line must mirror the bot's configured
+    indicators. Regression: a RSI-only bot used to see EMA9/EMA21/MACD
+    values in every log line even though those weren't part of the
+    entry strategy, which made logs noisy and misleading."""
+
+    def _attach_indicator_types(self, config, types):
+        """Plant one entry.indicator_groups group with the requested
+        types. All IndicatorConfig fields besides ``type`` are Optional,
+        so we can construct the minimum viable stub without wiring
+        per-indicator defaults."""
+        from config.models import IndicatorConfig, IndicatorGroup
+        config.entry.indicator_groups = [
+            IndicatorGroup(
+                id=1, name="t",
+                indicators=[IndicatorConfig(type=t) for t in types],
+            )
+        ]
+
+    def _snapshot(self):
+        """Full snapshot as get_indicator_snapshot would produce it.
+        Individual tests drive the filter by swapping the config, not
+        by clipping the snapshot, so the snapshot stays complete."""
+        return {
+            "rsi_14": 35.17,
+            "ema_9": 76072.8,
+            "ema_21": 76340.94,
+            "macd": 12.5,
+            "macd_signal": 170.5,
+            "macd_histogram": -157.9944,
+        }
+
+    def test_rsi_only_suppresses_ema_and_macd(
+        self, engine, minimal_bot_config,
+    ):
+        self._attach_indicator_types(minimal_bot_config, ["RSI"])
+        engine._active_indicator_types = {"RSI"}
+        engine._last_snapshot = self._snapshot()
+
+        line = engine._format_indicator_log()
+        assert line is not None
+        assert line == "Indicators — RSI: 35.17"
+        assert "EMA" not in line
+        assert "MACD" not in line
+
+    def test_rsi_and_macd_shows_both(self, engine, minimal_bot_config):
+        self._attach_indicator_types(minimal_bot_config, ["RSI", "MACD"])
+        engine._active_indicator_types = {"RSI", "MACD"}
+        engine._last_snapshot = self._snapshot()
+
+        line = engine._format_indicator_log()
+        assert line is not None
+        assert "RSI: 35.17" in line
+        assert "MACD hist: -157.9944" in line
+        assert "EMA" not in line
+
+    def test_no_configured_indicators_skips_line(self, engine):
+        """Bot without any configured indicators (ASAP-only or empty
+        entry) — the log line is suppressed entirely rather than
+        printing an "Indicators —" with nothing after it."""
+        engine._active_indicator_types = set()
+        engine._last_snapshot = self._snapshot()
+        assert engine._format_indicator_log() is None
+
+    def test_unknown_only_indicators_skips_line(self, engine):
+        """Bot configured exclusively with indicators whose values the
+        snapshot doesn't carry (e.g. BOLLINGER, PARABOLIC_SAR). The
+        filter MUST NOT fall back to printing EMA/MACD/RSI just because
+        those happen to be in the snapshot."""
+        engine._active_indicator_types = {"BOLLINGER", "PARABOLIC_SAR"}
+        engine._last_snapshot = self._snapshot()
+        assert engine._format_indicator_log() is None
+
+    def test_empty_snapshot_skips_line(self, engine):
+        """First ticks before enough candle history has been fetched —
+        snapshot is an empty dict. Better to stay silent than to log
+        placeholder '?' values for every configured indicator."""
+        engine._active_indicator_types = {"RSI", "MACD"}
+        engine._last_snapshot = {}
+        assert engine._format_indicator_log() is None
+
+    def test_collect_types_picks_up_entry_and_tp_groups(
+        self, minimal_bot_config,
+    ):
+        """The collector must merge entry + TP indicator groups so a bot
+        that uses MACD purely as a TP confirmation still gets MACD hist
+        in its log line."""
+        from config.models import IndicatorConfig, IndicatorGroup
+        from paper.paper_engine import _collect_active_indicator_types
+
+        minimal_bot_config.entry.indicator_groups = [
+            IndicatorGroup(id=1, indicators=[IndicatorConfig(type="RSI")])
+        ]
+        minimal_bot_config.take_profit.indicator_groups = [
+            IndicatorGroup(id=1, indicators=[IndicatorConfig(type="macd")])
+        ]
+        types = _collect_active_indicator_types(minimal_bot_config)
+        assert types == {"RSI", "MACD"}
+
+    def test_collect_types_reads_legacy_flat_indicators(
+        self, minimal_bot_config,
+    ):
+        """Older configs still use the flat entry.indicators list
+        instead of indicator_groups — the collector must honour both."""
+        from config.models import IndicatorConfig
+        from paper.paper_engine import _collect_active_indicator_types
+
+        minimal_bot_config.entry.indicators = [IndicatorConfig(type="RSI")]
+        minimal_bot_config.entry.indicator_groups = []
+        types = _collect_active_indicator_types(minimal_bot_config)
+        assert "RSI" in types
