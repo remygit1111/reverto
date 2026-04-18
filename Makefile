@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -112,3 +112,16 @@ live:
 live-dry:
 	@test -n "$(BOT)" || (echo "BOT= required" && exit 1)
 	DRY_RUN=1 $(PYTHON) main_live.py --bot $(BOT) --dry-run
+
+# ── Parity testing ────────────────────────────────────────────────────────────
+# Compare a paper bot's deals vs a live-dry bot's deals. Used after
+# running both side-by-side for ≥ 1 week to decide whether the paper
+# engine is a faithful proxy for live execution.
+#
+# Usage:
+#   make parity-compare PAPER=rsi_paper_test LIVE=rsi_real_test
+#   make parity-compare PAPER=... LIVE=... SINCE=2026-04-18
+parity-compare:
+	@test -n "$(PAPER)" || (echo "Usage: make parity-compare PAPER=<slug> LIVE=<slug> [SINCE=YYYY-MM-DD]" && exit 1)
+	@test -n "$(LIVE)"  || (echo "Usage: make parity-compare PAPER=<slug> LIVE=<slug> [SINCE=YYYY-MM-DD]" && exit 1)
+	$(PYTHON) scripts/parity_compare.py --paper $(PAPER) --live $(LIVE) $(if $(SINCE),--since $(SINCE),)
