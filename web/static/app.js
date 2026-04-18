@@ -3,6 +3,17 @@
 // 'unsafe-inline' on script-src. All event handlers are wired via
 // addEventListener in setupEventListeners() — no onclick="..." attributes.
 
+// ── Debug helpers ────────────────────────────────────────────────────────────
+// Opt-in debug logging. Set `window._REVERTO_DEBUG = true` from the
+// browser console to see _debug() output. Existing console.log calls
+// guarded by `window._BT_DEBUG` keep their own gate — this helper is
+// for new code that doesn't have domain-specific debug flags yet.
+function _debug(...args) {
+  if (window._REVERTO_DEBUG === true) {
+    console.log('[REVERTO]', ...args);
+  }
+}
+
 // ── Persisted UI settings (theme, text size, brightness, compact) ────────────
 // Applied as early as possible so there is no visual flash between the
 // default dark/normal palette and the user's saved preferences.
@@ -167,6 +178,29 @@ function handleGlobalEscape(e) {
   e.preventDefault();
 }
 document.addEventListener('keydown', handleGlobalEscape);
+
+async function handleResetDrawdown(slug) {
+  if (!slug) return;
+  if (!window.confirm(
+    'Reset the drawdown guard for ' + slug + '?\n\n' +
+    'The peak value is cleared and the bot resumes new entries on the next tick.'
+  )) return;
+  try {
+    const res = await fetch(
+      '/api/bots/' + encodeURIComponent(slug) + '/drawdown/reset',
+      { method: 'POST' },
+    );
+    if (!res.ok) {
+      const txt = await res.text();
+      alert('Reset failed: ' + (res.status + ' ' + txt.slice(0, 200)));
+      return;
+    }
+    alert('Drawdown guard reset for ' + slug + '.');
+    location.reload();
+  } catch (e) {
+    alert('Reset failed: ' + (e && e.message || e));
+  }
+}
 
 async function handleEmergencyStop() {
   toggleProfileMenu(false);
@@ -1166,6 +1200,31 @@ function renderBotCard(b) {
     ? `<div class="more-deals-row">+${openCount - 3} more deals</div>`
     : '';
 
+  // State badges — drawdown pause and clock-skew pause are operator-
+  // visible warning states that deserve a bold marker above the stats
+  // grid. Drawdown takes priority because it means the kill-switch
+  // actually fired; clock-skew is a softer "orders paused while we
+  // resync with the exchange clock".
+  const drawdownTriggered = b.drawdown_guard && b.drawdown_guard.triggered;
+  const pausedByDrawdown = b.paused_by_drawdown || drawdownTriggered;
+  const pausedBySkew = b.paused_by_clock_skew;
+  let stateBadge = '';
+  if (pausedByDrawdown) {
+    const reason = (b.drawdown_guard && b.drawdown_guard.trigger_reason) || '';
+    stateBadge = `<div class="state-badge badge-danger" role="status"
+        aria-label="Drawdown guard triggered">
+      ⚠ DRAWDOWN PAUSED${reason ? ' — ' + safeText(reason) : ''}
+      <button type="button" class="btn-small btn-warning"
+              data-action="reset-drawdown" data-slug="${safeText(b.slug)}"
+              aria-label="Reset drawdown guard">Reset</button>
+    </div>`;
+  } else if (pausedBySkew) {
+    stateBadge = `<div class="state-badge badge-warning" role="status"
+        aria-label="Clock skew detected">
+      🕐 CLOCK SKEW — orders paused
+    </div>`;
+  }
+
   return `
   <div class="bot-card" data-slug="${safeText(b.slug)}">
     <div class="bot-card-top">
@@ -1174,6 +1233,7 @@ function renderBotCard(b) {
         <div class="dot"></div><span>${running ? 'Running' : 'Stopped'}</span>
       </div>
     </div>
+    ${stateBadge}
     <div class="bot-card-meta">
       ${safeText((b.exchange || '—').toUpperCase())} · ${safeText(b.pair || 'BTC/USD')} · ${safeText((b.mode || 'paper').toUpperCase())}
       ${b.uptime ? '· ⏱ ' + safeText(b.uptime) : ''}
@@ -1232,6 +1292,7 @@ document.addEventListener('click', e => {
   if (!slug) return;
   if (action === 'open') openBot(slug);
   else if (action === 'delete') deleteBot(slug, el.dataset.name || slug);
+  else if (action === 'reset-drawdown') { handleResetDrawdown(slug); e.stopPropagation(); }
   else if (['start', 'stop', 'restart'].includes(action)) botAction(slug, action, el);
 });
 

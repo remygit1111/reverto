@@ -31,11 +31,18 @@ from collections import deque
 from typing import Optional
 
 from config.models import BotConfig
+from core.clock_monitor import ClockMonitor
 from exchanges.base_exchange import BaseExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import PaperEngine
 
 logger = logging.getLogger(__name__)
+
+# Default tolerance for clock-skew monitoring. Exchanges typically
+# reject orders whose client-side timestamp drifts more than a few
+# seconds from the server clock; 5s is a conservative default that
+# doesn't trip on normal NTP jitter but catches broken clocks.
+DEFAULT_CLOCK_SKEW_TOLERANCE_S = 5.0
 
 # Hard cap on the base order size any live bot is allowed to boot with
 # by default. Operators can bump it via the main_live.py CLI flag if
@@ -88,6 +95,7 @@ class LiveEngine(PaperEngine):
         slug: Optional[str] = None,
         dry_run: bool = True,
         max_base_order_size: float = DEFAULT_MAX_BASE_ORDER_SIZE_BTC,
+        clock_skew_tolerance: float = DEFAULT_CLOCK_SKEW_TOLERANCE_S,
     ) -> None:
         # Pre-flight safety rails: run BEFORE super().__init__ so a
         # misconfigured bot never starts a notify worker, touches the
@@ -115,10 +123,54 @@ class LiveEngine(PaperEngine):
         # entries are dropped automatically once the buffer fills up.
         self._live_order_log: deque = deque(maxlen=LIVE_ORDER_LOG_MAXLEN)
 
-        logger.warning(
-            "LiveEngine initialised — dry_run=%s base_order_size=%s max=%s",
-            dry_run, config.dca.base_order_size, max_base_order_size,
+        # Clock-skew monitor — Phase-2+ guard against placing orders
+        # with a drifted client clock. Fail-open on fetch errors so a
+        # flaky time endpoint never locks trading out permanently.
+        self.clock_monitor = ClockMonitor(
+            exchange, max_skew_seconds=clock_skew_tolerance,
         )
+        self._paused_by_clock_skew: bool = False
+
+        logger.warning(
+            "LiveEngine initialised — dry_run=%s base_order_size=%s max=%s skew_tol=%ss",
+            dry_run, config.dca.base_order_size, max_base_order_size,
+            clock_skew_tolerance,
+        )
+
+    # ------------------------------------------------------------------
+    # Tick override — clock-skew gate
+    # ------------------------------------------------------------------
+
+    def _tick(self) -> None:
+        """Override of PaperEngine._tick that pre-checks exchange clock
+        skew. When the local clock has drifted beyond tolerance we skip
+        order-placement entirely for this tick; state writing still
+        proceeds so the dashboard reflects the paused state.
+        """
+        skew, ok = self.clock_monitor.check()
+        if not ok:
+            if not self._paused_by_clock_skew:
+                logger.error(
+                    "Clock skew %.2fs exceeds tolerance — pausing orders",
+                    skew,
+                )
+            self._paused_by_clock_skew = True
+            # Skipping entry / DCA / order actions is simplest by
+            # flipping the existing drawdown-pause flag — _check_entry
+            # and _check_dca both honour it. We flip only for this
+            # tick; the next tick re-checks skew.
+            prev_drawdown = self._paused_by_drawdown
+            self._paused_by_drawdown = True
+            try:
+                super()._tick()
+            finally:
+                self._paused_by_drawdown = prev_drawdown
+            return
+
+        if self._paused_by_clock_skew:
+            logger.info("Clock skew back within tolerance (%.2fs) — resuming", skew)
+        self._paused_by_clock_skew = False
+        super()._tick()
 
     @staticmethod
     def _preflight(config: BotConfig, max_base_order_size: float) -> None:

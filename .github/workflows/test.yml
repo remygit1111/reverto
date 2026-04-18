@@ -8,12 +8,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the oldest supported (3.10+ union syntax is used).
+        # 3.12 is the primary dev version.
+        # 3.13 is smoke-tested; some deps may lag.
+        python-version: ['3.11', '3.12', '3.13']
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install dependencies
@@ -21,18 +29,24 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install ruff pip-audit
+          .venv/bin/pip install ruff pip-audit pytest-cov
 
       - name: Lint (ruff)
         run: .venv/bin/ruff check .
 
-      - name: Tests (pytest)
-        run: .venv/bin/pytest -q
+      - name: Tests (pytest + coverage)
+        # --cov-fail-under=55 is a floor chosen from the current baseline
+        # (~64% line coverage). Raise incrementally as test coverage
+        # improves rather than starting with a value that blocks PRs.
+        run: |
+          .venv/bin/pytest -q \
+            --cov=. \
+            --cov-report=term-missing:skip-covered \
+            --cov-fail-under=55
 
       - name: Security audit (pip-audit)
-        # Non-fatal — reports but does not block the pipeline yet so
-        # CVE announcements on transitive deps don't stop everyone's
-        # PRs overnight. Flip `continue-on-error` to false once the
-        # team has a process for upgrading flagged deps promptly.
+        # Non-fatal — reports but does not block the pipeline. Flip
+        # `continue-on-error: false` once direct-deps are actively
+        # monitored and responded to promptly.
         continue-on-error: true
         run: .venv/bin/pip-audit --disable-pip

@@ -25,6 +25,56 @@ from __future__ import annotations
 
 from prometheus_client import Counter, Gauge, Histogram
 
+# Bounded error-class mapping used by ``classify_error``. Keeping this
+# small set prevents Prometheus label-cardinality explosion — a hostile
+# exchange emitting exotic exception types would otherwise create a new
+# time-series for each name. ccxt is imported lazily to keep
+# web/metrics.py importable in environments (e.g. test hosts) without
+# the full exchange stack.
+_CCXT_ERROR_MAP: dict[type, str] = {}
+
+
+def _load_ccxt_error_map() -> dict[type, str]:
+    """Populate the ccxt exception → label map on first use."""
+    global _CCXT_ERROR_MAP
+    if _CCXT_ERROR_MAP:
+        return _CCXT_ERROR_MAP
+    try:
+        import ccxt  # noqa: WPS433 — lazy
+    except ImportError:
+        return _CCXT_ERROR_MAP
+
+    _CCXT_ERROR_MAP.update({
+        ccxt.RateLimitExceeded:   "rate_limit",
+        ccxt.InsufficientFunds:   "insufficient_funds",
+        ccxt.NetworkError:        "network",
+        ccxt.DDoSProtection:      "ddos",
+        ccxt.ExchangeNotAvailable: "exchange_unavailable",
+        ccxt.InvalidOrder:        "invalid_order",
+        ccxt.OrderNotFound:       "order_not_found",
+    })
+    return _CCXT_ERROR_MAP
+
+
+def classify_error(exc: BaseException) -> str:
+    """Map an exception instance to a bounded-set label.
+
+    Returns one of:
+      ``rate_limit``, ``insufficient_funds``, ``network``, ``ddos``,
+      ``exchange_unavailable``, ``invalid_order``, ``order_not_found``,
+      ``not_implemented``, ``value_error``, ``key_error``, ``other``.
+    """
+    for exc_type, label in _load_ccxt_error_map().items():
+        if isinstance(exc, exc_type):
+            return label
+    if isinstance(exc, NotImplementedError):
+        return "not_implemented"
+    if isinstance(exc, ValueError):
+        return "value_error"
+    if isinstance(exc, KeyError):
+        return "key_error"
+    return "other"
+
 # ── Tick loop ────────────────────────────────────────────────────────
 
 bot_ticks_total = Counter(
@@ -83,7 +133,18 @@ def record_tick(bot_slug: str, mode: str) -> None:
     bot_ticks_total.labels(bot_slug=bot_slug, mode=mode).inc()
 
 
-def record_tick_error(bot_slug: str, kind: str) -> None:
+def record_tick_error(bot_slug: str, exc_or_kind) -> None:
+    """Record a tick-loop exception.
+
+    Accepts either an exception instance (preferred — classified to a
+    bounded label via ``classify_error``) or a raw label string (for
+    callers that already have a label in hand). String callers are
+    responsible for keeping cardinality bounded themselves.
+    """
+    if isinstance(exc_or_kind, BaseException):
+        kind = classify_error(exc_or_kind)
+    else:
+        kind = str(exc_or_kind)
     bot_tick_errors_total.labels(bot_slug=bot_slug, kind=kind).inc()
 
 

@@ -1076,21 +1076,47 @@ async def healthz(request: Request):
     }
 
 
+async def _check_db_sync() -> None:
+    """Synchronous DB ping — runs inside asyncio.to_thread so a slow
+    SQLite lock doesn't block the event loop."""
+    from core.database import get_db
+    conn = get_db()
+    conn.execute("SELECT 1").fetchone()
+
+
 @app.get("/readyz")
 async def readyz(request: Request):
     """Readiness probe — no auth, no rate limit. Verifies the SQLite
     ledger is reachable. A 503 here tells an orchestrator not to send
-    new requests yet (DB migration in progress, disk full, etc.)."""
+    new requests yet (DB migration in progress, disk full, etc.).
+
+    Hard 3s timeout on the DB ping so a locked SQLite can't wedge the
+    probe: orchestrators rely on readyz responding quickly, and a slow
+    probe is as bad as a failing one.
+    """
     try:
-        from core.database import get_db
-        conn = get_db()
-        conn.execute("SELECT 1")
+        await asyncio.wait_for(
+            asyncio.to_thread(_check_db_sync_blocking),
+            timeout=3.0,
+        )
         return {"status": "ready"}
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "error": "DB ping timed out (>3s)"},
+        )
     except Exception as e:
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "error": str(e)[:200]},
         )
+
+
+def _check_db_sync_blocking() -> None:
+    """Blocking variant — the one asyncio.to_thread actually runs."""
+    from core.database import get_db
+    conn = get_db()
+    conn.execute("SELECT 1").fetchone()
 
 
 @app.get("/metrics")
