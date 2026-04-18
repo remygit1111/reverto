@@ -606,3 +606,129 @@ class TestDeleteBacktestRuns:
         client.cookies.clear()
         r = client.delete("/api/backtest/runs/1")
         assert r.status_code == 401
+
+
+# ── Start dry-run (Phase-1 live launcher) ─────────────────────────────────────
+
+class TestStartDryRun:
+    """Portal-side launcher for live-mode bots under Phase 1 dry-run.
+
+    These tests monkeypatch subprocess.Popen so no real bot is ever
+    spawned; the assertions target the command shape + env + the
+    mode-guard (paper bots must be refused)."""
+
+    def _live_payload(self) -> dict:
+        """Use the default name from _make_payload so the resulting slug
+        lines up with _TEST_SLUG — the autouse cleanup fixture only
+        knows that single path."""
+        p = _make_payload()
+        p["bot"]["mode"] = "live"
+        return p
+
+    def test_route_registered(self):
+        routes = [
+            r for r in app.routes
+            if getattr(r, "path", "") == "/api/bots/{slug}/start-dry-run"
+            and "POST" in getattr(r, "methods", set())
+        ]
+        assert len(routes) == 1, (
+            "POST /api/bots/{slug}/start-dry-run must be registered exactly once"
+        )
+
+    def test_unauthenticated_is_401(self):
+        client = TestClient(webapp.app)
+        client.cookies.clear()
+        r = client.post("/api/bots/whatever/start-dry-run")
+        assert r.status_code == 401
+
+    def test_paper_mode_bot_is_refused(self, auth_client, monkeypatch):
+        """start_bot_dry_run must return ok=False for a paper-mode bot
+        rather than letting main_live.py's hard-mode check swallow it
+        silently as an exit-1 subprocess."""
+        # Refuse at the helper level — nothing should ever spawn.
+        called = {"popen": 0}
+
+        def _fake_popen(*a, **kw):
+            called["popen"] += 1
+            raise AssertionError("Popen must not run for paper-mode bots")
+        monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
+
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        # Seed a paper-mode YAML via the normal create endpoint.
+        create = auth_client.post("/api/bots", json=_make_payload())
+        assert create.status_code == 200
+        try:
+            r = auth_client.post(f"/api/bots/{_TEST_SLUG}/start-dry-run")
+            assert r.status_code == 200
+            body = r.json()
+            assert body.get("ok") is False
+            assert "live-mode" in body.get("error", "")
+            assert called["popen"] == 0
+        finally:
+            # Clean up — the autouse fixture removes the YAML, but we
+            # also want registry state consistent for the next test.
+            auth_client.delete(f"/api/bots/{_TEST_SLUG}")
+
+    def test_live_mode_bot_spawns_main_live_with_dry_run(
+        self, auth_client, monkeypatch,
+    ):
+        """Happy path: live YAML + Popen captured. Verifies argv shape
+        (main_live.py --bot <slug> --dry-run) and that DRY_RUN=1 is in
+        the child env so the confirmation prompt never blocks a
+        non-TTY portal subprocess."""
+        captured: dict = {}
+
+        class _FakeProc:
+            pid = 4242
+
+        def _fake_popen(cmd, *a, **kw):
+            captured["cmd"] = cmd
+            captured["env"] = kw.get("env", {})
+            captured["start_new_session"] = kw.get("start_new_session")
+            # Drop a fake PID file so the post-spawn wait loop exits.
+            from web.app import PID_DIR
+            PID_DIR.mkdir(parents=True, exist_ok=True)
+            (PID_DIR / f"{_TEST_SLUG}.pid").write_text(str(_FakeProc.pid))
+            return _FakeProc()
+
+        monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
+
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        assert auth_client.post(
+            "/api/bots", json=self._live_payload(),
+        ).status_code == 200
+        try:
+            r = auth_client.post(f"/api/bots/{_TEST_SLUG}/start-dry-run")
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body.get("ok") is True, body
+            assert "DRY-RUN" in body.get("message", "")
+
+            cmd = captured["cmd"]
+            assert cmd[1].endswith("main_live.py"), cmd
+            assert "--bot" in cmd and _TEST_SLUG in cmd
+            assert "--dry-run" in cmd
+            assert captured["env"].get("DRY_RUN") == "1"
+            assert captured["start_new_session"] is True
+        finally:
+            # Remove fake PID + YAML so subsequent tests see a clean slate.
+            from web.app import PID_DIR
+            pid_file = PID_DIR / f"{_TEST_SLUG}.pid"
+            if pid_file.exists():
+                pid_file.unlink()
+            auth_client.delete(f"/api/bots/{_TEST_SLUG}")
+
+    def test_unknown_slug_is_refused(self, auth_client, monkeypatch):
+        def _fake_popen(*a, **kw):
+            raise AssertionError("Popen must not run for unknown bot")
+        monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
+
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post("/api/bots/does_not_exist_anywhere/start-dry-run")
+        # Helper returns {"ok": False, ...} rather than raising — the
+        # endpoint surfaces that as 200 with the ok flag.
+        assert r.status_code == 200
+        assert r.json().get("ok") is False

@@ -34,6 +34,30 @@ make stop-all    # stops portal + every bot via SIGTERM
 `make stop-all` waits up to 10s for each bot to flush Telegram
 notifications via its `notify_stop` / `notify_shutdown` queue drain.
 
+## Live bot dry-run via het portal (Phase 1)
+
+Onder Phase 1 zijn live-mode bots alleen toegestaan in dry-run: de
+runner gebruikt de echte exchange client voor ticker-data maar
+weigert `_place_market_order` in non-dry-run. Het portal laat je
+dit nu starten zonder via `make live-dry` te hoeven.
+
+- **Overview**: bots met `mode: live` in hun YAML tonen een oranje
+  **▶ Start dry-run** knop (geen groene Start). Klik → bevestig in
+  het dialog → portal spawnt `main_live.py --bot <slug> --dry-run`
+  met `DRY_RUN=1` in de env (confirmation prompt wordt overgeslagen).
+- **Running state**: het "Running" pill krijgt een gele banner
+  **🟡 DRY RUN — no real orders placed** zolang de bot draait. Dit
+  blijft staan tot Phase 3 real execution toelaat.
+- **Stop / Restart**: werken ongewijzigd. Restart is mode-aware —
+  een live bot herstart weer als dry-run, een paper bot als paper.
+- **API**: `POST /api/bots/<slug>/start-dry-run` (auth, rate-limited
+  20/min, audited als `bot_start_dry_run`). Paper-mode bots worden
+  door de helper geweigerd met een duidelijke foutmelding in plaats
+  van stil subprocess-exit.
+
+Alternatief blijft `make live-dry BOT=<slug>` voor ops-flows zonder
+portal.
+
 ## Emergency stop
 
 Portal → profile menu → **🛑 Emergency stop**. Confirm the dialog.

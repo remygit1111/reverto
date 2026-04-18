@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from config.config_loader import load_bot_config
-from config.models import BotConfig
+from config.models import BotConfig, Mode
 from core import credentials
 from core.database import init_db as _init_db
 from notifications.telegram import TelegramNotifier
@@ -673,6 +673,77 @@ async def stop_bot(slug: str) -> dict:
     return {"ok": True, "message": f"{slug} stopped (PID {pid})"}
 
 
+async def start_bot_dry_run(slug: str) -> dict:
+    """Spawn a LIVE-mode bot in dry-run via main_live.py.
+
+    Phase 1 counterpart to start_bot(): uses main_live.py --bot <slug>
+    --dry-run with DRY_RUN=1 so the confirmation prompt is skipped.
+    The resulting subprocess writes the SAME PID/state/log files as
+    the paper runner, so stop_bot/restart_bot work unchanged.
+    """
+    bot = await registry.get(slug)
+    if not bot:
+        return {"ok": False, "error": f"Unknown bot: {slug}"}
+    if bot.running:
+        return {"ok": False, "error": f"{slug} already running (PID {bot.pid})"}
+
+    # Only live-mode bots may be launched dry-run. A paper bot would
+    # fail the hard mode check inside main_live.py, but bouncing it at
+    # the portal is friendlier than letting the subprocess exit 1 and
+    # surface as a silent no-op.
+    try:
+        cfg = load_bot_config(bot.config_file)
+    except Exception as e:
+        return {"ok": False, "error": f"Could not load config: {e}"}
+    if cfg.mode != Mode.LIVE:
+        return {
+            "ok": False,
+            "error": (
+                f"{slug} is mode={cfg.mode.value}; dry-run is only for live-mode bots"
+            ),
+        }
+
+    if not await registry.begin_start(slug):
+        return {"ok": False, "error": "Bot is already starting"}
+
+    try:
+        PID_DIR.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(BASE_DIR)
+        # main_live.py prompts the operator on non-dry-run launches and
+        # also respects DRY_RUN=1 as a bypass — set it explicitly so a
+        # non-TTY portal subprocess never hangs on input().
+        env["DRY_RUN"] = "1"
+
+        with open(bot.log_file, "a") as log_out:
+            proc = subprocess.Popen(
+                [PYTHON_BIN, str(BASE_DIR / "main_live.py"),
+                 "--bot", slug, "--dry-run"],
+                cwd=str(BASE_DIR),
+                stdout=log_out,
+                stderr=log_out,
+                env=env,
+                start_new_session=True,
+            )
+        logger.info(f"Bot {slug} started in DRY-RUN (PID {proc.pid})")
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if bot.pid_file.exists():
+                break
+            await asyncio.sleep(0.1)
+
+        return {
+            "ok": True,
+            "message": f"{slug} started in DRY-RUN (PID {proc.pid})",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        await registry.end_start(slug)
+
+
 async def restart_bot(slug: str) -> dict:
     bot = await registry.get(slug)
     if not bot:
@@ -681,6 +752,7 @@ async def restart_bot(slug: str) -> dict:
     # Fire restart notification before tearing the subprocess down.
     # The portal owns the restart lifecycle, so the bot itself never
     # gets a chance to send this from inside its own engine loop.
+    cfg = None
     try:
         cfg = load_bot_config(bot.config_file)
         notifier = TelegramNotifier(notify_on=cfg.telegram.notify_on)
@@ -701,6 +773,12 @@ async def restart_bot(slug: str) -> dict:
             break
         await asyncio.sleep(0.1)
 
+    # Dispatch by mode — live bots restart back into dry-run (Phase 1
+    # only supports that), paper bots restart into paper. If config
+    # loading failed above, fall through to the paper path — that's the
+    # historical behaviour.
+    if cfg is not None and cfg.mode == Mode.LIVE:
+        return await start_bot_dry_run(slug)
     return await start_bot(slug)
 
 
