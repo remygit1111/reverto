@@ -14,7 +14,6 @@ import secrets
 import signal
 import subprocess
 import sys
-import threading
 import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
@@ -1063,183 +1062,22 @@ async def api_deal_start(slug: str, request: Request, actor: str = Depends(_requ
 
 
 # ── Ops endpoints — health checks + Prometheus ──────────────────────────────
-
-@app.get("/healthz")
-async def healthz(request: Request):
-    """Liveness probe — no auth, no rate limit. Always returns 200 as
-    long as the portal process is actually answering. Use as Kubernetes
-    livenessProbe so the orchestrator doesn't restart healthy portals."""
-    return {
-        "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "pid": os.getpid(),
-    }
-
-
-async def _check_db_sync() -> None:
-    """Synchronous DB ping — runs inside asyncio.to_thread so a slow
-    SQLite lock doesn't block the event loop."""
-    from core.database import get_db
-    conn = get_db()
-    conn.execute("SELECT 1").fetchone()
-
-
-@app.get("/readyz")
-async def readyz(request: Request):
-    """Readiness probe — no auth, no rate limit. Verifies the SQLite
-    ledger is reachable. A 503 here tells an orchestrator not to send
-    new requests yet (DB migration in progress, disk full, etc.).
-
-    Hard 3s timeout on the DB ping so a locked SQLite can't wedge the
-    probe: orchestrators rely on readyz responding quickly, and a slow
-    probe is as bad as a failing one.
-    """
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(_check_db_sync_blocking),
-            timeout=3.0,
-        )
-        return {"status": "ready"}
-    except asyncio.TimeoutError:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready", "error": "DB ping timed out (>3s)"},
-        )
-    except Exception as e:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready", "error": str(e)[:200]},
-        )
+#
+# The actual route handlers now live in web/routes/admin.py and
+# web/routes/drawdown.py — included at the bottom of this module so
+# the module-level names they import (limiter, _request_actor,
+# registry, stop_bot, _audit, _BOT_SLUG_RE, _do_portal_restart,
+# _check_db_sync_blocking) are already defined by the time the
+# route modules load.
 
 
 def _check_db_sync_blocking() -> None:
-    """Blocking variant — the one asyncio.to_thread actually runs."""
+    """Blocking DB ping used by /readyz. Lives at module level so the
+    route module (web/routes/admin.py) can import it without pulling
+    in the routing decorators."""
     from core.database import get_db
     conn = get_db()
     conn.execute("SELECT 1").fetchone()
-
-
-@app.get("/metrics")
-async def metrics(request: Request):
-    """Prometheus scrape endpoint — no auth, no rate limit.
-
-    Scraping is expected to be gated at the network layer (firewall,
-    ingress ACL) rather than the application layer: Prometheus
-    service-accounts don't carry user sessions and operators would
-    otherwise have to share the API key with the monitoring stack.
-    """
-    from fastapi.responses import Response as _Response
-    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-    return _Response(
-        content=generate_latest(),
-        media_type=CONTENT_TYPE_LATEST,
-    )
-
-
-@app.post("/api/emergency-stop")
-@limiter.limit("5/minute")
-async def api_emergency_stop(request: Request, actor: str = Depends(_request_actor)):
-    """Stop every running bot immediately.
-
-    Audit-logged and rate-limited. Intended as the big red button a
-    panicking operator can hit without hunting for individual bot
-    stop endpoints. Uses the existing ``stop_bot(slug)`` plumbing so
-    SIGTERM + notify-drain still happens per bot — we're not pulling
-    the rug out from under any in-flight order logic.
-    """
-    _audit("emergency_stop", "-", actor)
-    logger.error("EMERGENCY STOP requested by %s", actor)
-
-    stopped: list[str] = []
-    failed: list[dict] = []
-    for bot in await registry.all():
-        if not bot.running:
-            continue
-        try:
-            result = await stop_bot(bot.slug)
-            if result.get("ok"):
-                stopped.append(bot.slug)
-            else:
-                failed.append({"slug": bot.slug, "error": result.get("error")})
-        except Exception as e:
-            failed.append({"slug": bot.slug, "error": str(e)[:200]})
-
-    return {
-        "ok": True,
-        "stopped_bots": stopped,
-        "failed": failed,
-        "triggered_by": actor,
-    }
-
-
-@app.post("/api/bots/{slug}/drawdown/reset")
-@limiter.limit("10/minute")
-async def api_drawdown_reset(slug: str, request: Request, actor: str = Depends(_request_actor)):
-    """Clear the drawdown guard's triggered state for a bot.
-
-    Writes a fresh ``drawdown_guard`` blob to the bot's state.json; on
-    the next tick the engine's _load_state path picks up the cleared
-    state. The engine itself also exposes guard.reset() in-process,
-    but the portal can't call that across the subprocess boundary —
-    state.json is the shared contract.
-
-    Only accepts well-formed slugs to block a `{slug}="../secrets"`
-    style path-escape through the LOG_DIR composition.
-    """
-    if not _BOT_SLUG_RE.match(slug):
-        raise HTTPException(status_code=400, detail="Invalid slug")
-
-    bot = await registry.get(slug)
-    if not bot:
-        raise HTTPException(status_code=404, detail="Unknown bot")
-
-    state_file = bot.state_file
-    if not state_file.exists():
-        raise HTTPException(status_code=404, detail="Bot state not found")
-
-    try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        raise HTTPException(status_code=500, detail=f"State unreadable: {str(e)[:100]}")
-
-    data["drawdown_guard"] = {
-        "peak_value": None,
-        "triggered": False,
-        "trigger_reason": None,
-    }
-    data["paused_by_drawdown"] = False
-
-    # Atomic rewrite — same pattern as the engine's own writer so we
-    # don't race with an in-progress state.json refresh.
-    tmp = state_file.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(state_file)
-
-    _audit("drawdown_reset", slug, actor)
-    logger.warning("Drawdown guard reset for %s by %s", slug, actor)
-    return {"ok": True, "bot": slug}
-
-
-@app.post("/api/portal/restart")
-@limiter.limit("5/minute")
-async def api_portal_restart(request: Request, actor: str = Depends(_request_actor)):
-    """Restart the portal process.
-
-    Uses os.execv in a background thread so the HTTP response can reach
-    the browser before the process is replaced.
-    """
-    _audit("portal_restart", "-", actor)
-    logger.info("Portal restart requested via API")
-    t = threading.Thread(target=_do_portal_restart, daemon=True)
-    t.start()
-    return {"ok": True, "message": "Portal restarting — reconnecting in a few seconds..."}
-
-
-@app.get("/api/portal/status")
-@limiter.limit("60/minute")
-async def api_portal_status(request: Request):
-    """Simple health check — browser polls this to detect when portal is back."""
-    return {"ok": True, "pid": os.getpid()}
 
 
 @app.get("/api/price")
@@ -2391,6 +2229,23 @@ async def api_backtest_run_delete(
         raise HTTPException(status_code=404, detail="Run not found")
     _audit("backtest_delete", str(run_id), actor)
     return {"ok": True}
+
+
+# ── Sub-routers ─────────────────────────────────────────────────────────────
+# Routes extracted from this file into web/routes/*.py. Included at the
+# bottom so the module-level names the routers import (limiter,
+# _request_actor, _audit, registry, stop_bot, _BOT_SLUG_RE,
+# _do_portal_restart, _check_db_sync_blocking) are all defined by the
+# time the import-machinery follows those imports.
+#
+# Additional domains (auth, bots, deals, chart, exchanges, backtest)
+# still live in this file; a follow-up pass can migrate them using the
+# same pattern.
+from web.routes import admin as _admin_routes  # noqa: E402
+from web.routes import drawdown as _drawdown_routes  # noqa: E402
+
+app.include_router(_admin_routes.router)
+app.include_router(_drawdown_routes.router)
 
 
 def run_portal(host="0.0.0.0", port=8080):
