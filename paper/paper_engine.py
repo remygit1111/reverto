@@ -586,6 +586,8 @@ class PaperEngine:
             if self._closes_per_tf.get(bot_tf):
                 self._last_snapshot = self.indicator_engine.get_indicator_snapshot(
                     self._closes_per_tf, bot_tf,
+                    highs_per_tf=self._highs_per_tf,
+                    lows_per_tf=self._lows_per_tf,
                 )
 
             self._monitor_open_deals(price)
@@ -1049,6 +1051,25 @@ class PaperEngine:
                 parts.append(f"EMA21: {snap['ema_21']:.2f}")
         if "MACD" in active and "macd_histogram" in snap:
             parts.append(f"MACD hist: {snap['macd_histogram']:.4f}")
+        if "BOLLINGER" in active and "bb_pct_b" in snap:
+            parts.append(f"BB %B: {snap['bb_pct_b']:.2f}")
+        if "PARABOLIC_SAR" in active and "psar" in snap:
+            trend = snap.get("psar_trend", "?")
+            parts.append(f"PSAR: {snap['psar']:.2f} ({trend})")
+        if "SUPERTREND" in active and "supertrend" in snap:
+            direction = snap.get("supertrend_dir", "?")
+            parts.append(f"ST: {snap['supertrend']:.2f} ({direction})")
+        if "SUPPORT_RESISTANCE" in active:
+            s_val = snap.get("sr_support")
+            r_val = snap.get("sr_resistance")
+            if s_val is not None or r_val is not None:
+                s_str = f"S@{s_val:.0f}" if s_val is not None else "S@—"
+                r_str = f"R@{r_val:.0f}" if r_val is not None else "R@—"
+                parts.append(f"S&R: {s_str} {r_str}")
+        if "QFL" in active and "qfl_base" in snap:
+            parts.append(f"QFL base: {snap['qfl_base']:.2f}")
+        if "MARKET_STRUCTURE" in active and "market_structure" in snap:
+            parts.append(f"MS: {snap['market_structure']}")
 
         if not parts:
             return None

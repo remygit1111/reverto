@@ -362,6 +362,15 @@ class TestIndicatorLogFiltering:
             "macd": 12.5,
             "macd_signal": 170.5,
             "macd_histogram": -157.9944,
+            "bb_pct_b": 0.42,
+            "psar": 51200.00,
+            "psar_trend": "bull",
+            "supertrend": 52100.50,
+            "supertrend_dir": "up",
+            "sr_support": 51000.0,
+            "sr_resistance": 52500.0,
+            "qfl_base": 51500.00,
+            "market_structure": "HH",
         }
 
     def test_rsi_only_suppresses_ema_and_macd(
@@ -397,11 +406,14 @@ class TestIndicatorLogFiltering:
         assert engine._format_indicator_log() is None
 
     def test_unknown_only_indicators_skips_line(self, engine):
-        """Bot configured exclusively with indicators whose values the
-        snapshot doesn't carry (e.g. BOLLINGER, PARABOLIC_SAR). The
-        filter MUST NOT fall back to printing EMA/MACD/RSI just because
-        those happen to be in the snapshot."""
-        engine._active_indicator_types = {"BOLLINGER", "PARABOLIC_SAR"}
+        """Bot configured exclusively with an unknown / unsupported
+        indicator type. The filter must NOT fall back to printing
+        RSI/EMA/MACD just because those happen to be in the snapshot.
+
+        Historically this used BOLLINGER/PARABOLIC_SAR as the "unknown"
+        examples; those are now first-class snapshot values so a made-
+        up type name is used instead."""
+        engine._active_indicator_types = {"NOT_A_REAL_INDICATOR"}
         engine._last_snapshot = self._snapshot()
         assert engine._format_indicator_log() is None
 
@@ -443,3 +455,61 @@ class TestIndicatorLogFiltering:
         minimal_bot_config.entry.indicator_groups = []
         types = _collect_active_indicator_types(minimal_bot_config)
         assert "RSI" in types
+
+    # ── Per-indicator formatting ────────────────────────────────────
+
+    def test_bollinger_only_logs_pct_b(self, engine):
+        engine._active_indicator_types = {"BOLLINGER"}
+        engine._last_snapshot = self._snapshot()
+        line = engine._format_indicator_log()
+        assert line == "Indicators — BB %B: 0.42"
+
+    def test_psar_only_logs_value_and_trend(self, engine):
+        engine._active_indicator_types = {"PARABOLIC_SAR"}
+        engine._last_snapshot = self._snapshot()
+        line = engine._format_indicator_log()
+        assert line == "Indicators — PSAR: 51200.00 (bull)"
+
+    def test_supertrend_only_logs_value_and_direction(self, engine):
+        engine._active_indicator_types = {"SUPERTREND"}
+        engine._last_snapshot = self._snapshot()
+        line = engine._format_indicator_log()
+        assert line == "Indicators — ST: 52100.50 (up)"
+
+    def test_sr_only_logs_support_and_resistance(self, engine):
+        engine._active_indicator_types = {"SUPPORT_RESISTANCE"}
+        engine._last_snapshot = self._snapshot()
+        line = engine._format_indicator_log()
+        assert line == "Indicators — S&R: S@51000 R@52500"
+
+    def test_sr_one_sided_renders_placeholder(self, engine):
+        """Only one of support/resistance is active — the other side
+        gets an em-dash placeholder rather than being dropped."""
+        engine._active_indicator_types = {"SUPPORT_RESISTANCE"}
+        snap = self._snapshot()
+        snap.pop("sr_resistance")
+        engine._last_snapshot = snap
+        line = engine._format_indicator_log()
+        assert line == "Indicators — S&R: S@51000 R@—"
+
+    def test_qfl_only_logs_base(self, engine):
+        engine._active_indicator_types = {"QFL"}
+        engine._last_snapshot = self._snapshot()
+        line = engine._format_indicator_log()
+        assert line == "Indicators — QFL base: 51500.00"
+
+    def test_market_structure_only_logs_pattern(self, engine):
+        engine._active_indicator_types = {"MARKET_STRUCTURE"}
+        engine._last_snapshot = self._snapshot()
+        line = engine._format_indicator_log()
+        assert line == "Indicators — MS: HH"
+
+    def test_combined_indicators_log_all(self, engine):
+        """RSI + BB + PSAR → log shows all three in declaration order."""
+        engine._active_indicator_types = {"RSI", "BOLLINGER", "PARABOLIC_SAR"}
+        engine._last_snapshot = self._snapshot()
+        line = engine._format_indicator_log()
+        assert line == (
+            "Indicators — RSI: 35.17 | BB %B: 0.42 "
+            "| PSAR: 51200.00 (bull)"
+        )

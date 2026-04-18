@@ -1161,3 +1161,166 @@ class TestMACDUsePercentileEdge:
         assert check_macd_signal(
             closes, condition="macd_cross_above_zero", use_percentile=True,
         ) is False
+
+
+# ── Indicator snapshot contract (fuels the per-tick log line) ────────────────
+
+
+class TestIndicatorSnapshotExtended:
+    """Pins what ``IndicatorEngine.get_indicator_snapshot`` emits for
+    each indicator family. The paper engine's per-tick log line reads
+    these exact keys, so this test doubles as a regression guard for
+    the wire format between engine → log formatter."""
+
+    def _engine(self):
+        """Bare-minimum IndicatorEngine — snapshot doesn't consult the
+        config (it uses hardcoded defaults), so any BotConfig stub
+        works. Built via the same fixture trick as test_paper_engine."""
+        from unittest.mock import MagicMock
+        from strategies.indicator_engine import IndicatorEngine
+        stub = MagicMock()
+        stub.entry.indicators = []
+        stub.entry.indicator_groups = []
+        return IndicatorEngine(stub)
+
+    def _ohlc(self, n=60):
+        """Synthetic trending + oscillating series — enough data for
+        every indicator to produce a non-trivial value on the last bar."""
+        closes = [100.0 + i * 0.4 + (i % 5) * 0.2 for i in range(n)]
+        highs  = [c + 0.5 for c in closes]
+        lows   = [c - 0.5 for c in closes]
+        return closes, highs, lows
+
+    def test_snapshot_includes_bollinger_pct_b(self):
+        closes, _, _ = self._ohlc()
+        snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+        )
+        assert "bb_pct_b" in snap
+        # %B can overshoot outside [0,1] on strong trends; the sanity
+        # window is loose — the point is the key is numeric.
+        assert isinstance(snap["bb_pct_b"], float)
+
+    def test_snapshot_includes_psar_with_trend(self):
+        closes, highs, lows = self._ohlc()
+        snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+            highs_per_tf={"1h": highs},
+            lows_per_tf={"1h": lows},
+        )
+        assert "psar" in snap
+        assert snap["psar_trend"] in ("bull", "bear")
+
+    def test_snapshot_includes_supertrend_with_direction(self):
+        closes, highs, lows = self._ohlc()
+        snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+            highs_per_tf={"1h": highs},
+            lows_per_tf={"1h": lows},
+        )
+        assert "supertrend" in snap
+        assert snap["supertrend_dir"] in ("up", "down")
+
+    def test_snapshot_includes_sr_levels_when_pivots_exist(self):
+        """Need an isolated local extremum with ≥15 strictly lower bars
+        on each side so find_support_resistance can confirm the pivot.
+        Use a single sharp spike centred between two flat plateaus."""
+        n = 50
+        highs = [100.0] * n
+        lows  = [99.0] * n
+        # Centre bar 25 gets an isolated spike — 25 bars before + 24
+        # bars after, all strictly lower. That satisfies left/right=15
+        # on the resistance side.
+        highs[25] = 120.0
+        closes = [99.5] * n
+        closes[25] = 119.5
+
+        snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+            highs_per_tf={"1h": highs},
+            lows_per_tf={"1h": lows},
+        )
+        # The spike produces a confirmed resistance pivot at 120.0.
+        assert snap.get("sr_resistance") == 120.0
+
+    def test_snapshot_includes_qfl_base_when_base_found(self):
+        """QFL needs ≥ base_periods (36) candles AND a valid base
+        pattern. A sustained uptrend followed by a pump + crack
+        produces one."""
+        closes = [100.0 + i * 0.1 for i in range(60)] + [110.0] * 20 + [100.0] * 20
+        highs = [c + 0.5 for c in closes]
+        lows  = [c - 0.5 for c in closes]
+        snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+            highs_per_tf={"1h": highs},
+            lows_per_tf={"1h": lows},
+        )
+        # The base may or may not land depending on the pump%/crack%
+        # defaults, so only assert the type when present.
+        if "qfl_base" in snap:
+            assert isinstance(snap["qfl_base"], float)
+
+    def test_snapshot_includes_market_structure_pattern(self):
+        """Ascending series with obvious swings → HH / HL labels."""
+        closes = []
+        n = 80
+        # Alternating pattern with overall uptrend — guarantees swing
+        # highs AND lows that the classifier can compare.
+        for i in range(n):
+            base = 100.0 + i * 0.3
+            closes.append(base + (2.0 if i % 8 < 4 else -2.0))
+        snap = self._engine().get_indicator_snapshot({"1h": closes}, "1h")
+        if "market_structure" in snap:
+            assert snap["market_structure"] in ("HH", "HL", "LH", "LL")
+
+    def test_snapshot_skips_hlc_indicators_without_highs_lows(self):
+        """When the caller can't supply highs/lows (e.g. first tick
+        before OHLCV was fetched), PSAR/Supertrend/S&R/QFL must be
+        silently skipped rather than raising."""
+        closes, _, _ = self._ohlc()
+        snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+        )
+        for key in ("psar", "supertrend", "sr_support", "sr_resistance", "qfl_base"):
+            assert key not in snap, f"{key} should not be present without highs/lows"
+
+    def test_snapshot_skips_indicator_on_insufficient_data(self):
+        """20 candles isn't enough for most of these — the snapshot
+        must return whatever DID compute and silently drop the rest."""
+        closes = [100.0 + i for i in range(20)]
+        highs = [c + 0.5 for c in closes]
+        lows  = [c - 0.5 for c in closes]
+        snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+            highs_per_tf={"1h": highs},
+            lows_per_tf={"1h": lows},
+        )
+        # Bollinger needs period=20 (exactly met) → should appear.
+        assert "bb_pct_b" in snap
+        # Market Structure needs lookback*10 = 30 → should be absent.
+        assert "market_structure" not in snap
+        # QFL needs base_periods+pump_periods data — 20 candles won't
+        # yield a validated base with defaults.
+        assert "qfl_base" not in snap
+
+    def test_snapshot_survives_indicator_exception(self, monkeypatch):
+        """A broken indicator implementation must NOT take down the
+        whole snapshot. Monkeypatch BB to always raise and assert the
+        other keys still land."""
+        import strategies.indicator_engine as ie_mod
+
+        def _boom(*a, **kw):
+            raise RuntimeError("synthetic failure")
+
+        monkeypatch.setattr(ie_mod, "calculate_bollinger_bands", _boom)
+
+        closes, highs, lows = self._ohlc()
+        snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+            highs_per_tf={"1h": highs},
+            lows_per_tf={"1h": lows},
+        )
+        assert "bb_pct_b" not in snap
+        # Other indicators must still be present.
+        assert "rsi_14" in snap
+        assert "psar" in snap
