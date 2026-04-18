@@ -31,8 +31,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 logger = logging.getLogger(__name__)
 
 
@@ -97,7 +95,6 @@ def train_entry_filter(
         return {"skipped": True, "reason": "xgboost_missing"}
 
     try:
-        import joblib
         from sklearn.metrics import roc_auc_score
         from sklearn.model_selection import TimeSeriesSplit
     except ImportError as e:
@@ -138,7 +135,11 @@ def train_entry_filter(
     model_dir = Path(__file__).parent / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
     model_file = model_dir / "entry_filter.pkl"
-    joblib.dump(model, model_file)
+    # Atomic write — a crash mid-dump would otherwise leave a
+    # half-written .pkl that the next EntryFilter load would silently
+    # fail-open on, masking the training failure.
+    from ml.model_io import atomic_dump_model
+    atomic_dump_model(model, model_file)
 
     result = {
         "n_deals": int(len(deals_df)),
@@ -254,6 +255,13 @@ def _persist_results(bot_slug: str, results: dict) -> Path:
 
 
 if __name__ == "__main__":
+    # Only insert the project root on actual CLI invocation — import-time
+    # sys.path mutation was a side effect that complicated test setup and
+    # shadowed real import errors. The cron entry-point still needs it
+    # because it runs `python ml/nightly_pipeline.py` from an arbitrary
+    # cwd and needs to find the sibling `core`, `ml`, `config` packages.
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -266,4 +274,23 @@ if __name__ == "__main__":
         help="Path to SQLite database (default: logs/reverto.db)",
     )
     args = parser.parse_args()
-    run_pipeline(args.bot, args.db)
+
+    # Canonicalize --db and refuse anything outside the project root.
+    # The CLI is nominally trusted (operators run it directly) but
+    # an accidental `--db /etc/passwd` or a symlink trick is still
+    # worth rejecting with a clear error rather than letting sqlite3
+    # open it.
+    BASE_DIR = Path(__file__).parent.parent.resolve()
+    db_path = Path(args.db).resolve()
+
+    try:
+        db_path.relative_to(BASE_DIR)
+    except ValueError:
+        print(f"Error: --db must be within {BASE_DIR}", file=sys.stderr)
+        sys.exit(1)
+
+    if not db_path.exists():
+        print(f"Error: database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    run_pipeline(args.bot, str(db_path))

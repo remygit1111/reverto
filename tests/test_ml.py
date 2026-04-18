@@ -169,3 +169,94 @@ class TestMarketRegime:
     def test_train_on_empty_candles_raises(self):
         with pytest.raises(ValueError, match="Not enough candles"):
             market_regime.train_regime_model([])
+
+
+# ── market_regime: malformed / partial candles ──────────────────────────────
+
+class TestMarketRegimeMalformed:
+    """Previous crash path: compute_regime_features() dereferenced
+    c["close"] / c["volume"] directly, so any malformed dict would kill
+    the whole pipeline with a KeyError. We now return an empty frame and
+    let detect_current_regime fall back to "unknown" cleanly."""
+
+    def test_malformed_candles_returns_empty(self):
+        result = market_regime.compute_regime_features([{}])
+        assert result.empty
+
+    def test_missing_volume_key_handled(self):
+        result = market_regime.compute_regime_features([{"close": 100}])
+        assert result.empty
+
+    def test_missing_close_key_handled(self):
+        result = market_regime.compute_regime_features([{"volume": 10}])
+        assert result.empty
+
+    def test_none_entry_handled(self):
+        """Non-dict entries should also land in the fail-soft path."""
+        result = market_regime.compute_regime_features([None, None])
+        assert result.empty
+
+
+# ── safe_load_model / atomic_dump_model ─────────────────────────────────────
+
+class TestModelIO:
+    """Thin regression tests for the pickle-RCE guard and the atomic
+    dump helper. These are smoke-level — joblib already has its own
+    extensive suite, we just need to pin the safety checks that Reverto
+    layers on top of it."""
+
+    def test_safe_load_rejects_path_outside_root(self, tmp_path):
+        """A path that resolves outside ``allowed_root`` must be refused
+        even when the file exists — mitigates symlink / absolute-path
+        tricks that would otherwise hand joblib.load arbitrary files."""
+        from ml.model_io import safe_load_model
+
+        outside = tmp_path / "escape.pkl"
+        outside.write_bytes(b"not-a-real-pickle")
+
+        # Use a different tmp dir as the allowlist root.
+        root = tmp_path / "models"
+        root.mkdir()
+
+        assert safe_load_model(outside, allowed_root=root) is None
+
+    def test_safe_load_missing_file_returns_none(self, tmp_path):
+        from ml.model_io import safe_load_model
+        assert safe_load_model(tmp_path / "nope.pkl", allowed_root=tmp_path) is None
+
+    def test_atomic_dump_roundtrip(self, tmp_path):
+        """Write + read back a trivial picklable payload and verify the
+        resulting file is neither zero-sized nor leaves a .tmp sibling."""
+        from ml.model_io import atomic_dump_model, safe_load_model
+
+        target = tmp_path / "x.pkl"
+        atomic_dump_model({"hello": 1}, target)
+
+        assert target.exists() and target.stat().st_size > 0
+        assert not (tmp_path / "x.pkl.tmp").exists()
+
+        loaded = safe_load_model(target, allowed_root=tmp_path)
+        assert loaded == {"hello": 1}
+
+    def test_atomic_dump_cleans_up_on_failure(self, tmp_path, monkeypatch):
+        """When joblib.dump raises, the .tmp file must be removed so the
+        next run doesn't trip over a partial write."""
+        from ml import model_io
+
+        def _boom(obj, path):
+            # Pretend to start a dump so the .tmp file exists, then raise.
+            path.write_bytes(b"partial")
+            raise RuntimeError("simulated disk full")
+
+        monkeypatch.setattr(model_io, "os", model_io.os)  # no-op, keeps import visible
+        # Patch joblib.dump inside the helper's namespace. atomic_dump_model
+        # imports joblib lazily, so we patch the joblib module directly.
+        import joblib
+        monkeypatch.setattr(joblib, "dump", _boom)
+
+        target = tmp_path / "y.pkl"
+        with pytest.raises(RuntimeError, match="simulated disk full"):
+            model_io.atomic_dump_model({"hi": 2}, target)
+
+        assert not target.exists()
+        assert not (tmp_path / "y.pkl.tmp").exists()

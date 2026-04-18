@@ -13,12 +13,11 @@ OPTIONAL gate on top of the indicator logic, not a replacement.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from ml.model_io import MODEL_PATH, safe_load_model
 
-MODEL_PATH = Path(__file__).parent / "models"
+logger = logging.getLogger(__name__)
 
 
 class EntryFilter:
@@ -41,20 +40,14 @@ class EntryFilter:
 
     def _load_model(self) -> None:
         model_file = MODEL_PATH / "entry_filter.pkl"
-        if not model_file.exists():
-            # No model yet — fresh install, pre-training, or
-            # operator has deliberately removed the file.
-            return
-        try:
-            # joblib is pulled lazily so environments without the
-            # ML extras can still import EntryFilter (it will just
-            # always fail-open).
-            import joblib
-            self.model = joblib.load(model_file)
+        # safe_load_model enforces that the resolved path stays inside
+        # the allowed root (pickle-RCE defence) and swallows missing-file /
+        # missing-joblib / corrupt-payload into a None return so the
+        # filter stays fail-open. Passing MODEL_PATH as allowed_root so
+        # tests can monkeypatch entry_filter.MODEL_PATH to a tmp dir.
+        self.model = safe_load_model(model_file, allowed_root=MODEL_PATH)
+        if self.model is not None:
             logger.info("Entry filter model loaded from %s", model_file)
-        except Exception as e:
-            logger.warning("Could not load entry filter: %s", str(e)[:200])
-            self.model = None
 
     def predict(self, features: dict) -> tuple[float, bool]:
         """Return (win_probability, should_enter) for a feature dict.

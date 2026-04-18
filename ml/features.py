@@ -143,16 +143,27 @@ def compute_features(
         "macd_slope": _safe_float(macd_slope),
         "macd_above_signal": _safe_float(macd_now["macd"] > macd_now["signal"]),
 
-        # Trend — price-vs-MA ratios.
+        # Trend — price-vs-MA ratios. Guard against sma_*==0; with real
+        # price series this can't happen, but synthetic / corrupted
+        # inputs (all-zero candles from a stubbed loader) would otherwise
+        # propagate a ZeroDivisionError out of compute_features().
         "sma_20": _safe_float(sma_20),
-        "price_vs_sma20": _safe_float(last_close / sma_20 - 1),
-        "price_vs_sma50": _safe_float(last_close / sma_50 - 1),
+        "price_vs_sma20": _safe_float((last_close / sma_20 - 1) if sma_20 else 0.0),
+        "price_vs_sma50": _safe_float((last_close / sma_50 - 1) if sma_50 else 0.0),
         "trend_up": _safe_float(sma_20 > sma_50),
 
-        # Rate-of-change across multiple horizons.
-        "roc_5": _safe_float(last_close / closes[-6] - 1 if len(closes) >= 6 else 0.0),
-        "roc_10": _safe_float(last_close / closes[-11] - 1 if len(closes) >= 11 else 0.0),
-        "roc_20": _safe_float(last_close / closes[-21] - 1 if len(closes) >= 21 else 0.0),
+        # Rate-of-change across multiple horizons. Guard each denominator
+        # against the zero-bar case so a single bad candle can't crash
+        # the whole feature build.
+        "roc_5":  _safe_float(
+            (last_close / closes[-6] - 1) if len(closes) >= 6 and closes[-6] else 0.0
+        ),
+        "roc_10": _safe_float(
+            (last_close / closes[-11] - 1) if len(closes) >= 11 and closes[-11] else 0.0
+        ),
+        "roc_20": _safe_float(
+            (last_close / closes[-21] - 1) if len(closes) >= 21 and closes[-21] else 0.0
+        ),
 
         # Volatility.
         "atr_14": _safe_float(atr_14),

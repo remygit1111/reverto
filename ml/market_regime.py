@@ -17,15 +17,14 @@ tick. Missing-model calls fall back to "unknown" rather than raising
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from ml.model_io import MODEL_PATH, atomic_dump_model, safe_load_model
 
-MODEL_PATH = Path(__file__).parent / "models"
+logger = logging.getLogger(__name__)
 
 # Positional labels — KMeans gives us clusters 0..N-1 with no inherent
 # meaning. Consumers are free to remap these after inspecting centroids.
@@ -52,8 +51,17 @@ def compute_regime_features(candles: list) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame()
 
-    closes = np.asarray([c["close"] for c in candles], dtype=float)
-    volumes = np.asarray([c["volume"] for c in candles], dtype=float)
+    # Malformed candle dicts (missing close/volume keys, or non-dict
+    # entries entirely) would otherwise crash the feature builder with
+    # a KeyError deep inside numpy. Return an empty frame and let the
+    # regime detector fall back to "unknown" — same behaviour as when
+    # the rolling windows don't have enough data to settle.
+    try:
+        closes = np.asarray([c["close"] for c in candles], dtype=float)
+        volumes = np.asarray([c["volume"] for c in candles], dtype=float)
+    except (KeyError, TypeError) as e:
+        logger.warning("Malformed candle data: %s", str(e)[:200])
+        return pd.DataFrame()
 
     if len(closes) < 2:
         return pd.DataFrame()
@@ -90,7 +98,6 @@ def train_regime_model(
     # won't blow up at import time.
     from sklearn.cluster import KMeans
     from sklearn.preprocessing import StandardScaler
-    import joblib
 
     MODEL_PATH.mkdir(parents=True, exist_ok=True)
 
@@ -110,8 +117,11 @@ def train_regime_model(
     model = KMeans(n_clusters=n_regimes, random_state=42, n_init=10)
     model.fit(X)
 
-    joblib.dump(scaler, MODEL_PATH / "regime_scaler.pkl")
-    joblib.dump(model, MODEL_PATH / "regime_model.pkl")
+    # Atomic writes — a crash between the scaler and model dumps would
+    # otherwise leave an unpaired scaler on disk, and detect_current_regime
+    # would happily load it against a stale model.
+    atomic_dump_model(scaler, MODEL_PATH / "regime_scaler.pkl")
+    atomic_dump_model(model, MODEL_PATH / "regime_model.pkl")
 
     return {
         "n_regimes": n_regimes,
@@ -126,17 +136,10 @@ def detect_current_regime(candles: list) -> str:
     trained model. Returns "unknown" when any of the following hold:
     model files missing, feature matrix empty, loader raises.
     """
-    scaler_file = MODEL_PATH / "regime_scaler.pkl"
-    model_file = MODEL_PATH / "regime_model.pkl"
-    if not scaler_file.exists() or not model_file.exists():
-        return "unknown"
-
-    try:
-        import joblib
-        scaler = joblib.load(scaler_file)
-        model = joblib.load(model_file)
-    except Exception as e:
-        logger.warning("Could not load regime model: %s", str(e)[:200])
+    # allowed_root=MODEL_PATH so tests can swap the dir with monkeypatch.
+    scaler = safe_load_model(MODEL_PATH / "regime_scaler.pkl", allowed_root=MODEL_PATH)
+    model = safe_load_model(MODEL_PATH / "regime_model.pkl", allowed_root=MODEL_PATH)
+    if scaler is None or model is None:
         return "unknown"
 
     features = compute_regime_features(candles)
