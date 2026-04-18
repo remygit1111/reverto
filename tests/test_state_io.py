@@ -224,3 +224,116 @@ class TestBackwardsCompatAliases:
         # Same callable as the canonical state_io version.
         assert _deal_to_dict is deal_to_dict
         assert _dict_to_deal is dict_to_deal
+
+
+# ── Concurrency invariants ──────────────────────────────────────────────────
+
+class TestStateIOConcurrency:
+    """Production design gives each PaperEngine its own state_file (per
+    bot slug), so concurrent writes to the SAME StateIO are never
+    supposed to happen. These tests pin the invariant anyway — the
+    atomic-rename pattern must survive a hypothetical multi-thread
+    writer without raising or corrupting the file."""
+
+    def test_concurrent_writes_land_valid_json(self, tmp_path):
+        """10 threads racing writes of distinct values — every write
+        either wins atomically or gets overwritten by a later write,
+        but the final file is ALWAYS a parseable JSON dict from one of
+        the writers. No half-written state, no exceptions."""
+        import json
+        import threading
+
+        state_file = tmp_path / "concurrent.json"
+        io = StateIO(state_file, "test")
+
+        errors: list[str] = []
+
+        def writer(value):
+            try:
+                io.write({"value": value, "written_by": f"t{value}"})
+            except Exception as e:  # noqa: BLE001 — test is the catch
+                errors.append(f"{value}: {e}")
+
+        threads = [
+            threading.Thread(target=writer, args=(i,)) for i in range(10)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"unexpected errors: {errors}"
+        assert state_file.exists()
+        data = json.loads(state_file.read_text())
+        # The winning writer's value wins — but it MUST be one of the
+        # 10 writers, not some in-between garbage.
+        assert 0 <= data["value"] < 10
+        assert data["written_by"] == f"t{data['value']}"
+
+    def test_concurrent_reads_dont_block_each_other(self, tmp_path):
+        """20 threads all reading the same state file must each see
+        the full payload. load() is side-effect-free on the read path
+        (cleanup_orphan_tmps is idempotent) so there's no mutex needed."""
+        import json
+        import threading
+
+        state_file = tmp_path / "read.json"
+        state_file.write_text(json.dumps({"value": 42}))
+        io = StateIO(state_file, "test")
+
+        results: list = []
+        results_lock = threading.Lock()
+
+        def reader():
+            data = io.load()
+            with results_lock:
+                results.append(data)
+
+        threads = [threading.Thread(target=reader) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(results) == 20
+        assert all(r == {"value": 42} for r in results)
+
+    def test_reader_during_writer_sees_valid_state(self, tmp_path):
+        """A reader interleaved with a writer must see either the old
+        state or the new state — never a partial file. POSIX rename
+        is atomic so the .tmp → final swap is visible instantly."""
+        import json
+        import threading
+        import time as _time
+
+        state_file = tmp_path / "raced.json"
+        io = StateIO(state_file, "test")
+        io.write({"value": "initial"})
+
+        writer_done = threading.Event()
+
+        def writer():
+            for i in range(50):
+                io.write({"value": f"v{i}"})
+            writer_done.set()
+
+        reads: list[str] = []
+
+        def reader():
+            while not writer_done.is_set():
+                data = io.load()
+                if data is not None:
+                    reads.append(data["value"])
+                _time.sleep(0.001)
+
+        t_w = threading.Thread(target=writer)
+        t_r = threading.Thread(target=reader)
+        t_w.start(); t_r.start()
+        t_w.join(); t_r.join()
+
+        # Every observed value must match one that was actually written.
+        legal = {"initial"} | {f"v{i}" for i in range(50)}
+        assert all(v in legal for v in reads), (
+            f"reader saw illegal value(s): "
+            f"{[v for v in reads if v not in legal]}"
+        )
