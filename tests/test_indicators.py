@@ -1324,3 +1324,106 @@ class TestIndicatorSnapshotExtended:
         # Other indicators must still be present.
         assert "rsi_14" in snap
         assert "psar" in snap
+
+    def _engine_with_indicators(self, indicators):
+        """Build an IndicatorEngine with a custom entry indicator group.
+        Uses a MagicMock BotConfig stub to sidestep the full Pydantic
+        validation (snapshot doesn't consult any other field)."""
+        from unittest.mock import MagicMock
+        from strategies.indicator_engine import IndicatorEngine
+
+        group = MagicMock()
+        group.indicators = indicators
+
+        stub = MagicMock()
+        stub.entry.indicators = []
+        stub.entry.indicator_groups = [group]
+        stub.take_profit.indicator_groups = []
+        return IndicatorEngine(stub)
+
+    def test_snapshot_uses_config_bollinger_period(self):
+        """Bot with BB period=10 must produce a DIFFERENT %B than the
+        default period=20. Proves the snapshot reads the operator's
+        params, not the previous hardcoded defaults."""
+        from config.models import IndicatorConfig
+        closes, _, _ = self._ohlc()
+
+        # Reference: default period=20 (no config).
+        default_engine = self._engine()
+        default_snap = default_engine.get_indicator_snapshot(
+            {"1h": closes}, "1h",
+        )
+
+        # Override: period=10 via config.
+        engine_custom = self._engine_with_indicators(
+            [IndicatorConfig(type="BOLLINGER", period=10, multiplier=2.0)]
+        )
+        custom_snap = engine_custom.get_indicator_snapshot(
+            {"1h": closes}, "1h",
+        )
+
+        assert "bb_pct_b" in default_snap
+        assert "bb_pct_b" in custom_snap
+        assert default_snap["bb_pct_b"] != custom_snap["bb_pct_b"], (
+            "period=10 and period=20 must yield different %B values"
+        )
+
+    def test_snapshot_uses_config_supertrend_params(self):
+        """ATR period override bubbles into the Supertrend computation.
+        atr=7 vs atr=10 on the same series yields a different band."""
+        from config.models import IndicatorConfig
+        closes, highs, lows = self._ohlc()
+
+        default_snap = self._engine().get_indicator_snapshot(
+            {"1h": closes}, "1h",
+            highs_per_tf={"1h": highs},
+            lows_per_tf={"1h": lows},
+        )
+        engine_custom = self._engine_with_indicators(
+            [IndicatorConfig(type="SUPERTREND", atr_period=7, multiplier=2.5)]
+        )
+        custom_snap = engine_custom.get_indicator_snapshot(
+            {"1h": closes}, "1h",
+            highs_per_tf={"1h": highs},
+            lows_per_tf={"1h": lows},
+        )
+        assert "supertrend" in default_snap
+        assert "supertrend" in custom_snap
+        assert default_snap["supertrend"] != custom_snap["supertrend"]
+
+    def test_snapshot_falls_back_to_defaults_when_indicator_not_configured(self):
+        """Bot with only RSI → BB snapshot still computed with default
+        period=20 + multiplier=2.0 so the dashboard value is populated."""
+        from config.models import IndicatorConfig
+        closes, _, _ = self._ohlc()
+
+        engine = self._engine_with_indicators(
+            [IndicatorConfig(type="RSI", period=14, threshold="below_35")]
+        )
+        snap = engine.get_indicator_snapshot({"1h": closes}, "1h")
+        # BB is not in the config, but defaults kick in and produce a value.
+        assert "bb_pct_b" in snap
+
+    def test_find_indicator_config_spans_entry_and_tp(self):
+        """The resolver must walk BOTH entry groups and TP groups so a
+        BB filter configured only for TP confirmation still feeds the
+        snapshot."""
+        from config.models import IndicatorConfig
+        from unittest.mock import MagicMock
+        from strategies.indicator_engine import IndicatorEngine
+
+        tp_group = MagicMock()
+        tp_group.indicators = [
+            IndicatorConfig(type="BOLLINGER", period=30, multiplier=2.5)
+        ]
+
+        stub = MagicMock()
+        stub.entry.indicators = []
+        stub.entry.indicator_groups = []
+        stub.take_profit.indicator_groups = [tp_group]
+
+        engine = IndicatorEngine(stub)
+        found = engine._find_indicator_config("BOLLINGER")
+        assert found is not None
+        assert found.period == 30
+        assert found.multiplier == 2.5

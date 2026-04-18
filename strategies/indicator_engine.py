@@ -73,6 +73,35 @@ class IndicatorEngine:
             inds.extend(g.indicators)
         return inds
 
+    def _find_indicator_config(self, itype: str) -> IndicatorConfig | None:
+        """Return the first matching IndicatorConfig across entry groups,
+        the legacy flat entry list, and TP indicator groups. Used by
+        ``get_indicator_snapshot`` so the per-tick log line reflects
+        the parameters the bot ACTUALLY evaluates instead of hard-coded
+        defaults. Returns None if the type isn't configured — callers
+        fall back to sensible defaults so a snapshot is still produced
+        even for indicators that aren't part of the strategy."""
+        wanted = itype.upper()
+        # Entry groups first — that's where most operators put filters.
+        for g in self.indicator_groups:
+            for ind in getattr(g, "indicators", []) or []:
+                if ind.type.upper() == wanted:
+                    return ind
+        for ind in self.entry_indicators:
+            if ind.type.upper() == wanted:
+                return ind
+        # TP groups — check last so an entry filter wins if both exist
+        # with different params (unlikely, but deterministic).
+        tp_groups = getattr(
+            getattr(self.config, "take_profit", None),
+            "indicator_groups", None,
+        ) or []
+        for g in tp_groups:
+            for ind in getattr(g, "indicators", []) or []:
+                if ind.type.upper() == wanted:
+                    return ind
+        return None
+
     def required_timeframes(self, bot_timeframe: str) -> set[str]:
         """Set of timeframes the engine needs closes for."""
         tfs = {bot_timeframe}
@@ -237,11 +266,12 @@ class IndicatorEngine:
         timeframes are NOT currently shown separately — they'd need a
         multi-tf UI.
 
-        Uses hardcoded default parameters (BB period 20, PSAR 0.02/0.20,
-        Supertrend 10/3.0, S&R left/right 15, QFL 36/8, MS lookback 3).
-        TODO: read these from the actual indicator group config so
-        snapshot values match what the bot evaluates. Blocks the spec's
-        "later PR" — documented in commit 20d8a6b (v25 advisory split).
+        Parameters mirror the operator's indicator-group config where
+        available (BB period/multiplier, PSAR AF, Supertrend ATR etc.)
+        via ``_find_indicator_config``. Unconfigured indicators fall
+        back to sensible defaults so a bot without BOLLINGER still gets
+        a bb_pct_b snapshot for the dashboard — that's advisory, never
+        consulted by the signal evaluator.
         """
         closes = closes_per_tf.get(bot_timeframe)
         if not closes:
@@ -272,8 +302,15 @@ class IndicatorEngine:
         # Bollinger %B — normalised position of price inside the bands.
         # 0 = at lower band, 1 = at upper band. Can overshoot <0 / >1
         # when price pokes outside the envelope.
+        bb_cfg = self._find_indicator_config("BOLLINGER")
+        bb_period = (bb_cfg.period if bb_cfg and bb_cfg.period else 20)
+        bb_multiplier = (bb_cfg.multiplier if bb_cfg and bb_cfg.multiplier else 2.0)
+        bb_ma_type = (bb_cfg.ma_type if bb_cfg and bb_cfg.ma_type else "SMA")
         try:
-            bands = calculate_bollinger_bands(closes, period=20, multiplier=2.0)
+            bands = calculate_bollinger_bands(
+                closes, period=bb_period, multiplier=bb_multiplier,
+                ma_type=bb_ma_type,
+            )
             upper, lower = bands["upper"], bands["lower"]
             if upper > lower:
                 snapshot["bb_pct_b"] = (closes[-1] - lower) / (upper - lower)
@@ -283,8 +320,10 @@ class IndicatorEngine:
         # Market structure — classify the most recent swing relative to
         # the prior one of the same type. HH/LH come from swing highs,
         # HL/LL from swing lows. Whichever swing is most recent wins.
+        ms_cfg = self._find_indicator_config("MARKET_STRUCTURE")
+        ms_lookback = (ms_cfg.lookback if ms_cfg and ms_cfg.lookback else 3)
         try:
-            ms_highs, ms_lows = _swing_points(closes, lookback=3)
+            ms_highs, ms_lows = _swing_points(closes, lookback=ms_lookback)
             last_high = ms_highs[-1] if ms_highs else None
             last_low = ms_lows[-1] if ms_lows else None
             if last_high is not None and (
@@ -306,10 +345,18 @@ class IndicatorEngine:
 
         # ── HLC-backed indicators (need highs + lows too) ────────────
         if highs and lows and len(highs) == len(lows) == len(closes):
+            psar_cfg = self._find_indicator_config("PARABOLIC_SAR")
+            psar_initial = (
+                psar_cfg.initial_af if psar_cfg and psar_cfg.initial_af
+                else 0.02
+            )
+            psar_max = (
+                psar_cfg.max_af if psar_cfg and psar_cfg.max_af else 0.20
+            )
             try:
                 psar_series = calculate_parabolic_sar(
                     highs, lows, closes,
-                    initial_af=0.02, max_af=0.20,
+                    initial_af=psar_initial, max_af=psar_max,
                 )
                 if psar_series:
                     sar, trend = psar_series[-1]
@@ -318,10 +365,17 @@ class IndicatorEngine:
             except Exception as e:
                 logger.debug(f"PSAR snapshot skipped: {e}")
 
+            st_cfg = self._find_indicator_config("SUPERTREND")
+            st_atr = (
+                st_cfg.atr_period if st_cfg and st_cfg.atr_period else 10
+            )
+            st_mult = (
+                st_cfg.multiplier if st_cfg and st_cfg.multiplier else 3.0
+            )
             try:
                 st_series = calculate_supertrend(
                     highs, lows, closes,
-                    atr_period=10, multiplier=3.0,
+                    atr_period=st_atr, multiplier=st_mult,
                 )
                 if st_series:
                     st_val, st_trend = st_series[-1]
@@ -332,10 +386,17 @@ class IndicatorEngine:
             except Exception as e:
                 logger.debug(f"Supertrend snapshot skipped: {e}")
 
+            sr_cfg = self._find_indicator_config("SUPPORT_RESISTANCE")
+            sr_left = (
+                sr_cfg.left_bars if sr_cfg and sr_cfg.left_bars else 15
+            )
+            sr_right = (
+                sr_cfg.right_bars if sr_cfg and sr_cfg.right_bars else 15
+            )
             try:
                 active_sup, active_res = find_support_resistance(
                     highs, lows, closes,
-                    left_bars=15, right_bars=15,
+                    left_bars=sr_left, right_bars=sr_right,
                 )
                 if active_sup:
                     snapshot["sr_support"] = active_sup[0]
@@ -344,10 +405,32 @@ class IndicatorEngine:
             except Exception as e:
                 logger.debug(f"S&R snapshot skipped: {e}")
 
+            qfl_cfg = self._find_indicator_config("QFL")
+            qfl_base_periods = (
+                qfl_cfg.base_periods if qfl_cfg and qfl_cfg.base_periods
+                else 36
+            )
+            qfl_pump_periods = (
+                qfl_cfg.pump_periods if qfl_cfg and qfl_cfg.pump_periods
+                else 8
+            )
+            qfl_pump_pct = (
+                qfl_cfg.pump_from_base_pct
+                if qfl_cfg and qfl_cfg.pump_from_base_pct
+                else 3.0
+            )
+            qfl_crack_pct = (
+                qfl_cfg.base_crack_pct
+                if qfl_cfg and qfl_cfg.base_crack_pct
+                else 3.0
+            )
             try:
                 qfl = calculate_qfl_series(
                     highs, lows, closes,
-                    base_periods=36, pump_periods=8,
+                    base_periods=qfl_base_periods,
+                    pump_periods=qfl_pump_periods,
+                    pump_pct=qfl_pump_pct,
+                    base_crack_pct=qfl_crack_pct,
                 )
                 base_last = qfl["base"][-1] if qfl.get("base") else None
                 if base_last is not None:
