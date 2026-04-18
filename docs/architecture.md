@@ -140,10 +140,74 @@ mee. Elke `deal_store` call binnen de engine gebruikt
 ### Credentials (Fase 1 = global)
 
 `core/credentials.py` heeft `user_id` verplicht gemaakt maar gebruikt
-het nog niet — Phase 1 deelt één `logs/credentials.json` + één
-Fernet master key tussen alle users. Het verplicht houden van het
-argument voorkomt dat Phase 2 (per-user key files) opnieuw elk
-callsite moet aanpassen.
+het nog niet — Phase 1 deelde één `logs/credentials.json` + één
+Fernet master key tussen alle users. Phase 2 (hieronder) wire't de
+per-user key files + per-exchange `.enc` files echt aan.
+
+## Multi-tenant filesystem layout (Fase 2)
+
+Alle user-specifieke assets zijn gescoped per `user_id`. Path
+construction gebeurt via `core/paths.py`; nooit hardcoded strings.
+
+| Artefact          | Pad                                                  |
+|-------------------|------------------------------------------------------|
+| Bot YAML config   | `config/bots/<user_id>/<slug>.yaml`                 |
+| Engine state      | `logs/<user_id>/<slug>.state.json`                  |
+| Subprocess log    | `logs/<user_id>/<slug>.log`                         |
+| Manual-trigger    | `logs/<user_id>/<slug>.manual_trigger`              |
+| Deal sentinels    | `logs/<user_id>/<slug>.deal_{edit,close,cancel}_*`  |
+| PID file          | `logs/<user_id>/pids/<slug>.pid`                    |
+| Per-user Fernet   | `keys/<user_id>.key`             (chmod 0600)       |
+| Per-exchange enc  | `credentials/<user_id>/<exchange>.enc`  (0600)      |
+
+Systeem-bestanden (`logs/reverto.db`, `logs/audit.log`,
+`logs/portal.log`, `logs/.credentials.key`, `logs/.auth.json`,
+`logs/.api_key_ephemeral`) blijven op hun bestaande locatie —
+die zijn operator/system state, niet tenant data.
+
+### Composite bot slug
+
+De `BotRegistry` keyt op `(user_id, slug)` in plaats van alleen
+`slug`. Twee verschillende users kunnen dezelfde slug-naam
+gebruiken zonder conflict — hun state/log/pid/config bestanden
+leven elk onder hun eigen `<user_id>/` subdir. `BotInfo.user_id`
+is het nieuwe veld dat door elke file-path helper wordt gelezen.
+
+### Per-user Fernet key — cryptografische isolatie
+
+`core/credentials.py` onderhoudt twee onafhankelijke key-systemen:
+
+- **Per-user keys** (`keys/<user_id>.key`) beschermen exchange
+  credentials. Elke user heeft een eigen Fernet key, dus user 2
+  kan user 1's `.enc` ciphertext fundamenteel niet decrypten
+  zelfs bij volledige filesystem-toegang. Dit is de primaire
+  security property van Fase 2.
+- **System key** (`logs/.credentials.key`) blijft bestaan voor
+  `save_encrypted` / `load_encrypted` — die encrypten de portal-
+  auth blob (`logs/.auth.json`). Portal-login is operator-level
+  state, geen tenant data.
+
+`rotate_fernet_key(user_id=...)` is nu per-user: rotate user 1's
+key + re-encrypt zijn hele `credentials/1/` tree zonder user 2 te
+raken. De commit-order (key first, .enc files second) is
+ongewijzigd zodat een crash mid-rotation recoverable blijft via
+de timestamped `.bak.<ts>` backup.
+
+### Migratie contract
+
+Van Phase-1 flat layout naar Phase-2 per-user layout:
+
+```bash
+make reset-db        # als je ook de DB wilt resetten (v3 schema)
+make migrate-fs      # verplaatst bot configs + state/log/pid + credentials
+make start           # portal boot, registry scans config/bots/<uid>/
+```
+
+Het migratie-script (`scripts/migrate_to_user_fs.py`) is
+idempotent: een tweede run op een al-gemigreerde layout doet
+niks. System files (`reverto.db`, `audit.log`, etc.) worden
+nooit aangeraakt. Zie `docs/runbook.md` "Filesystem migration
+(Fase 2)" voor de stap-voor-stap.
 
 
 ## Persistence layer (post-v22 refactor)

@@ -4,7 +4,10 @@ __pycache__/
 *.pyo
 .env
 config/bots/*.yaml
+config/bots/*/
 logs/
+keys/
+credentials/
 data/
 ml/model_store/
 ml/models/

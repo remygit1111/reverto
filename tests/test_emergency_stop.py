@@ -58,7 +58,7 @@ class TestDrawdownReset:
         assert r.status_code in (400, 404)
 
     def test_unknown_slug_returns_404(self, monkeypatch):
-        async def _fake_get(slug):
+        async def _fake_get(user_id, slug):
             return None
 
         monkeypatch.setattr(webapp.registry, "get", _fake_get)
@@ -86,7 +86,7 @@ class TestDrawdownReset:
             def __init__(self):
                 self.state_file = state_file
 
-        async def _fake_get(slug):
+        async def _fake_get(user_id, slug):
             return _FakeBot()
 
         monkeypatch.setattr(webapp.registry, "get", _fake_get)

@@ -29,6 +29,58 @@ hand houdt, draai eerst `make reset-db` zodat er geen rijen zijn
 om kwijt te raken. De `_migrate_schema` warning-log signaleert de
 drop expliciet.
 
+## Filesystem migration (Fase 2)
+
+Na de DB-reset volgt de filesystem-migratie naar de multi-tenant
+layout. Alle per-bot assets (YAML configs, state files, logs, PIDs,
+credentials) verhuizen onder `<root>/<user_id>/` subdirs zodat
+meerdere users in de toekomst niet op elkaars slugs botsen.
+
+```bash
+# 1. Stop ALLE bots via het portal (stop-all ook mogelijk).
+#    Een live migratie tijdens een tick-heavy run laat state.json
+#    half-gecopieerd staan.
+make stop-all
+
+# 2. Draai de migratie (idempotent — een tweede run is een no-op).
+make migrate-fs
+
+# 3. Start het portal weer. De registry scant nu config/bots/<uid>/.
+make start
+```
+
+Wat verhuist (onder user_id=1):
+
+| Van                              | Naar                                      |
+|----------------------------------|-------------------------------------------|
+| `config/bots/*.yaml`             | `config/bots/1/*.yaml`                   |
+| `logs/*.state.json`              | `logs/1/*.state.json`                    |
+| `logs/*.log`                     | `logs/1/*.log`                           |
+| `logs/*.manual_trigger`          | `logs/1/*.manual_trigger`                |
+| `logs/pids/*.pid`                | `logs/1/pids/*.pid`                      |
+| `logs/credentials.json` + `.key` | `credentials/1/<exchange>.enc` + `keys/1.key` |
+
+Wat NIET verhuist (system files blijven staan):
+
+- `logs/reverto.db` + `-wal` + `-shm` (SQLite, system state).
+- `logs/audit.log` + gerotateerde variants.
+- `logs/portal.log`, `logs/.api_key_ephemeral`, `logs/.auth.json`.
+- `logs/.credentials.key` + zijn `.bak.*` backups (system Fernet
+  voor `.auth.json`, blijft op zijn plek).
+- `logs/credentials.json` wordt geleegd wat exchanges betreft (de
+  plaintext daaruit is in de per-user `.enc` files beland), maar
+  het bestand zelf wordt niet verwijderd — operator doet dat na
+  handmatige verificatie dat alle exchanges correct werken.
+
+Backups worden NIET automatisch gemaakt door `migrate-fs` — de
+migratie is een move, niet een copy. Bij twijfel maak eerst een
+`git tag` of handmatige `tar -cz` van `config/bots/` en `logs/`.
+
+Na de migratie heeft de bots-startup-flow een `--user-id` argument
+(default 1). Het portal geeft het expliciet mee aan
+`main_paper.py` / `main_live.py` zodat de subprocess exact weet
+welk user tree hij bedient.
+
 ## Startup checklist (fresh machine)
 
 ```bash

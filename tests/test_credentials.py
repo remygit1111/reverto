@@ -1,12 +1,11 @@
 # tests/test_credentials.py
-# Tests voor core.credentials — Fernet-encrypted exchange key store.
+# Tests voor core.credentials — per-user Fernet-encrypted exchange keys.
 #
-# Elke test isoleert de module-level paden (_KEY_FILE, _STORE_FILE,
-# _LOG_DIR) via monkeypatch naar een tmp_path, zodat we nooit aan
-# logs/credentials.json of logs/.credentials.key van de echte portal
-# komen.
+# Elke test isoleert de filesystem tree via monkey-patching van
+# core.paths.BASE_DIR naar een tmp_path. De Phase-2 layout legt
+# keys op keys/<uid>.key en ciphertext op credentials/<uid>/<exchange>.enc,
+# dus één knop voor BASE_DIR schakelt de hele test-sandbox om.
 
-import json
 import os
 import sys
 
@@ -14,35 +13,45 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from core import credentials
+from core import credentials, paths
 
 
 @pytest.fixture
 def tmp_store(tmp_path, monkeypatch):
-    """Isolate the credentials module against a per-test tmp dir."""
-    key_file = tmp_path / ".credentials.key"
-    store_file = tmp_path / "credentials.json"
-    monkeypatch.setattr(credentials, "_LOG_DIR", tmp_path)
-    monkeypatch.setattr(credentials, "_KEY_FILE", key_file)
-    monkeypatch.setattr(credentials, "_STORE_FILE", store_file)
+    """Redirect the whole Phase-2 tree (keys/ + credentials/) into
+    tmp_path. The system key at logs/.credentials.key is also
+    redirected so save_encrypted/load_encrypted don't clobber the
+    real file either."""
+    monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(credentials, "_BASE_DIR", tmp_path)
+    monkeypatch.setattr(credentials, "_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(
+        credentials, "_KEY_FILE", tmp_path / "logs" / ".credentials.key",
+    )
     return tmp_path
 
 
-class TestMasterKey:
-    def test_key_file_auto_created_on_first_use(self, tmp_store):
-        key_file = tmp_store / ".credentials.key"
-        assert not key_file.exists()
-        # Any call that needs the fernet instance creates the key
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
-        assert key_file.exists()
-        assert len(key_file.read_bytes()) > 0
+class TestUserKey:
 
-    def test_key_file_reused_across_calls(self, tmp_store):
+    def test_user_key_auto_created(self, tmp_store):
+        key_path = paths.user_fernet_key_path(1)
+        assert not key_path.exists()
         credentials.save_keys("bitget", "ak", "sc", user_id=1)
-        first = (tmp_store / ".credentials.key").read_bytes()
+        assert key_path.exists()
+        assert len(key_path.read_bytes()) > 0
+
+    def test_user_key_reused_across_calls(self, tmp_store):
+        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        first = paths.user_fernet_key_path(1).read_bytes()
         credentials.save_keys("kraken", "ak2", "sc2", user_id=1)
-        second = (tmp_store / ".credentials.key").read_bytes()
-        assert first == second, "master key must not rotate between calls"
+        second = paths.user_fernet_key_path(1).read_bytes()
+        assert first == second, "per-user key must not rotate between calls"
+
+    def test_user_key_is_mode_0600(self, tmp_store):
+        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        key_path = paths.user_fernet_key_path(1)
+        mode = key_path.stat().st_mode & 0o777
+        assert mode == 0o600, f"key mode is {oct(mode)}, expected 0600"
 
 
 class TestSaveAndGet:
@@ -65,15 +74,14 @@ class TestSaveAndGet:
         }
 
     def test_ciphertext_is_actually_encrypted(self, tmp_store):
-        credentials.save_keys("bitget", "plain-text-key", "plain-text-secret", user_id=1)
-        raw = (tmp_store / "credentials.json").read_text(encoding="utf-8")
-        # Secrets must never appear verbatim on disk
-        assert "plain-text-key" not in raw
-        assert "plain-text-secret" not in raw
-        # But the store is valid JSON with a bitget entry
-        parsed = json.loads(raw)
-        assert "bitget" in parsed
-        assert "api_key" in parsed["bitget"]
+        credentials.save_keys(
+            "bitget", "plain-text-key", "plain-text-secret", user_id=1,
+        )
+        enc_path = paths.exchange_creds_path(1, "bitget")
+        raw = enc_path.read_bytes()
+        # Secrets must never appear verbatim in the ciphertext blob.
+        assert b"plain-text-key" not in raw
+        assert b"plain-text-secret" not in raw
 
 
 class TestHasKeys:
@@ -101,7 +109,9 @@ class TestDeleteKeys:
         credentials.save_keys("kraken", "k", "K", user_id=1)
         credentials.delete_keys("bitget", user_id=1)
         assert credentials.get_keys("bitget", user_id=1) is None
-        assert credentials.get_keys("kraken", user_id=1) == {"api_key": "k", "api_secret": "K"}
+        assert credentials.get_keys("kraken", user_id=1) == {
+            "api_key": "k", "api_secret": "K",
+        }
 
 
 class TestListExchanges:
@@ -111,8 +121,10 @@ class TestListExchanges:
     def test_after_save(self, tmp_store):
         credentials.save_keys("kraken", "k", "K", user_id=1)
         credentials.save_keys("bitget", "b", "B", user_id=1)
-        # Sorted alphabetically
-        assert credentials.list_exchanges_with_keys(user_id=1) == ["bitget", "kraken"]
+        # Sorted alphabetically — deterministic UI output.
+        assert credentials.list_exchanges_with_keys(user_id=1) == [
+            "bitget", "kraken",
+        ]
 
     def test_after_delete(self, tmp_store):
         credentials.save_keys("bitget", "b", "B", user_id=1)
@@ -124,28 +136,85 @@ class TestListExchanges:
 class TestDecryptFailure:
     def test_tampered_ciphertext_returns_none(self, tmp_store):
         credentials.save_keys("bitget", "ak", "sc", user_id=1)
-        # Tamper with the stored ciphertext — flip a byte
-        store_path = tmp_store / "credentials.json"
-        store = json.loads(store_path.read_text(encoding="utf-8"))
-        store["bitget"]["api_key"] = "gAAAAAB_invalid_token_that_cannot_decrypt_=="
-        store_path.write_text(json.dumps(store), encoding="utf-8")
-
-        # get_keys must return None (no exception leaked to caller)
-        result = credentials.get_keys("bitget", user_id=1)
-        assert result is None
-
-    def test_missing_field_returns_none(self, tmp_store):
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
-        store_path = tmp_store / "credentials.json"
-        store = json.loads(store_path.read_text(encoding="utf-8"))
-        del store["bitget"]["api_secret"]  # half-corrupt entry
-        store_path.write_text(json.dumps(store), encoding="utf-8")
-
+        path = paths.exchange_creds_path(1, "bitget")
+        # Flip the first byte to break the Fernet MAC.
+        data = bytearray(path.read_bytes())
+        data[0] ^= 0xFF
+        path.write_bytes(bytes(data))
         assert credentials.get_keys("bitget", user_id=1) is None
 
-    def test_corrupt_store_file_treated_as_empty(self, tmp_store):
-        # Write junk where the JSON should be
-        (tmp_store / "credentials.json").write_text("not json", encoding="utf-8")
-        assert credentials.has_keys("bitget", user_id=1) is False
+    def test_garbage_file_returns_none(self, tmp_store):
+        path = paths.exchange_creds_path(1, "bitget")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not a valid fernet token")
         assert credentials.get_keys("bitget", user_id=1) is None
-        assert credentials.list_exchanges_with_keys(user_id=1) == []
+
+
+# ── Per-user isolation — the Phase-2 security property ─────────────────────
+
+
+class TestPerUserIsolation:
+    """user 2 must not be able to read user 1's exchange credentials
+    even when both have the same exchange configured. Each user has
+    a distinct Fernet key + distinct .enc directory, so a path
+    lookup for user 2 naturally misses user 1's blob."""
+
+    def test_user_1_and_user_2_have_different_keys(self, tmp_store):
+        credentials.save_keys("bitget", "a", "b", user_id=1)
+        credentials.save_keys("bitget", "c", "d", user_id=2)
+        key1 = paths.user_fernet_key_path(1).read_bytes()
+        key2 = paths.user_fernet_key_path(2).read_bytes()
+        assert key1 != key2
+
+    def test_get_keys_isolates_across_users(self, tmp_store):
+        credentials.save_keys("bitget", "u1-ak", "u1-sc", user_id=1)
+        credentials.save_keys("bitget", "u2-ak", "u2-sc", user_id=2)
+
+        u1 = credentials.get_keys("bitget", user_id=1)
+        u2 = credentials.get_keys("bitget", user_id=2)
+        assert u1 == {"api_key": "u1-ak", "api_secret": "u1-sc"}
+        assert u2 == {"api_key": "u2-ak", "api_secret": "u2-sc"}
+
+    def test_list_exchanges_scoped_per_user(self, tmp_store):
+        credentials.save_keys("bitget", "a", "b", user_id=1)
+        credentials.save_keys("kraken", "c", "d", user_id=2)
+        assert credentials.list_exchanges_with_keys(user_id=1) == ["bitget"]
+        assert credentials.list_exchanges_with_keys(user_id=2) == ["kraken"]
+
+    def test_user_2_cannot_decrypt_user_1_blob(self, tmp_store):
+        """Swap user 2's .enc to point at user 1's ciphertext, then try
+        to read it with user 2's key. The decrypt must fail (different
+        Fernet keys) and get_keys must return None rather than leak."""
+        credentials.save_keys("bitget", "secret-one", "secret-sec", user_id=1)
+        # Ensure user 2 has their own key on disk so get_keys under
+        # user 2 doesn't generate a fresh one after we plant the blob.
+        credentials.save_keys("kraken", "x", "y", user_id=2)
+
+        u1_blob = paths.exchange_creds_path(1, "bitget").read_bytes()
+        u2_path = paths.exchange_creds_path(2, "bitget")
+        u2_path.write_bytes(u1_blob)
+
+        # Decrypting user 1's ciphertext under user 2's Fernet key must
+        # fail silently → None.
+        assert credentials.get_keys("bitget", user_id=2) is None
+
+
+# ── save_encrypted / load_encrypted (system key, .auth.json) ───────────────
+
+
+class TestSystemEncryption:
+    """The portal auth blob keeps using the system key at
+    logs/.credentials.key — per-user scoping doesn't apply."""
+
+    def test_roundtrip(self, tmp_store):
+        auth_path = tmp_store / "logs" / ".auth.json"
+        credentials.save_encrypted(auth_path, {"hello": "world"})
+        assert credentials.load_encrypted(auth_path) == {"hello": "world"}
+
+    def test_missing_file_returns_none(self, tmp_store):
+        assert credentials.load_encrypted(tmp_store / "nope.enc") is None
+
+    def test_ciphertext_not_plaintext(self, tmp_store):
+        auth_path = tmp_store / "logs" / ".auth.json"
+        credentials.save_encrypted(auth_path, {"password": "hunter2"})
+        assert b"hunter2" not in auth_path.read_bytes()

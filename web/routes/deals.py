@@ -23,7 +23,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core import deal_store
+from core import deal_store, paths
 from core.user import User
 from web.app import (
     _audit,
@@ -31,7 +31,6 @@ from web.app import (
     _request_actor,
     _request_user,
     limiter,
-    LOG_DIR,
     registry,
 )
 
@@ -115,7 +114,7 @@ async def api_deal_get(
     user: User = Depends(_request_user),
 ):
     _validate_deal_id(deal_id)
-    bot = await registry.get(slug)
+    bot = await registry.get(user.id, slug)
     if bot:
         state = bot.read_state()
         for d in state.get("open_deals", []):
@@ -139,6 +138,7 @@ async def api_deal_edit(
     slug: str, deal_id: str, body: DealEditBody,
     request: Request,
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     _validate_deal_id(deal_id)
     settings: dict = {}
@@ -163,7 +163,7 @@ async def api_deal_edit(
     if body.dca_enabled is not None:
         settings["dca_enabled"] = body.dca_enabled
 
-    sentinel = LOG_DIR / f"{slug}.deal_edit_{deal_id}"
+    sentinel = paths.user_logs_dir(user.id) / f"{slug}.deal_edit_{deal_id}"
     sentinel.write_text(_json.dumps(settings), encoding="utf-8")
     _audit("deal_edit", slug, actor)
     return {"ok": True, "deal_id": deal_id}
@@ -176,11 +176,12 @@ async def api_deal_action(
     request: Request,
     action: str = "close",
     actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
 ):
     _validate_deal_id(deal_id)
     if action not in ("cancel", "close"):
         raise HTTPException(status_code=400, detail="action must be cancel or close")
-    sentinel = LOG_DIR / f"{slug}.deal_{action}_{deal_id}"
+    sentinel = paths.user_logs_dir(user.id) / f"{slug}.deal_{action}_{deal_id}"
     sentinel.write_text("", encoding="utf-8")
     _audit(f"deal_{action}", slug, actor)
     return {"ok": True, "deal_id": deal_id, "action": action}

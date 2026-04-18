@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -132,3 +132,11 @@ parity-compare:
 #             before the first boot on the new v3 schema.
 reset-db:
 	$(PYTHON) scripts/reset_db.py
+
+# migrate-fs — Phase-2 layout migration (destructive but idempotent).
+# Stop every bot via the portal before running. Moves per-bot config +
+# state + log + pid files into user-scoped subdirectories, converts
+# logs/credentials.json into per-exchange .enc files under a fresh
+# per-user Fernet key at keys/1.key.
+migrate-fs:
+	$(PYTHON) scripts/migrate_to_user_fs.py
