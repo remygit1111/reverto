@@ -18,6 +18,7 @@ from notifications.telegram import TelegramNotifier
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from strategies.indicator_engine import IndicatorEngine
 from core.liquidation_guard import LiquidationGuard
+from core.drawdown_guard import DrawdownGuard, DrawdownGuardConfig
 from core import deal_store
 from core.database import init_db as _init_db
 
@@ -194,6 +195,11 @@ class PaperEngine:
         self.guard            = ScheduleGuard(config.schedule)
         self.indicator_engine = IndicatorEngine(config)
         self.liq_guard        = LiquidationGuard(config, notifier)
+        # Drawdown guard defaults to a disabled config, so bots without
+        # the drawdown_guard YAML key behave identically to pre-Phase-1.
+        dd_cfg = getattr(config, "drawdown_guard", None) or DrawdownGuardConfig()
+        self.drawdown_guard   = DrawdownGuard(dd_cfg)
+        self._paused_by_drawdown: bool = False
         self.poll_interval    = poll_interval
         self._current_price: float = 0.0
         # Written to state.json as "indicators" for diagnostic inspection.
@@ -568,12 +574,23 @@ class PaperEngine:
             self._monitor_open_deals(price)
             self._update_liq_guard(price)
 
+            # Drawdown guard — observes equity after open-deal monitoring
+            # so unrealised PnL is already reflected in balance+PnL sums.
+            # Triggers are translated into either a hard stop() or a
+            # soft pause (skip new entries, keep managing open deals).
+            self._update_drawdown_guard(price)
+            if self._paused_by_drawdown:
+                # Fall-through: still run sentinels and write state so
+                # the portal reflects the paused state, just don't look
+                # for new entries.
+                pass
+
             # Manual trigger: the portal writes a sentinel file to force
             # an immediate deal open, bypassing schedule + indicators.
             self._check_manual_trigger(price)
             self._check_deal_sentinels(price)
 
-            if is_open:
+            if is_open and not self._paused_by_drawdown:
                 self._check_entry(price)
 
             # Write state for portal after every tick
@@ -718,6 +735,61 @@ class PaperEngine:
     # ------------------------------------------------------------------
     # Entry logic
     # ------------------------------------------------------------------
+
+    def _current_equity_btc(self, price: float) -> float:
+        """Balance + unrealised PnL across every open deal.
+
+        Used for the drawdown guard's ``equity`` metric. Uses a state
+        snapshot so we never hold the PaperState lock across the PnL
+        calculation — each deal's calculate_pnl only touches its own
+        ordered list, which is immutable once the deal is in open_deals.
+        """
+        open_deals = self.state.get_open_deals_snapshot()
+        unrealised = 0.0
+        for deal in open_deals.values():
+            try:
+                pnl_btc, _ = deal.calculate_pnl(price)
+            except Exception:
+                pnl_btc = 0.0
+            unrealised += pnl_btc
+        return self.state.balance_btc + unrealised
+
+    def _update_drawdown_guard(self, price: float) -> None:
+        """Feed the current metric reading into the drawdown guard and
+        apply the configured action (pause / stop) on first trigger."""
+        cfg = self.drawdown_guard.config
+        if not cfg.enabled:
+            return
+
+        if cfg.metric == "balance":
+            value = self.state.balance_btc
+        else:  # equity
+            value = self._current_equity_btc(price)
+
+        triggered = self.drawdown_guard.update(value)
+        if not triggered:
+            return
+
+        # Only take action on the first trigger — subsequent ticks leave
+        # us in the already-applied state rather than spamming stop()
+        # or duplicate notifications.
+        if self._paused_by_drawdown:
+            return
+
+        reason = self.drawdown_guard.trigger_reason or "drawdown"
+        logger.error("Drawdown guard fired (%s) — action=%s", reason, cfg.action)
+
+        self._notify(
+            self.notifier.notify_error,
+            self.config.name,
+            f"Drawdown guard: {reason} (action={cfg.action})",
+        )
+
+        if cfg.action == "stop":
+            logger.error("Stopping engine due to drawdown")
+            self.running = False
+        # For "pause" we just flip the flag — open deals stay managed.
+        self._paused_by_drawdown = True
 
     def _check_manual_trigger(self, price: float):
         """If the manual-trigger sentinel exists, consume it and open a
