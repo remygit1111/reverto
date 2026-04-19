@@ -141,7 +141,6 @@ body.is-login #hdr-price,
 body.is-login #hdr-pill,
 body.is-login #hdr-uptime,
 body.is-login .state-ws-indicator,
-body.is-login #restart-btn,
 body.is-login #profile-btn,
 body.is-login #profile-menu {
   display: none !important;
