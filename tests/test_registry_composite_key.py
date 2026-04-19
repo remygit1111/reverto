@@ -19,7 +19,7 @@ import yaml
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import database, paths
-from web.app import BotInfo, BotRegistry
+from web.app import BotInfo, BotRegistry, _reset_user_dirs_cache
 
 
 _MINIMAL_YAML = {
@@ -41,6 +41,17 @@ _MINIMAL_YAML = {
         "stop_loss": {"type": "fixed", "pct": 5.0},
     }
 }
+
+
+@pytest.fixture(autouse=True)
+def _reset_scan_cache():
+    """Reset the module-level fail-closed cache before AND after every
+    test so state doesn't leak across tests (Paths from tmp_path A
+    would otherwise sit in the dedup set while tmp_path B scans run).
+    """
+    _reset_user_dirs_cache()
+    yield
+    _reset_user_dirs_cache()
 
 
 @pytest.fixture
@@ -261,3 +272,272 @@ class TestOrphanUserDirs:
             if r.levelname == "WARNING" and "orphan" in r.message.lower()
         ]
         assert any("42" in w for w in warnings)
+
+
+# ── Audit v25 Finding #1: fail-closed fallback bij DB-failure ──────────────
+
+
+class TestUserDirScanCacheFallback:
+    """Pre-fix viel _scan_user_dirs bij get_active_user_ids()-failure
+    terug op integer-name-only matching — elke orphan dir kwam er
+    weer door. Post-fix: last-known-good cache, herbruikbaar tot
+    ``_MAX_STALE_REFRESHES`` achter elkaar falen, dan fail-closed.
+    """
+
+    def test_db_success_refreshes_cache(self, sandbox_registry):
+        """Succesvolle DB-call vult de module-cache en reset de
+        failure-counter. Zonder deze invariant kan een eerder
+        mislukte scan voor altijd blijven hangen in stale-mode."""
+        import web.app as webapp
+        _seed_user(2, "bob")
+        reg = BotRegistry()
+        reg._scan_user_dirs()
+
+        assert webapp._cached_active_users == {1, 2}
+        assert webapp._db_failure_count == 0
+
+    def test_db_failure_uses_cache_within_window(
+        self, sandbox_registry, monkeypatch, caplog,
+    ):
+        """Bij DB-failure met een geldige cache moeten we N stale
+        cycles lang de cache hergebruiken — niet fail-open terugvallen
+        op integer-name matching, niet meteen fail-closed leeg teruggeven.
+        """
+        import web.app as webapp
+        _seed_user(2, "bob")
+        _write_bot_yaml(sandbox_registry, 1, "legit", "Legit")
+        _write_bot_yaml(sandbox_registry, 2, "bobs_bot", "Bob")
+
+        # Prime de cache met één succesvolle scan.
+        reg = BotRegistry()
+        assert webapp._cached_active_users == {1, 2}
+
+        # Patch core.user.get_active_user_ids op raise-pad.
+        def _boom():
+            raise RuntimeError("DB temporarily unavailable")
+        monkeypatch.setattr("core.user.get_active_user_ids", _boom)
+
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="web.app"):
+            for _ in range(3):
+                result = reg._scan_user_dirs()
+                # Elke stale-cycle levert nog steeds (1, …) en (2, …).
+                uids = {uid for uid, _dir in result}
+                assert uids == {1, 2}
+
+        assert webapp._db_failure_count == 3
+        stale_msgs = [
+            r.message for r in caplog.records
+            if r.levelname == "WARNING" and "stale cycles" in r.message
+        ]
+        assert len(stale_msgs) == 3, (
+            f"expected 3 stale-cycle WARNINGs, got {stale_msgs}"
+        )
+        # Geen ERROR binnen het venster — dat is juist het verschil
+        # met fail-closed mode.
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert errors == []
+
+    def test_db_failure_returns_empty_after_max_stale_refreshes(
+        self, sandbox_registry, monkeypatch, caplog,
+    ):
+        """Na ``_MAX_STALE_REFRESHES`` mislukte pogingen flip we naar
+        fail-closed: returnt [], ERROR log."""
+        import web.app as webapp
+        _write_bot_yaml(sandbox_registry, 1, "legit", "Legit")
+        reg = BotRegistry()
+        assert webapp._cached_active_users == {1}
+
+        monkeypatch.setattr(
+            "core.user.get_active_user_ids",
+            lambda: (_ for _ in ()).throw(RuntimeError("DB down")),
+        )
+
+        caplog.clear()
+        with caplog.at_level("ERROR", logger="web.app"):
+            result = None
+            # _MAX_STALE_REFRESHES=5; de 6e call moet fail-closed gaan.
+            for _ in range(webapp._MAX_STALE_REFRESHES + 1):
+                result = reg._scan_user_dirs()
+
+        assert result == [], (
+            f"expected empty list after exhausted staleness, got {result}"
+        )
+        error_msgs = [
+            r.message for r in caplog.records
+            if r.levelname == "ERROR"
+            and "fail-closed" in r.message
+        ]
+        assert error_msgs, (
+            f"expected ERROR with 'fail-closed', got "
+            f"{[r.message for r in caplog.records]}"
+        )
+        # Counter stays incremented — de volgende DB-success reset 'em.
+        assert webapp._db_failure_count > webapp._MAX_STALE_REFRESHES
+
+    def test_db_success_after_failure_resets_counter(
+        self, sandbox_registry, monkeypatch,
+    ):
+        """Na een herstelde DB-call moet de counter terug naar 0 en
+        de cache vernieuwd zijn. Zonder reset zou de registry
+        permanent in stale-mode blijven zitten na een hickup."""
+        import web.app as webapp
+        _seed_user(2, "bob")
+        reg = BotRegistry()
+
+        # Twee mislukte scans.
+        def _boom():
+            raise RuntimeError("hiccup")
+        monkeypatch.setattr("core.user.get_active_user_ids", _boom)
+        reg._scan_user_dirs()
+        reg._scan_user_dirs()
+        assert webapp._db_failure_count == 2
+
+        # Herstel de DB-call en scan opnieuw.
+        monkeypatch.undo()
+        # Seed user 2 opnieuw omdat monkeypatch.undo() de fixture-
+        # installatie niet verwijdert maar onze monkeypatch wel.
+        # (sandbox_registry zelf blijft gelden.)
+        reg._scan_user_dirs()
+
+        assert webapp._db_failure_count == 0
+        assert webapp._cached_active_users == {1, 2}
+
+    def test_db_failure_with_no_prior_cache_fails_closed_immediately(
+        self, sandbox_registry, monkeypatch, caplog,
+    ):
+        """Boot-scenario: DB nog niet ready (of registry freshly
+        re-initialised na een reset) + get_active_user_ids() faalt.
+        Zonder cache moeten we meteen fail-closed — niet fail-open
+        fallback op integer-name matching."""
+        import web.app as webapp
+        # Zorg dat de cache écht leeg is voor deze test.
+        _reset_user_dirs_cache()
+        assert webapp._cached_active_users is None
+
+        # Patch get_active_user_ids VOORDAT BotRegistry() de
+        # eerste scan doet — anders primt __init__ de cache alsnog.
+        def _boom():
+            raise RuntimeError("DB not ready")
+        monkeypatch.setattr("core.user.get_active_user_ids", _boom)
+
+        _write_bot_yaml(sandbox_registry, 1, "would_be_orphan_if_fail_open", "X")
+
+        caplog.clear()
+        with caplog.at_level("ERROR", logger="web.app"):
+            reg = BotRegistry()
+            result = reg._scan_user_dirs()
+
+        assert result == [], (
+            "fail-open regressie — lege cache moet meteen [] returnen"
+        )
+        error_msgs = [
+            r.message for r in caplog.records
+            if r.levelname == "ERROR" and "no prior cache" in r.message
+        ]
+        assert error_msgs, (
+            f"expected ERROR met 'no prior cache', got "
+            f"{[r.message for r in caplog.records if r.levelname == 'ERROR']}"
+        )
+
+
+# ── Audit v25 Finding #7: orphan warning log dedup ─────────────────────────
+
+
+class TestOrphanLogDedup:
+    """Pre-fix: elke 5-seconden registry-refresh die een orphan dir
+    tegenkwam logde opnieuw een WARNING. Eén typo = 720
+    WARNINGs/uur. Post-fix: alleen loggen als de orphan NIEUW is
+    sinds de vorige scan. Verdwenen + heringevoerde orphans worden
+    wél opnieuw gelogd zodat operator-drift niet onzichtbaar is.
+    """
+
+    def test_orphan_logged_once_across_scans(
+        self, sandbox_registry, caplog,
+    ):
+        """5 scans op dezelfde orphan = 1 WARNING. Niet 5."""
+        _write_bot_yaml(sandbox_registry, 1, "legit", "OK")
+        _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan")
+
+        # De eerste scan gebeurt in ``BotRegistry.__init__``; capture
+        # vanaf dat moment zodat de totaal-telling over alle 5 scans
+        # klopt (eerste + 4 handmatige).
+        with caplog.at_level("WARNING", logger="web.app"):
+            reg = BotRegistry()  # scan 1
+            for _ in range(4):
+                reg._scan_user_dirs()  # scans 2–5
+
+        warnings_999 = [
+            r.message for r in caplog.records
+            if r.levelname == "WARNING"
+            and "orphan" in r.message.lower()
+            and "999" in r.message
+        ]
+        assert len(warnings_999) == 1, (
+            f"expected exactly 1 WARNING for 999 across 5 scans, got "
+            f"{len(warnings_999)}: {warnings_999}"
+        )
+
+    def test_new_orphan_logged_on_subsequent_scan(
+        self, sandbox_registry, caplog,
+    ):
+        """Scan 1: 999 gelogd. Scan 2 (na toevoegen van 888): 888
+        gelogd, 999 NIET opnieuw."""
+        _write_bot_yaml(sandbox_registry, 1, "legit", "OK")
+        _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan 999")
+
+        reg = BotRegistry()  # eerste scan in __init__ logt 999.
+        caplog.clear()
+
+        _write_bot_yaml(sandbox_registry, 888, "ghost2", "Orphan 888")
+
+        with caplog.at_level("WARNING", logger="web.app"):
+            reg._scan_user_dirs()
+
+        orphan_msgs = [
+            r.message for r in caplog.records
+            if r.levelname == "WARNING" and "orphan" in r.message.lower()
+        ]
+        assert any("888" in m for m in orphan_msgs), (
+            f"new orphan 888 must be logged, got {orphan_msgs}"
+        )
+        assert not any("999" in m for m in orphan_msgs), (
+            f"existing orphan 999 must NOT re-log, got {orphan_msgs}"
+        )
+
+    def test_removed_orphan_relogged_if_recreated(
+        self, sandbox_registry, caplog,
+    ):
+        """Life-cycle van een orphan: loggen → verdwijnen → opnieuw
+        loggen als 'ie terugkomt. Garandeert dat operator-drift
+        zichtbaar blijft zonder dat een tijdelijk verwijderde dir
+        voor altijd stil blijft."""
+        import shutil as _shutil
+        _write_bot_yaml(sandbox_registry, 1, "legit", "OK")
+        _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan 999")
+
+        # Scan 1 — 999 wordt gelogd.
+        reg = BotRegistry()
+
+        # Operator ruimt 999 op.
+        _shutil.rmtree(sandbox_registry / "config" / "bots" / "999")
+
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="web.app"):
+            reg._scan_user_dirs()  # Scan 2 — geen orphan meer.
+
+        # Operator plaatst 'm opnieuw.
+        _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan 999 take 2")
+
+        with caplog.at_level("WARNING", logger="web.app"):
+            reg._scan_user_dirs()  # Scan 3 — 999 is weer nieuw.
+
+        orphan_msgs = [
+            r.message for r in caplog.records
+            if r.levelname == "WARNING" and "orphan" in r.message.lower()
+            and "999" in r.message
+        ]
+        assert len(orphan_msgs) == 1, (
+            f"expected 999 to re-log exactly once after recreation, got "
+            f"{len(orphan_msgs)}: {orphan_msgs}"
+        )
