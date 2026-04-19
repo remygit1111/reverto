@@ -121,14 +121,15 @@ jobs:
         run: .venv/bin/ruff check .
 
       - name: Tests (pytest + coverage)
-        # --cov-fail-under=55 is a floor chosen from the current baseline
-        # (~64% line coverage). Raise incrementally as test coverage
-        # improves rather than starting with a value that blocks PRs.
+        # --cov-fail-under=80 catches significant coverage regressions.
+        # Actual coverage is ~86% on HEAD (audit v25 measured); 80%
+        # gives ~6pp buffer for small fluctuations but surfaces any
+        # meaningful drop. Raise when coverage structurally climbs.
         run: |
           .venv/bin/pytest -q \
             --cov=. \
             --cov-report=term-missing:skip-covered \
-            --cov-fail-under=55
+            --cov-fail-under=80
 
       - name: Security audit — direct deps (BLOCKING)
         # A CVE in a pinned requirements*.txt dependency fails the

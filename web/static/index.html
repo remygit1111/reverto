@@ -29,7 +29,6 @@
     <span id="state-ws-dot" class="live-dot"></span>
     <span id="state-ws-label" class="log-status-text">offline</span>
   </span>
-  <button class="hbtn hbtn-theme hbtn-hide-mobile" id="restart-btn" title="Restart dashboard">Restart Dashboard</button>
   <button id="profile-btn" type="button" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">
     <span id="profile-initial">A</span>
   </button>
@@ -903,6 +902,10 @@
         <div class="wizard-footer">
           <div class="wizard-footer-spacer"></div>
           <button type="button" class="hbtn hbtn-theme" id="nb-bt-btn">▶ Test Strategy</button>
+          <!-- Cancel verschijnt alleen in edit-mode (editBot zet
+               'm zichtbaar); in de new-bot flow blijft 'ie verborgen
+               zodat die UX ongewijzigd is. -->
+          <button type="button" class="hbtn hbtn-theme hidden" id="nb-cancel-btn">Cancel</button>
           <button type="button" class="hbtn hbtn-theme btn-accent" id="nb-submit-btn">Save bot</button>
         </div>
       </div>

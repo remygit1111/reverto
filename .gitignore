@@ -16,6 +16,8 @@ ml/candle_cache/
 notebooks/.ipynb_checkpoints/
 *.log
 *:Zone.Identifier
+# Audit rapporten — lokaal bewaard, niet in git
+audits/
 audit_*.docx
 audit_out/
 backups/

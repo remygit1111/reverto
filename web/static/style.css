@@ -28,17 +28,21 @@
 }
 
 /* ── Design tokens ──────────────────────────────────────────────────────────── */
+/* Dark palette tracks VS Code's "Dark+" defaults (neutral greys) so
+   long sessions stay easy on the eyes. The previous blue-black palette
+   (--bg #0a0e14) was too saturated under portal use. Turquoise accent
+   (#00d4aa) stays as Reverto's brand identity. */
 :root {
-  --bg:       #0a0e14;
-  --surface:  #111620;
-  --surface2: #161d2b;
-  --border:   #1e2736;
+  --bg:       #1e1e1e;
+  --surface:  #252526;
+  --surface2: #2d2d30;
+  --border:   #3c3c3c;
   --accent:   #00d4aa;
   --red:      #ff4d6d;
   --amber:    #ffb347;
   --blue:     #5b8dee;
-  --text:     #c8d3e0;
-  --muted:    #4a5568;
+  --text:     #d4d4d4;
+  --muted:    #5a5a5a;
   --mono:     'IBM Plex Mono', monospace;
   --sans:     'IBM Plex Sans', sans-serif;
 
@@ -94,9 +98,9 @@
 /* Text-brightness overrides — applied on top of the theme defaults. The
    "normal" entries keep the existing palette so untouched installs look
    unchanged. Dimmed/bright shift --text and --muted only. */
-[data-theme="dark"][data-brightness="dimmed"]  { --text: #8a96a8; --muted: #2d3748; }
-[data-theme="dark"][data-brightness="normal"]  { --text: #c8d3e0; --muted: #4a5568; }
-[data-theme="dark"][data-brightness="bright"]  { --text: #ffffff; --muted: #718096; }
+[data-theme="dark"][data-brightness="dimmed"]  { --text: #858585; --muted: #3c3c3c; }
+[data-theme="dark"][data-brightness="normal"]  { --text: #d4d4d4; --muted: #5a5a5a; }
+[data-theme="dark"][data-brightness="bright"]  { --text: #ffffff; --muted: #7e7e7e; }
 [data-theme="light"][data-brightness="dimmed"] { --text: #6b7a8d; --muted: #b0bac6; }
 [data-theme="light"][data-brightness="normal"] { --text: #1a2233; --muted: #8a94a6; }
 [data-theme="light"][data-brightness="bright"] { --text: #000000; --muted: #4a5568; }
@@ -137,7 +141,6 @@ body.is-login #hdr-price,
 body.is-login #hdr-pill,
 body.is-login #hdr-uptime,
 body.is-login .state-ws-indicator,
-body.is-login #restart-btn,
 body.is-login #profile-btn,
 body.is-login #profile-menu {
   display: none !important;
