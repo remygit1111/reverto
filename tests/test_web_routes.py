@@ -114,12 +114,15 @@ class TestPostBotsSmoke:
         r = CLIENT.post("/api/bots", json=_make_payload())
         assert r.status_code == 401
 
-    def test_post_without_body_is_422_not_405(self):
-        # 422 is correct (missing body). 405 would mean the POST route
-        # is not registered at all — exactly the regression we guard against.
+    def test_post_without_body_is_400_not_405(self):
+        # 400 is correct: the handler reads the body manually now
+        # (audit v25 #5 body-size cap lifted the `body: dict` param),
+        # so an empty body fails JSON-parse with 400. 405 would mean
+        # the POST route is not registered — exactly the regression
+        # we guard against.
         r = CLIENT.post("/api/bots", headers=AUTH)
         assert r.status_code != 405
-        assert r.status_code == 422
+        assert r.status_code == 400
 
     def test_post_with_valid_payload_creates_bot(self):
         r = CLIENT.post("/api/bots", json=_make_payload(), headers=JSON)
@@ -1134,3 +1137,170 @@ class TestFavicon:
         assert "/favicon.ico" in body
         assert "/static/favicon.svg" in body
         assert "/static/apple-touch-icon.png" in body
+
+
+# ── Body-size cap on POST /api/bots + PUT /api/bots/{slug}/config ───────────
+
+
+class TestBotEndpointBodySizeCap:
+    """Audit v25 #5 — the validate-config body cap existed since
+    v23, but POST /api/bots (create) and PUT /api/bots/{slug}/config
+    (update) still accepted arbitrary JSON via FastAPI's auto-parse.
+    Both endpoints now route through ``_read_body_with_cap`` with
+    the same 64 KB limit. These tests pin both the refusal paths
+    (Content-Length header + chunked streaming) and the happy-path
+    so a future refactor can't silently re-introduce the DoS surface.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sweep_bodycap_bots(self):
+        """Bot YAMLs created by these tests don't match the module-
+        level ``_cleanup_yaml`` pattern (which targets one specific
+        slug). Sweep every ``pytest_bodycap_*`` YAML + sidecars
+        before and after each test so state never leaks between
+        runs or into production config."""
+        import glob as _glob
+        import pathlib as _pl
+
+        def _sweep():
+            for pattern in (
+                f"config/bots/{_TEST_USER_ID}/pytest_bodycap_*.yaml",
+                f"logs/{_TEST_USER_ID}/pytest_bodycap_*.state.json",
+                f"logs/{_TEST_USER_ID}/pids/pytest_bodycap_*.pid",
+                f"logs/{_TEST_USER_ID}/pytest_bodycap_*.log",
+            ):
+                for p in _glob.glob(pattern):
+                    try:
+                        _pl.Path(p).unlink()
+                    except OSError:
+                        pass
+        _sweep()
+        yield
+        _sweep()
+
+    # ── POST /api/bots ──────────────────────────────────────────────
+
+    def test_post_bots_rejects_oversized_content_length(self, auth_client):
+        """Padded body above MAX_CONFIG_BODY_BYTES → 413 before any
+        JSON parsing touches the payload."""
+        from web.routes.bots import MAX_CONFIG_BODY_BYTES
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        payload = _make_payload(name="Pytest Bodycap Post A")
+        payload["bot"]["_bloat"] = "x" * (MAX_CONFIG_BODY_BYTES + 1000)
+
+        r = auth_client.post("/api/bots", json=payload)
+        assert r.status_code == 413
+        assert "too large" in r.json().get("detail", "").lower()
+
+    def test_post_bots_rejects_streamed_oversized_body(self, auth_client):
+        """Chunked client (no Content-Length) still bounded — the
+        streaming path must abort mid-read."""
+        from web.routes.bots import MAX_CONFIG_BODY_BYTES
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        bloat = b"x" * (MAX_CONFIG_BODY_BYTES // 2 + 100)
+
+        def _stream():
+            yield b'{"bot": {"filler": "'
+            yield bloat
+            yield bloat
+            yield b'"}}'
+
+        r = auth_client.post(
+            "/api/bots",
+            content=_stream(),
+            headers={
+                "Content-Type": "application/json",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+        assert r.status_code == 413
+
+    def test_post_bots_happy_path_still_creates(self, auth_client):
+        """Sanity guard — the cap refactor must not break normal
+        create flow. Without this, a bug that rejected every POST
+        would still pass the refusal tests above."""
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/bots",
+            json=_make_payload(name="Pytest Bodycap Happy Path"),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json().get("ok") is True
+
+    def test_post_bots_rejects_invalid_content_length(self, auth_client):
+        """Malformed Content-Length → 400, same contract as
+        validate-config so clients get one consistent error path
+        across the three config-ingesting endpoints."""
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/bots",
+            content=b'{"bot": {"name": "x"}}',
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": "not-a-number",
+            },
+        )
+        assert r.status_code == 400
+        assert "Content-Length" in r.json().get("detail", "")
+
+    # ── PUT /api/bots/{slug}/config ─────────────────────────────────
+
+    def test_put_config_rejects_oversized_content_length(self, auth_client):
+        """Update path: same 413 refusal on an over-cap Content-Length."""
+        from web.routes.bots import MAX_CONFIG_BODY_BYTES
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        # Create a bot first so the PUT has a target — otherwise the
+        # 404 "Bot not found" check would fire before the body-cap
+        # helper runs (handler-order detail we must not mask).
+        create = auth_client.post(
+            "/api/bots",
+            json=_make_payload(name="Pytest Bodycap Put"),
+        )
+        assert create.status_code == 200
+        slug = create.json()["slug"]
+
+        payload = _make_payload(name="Pytest Bodycap Put")
+        payload["bot"]["_bloat"] = "x" * (MAX_CONFIG_BODY_BYTES + 1000)
+
+        r = auth_client.put(f"/api/bots/{slug}/config", json=payload)
+        assert r.status_code == 413
+        assert "too large" in r.json().get("detail", "").lower()
+
+    def test_put_config_rejects_streamed_oversized_body(self, auth_client):
+        """Update path: chunked variant."""
+        from web.routes.bots import MAX_CONFIG_BODY_BYTES
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+
+        create = auth_client.post(
+            "/api/bots",
+            json=_make_payload(name="Pytest Bodycap Put Stream"),
+        )
+        assert create.status_code == 200
+        slug = create.json()["slug"]
+
+        bloat = b"x" * (MAX_CONFIG_BODY_BYTES // 2 + 100)
+
+        def _stream():
+            yield b'{"bot": {"filler": "'
+            yield bloat
+            yield bloat
+            yield b'"}}'
+
+        r = auth_client.put(
+            f"/api/bots/{slug}/config",
+            content=_stream(),
+            headers={
+                "Content-Type": "application/json",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+        assert r.status_code == 413

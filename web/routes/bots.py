@@ -49,15 +49,82 @@ from web.app import (
 
 logger = logging.getLogger(__name__)
 
-# Maximum request-body size for /api/bots/validate-config (bytes).
-# A fully-loaded bot YAML round-trips to ~4 KB of JSON; 64 KB gives
-# ~16× headroom for pathological configs while keeping an authenticated
-# DoS (30 reqs/min × n-megabyte bodies) bounded. The handler checks
+# Maximum request-body size for config-ingesting endpoints (bytes).
+# Applies to validate-config, POST /api/bots (create), and
+# PUT /api/bots/{slug}/config (update). A fully-loaded bot YAML
+# round-trips to ~4 KB of JSON; 64 KB gives ~16× headroom for
+# pathological configs while keeping an authenticated DoS (20-30
+# reqs/min × n-megabyte bodies) bounded. The helpers below check
 # Content-Length BEFORE awaiting the JSON body so oversized payloads
 # never land in memory.
 MAX_CONFIG_BODY_BYTES = 64 * 1024
 
 router = APIRouter(tags=["bots"])
+
+
+# ── Body-size helpers (shared by every config-ingesting endpoint) ───────────
+
+async def _read_body_with_cap(request: Request, cap: int) -> bytes:
+    """Read the request body enforcing a byte cap.
+
+    Two paths, matching the audit-v23 validate-config handler:
+
+    * **Content-Length present** — parse the header and refuse
+      (``413``) before touching the body if it's already over cap.
+      Malformed Content-Length maps to ``400`` so the client gets a
+      meaningful error instead of a 500.
+    * **Content-Length absent** (chunked / Transfer-Encoding) — stream
+      the body and abort the moment the accumulated size crosses the
+      cap. Without this branch a chunked client could still DoS the
+      process by sending an unbounded number of chunks.
+
+    Raises ``HTTPException`` in both refusal paths so the caller just
+    ``await``s and lets FastAPI surface the response. Returns the raw
+    body bytes on success.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        body_bytes = b""
+        async for chunk in request.stream():
+            body_bytes += chunk
+            if len(body_bytes) > cap:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Config body too large (>{cap} bytes)",
+                )
+        return body_bytes
+
+    try:
+        cl_int = int(content_length)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Invalid Content-Length",
+        )
+    if cl_int > cap:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Config body too large ({cl_int} > {cap} bytes)",
+        )
+    return await request.body()
+
+
+def _parse_json_object_body(body_bytes: bytes) -> dict:
+    """Decode + parse a body that must be a JSON object.
+
+    Returns the parsed dict. Anything that's not a JSON object —
+    malformed JSON, a top-level list/string/number, non-UTF-8 bytes —
+    raises ``HTTPException(400)`` so the three config endpoints share
+    the same error contract.
+    """
+    try:
+        body = json.loads(body_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=400, detail="Config must be a JSON object",
+        )
+    return body
 
 
 # ── Read ────────────────────────────────────────────────────────────────────
@@ -309,51 +376,12 @@ async def validate_config(
     summary. Never enforces — the wizard renders the result so the
     operator can adjust ladder/DCA parameters before saving.
 
-    Body-size cap: the handler refuses requests larger than
-    ``MAX_CONFIG_BODY_BYTES`` before reading the body, so an
+    Body-size cap: ``_read_body_with_cap`` refuses requests larger
+    than ``MAX_CONFIG_BODY_BYTES`` before reading the body, so an
     authenticated client cannot DoS the process with giant JSON.
     """
-    content_length = request.headers.get("content-length")
-    if content_length is None:
-        # Fall back to consuming up to MAX+1 bytes so chunked-encoded
-        # clients (no Content-Length header) are still bounded — we
-        # read lazily and abort once the limit is crossed.
-        body_bytes = b""
-        async for chunk in request.stream():
-            body_bytes += chunk
-            if len(body_bytes) > MAX_CONFIG_BODY_BYTES:
-                raise HTTPException(
-                    status_code=413,
-                    detail=(
-                        f"Config body too large "
-                        f"(>{MAX_CONFIG_BODY_BYTES} bytes)"
-                    ),
-                )
-    else:
-        try:
-            cl_int = int(content_length)
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="Invalid Content-Length",
-            )
-        if cl_int > MAX_CONFIG_BODY_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"Config body too large "
-                    f"({cl_int} > {MAX_CONFIG_BODY_BYTES} bytes)"
-                ),
-            )
-        body_bytes = await request.body()
-
-    try:
-        body = json.loads(body_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-    if not isinstance(body, dict):
-        raise HTTPException(
-            status_code=400, detail="Config must be a JSON object",
-        )
+    body_bytes = await _read_body_with_cap(request, MAX_CONFIG_BODY_BYTES)
+    body = _parse_json_object_body(body_bytes)
 
     try:
         cfg = _validate_bot_payload(body)
@@ -369,12 +397,20 @@ async def validate_config(
 @router.post("/api/bots")
 @limiter.limit("20/minute")
 async def create_bot(
-    body: dict,
     request: Request,
     actor: str = Depends(_request_actor),
     user: User = Depends(_request_user),
 ):
-    """Maak een nieuwe bot YAML aan. Slug komt uit de bot naam."""
+    """Maak een nieuwe bot YAML aan. Slug komt uit de bot naam.
+
+    Body-size cap identical to validate-config: a DoS via a
+    gigantic YAML payload is the same attack surface here — every
+    authenticated endpoint that ingests config JSON needs the
+    guard. Audit v24/v25 flagged this as MEDIUM #3.
+    """
+    body_bytes = await _read_body_with_cap(request, MAX_CONFIG_BODY_BYTES)
+    body = _parse_json_object_body(body_bytes)
+
     try:
         cfg = _validate_bot_payload(body)
     except ValueError as e:
@@ -423,14 +459,20 @@ async def get_bot_config(
 @limiter.limit("10/minute")
 async def update_bot_config(
     slug: str,
-    body: dict,
     request: Request,
     actor: str = Depends(_request_actor),
     user: User = Depends(_request_user),
 ):
+    """Overwrite a bot YAML in place. Body-size cap mirrors
+    ``create_bot`` + ``validate_config`` — same DoS surface, same
+    64 KB guard."""
     path = _bot_yaml_path(user.id, slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
+
+    body_bytes = await _read_body_with_cap(request, MAX_CONFIG_BODY_BYTES)
+    body = _parse_json_object_body(body_bytes)
+
     try:
         _validate_bot_payload(body)
     except ValueError as e:
