@@ -43,7 +43,7 @@ class TestRoutesRegistered:
     MIGRATED_PATHS: set[str] = {
         # admin
         "/healthz", "/readyz", "/metrics",
-        "/api/emergency-stop", "/api/portal/restart", "/api/portal/status",
+        "/api/emergency-stop", "/api/portal/status",
         # auth
         "/auth/login", "/auth/logout", "/auth/status",
         "/api/auth/change-password",

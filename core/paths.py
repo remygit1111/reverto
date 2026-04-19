@@ -79,7 +79,17 @@ def user_keys_dir() -> Path:
 def user_credentials_dir(user_id: int) -> Path:
     """``credentials/<user_id>/`` — per-user encrypted-credentials tree.
     0700 for defence-in-depth against an umask that would otherwise
-    leave the dir world-readable."""
+    leave the dir world-readable.
+
+    Audit v24 carry-over LOW #4 (fixed): the parent ``credentials/``
+    directory used to inherit the system umask (typically 0755) because
+    ``Path.mkdir(parents=True)`` ignores the ``mode`` argument for
+    intermediate parents. That leaked the user-id listing to any
+    local account. We now ensure the parent explicitly at 0700 first
+    before creating the child — both levels of the tree are now
+    owner-only.
+    """
+    _ensure_dir(BASE_DIR / "credentials", mode=0o700)
     return _ensure_dir(
         BASE_DIR / "credentials" / str(user_id), mode=0o700,
     )

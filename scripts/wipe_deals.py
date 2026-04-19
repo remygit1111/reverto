@@ -72,6 +72,12 @@ def _is_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
+        # NOTE: os.kill(pid, 0) is POSIX-only. On Windows this would
+        # raise OSError unconditionally; the refuse-to-run guard would
+        # then fire on every call. Reverto's target platform is Linux
+        # (WSL2 in development, Linux server in production). If a
+        # Windows port is ever needed, replace with psutil.pid_exists()
+        # which is cross-platform.
         os.kill(pid, 0)
     except ProcessLookupError:
         return False

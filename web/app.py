@@ -2,7 +2,6 @@
 # Reverto Web Portal — FastAPI backend
 # Multi-bot: reads state from logs/{slug}.state.json per bot.
 # Manages bot processes via start/stop API.
-# Portal can restart itself via /api/portal/restart.
 
 import asyncio
 import hashlib
@@ -1012,14 +1011,6 @@ async def restart_bot(user_id: int, slug: str) -> dict:
     return await start_bot(user_id, slug)
 
 
-def _do_portal_restart():
-    """Restart the portal process using os.execv — replaces current process."""
-    time.sleep(0.8)  # Give the HTTP response time to reach the browser
-    logger.info("=== Portal restarting ===")
-    logger.info("Portal restarting via os.execv...")
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
-
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -1204,7 +1195,7 @@ def _compute_summary(bots: list[dict]) -> dict:
 # The actual route handlers now live in web/routes/admin.py and
 # web/routes/drawdown.py — included at the bottom of this module so
 # the module-level names they import (limiter, _request_actor,
-# registry, stop_bot, _audit, _BOT_SLUG_RE, _do_portal_restart,
+# registry, stop_bot, _audit, _BOT_SLUG_RE,
 # _check_db_sync_blocking) are already defined by the time the
 # route modules load.
 
@@ -1739,7 +1730,7 @@ async def tail_logs():
 # Routes extracted from this file into web/routes/*.py. Included at the
 # bottom so the module-level names the routers import (limiter,
 # _request_actor, _audit, registry, stop_bot, _BOT_SLUG_RE,
-# _do_portal_restart, _check_db_sync_blocking) are all defined by the
+# _check_db_sync_blocking) are all defined by the
 # time the import-machinery follows those imports.
 #
 # Additional domains (auth, bots, deals, chart, exchanges, backtest)
