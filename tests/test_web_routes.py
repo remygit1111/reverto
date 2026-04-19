@@ -1074,3 +1074,53 @@ class TestValidateConfigEndpoint:
             },
         )
         assert r.status_code == 413
+
+
+# ── Favicon ──────────────────────────────────────────────────────────────────
+
+
+class TestFavicon:
+    """Regression guard: GET /favicon.ico used to 404 because no route
+    was registered even though AuthMiddleware whitelisted the path.
+    Browsers hit it on every page-load — a persistent 404 in the
+    devtools console is noisy and masks real errors."""
+
+    def test_favicon_root_returns_200_unauthenticated(self):
+        """Browsers request /favicon.ico BEFORE the session cookie
+        is set — the route must succeed without any auth. Serves the
+        multi-resolution ICO shipped in web/static/."""
+        r = CLIENT.get("/favicon.ico")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("image/")
+        # Real ICO: 5-6 KB. Assert "non-empty binary" to catch a
+        # stripped or symlinked-to-empty file.
+        assert len(r.content) > 100
+        # ICO magic bytes: 00 00 01 00.
+        assert r.content[:4] == b"\x00\x00\x01\x00"
+
+    def test_favicon_svg_served_via_static_mount(self):
+        """The /static mount picks up the SVG + apple-touch PNG that
+        index.html references via <link rel="icon">. Smoke-test all
+        three paths so a missing asset surfaces in CI instead of as
+        a console error."""
+        for path, prefix in (
+            ("/static/favicon.svg", b"<"),            # XML/SVG
+            ("/static/apple-touch-icon.png", b"\x89PNG"),
+        ):
+            r = CLIENT.get(path)
+            assert r.status_code == 200, f"{path} → {r.status_code}"
+            assert r.content.startswith(prefix), (
+                f"{path} served something other than the expected asset"
+            )
+
+    def test_index_html_references_favicon(self):
+        """Protects against someone stripping the <link rel="icon">
+        tags from index.html during a rewrite — the route would still
+        work but the SVG / apple-touch paths wouldn't be discovered."""
+        r = CLIENT.get("/")
+        assert r.status_code == 200
+        body = r.text
+        assert 'rel="icon"' in body
+        assert "/favicon.ico" in body
+        assert "/static/favicon.svg" in body
+        assert "/static/apple-touch-icon.png" in body
