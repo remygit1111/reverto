@@ -26,13 +26,96 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install dependencies
+      - name: Install core dependencies
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install -r requirements-ml.txt
           .venv/bin/pip install ruff pip-audit pytest-cov
+
+      - name: Smoke-import core modules
+        # Audit v25 #3 guard. A production module whose dependency
+        # sits in requirements.txt must import cleanly on a fresh
+        # install. Caught prometheus_client + xgboost previously by
+        # coincidence (tests happened to import them); this step
+        # makes the guarantee explicit so a future lazy-imported
+        # production path can't silently drift out of the manifest.
+        # Runs BEFORE requirements-ml.txt install, so any ML-lib
+        # import accidentally lifted to top level fails here.
+        run: |
+          .venv/bin/python -c "
+          import web.app
+          import web.metrics
+          import web.routes.admin
+          import web.routes.auth
+          import web.routes.backtest
+          import web.routes.bots
+          import web.routes.chart
+          import web.routes.deals
+          import web.routes.drawdown
+          import web.routes.exchanges
+          import paper.paper_engine
+          import paper.paper_state
+          import paper.state_io
+          import live.live_engine
+          import live.order_reconciliation
+          import core.clock_monitor
+          import core.credentials
+          import core.database
+          import core.deal_store
+          import core.drawdown_guard
+          import core.ids
+          import core.liquidation_guard
+          import core.paths
+          import core.schedule_guard
+          import core.user
+          import exchanges.base_exchange
+          import exchanges.bitget
+          import exchanges.kraken
+          import exchanges.public_exchange
+          import notifications.telegram
+          import strategies.indicator_engine
+          import strategies.indicators.bollinger
+          import strategies.indicators.ema
+          import strategies.indicators.macd
+          import strategies.indicators.market_structure
+          import strategies.indicators.parabolic_sar
+          import strategies.indicators.qfl
+          import strategies.indicators.rsi
+          import strategies.indicators.supertrend
+          import strategies.indicators.support_resistance
+          import backtest.backtest_engine
+          import backtest.backtest_report
+          import ml.candle_loader
+          import ml.entry_filter
+          import ml.features
+          import ml.market_regime
+          import ml.model_io
+          import ml.nightly_pipeline
+          print('core smoke-import OK')
+          "
+
+      - name: Install ML dependencies
+        run: .venv/bin/pip install -r requirements-ml.txt
+
+      - name: Smoke-import ML dependencies
+        # Prove that requirements-ml.txt itself resolves to a
+        # usable install. The ml/ modules already imported fine in
+        # the step above because their ML-lib imports are lazy
+        # (ml/nightly_pipeline.py:9 explicitly calls this out);
+        # this step catches a regression in the ML manifest
+        # directly — a wheel going missing, a system-lib prereq
+        # disappearing from the runner image, etc.
+        run: |
+          .venv/bin/python -c "
+          import lightgbm
+          import llvmlite
+          import numba
+          import scipy
+          import sklearn
+          import xgboost
+          print('ml smoke-import OK')
+          "
 
       - name: Lint (ruff)
         run: .venv/bin/ruff check .
