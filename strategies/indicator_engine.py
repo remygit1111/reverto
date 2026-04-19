@@ -145,7 +145,7 @@ class IndicatorEngine:
                 opens = (opens_per_tf or {}).get(tf)
                 result = self._evaluate_indicator(
                     indicator, closes, highs, lows, opens)
-                logger.info(
+                logger.debug(
                     f"{context} {indicator.type}@{tf} → "
                     f"{'✅ SIGNAL' if result else '❌ no signal'}")
                 if not result:
@@ -164,7 +164,7 @@ class IndicatorEngine:
                 logger.info(f"{context} signal: ✅ CONFIRMED (group {gname})")
                 return True, trigger
 
-        logger.info(f"{context} signal: ❌ NOT confirmed")
+        logger.debug(f"{context} signal: ❌ NOT confirmed")
         return False, None
 
     def check_entry_signal(
@@ -184,7 +184,7 @@ class IndicatorEngine:
 
         for ind in all_inds:
             if ind.type.upper() == "ASAP":
-                logger.info("ASAP indicator present — bypassing all filters")
+                logger.debug("ASAP indicator present — bypassing all filters")
                 return True, {"group_id": 0, "group_name": "ASAP",
                               "indicators": ["ASAP"]}
 
@@ -231,7 +231,13 @@ class IndicatorEngine:
         if closes is None:
             return False
         confirmed = check_macd_signal(closes, tp_indicator)
-        logger.info(f"TP confirmation ({tp_indicator}): {'✅' if confirmed else '❌'}")
+        # Split by outcome: ✅ is a state-transition (deal gaat
+        # sluiten) en hoort op INFO; ❌ is per-tick ruis en gaat
+        # naar DEBUG om operator-logs leesbaar te houden.
+        if confirmed:
+            logger.info(f"TP confirmation ({tp_indicator}): ✅")
+        else:
+            logger.debug(f"TP confirmation ({tp_indicator}): ❌")
         return confirmed
 
     def check_tp_indicator_groups(
