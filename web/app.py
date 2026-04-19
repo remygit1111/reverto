@@ -321,6 +321,30 @@ def _request_user(request: Request) -> User:
     # For now, every authenticated request is admin.
     return get_default_user()
 
+
+def _ws_extract_user_id(websocket: WebSocket) -> Optional[int]:
+    """Resolve the WebSocket caller to a user_id from their session
+    cookie. Returns ``None`` for missing / invalid / expired cookies
+    so the caller can ``await websocket.close(code=4401)``.
+
+    ``BaseHTTPMiddleware`` does not run on WS upgrades, so WS-
+    endpoints can't use ``Depends(_request_user)`` — this helper is
+    the equivalent. Phase-1/2: mirrors ``_request_user()`` — every
+    valid session resolves to admin (id=1). Phase-3 wiring point:
+    when the cookie payload carries a user_id (or we resolve via
+    ``get_user_by_username`` on the ``"u"`` field), this helper
+    starts returning the actual caller's id. The signature is
+    Phase-3-ready on purpose so WS endpoints don't need to change
+    again.
+    """
+    payload = _verify_session_cookie(websocket.cookies.get(_SESSION_COOKIE))
+    if payload is None:
+        return None
+    # Phase-1/2: hardcoded admin, same as _request_user() HTTP path.
+    # TODO Phase-3: switch to payload.get("uid") once auth.py mints
+    # cookies with a user_id field + get_user_by_id() check.
+    return get_default_user().id
+
 # Module-level ccxt client — reused across /api/price calls so we don't pay
 # instantiation overhead on every request.
 _bitget_client = ccxt.bitget({"options": {"defaultType": "swap"}})
@@ -1499,10 +1523,8 @@ async def ws_logs(websocket: WebSocket, slug: str):
     # history, which leaked the API key. Browsers always send the session
     # cookie on a same-origin WS upgrade, so this is no regression for the
     # SPA. Reject before accept() so unauthenticated clients never see logs.
-    session_ok = _verify_session_cookie(
-        websocket.cookies.get(_SESSION_COOKIE)
-    ) is not None
-    if not session_ok:
+    user_id = _ws_extract_user_id(websocket)
+    if user_id is None:
         await websocket.close(code=4401)
         return
 
@@ -1525,8 +1547,10 @@ async def ws_logs(websocket: WebSocket, slug: str):
         return
 
     # Reject unknown slugs before accepting the socket — prevents tailing
-    # arbitrary file paths and keeps broadcaster keys bounded.
-    bot = await registry.get(slug)
+    # arbitrary file paths and keeps broadcaster keys bounded. Scope to
+    # the caller's own user_id so bot A of user 1 can never surface as
+    # bot A of user 2 through this endpoint (audit v25 Phase-2 follow-up).
+    bot = await registry.get(user_id, slug)
     if bot is None:
         await websocket.close(code=4004)
         return
