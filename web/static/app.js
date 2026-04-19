@@ -6063,6 +6063,13 @@ function setupEventListeners() {
   // Delegated click handlers on the bot detail deals tables — clicking
   // any row jumps to the chart tab with timeline markers for that deal.
   const _dealRowHandler = (e) => {
+    // Skip clicks on deal action buttons (close/cancel/edit). Those have
+    // their own document-level handler on regel 1652 and should NOT also
+    // trigger row-navigation to the chart. stopPropagation() in the
+    // button handler is too late — both handlers attach to different
+    // DOM nodes (tbody vs document) and tbody fires earlier in the
+    // bubble path, so we need this explicit opt-out here.
+    if (e.target.closest('.deal-btn')) return;
     const tr = e.target.closest('tr[data-deal-id]');
     if (!tr) return;
     const deal = findDealByIdInCurrentDetail(tr.dataset.dealId);
