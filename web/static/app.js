@@ -1927,6 +1927,9 @@ function nbInit() {
   nbEditSlug = null;
   const btn = $('nb-submit-btn');
   if (btn) btn.textContent = 'Save bot';
+  // Cancel button is edit-mode-only; keep it hidden on fresh entry.
+  const cancelBtn = $('nb-cancel-btn');
+  if (cancelBtn) cancelBtn.classList.add('hidden');
   nbApplyStateToForm();
   nbRenderScheduleWindows();
   nbHideError();
@@ -3472,6 +3475,12 @@ async function editBot(slug) {
     // Update submit button label to reflect edit mode
     const btn = $('nb-submit-btn');
     if (btn) btn.textContent = 'Save changes';
+    // Surface the Cancel button — users who open an existing bot for
+    // editing need a way back without persisting wip changes. The
+    // button is kept hidden in the new-bot flow because there's no
+    // "previous state" to return to.
+    const cancelBtn = $('nb-cancel-btn');
+    if (cancelBtn) cancelBtn.classList.remove('hidden');
   } catch (e) {
     alert('Network error: ' + e.message);
   }
@@ -3655,29 +3664,6 @@ function appendOverviewLog(text, slug) {
   out.appendChild(el);
   while (out.children.length > 300) out.removeChild(out.firstChild);
   out.scrollTop = out.scrollHeight;
-}
-
-// ── Portal restart ────────────────────────────────────────────────────────────
-async function restartPortal() {
-  const btn = $('restart-btn');
-  btn.textContent = 'Restarting...';
-  btn.disabled = true;
-
-  try {
-    await fetch('/api/portal/restart', { method: 'POST' });
-  } catch (e) {}
-
-  const poll = setInterval(async () => {
-    try {
-      const r = await fetch('/api/portal/status');
-      if (r.ok) {
-        clearInterval(poll);
-        btn.textContent = 'Restart Dashboard';
-        btn.disabled = false;
-        location.reload();
-      }
-    } catch (e) {}
-  }, 1000);
 }
 
 // ── Live candlestick chart ───────────────────────────────────────────────────
@@ -5948,8 +5934,6 @@ function calcMarketStructureMarkers(candles, lookback) {
 
 // ── Event wiring (vervangt alle inline onclick=) ─────────────────────────────
 function setupEventListeners() {
-  $('restart-btn').addEventListener('click', restartPortal);
-
   // Profile dropdown button + menu entries
   $('profile-btn').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -6115,6 +6099,20 @@ function setupEventListeners() {
 
   // ── New bot form ─────────────────────────────────────────────────────────
   $('nb-submit-btn').addEventListener('click', nbSubmit);
+
+  // Cancel in edit-mode: discard in-memory wizard state and navigate
+  // back to the bot-detail config tab. The YAML on disk is NEVER
+  // touched — we haven't called /api/bots/{slug}/config PUT yet, so
+  // there's nothing to roll back; we simply forget the user's edits.
+  $('nb-cancel-btn').addEventListener('click', () => {
+    const slug = nbEditSlug;
+    nbInit();  // resets state + hides Cancel + relabels submit btn
+    if (slug) {
+      openBot(slug);
+    } else {
+      showPage('bots');
+    }
+  });
 
   const addWinBtn = $('nb-sched-add-window');
   if (addWinBtn) {

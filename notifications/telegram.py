@@ -95,8 +95,7 @@ class TelegramNotifier:
         if not self._is_enabled(EVENT_STARTUP):
             return
         self.send(
-            f"🚀 <b>Reverto started</b>\n"
-            f"Bot      : {bot_name}\n"
+            f"<b>{bot_name} started</b>\n"
             f"Mode     : {mode.upper()}\n"
             f"Exchange : {exchange.upper()}"
         )
@@ -104,7 +103,7 @@ class TelegramNotifier:
     def notify_shutdown(self, bot_name: str):
         if not self._is_enabled(EVENT_SHUTDOWN):
             return
-        self.send(f"🛑 <b>Reverto stopped</b>\nBot: {bot_name}")
+        self.send(f"<b>{bot_name} stopped</b>")
 
     def notify_stop(self, bot_name: str, mode: str, exchange: str):
         # New-style stop event. Falls back to the legacy "shutdown"
@@ -112,8 +111,7 @@ class TelegramNotifier:
         if not (self._is_enabled(EVENT_STOP) or self._is_enabled(EVENT_SHUTDOWN)):
             return
         self.send(
-            f"🛑 <b>Reverto stopped</b>\n"
-            f"Bot      : {bot_name}\n"
+            f"<b>{bot_name} stopped</b>\n"
             f"Mode     : {mode.upper()}\n"
             f"Exchange : {exchange.upper()}"
         )
