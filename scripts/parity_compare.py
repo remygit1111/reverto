@@ -45,6 +45,16 @@ PRICE_WARN_BP     = 10       # 10 basis points = 0.10 %
 PNL_WARN_PP       = 0.5      # 0.5 percentage points
 DCA_MISMATCH_MIN  = 2        # flag when |paper_dca − live_dca| > 2
 
+# Minimum number of closed paper deals before the match-rate branch
+# of the interpretation fires. Below this we fall back to a "too
+# early to tell" message — match_rate on 1/1 is 100%, match_rate on
+# 0/1 is 0%, but neither number carries enough signal to say the
+# engines agree or disagree. Five closed deals is the smallest set
+# where a divergence pattern would start being statistically credible
+# without being so high that the operator has to wait weeks before
+# they see any useful output.
+MIN_DEALS_FOR_PARITY_VERDICT = 5
+
 
 # ── Data plumbing ─────────────────────────────────────────────────────────────
 
@@ -128,6 +138,27 @@ class Pair:
     live: dict
     delta_s: float
     flags: list[str] = field(default_factory=list)
+
+    @property
+    def is_open(self) -> bool:
+        """True when BOTH sides are still open. A pair where one side
+        closed and the other is still open is a timing artefact we
+        treat as closed for reporting purposes — the closed side has
+        the authoritative PnL + exit_trigger to compare against."""
+        return (
+            _deal_is_open(self.paper) and _deal_is_open(self.live)
+        )
+
+
+def _deal_is_open(deal: dict) -> bool:
+    """A deal counts as open when there's no closed_at timestamp AND
+    no close_reason in the DB. The engines write status='open' while
+    a position is live; the DB column is authoritative."""
+    if deal.get("status") == "open":
+        return True
+    if deal.get("closed_at") is None and not deal.get("close_reason"):
+        return True
+    return False
 
 
 def match_deals(
@@ -290,35 +321,73 @@ def _interpretation(
     flag_counts: dict,
     total_paper: int = 0,
     total_live: int = 0,
+    closed_pairs: int = 0,
+    open_pairs: int = 0,
 ) -> list[str]:
     """Deterministic, thresholded one-liners. Caller turns these into
-    bullets; empty list = nothing noteworthy."""
+    bullets; empty list = nothing noteworthy.
+
+    Volume-aware: below ``MIN_DEALS_FOR_PARITY_VERDICT`` closed paper
+    deals the match_rate branches are suppressed — 0 matches out of
+    0-3 deals means nothing yet, and 1/1 = 100% is noise, not signal.
+    At those volumes we instead describe the current state and
+    explicitly tell the operator to keep collecting data.
+    """
     out: list[str] = []
 
-    # Empty-state guard: when neither bot has produced any deals in
-    # the period, the match-rate branches below all collapse to
-    # "Low parity" which is misleading — there's nothing to compare.
-    # Surface a dedicated message so the operator knows to keep
-    # collecting data rather than chase a phantom divergence.
+    # Empty-state guard.
     if total_paper == 0 and total_live == 0:
         return [
             "No deals yet in the period — wait for bots to generate "
             "data before drawing conclusions.",
         ]
 
-    if match_rate >= 0.85:
+    # Volume guard: too few closed paper deals to make a statistical
+    # statement. Give the operator the current state + a reason to
+    # keep waiting instead of firing a "Low parity" verdict that
+    # would later read as a premature doom call. The denominator is
+    # ``total_paper`` (open + closed) — we use that instead of the
+    # pair-split because an unmatched paper deal still counts toward
+    # the volume threshold.
+    if total_paper < MIN_DEALS_FOR_PARITY_VERDICT:
+        parts = [
+            f"Early data — {total_paper} paper / {total_live} live "
+            f"deals in the period"
+        ]
+        if open_pairs:
+            parts.append(
+                f"{open_pairs} open pair(s) tracking on timing + entry "
+                f"price; PnL + exit parity can only be scored once they "
+                f"close"
+            )
+        if closed_pairs:
+            parts.append(
+                f"{closed_pairs} closed pair(s) so far"
+            )
+        parts.append(
+            f"wait for ≥ {MIN_DEALS_FOR_PARITY_VERDICT} closed paper "
+            f"deals before reading the match-rate as a divergence signal"
+        )
+        out.append(". ".join(parts) + ".")
+    elif match_rate >= 0.85:
         out.append(
-            "High parity — paper engine is a faithful proxy for live timing."
+            f"High parity — paper engine is a faithful proxy for live "
+            f"timing. ({total_paper} paper / {total_live} live deals, "
+            f"{closed_pairs} closed + {open_pairs} open pairs.)"
         )
     elif match_rate >= 0.60:
         out.append(
-            "Partial parity — many deals line up but a non-trivial fraction "
-            "is engine-exclusive. Investigate unmatched tables."
+            f"Partial parity — many deals line up but a non-trivial "
+            f"fraction is engine-exclusive. Investigate unmatched tables. "
+            f"({total_paper} paper / {total_live} live, {closed_pairs} "
+            f"closed pairs.)"
         )
     else:
         out.append(
-            "Low parity — most deals have no counterpart. The two bots are "
-            "making meaningfully different decisions."
+            f"Low parity — most deals have no counterpart. The two bots "
+            f"are making meaningfully different decisions. "
+            f"({total_paper} paper / {total_live} live, {closed_pairs} "
+            f"closed pairs.)"
         )
 
     mt = agg.get("mean_timing_delta_s")
@@ -401,16 +470,38 @@ def render_markdown(
     lines.append(f"**Matching window:** {window_s}s")
     lines.append("")
 
+    # Split matched pairs so the operator can see at a glance whether
+    # the parity is already verified against closed outcomes (PnL +
+    # exit triggers compared) or still in-flight (only timing + entry
+    # price compared). Early-days runs often have all pairs open, which
+    # is fine as long as the counts are visible.
+    open_pairs   = [pair for pair in pairs if pair.is_open]
+    closed_pairs = [pair for pair in pairs if not pair.is_open]
+    # Symmetric totals — both sides count open + closed alike. We split
+    # out the per-status counts too so a future divergence (e.g. one
+    # side persists opens and the other doesn't) is visible instead of
+    # hidden behind a single aggregate.
+    paper_open   = sum(1 for d in paper_deals if _deal_is_open(d))
+    live_open    = sum(1 for d in live_deals  if _deal_is_open(d))
+    paper_closed = len(paper_deals) - paper_open
+    live_closed  = len(live_deals)  - live_open
+
     lines.append("## Summary")
     lines.append("")
-    lines.append("| Metric | Value |")
+    lines.append("| Metric | Paper | Live |")
+    lines.append("|---|---|---|")
+    lines.append(f"| Total deals   | {len(paper_deals)} | {len(live_deals)} |")
+    lines.append(f"| Open          | {paper_open} | {live_open} |")
+    lines.append(f"| Closed        | {paper_closed} | {live_closed} |")
+    lines.append("")
+    lines.append("| Matching | Value |")
     lines.append("|---|---|")
-    lines.append(f"| Paper deals      | {len(paper_deals)} |")
-    lines.append(f"| Live deals       | {len(live_deals)} |")
-    lines.append(f"| Matched pairs    | {len(pairs)} |")
-    lines.append(f"| Match rate       | {match_rate * 100:.1f}% |")
-    lines.append(f"| Unmatched paper  | {len(unmatched_paper)} |")
-    lines.append(f"| Unmatched live   | {len(unmatched_live)} |")
+    lines.append(f"| Matched pairs (total)  | {len(pairs)} |")
+    lines.append(f"| Matched closed pairs   | {len(closed_pairs)} |")
+    lines.append(f"| Matched open pairs     | {len(open_pairs)} |")
+    lines.append(f"| Match rate             | {match_rate * 100:.1f}% |")
+    lines.append(f"| Unmatched paper        | {len(unmatched_paper)} |")
+    lines.append(f"| Unmatched live         | {len(unmatched_live)} |")
     lines.append("")
 
     if agg:
@@ -535,6 +626,7 @@ def render_markdown(
     interp = _interpretation(
         match_rate, agg, flag_counts,
         total_paper=len(paper_deals), total_live=len(live_deals),
+        closed_pairs=len(closed_pairs), open_pairs=len(open_pairs),
     )
     if interp:
         lines.append("## Interpretation")
@@ -577,6 +669,9 @@ def render_json(
             "exit_trigger":  _exit_trigger_kind(deal.get("exit_trigger")),
         }
 
+    open_pairs_count   = sum(1 for p in pairs if p.is_open)
+    closed_pairs_count = len(pairs) - open_pairs_count
+
     payload = {
         "paper_slug": paper_slug,
         "live_slug": live_slug,
@@ -584,11 +679,16 @@ def render_json(
         "window_s": window_s,
         "paper_total": len(paper_deals),
         "live_total": len(live_deals),
+        "paper_open":   sum(1 for d in paper_deals if _deal_is_open(d)),
+        "live_open":    sum(1 for d in live_deals  if _deal_is_open(d)),
+        "closed_pairs": closed_pairs_count,
+        "open_pairs":   open_pairs_count,
         "pairs": [
             {
                 "paper": _deal(pair.paper),
                 "live": _deal(pair.live),
                 "delta_s": pair.delta_s,
+                "is_open": pair.is_open,
                 "flags": pair.flags,
             }
             for pair in pairs
