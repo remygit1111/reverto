@@ -35,7 +35,7 @@ import ccxt
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -1080,6 +1080,20 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 async def index():
     f = STATIC_DIR / "index.html"
     return HTMLResponse(f.read_text(encoding="utf-8") if f.exists() else "<h1>Not found</h1>")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve the multi-res ICO from web/static/ at the canonical root
+    path. Browsers hit /favicon.ico on every pageload regardless of
+    whatever <link rel="icon"> the HTML declares, and they do it
+    before the session cookie is set — which is why /favicon.ico is
+    already in AuthMiddleware._PUBLIC_PATHS.
+    """
+    f = STATIC_DIR / "favicon.ico"
+    if not f.exists():
+        raise HTTPException(status_code=404, detail="favicon missing")
+    return FileResponse(f, media_type="image/x-icon")
 
 
 def _compute_summary(bots: list[dict]) -> dict:
