@@ -18,7 +18,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import paths
+from core import database, paths
 from web.app import BotInfo, BotRegistry
 
 
@@ -45,8 +45,11 @@ _MINIMAL_YAML = {
 
 @pytest.fixture
 def sandbox_registry(tmp_path, monkeypatch):
-    """Point BASE_DIR at tmp_path so a fresh registry scans the
-    sandboxed config/bots/ tree instead of the real one."""
+    """Point BASE_DIR at tmp_path AND at a fresh SQLite DB so the
+    Phase-2 cross-check (``_scan_user_dirs`` → ``users`` table) has
+    something to look at. The default init_db() seed gives us user
+    id=1 (admin); tests that need additional users call
+    ``_seed_user()`` inside their body."""
     monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
     # The BotRegistry module-level constants are bound to the real
     # paths at import time. Rebind them on the `web.app` module so
@@ -56,7 +59,22 @@ def sandbox_registry(tmp_path, monkeypatch):
     monkeypatch.setattr(webapp, "CONFIG_DIR", tmp_path / "config" / "bots")
     monkeypatch.setattr(webapp, "LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr(webapp, "PID_DIR", tmp_path / "logs" / "pids")
-    return tmp_path
+    # Per-test DB so get_active_user_ids() has a predictable set.
+    database.set_db_path(tmp_path / "registry_test.db")
+    database.init_db()
+    yield tmp_path
+    database.close_db()
+
+
+def _seed_user(user_id: int, username: str, active: int = 1) -> None:
+    """Insert an extra users row alongside the seeded admin (id=1).
+    Used by tests that register bots under user_ids other than 1."""
+    conn = database.get_db()
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO users (id, username, active) VALUES (?, ?, ?)",
+            (user_id, username, active),
+        )
 
 
 def _write_bot_yaml(base: Path, user_id: int, slug: str, name: str) -> None:
@@ -72,6 +90,7 @@ class TestCompositeKey:
     def test_two_users_same_slug_do_not_collide(self, sandbox_registry):
         """The whole point of Phase 2: user 1 and user 2 can own a
         bot named ``rsi_test`` without stepping on each other."""
+        _seed_user(2, "bob")
         _write_bot_yaml(sandbox_registry, 1, "rsi_test", "User 1's RSI")
         _write_bot_yaml(sandbox_registry, 2, "rsi_test", "User 2's RSI")
 
@@ -84,6 +103,7 @@ class TestCompositeKey:
         assert bot_a is not bot_b
 
     def test_all_filters_by_user(self, sandbox_registry):
+        _seed_user(2, "bob")
         _write_bot_yaml(sandbox_registry, 1, "alpha", "A1")
         _write_bot_yaml(sandbox_registry, 1, "beta", "B1")
         _write_bot_yaml(sandbox_registry, 2, "gamma", "G2")
@@ -100,6 +120,7 @@ class TestCompositeKey:
     def test_cross_user_lookup_returns_none(self, sandbox_registry):
         """Registry.get(user_id=2, slug=) must NOT find a bot that
         belongs to user 1 — even if no user 2 bot with that slug exists."""
+        _seed_user(2, "bob")
         _write_bot_yaml(sandbox_registry, 1, "only_mine", "Mine")
         reg = BotRegistry()
         assert asyncio.run(reg.get(1, "only_mine")) is not None
@@ -107,6 +128,7 @@ class TestCompositeKey:
 
     def test_begin_start_scoped_per_user(self, sandbox_registry):
         """Claiming the start-slot for (1, slug) must not block (2, slug)."""
+        _seed_user(2, "bob")
         _write_bot_yaml(sandbox_registry, 1, "shared", "One")
         _write_bot_yaml(sandbox_registry, 2, "shared", "Two")
         reg = BotRegistry()
@@ -158,3 +180,84 @@ class TestIgnoresNonNumericSubdirs:
         slugs = {b.slug for b in all_bots}
         assert "good" in slugs
         assert "ghost" not in slugs
+
+
+# ── Audit v24 MEDIUM #2: users-table cross-check ───────────────────────────
+
+
+class TestOrphanUserDirs:
+    """_scan_user_dirs verifieert nu dat een integer-named subdir
+    matcht met een active row in de users tabel. Orphan dirs
+    (operator-fout, stale state, deactivated user) worden gelogd
+    als WARNING met 'orphan' in de message en geskipped."""
+
+    def test_orphan_integer_dir_is_skipped(self, sandbox_registry, caplog):
+        """Seed alleen user 1 (default). Drop config/bots/999/ yaml.
+        Registry mag dit niet oppakken + moet een WARNING loggen."""
+        _write_bot_yaml(sandbox_registry, 1, "legit", "Legit one")
+        _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan")
+
+        with caplog.at_level("WARNING", logger="web.app"):
+            reg = BotRegistry()
+
+        assert (999, "ghost") not in reg._bots
+        assert (1, "legit") in reg._bots
+
+        warnings = [
+            r.message for r in caplog.records
+            if r.levelname == "WARNING" and "orphan" in r.message.lower()
+        ]
+        assert any("999" in w for w in warnings), (
+            f"expected 'orphan' warning mentioning 999, got {warnings}"
+        )
+
+    def test_existing_user_dir_still_scanned(self, sandbox_registry):
+        """Positive-path guard: de default admin user (id=1) blijft
+        gewoon werken. Als we hier falen hebben we per ongeluk de
+        enige productie-user afgeknepen."""
+        _write_bot_yaml(sandbox_registry, 1, "rsi", "Admin's RSI")
+
+        reg = BotRegistry()
+        assert (1, "rsi") in reg._bots
+
+    def test_mixed_orphan_and_valid_dirs(self, sandbox_registry, caplog):
+        """Realistisch scenario: operator heeft een valide user 1
+        dir én een orphan 777 dir. Alleen 1 mag in de registry
+        landen; 777 krijgt een WARNING."""
+        _write_bot_yaml(sandbox_registry, 1, "real", "Real")
+        _write_bot_yaml(sandbox_registry, 777, "fake", "Orphan")
+
+        with caplog.at_level("WARNING", logger="web.app"):
+            reg = BotRegistry()
+
+        assert (1, "real") in reg._bots
+        assert (777, "fake") not in reg._bots
+
+        warnings = [
+            r.message for r in caplog.records
+            if r.levelname == "WARNING" and "orphan" in r.message.lower()
+        ]
+        assert any("777" in w for w in warnings), (
+            f"expected 'orphan' warning mentioning 777, got {warnings}"
+        )
+
+    def test_inactive_user_dir_is_treated_as_orphan(
+        self, sandbox_registry, caplog,
+    ):
+        """Een user met active=0 moet net als een niet-bestaande user
+        behandeld worden. Het cross-check filter moet op active=1
+        staan, niet alleen op ID-bestaan. Anders kan een operator die
+        een tenant deactiveert nog steeds bots voor die tenant in de
+        registry zien verschijnen."""
+        _seed_user(42, "deactivated", active=0)
+        _write_bot_yaml(sandbox_registry, 42, "bot", "Dead tenant")
+
+        with caplog.at_level("WARNING", logger="web.app"):
+            reg = BotRegistry()
+
+        assert (42, "bot") not in reg._bots
+        warnings = [
+            r.message for r in caplog.records
+            if r.levelname == "WARNING" and "orphan" in r.message.lower()
+        ]
+        assert any("42" in w for w in warnings)

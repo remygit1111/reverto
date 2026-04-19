@@ -92,3 +92,21 @@ def get_user_by_username(username: str) -> Optional[User]:
         username=str(row["username"]),
         active=bool(row["active"]),
     )
+
+
+def get_active_user_ids() -> set[int]:
+    """Return the set of user_ids for every row with ``active = 1``.
+
+    Used by ``BotRegistry._scan_user_dirs`` to cross-check integer-
+    named subdirs under ``config/bots/`` against the actual users
+    table — orphan dirs (operator error, stale state, deactivated
+    users) are thereby prevented from silently registering as real
+    tenants. The query is a single indexed scan over the PK and
+    the users table is tiny in Phase 1/2, so calling this per
+    registry refresh (every 5 s at worst) is cheap.
+    """
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id FROM users WHERE active = 1",
+    ).fetchall()
+    return {int(r["id"]) for r in rows}
