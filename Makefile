@@ -133,11 +133,15 @@ parity-compare:
 reset-db:
 	$(PYTHON) scripts/reset_db.py
 
-# wipe-deals — destructive: empties the deals + orders tables (keeps
-# users / backtest_runs / annotations). Used once after the cross-bot
-# deal-id collision fix (2026-04-19): the pre-fix ledger had silently-
-# overwritten rows, so restoring it has no value. Stop every bot via
-# the portal BEFORE running; the script prompts for "WIPE" to confirm.
+# wipe-deals — destructive: empties the deals + orders tables AND
+# resets every logs/<uid>/*.state.json to its "fresh start" shape
+# (balance → initial, open_deals/closed_deals → [], counts + pnl → 0).
+# Each state.json is backed up to <path>.pre_wipe_backup first.
+# Used once after the cross-bot deal-id collision fix (2026-04-19):
+# the pre-fix ledger had silently-overwritten rows, so restoring it
+# has no value. Stop every bot via the portal BEFORE running; the
+# script refuses if any pid-file points at a live process, and also
+# prompts for "WIPE" to confirm.
 wipe-deals:
 	$(PYTHON) scripts/wipe_deals.py
 
