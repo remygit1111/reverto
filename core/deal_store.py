@@ -64,54 +64,171 @@ def _decode_trigger(value: Optional[str]) -> Optional[dict]:
 
 
 # ── Deals / orders ───────────────────────────────────────────────────────────
+#
+# INSERT vs UPDATE vs upsert — the cross-bot-collision fix (2026-04-19).
+#
+# Pre-fix: save_deal used INSERT OR REPLACE. If two bots generated the
+# same deal.id (e.g. both produced "PAPER-0001" from per-instance
+# counters) the second writer silently clobbered the first — no error,
+# no warning, corrupt ledger.
+#
+# Post-fix: we split the write surface into three primitives:
+#   * create_deal — INSERT only, raises IntegrityError on duplicate id.
+#     Callers that know they're opening a new deal use this and retry
+#     with a fresh id on collision. This is the only path that catches
+#     cross-bot id reuse.
+#   * update_deal — UPDATE by (id, user_id, bot_slug). No-op if no row
+#     matches. Used for DCA updates where the row already exists.
+#   * save_deal — backwards-compat upsert: tries UPDATE first, falls
+#     back to INSERT if 0 rows were updated. Cross-owner collisions
+#     still raise IntegrityError because the fallback INSERT hits the
+#     PRIMARY KEY constraint.
+#
+# The new generator (core/ids.py) makes collisions astronomically rare
+# in practice (per-minute 10_000-slot keyspace + DB PRIMARY KEY guard),
+# but the three-way split keeps the DB as the authoritative source of
+# truth — any future generator regression surfaces as IntegrityError
+# instead of silent data loss.
 
-def save_deal(
+
+def _deal_row_tuple(
     deal: "PaperDeal", bot_slug: str, bot_name: str, user_id: int,
-) -> None:
-    """INSERT OR REPLACE the given deal row.
-
-    Called on open, on every DCA (so avg_entry + total_size stay current),
-    and on restart replay from the JSON state file.
-    """
+) -> tuple:
+    """Shared tuple-builder for create_deal / update_deal / save_deal so
+    column order can only drift in one place. Column order matches
+    both INSERT and UPDATE templates below."""
     status = "open" if deal.is_open else "closed"
     opened_at = deal.opened_at.isoformat() if deal.opened_at else _now_iso()
     closed_at = deal.closed_at.isoformat() if deal.closed_at else None
     initial_price = deal.orders[0].price if deal.orders else 0.0
+    return (
+        deal.id,
+        user_id,
+        bot_slug,
+        bot_name,
+        deal.side,
+        status,
+        deal.close_reason,
+        opened_at,
+        closed_at,
+        initial_price,
+        deal.avg_entry_price,
+        deal.close_price,
+        deal.total_size,
+        deal.leverage,
+        deal.pnl_btc,
+        deal.pnl_pct,
+        deal._peak_price,
+        _encode_trigger(getattr(deal, "entry_trigger", None)),
+        _encode_trigger(getattr(deal, "exit_trigger", None)),
+    )
 
+
+_INSERT_DEAL_SQL = """
+    INSERT INTO deals (
+        id, user_id, bot_slug, bot_name, side, status, close_reason,
+        opened_at, closed_at, initial_price, avg_entry,
+        close_price, total_size, leverage, pnl_btc, pnl_pct,
+        peak_price, entry_trigger, exit_trigger
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+_UPDATE_DEAL_SQL = """
+    UPDATE deals
+       SET bot_name = ?,
+           side = ?,
+           status = ?,
+           close_reason = ?,
+           opened_at = ?,
+           closed_at = ?,
+           initial_price = ?,
+           avg_entry = ?,
+           close_price = ?,
+           total_size = ?,
+           leverage = ?,
+           pnl_btc = ?,
+           pnl_pct = ?,
+           peak_price = ?,
+           entry_trigger = ?,
+           exit_trigger = ?
+     WHERE id = ? AND user_id = ? AND bot_slug = ?
+"""
+
+
+def create_deal(
+    deal: "PaperDeal", bot_slug: str, bot_name: str, user_id: int,
+) -> None:
+    """INSERT a new deal row.
+
+    Raises ``sqlite3.IntegrityError`` if a deal with the same id
+    already exists — the caller is expected to either log the
+    collision and retry with a regenerated id (paper_engine's open
+    path) or skip silently (JSON→DB migration on restart).
+    """
+    row = _deal_row_tuple(deal, bot_slug, bot_name, user_id)
     with _write_lock:
         conn = get_db()
         with conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO deals (
-                    id, user_id, bot_slug, bot_name, side, status, close_reason,
-                    opened_at, closed_at, initial_price, avg_entry,
-                    close_price, total_size, leverage, pnl_btc, pnl_pct,
-                    peak_price, entry_trigger, exit_trigger
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    deal.id,
-                    user_id,
-                    bot_slug,
-                    bot_name,
-                    deal.side,
-                    status,
-                    deal.close_reason,
-                    opened_at,
-                    closed_at,
-                    initial_price,
-                    deal.avg_entry_price,
-                    deal.close_price,
-                    deal.total_size,
-                    deal.leverage,
-                    deal.pnl_btc,
-                    deal.pnl_pct,
-                    deal._peak_price,
-                    _encode_trigger(getattr(deal, "entry_trigger", None)),
-                    _encode_trigger(getattr(deal, "exit_trigger", None)),
-                ),
-            )
+            conn.execute(_INSERT_DEAL_SQL, row)
+
+
+def update_deal(
+    deal: "PaperDeal", bot_slug: str, bot_name: str, user_id: int,
+) -> int:
+    """UPDATE an existing deal row scoped to (id, user_id, bot_slug).
+
+    Returns the number of rows affected (0 or 1). A 0 return means the
+    row doesn't exist — the caller decides whether to INSERT or log.
+    Used by the DCA update path where the deal was already persisted
+    on open and only avg_entry / total_size / peak_price need to move.
+    """
+    row = _deal_row_tuple(deal, bot_slug, bot_name, user_id)
+    # UPDATE template order: SET columns first, then WHERE key columns.
+    # Skip id/user_id/bot_slug in the SET list — those identify the row.
+    update_params = (
+        row[3],   # bot_name
+        row[4],   # side
+        row[5],   # status
+        row[6],   # close_reason
+        row[7],   # opened_at
+        row[8],   # closed_at
+        row[9],   # initial_price
+        row[10],  # avg_entry
+        row[11],  # close_price
+        row[12],  # total_size
+        row[13],  # leverage
+        row[14],  # pnl_btc
+        row[15],  # pnl_pct
+        row[16],  # peak_price
+        row[17],  # entry_trigger
+        row[18],  # exit_trigger
+        row[0],   # id (WHERE)
+        row[1],   # user_id (WHERE)
+        row[2],   # bot_slug (WHERE)
+    )
+    with _write_lock:
+        conn = get_db()
+        with conn:
+            cur = conn.execute(_UPDATE_DEAL_SQL, update_params)
+            return cur.rowcount
+
+
+def save_deal(
+    deal: "PaperDeal", bot_slug: str, bot_name: str, user_id: int,
+) -> None:
+    """Upsert: UPDATE if a matching row exists, else INSERT.
+
+    Backwards-compatible wrapper kept so existing call-sites (tests,
+    ``replay_deals_in_transaction``) don't need to know whether a row
+    already exists. Cross-owner collisions — another user or bot
+    holding the same id — still raise IntegrityError because the
+    fallback INSERT hits the PRIMARY KEY constraint. This is the
+    semantic the cross-bot-collision fix is built around: no silent
+    clobber, loud failure.
+    """
+    if update_deal(deal, bot_slug, bot_name, user_id) > 0:
+        return
+    create_deal(deal, bot_slug, bot_name, user_id)
 
 
 def replay_deals_in_transaction(
@@ -127,51 +244,27 @@ def replay_deals_in_transaction(
     """
     if not deals:
         return 0
+    # Restart-replay runs on every boot, so most rows are already in the
+    # DB — we want "add if missing" semantics, not clobber. INSERT OR
+    # IGNORE skips matching rows without raising, and keeps the whole
+    # batch atomic under the single `with conn` transaction.
     with _write_lock:
         conn = get_db()
-        with conn:  # one transaction for the whole batch
+        with conn:
             for deal in deals:
-                status = "open" if deal.is_open else "closed"
-                opened_at = deal.opened_at.isoformat() if deal.opened_at else _now_iso()
-                closed_at = deal.closed_at.isoformat() if deal.closed_at else None
-                initial_price = deal.orders[0].price if deal.orders else 0.0
+                row = _deal_row_tuple(deal, bot_slug, bot_name, user_id)
                 conn.execute(
-                    """
-                    INSERT OR REPLACE INTO deals (
-                        id, user_id, bot_slug, bot_name, side, status, close_reason,
-                        opened_at, closed_at, initial_price, avg_entry,
-                        close_price, total_size, leverage, pnl_btc, pnl_pct,
-                        peak_price, entry_trigger, exit_trigger
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        deal.id,
-                        user_id,
-                        bot_slug,
-                        bot_name,
-                        deal.side,
-                        status,
-                        deal.close_reason,
-                        opened_at,
-                        closed_at,
-                        initial_price,
-                        deal.avg_entry_price,
-                        deal.close_price,
-                        deal.total_size,
-                        deal.leverage,
-                        deal.pnl_btc,
-                        deal.pnl_pct,
-                        deal._peak_price,
-                        _encode_trigger(getattr(deal, "entry_trigger", None)),
-                        _encode_trigger(getattr(deal, "exit_trigger", None)),
+                    _INSERT_DEAL_SQL.replace(
+                        "INSERT INTO deals", "INSERT OR IGNORE INTO deals", 1,
                     ),
+                    row,
                 )
                 for order in deal.orders:
                     order_id = f"{deal.id}:{order.order_number}"
                     placed_at = order.timestamp.isoformat() if order.timestamp else _now_iso()
                     conn.execute(
                         """
-                        INSERT OR REPLACE INTO orders (
+                        INSERT OR IGNORE INTO orders (
                             id, user_id, deal_id, bot_slug, order_number, order_type,
                             price, size, fee_btc, placed_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -199,7 +292,15 @@ def save_order(
     user_id: int,
     fee_btc: float = 0.0,
 ) -> None:
-    """INSERT OR REPLACE a single order row under its parent deal."""
+    """INSERT a single order row under its parent deal.
+
+    Orders don't have an update path — each tick either appends a new
+    row (base order, then DCA N=2,3,...) or does nothing. The old
+    INSERT OR REPLACE was a leftover from the cross-bot-collision bug
+    era (same deal id across bots → overlapping order_ids → silent
+    clobber). Replaced with a plain INSERT so any duplicate surfaces
+    loudly as IntegrityError.
+    """
     order_id = f"{deal_id}:{order.order_number}"
     placed_at = order.timestamp.isoformat() if order.timestamp else _now_iso()
 
@@ -208,7 +309,7 @@ def save_order(
         with conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO orders (
+                INSERT INTO orders (
                     id, user_id, deal_id, bot_slug, order_number, order_type,
                     price, size, fee_btc, placed_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

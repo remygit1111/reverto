@@ -26,6 +26,7 @@ from config.config_loader import load_bot_config
 from config.models import BotConfig, Mode
 from core import credentials, paths
 from core.database import init_db as _init_db
+from core.ids import DEAL_ID_RE
 from core.user import User, get_default_user
 from notifications.telegram import TelegramNotifier
 
@@ -368,7 +369,11 @@ def _audit(action: str, slug: str = "-", key_hint: str = "-") -> None:
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
-_DEAL_ID_RE = re.compile(r"^[A-Z]+-\d{1,6}$")
+# Re-exported from core.ids so the engine, the web routes, and the
+# route-level validators all agree on one canonical shape for
+# YYYYMMDDHHMM-RRRR deal ids. Kept as the underscore-prefixed alias
+# so existing imports from web/routes/deals.py keep working.
+_DEAL_ID_RE = DEAL_ID_RE
 
 # Validator for slugs that come straight off the URL — the slugify()
 # helper above cleans wizard input, but path-parameter slugs must be

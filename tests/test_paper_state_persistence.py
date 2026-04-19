@@ -105,7 +105,15 @@ class TestClosedDealsSurviveRestart:
         assert restored.pnl_btc == pytest.approx(original_pnl_btc, rel=1e-6)
         assert e2.state.balance_btc == pytest.approx(original_balance, rel=1e-9)
 
-    def test_deal_counter_advances_past_restored_ids(self, tmp_path):
+    def test_new_ids_are_globally_unique_after_restore(self, tmp_path):
+        """Post-collision-fix (2026-04-19): the old per-instance
+        counter that needed to be re-synced past restored IDs is
+        gone. Each ``new_deal_id()`` call mints a fresh globally-
+        unique YYYYMMDDHHMM-RRRR id. This test pins the invariant
+        that a fresh engine after restore still produces ids distinct
+        from the restored ones — without any counter-sync logic."""
+        from core.ids import DEAL_ID_RE
+
         sf = tmp_path / "bot.state.json"
         e1 = _make_engine(sf)
         for i in (1, 2, 7):
@@ -115,9 +123,13 @@ class TestClosedDealsSurviveRestart:
         e1._write_state(80000.0, is_open=True)
 
         e2 = _make_engine(sf)
-        # Next ID must skip past the highest restored ID (7).
         next_id = e2.state.new_deal_id()
-        assert next_id == "PAPER-0008"
+        # New id has the new format...
+        assert DEAL_ID_RE.match(next_id), (
+            f"Expected YYYYMMDDHHMM-RRRR, got {next_id!r}"
+        )
+        # ...and doesn't collide with the restored legacy-format ids.
+        assert next_id not in {"PAPER-0001", "PAPER-0002", "PAPER-0007"}
 
 
 class TestOpenDealSurvivesRestart:

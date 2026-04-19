@@ -128,13 +128,22 @@ class PaperState:
         self.initial_balance_btc = initial_balance_btc
         self.open_deals: dict[str, PaperDeal] = {}
         self.closed_deals: list[PaperDeal] = []
-        self._deal_counter = 0
 
     def new_deal_id(self) -> str:
-        """Generate a unique deal ID."""
-        with self._lock:
-            self._deal_counter += 1
-            return f"PAPER-{self._deal_counter:04d}"
+        """Generate a globally-unique deal ID (YYYYMMDDHHMM-RRRR).
+
+        Replaces the old per-instance ``PAPER-NNNN`` counter. The
+        per-bot counter silently collided across bots — two engines
+        both starting at 0001 produced the same id, and the DB's
+        INSERT OR REPLACE clobbered one row with the other (cross-bot
+        deal-id collision bug, fixed 2026-04-19). The new ID is
+        globally unique, time-sortable as a string, and validated
+        through ``core.ids.DEAL_ID_RE`` at every ingress boundary.
+        Lock-free: the generator is stateless, so no counter contention
+        across the engine's notify + monitor threads.
+        """
+        from core.ids import generate_deal_id
+        return generate_deal_id()
 
     def open_deal(self, deal: PaperDeal):
         """Register a new open deal."""

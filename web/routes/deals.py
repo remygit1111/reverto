@@ -43,7 +43,7 @@ def _validate_deal_id(deal_id: str) -> None:
     if not _DEAL_ID_RE.match(deal_id):
         raise HTTPException(
             status_code=422,
-            detail="Invalid deal_id format (expected e.g. PAPER-0001)",
+            detail="Invalid deal_id format (expected e.g. 202604191342-7392)",
         )
 
 

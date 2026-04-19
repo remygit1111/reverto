@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 
 
-def _make_deal(deal_id="PAPER-0001"):
+def _make_deal(deal_id="202604191342-0001"):
     return PaperDeal(
         id=deal_id, bot_name="test_bot", symbol="BTC/USD",
         side="long", leverage=1,
@@ -75,7 +75,7 @@ class TestDealEditSentinel:
 
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
-        sentinel = log_dir / "test_bot.deal_edit_PAPER-0001"
+        sentinel = log_dir / "test_bot.deal_edit_202604191342-0001"
         sentinel.write_text(json.dumps({
             "tp_override": {"enabled": True, "target_pct": 5.5},
             "sl_override": {"enabled": True, "type": "trailing", "pct": 3.0},
@@ -84,7 +84,7 @@ class TestDealEditSentinel:
 
         engine._check_deal_sentinels(80000.0)
 
-        d = engine.state.open_deals["PAPER-0001"]
+        d = engine.state.open_deals["202604191342-0001"]
         assert d._tp_override == {"enabled": True, "target_pct": 5.5}
         assert d._sl_override == {"enabled": True, "type": "trailing", "pct": 3.0}
         assert d._dca_enabled is False
@@ -97,7 +97,7 @@ class TestDealEditSentinel:
 
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
-        sentinel = log_dir / "test_bot.deal_edit_PAPER-0001"
+        sentinel = log_dir / "test_bot.deal_edit_202604191342-0001"
         sentinel.write_text("NOT JSON {{{")
 
         engine._check_deal_sentinels(80000.0)
@@ -113,12 +113,12 @@ class TestDealCloseSentinel:
 
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
-        sentinel = log_dir / "test_bot.deal_close_PAPER-0001"
+        sentinel = log_dir / "test_bot.deal_close_202604191342-0001"
         sentinel.write_text("")
 
         engine._check_deal_sentinels(82000.0)
 
-        assert "PAPER-0001" not in engine.state.open_deals
+        assert "202604191342-0001" not in engine.state.open_deals
         assert len(engine.state.closed_deals) == 1
         assert engine.state.closed_deals[0].close_reason == "manual"
         assert not sentinel.exists()
@@ -134,15 +134,15 @@ class TestConcurrentSentinels:
         log_dir.mkdir(exist_ok=True)
         # Write both — glob order is filesystem-dependent but both
         # should be consumed without crashing.
-        (log_dir / "test_bot.deal_edit_PAPER-0001").write_text(
+        (log_dir / "test_bot.deal_edit_202604191342-0001").write_text(
             json.dumps({"tp_override": {"target_pct": 9.9}})
         )
-        (log_dir / "test_bot.deal_close_PAPER-0001").write_text("")
+        (log_dir / "test_bot.deal_close_202604191342-0001").write_text("")
 
         engine._check_deal_sentinels(82000.0)
 
         # Both sentinels consumed
-        assert not (log_dir / "test_bot.deal_edit_PAPER-0001").exists()
-        assert not (log_dir / "test_bot.deal_close_PAPER-0001").exists()
+        assert not (log_dir / "test_bot.deal_edit_202604191342-0001").exists()
+        assert not (log_dir / "test_bot.deal_close_202604191342-0001").exists()
         # The deal is closed (close sentinel wins if edit runs first)
-        assert "PAPER-0001" not in engine.state.open_deals
+        assert "202604191342-0001" not in engine.state.open_deals

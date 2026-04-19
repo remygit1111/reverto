@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -132,6 +132,14 @@ parity-compare:
 #             before the first boot on the new v3 schema.
 reset-db:
 	$(PYTHON) scripts/reset_db.py
+
+# wipe-deals — destructive: empties the deals + orders tables (keeps
+# users / backtest_runs / annotations). Used once after the cross-bot
+# deal-id collision fix (2026-04-19): the pre-fix ledger had silently-
+# overwritten rows, so restoring it has no value. Stop every bot via
+# the portal BEFORE running; the script prompts for "WIPE" to confirm.
+wipe-deals:
+	$(PYTHON) scripts/wipe_deals.py
 
 # migrate-fs — Phase-2 layout migration (destructive but idempotent).
 # Stop every bot via the portal before running. Moves per-bot config +

@@ -493,8 +493,13 @@ class TestDealEndpoints:
     def test_patch_invalid_deal_id_is_422(self, auth_client):
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
-        # Lowercase, spaces, special chars — all must be rejected
-        for bad_id in ["evil-inject", "paper-001", "PAPER-0001;rm", "X" * 20]:
+        # Post-collision-fix format is YYYYMMDDHHMM-RRRR. Legacy
+        # PAPER-NNNN IDs now also fail validation (intentional — old
+        # IDs should never reappear from operator tooling).
+        for bad_id in [
+            "evil-inject", "paper-001", "202604191342-0001;rm",
+            "X" * 20, "PAPER-0001",
+        ]:
             r = auth_client.patch(
                 f"/api/bots/test/deals/{bad_id}",
                 json={"tp_enabled": True},
@@ -506,13 +511,13 @@ class TestDealEndpoints:
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.patch(
-            "/api/bots/test/deals/PAPER-0001",
+            "/api/bots/test/deals/202604191342-0001",
             json={"tp_enabled": True, "tp_target_pct": 3.5},
         )
         assert r.status_code == 200
         assert r.json().get("ok") is True
         # Clean up sentinel — Phase-2 layout puts it under logs/<user>/.
-        sentinel = paths.user_logs_dir(1) / "test.deal_edit_PAPER-0001"
+        sentinel = paths.user_logs_dir(1) / "test.deal_edit_202604191342-0001"
         if sentinel.exists():
             sentinel.unlink()
 
@@ -521,12 +526,12 @@ class TestDealEndpoints:
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
-            "/api/bots/test/deals/PAPER-0002",
+            "/api/bots/test/deals/202604191342-0002",
             params={"action": "cancel"},
         )
         assert r.status_code == 200
         assert r.json().get("action") == "cancel"
-        sentinel = paths.user_logs_dir(1) / "test.deal_cancel_PAPER-0002"
+        sentinel = paths.user_logs_dir(1) / "test.deal_cancel_202604191342-0002"
         if sentinel.exists():
             sentinel.unlink()
 
@@ -535,12 +540,12 @@ class TestDealEndpoints:
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
-            "/api/bots/test/deals/PAPER-0003",
+            "/api/bots/test/deals/202604191342-0003",
             params={"action": "close"},
         )
         assert r.status_code == 200
         assert r.json().get("action") == "close"
-        sentinel = paths.user_logs_dir(1) / "test.deal_close_PAPER-0003"
+        sentinel = paths.user_logs_dir(1) / "test.deal_close_202604191342-0003"
         if sentinel.exists():
             sentinel.unlink()
 
@@ -557,7 +562,7 @@ class TestDealEndpoints:
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
-            "/api/bots/test/deals/PAPER-0001",
+            "/api/bots/test/deals/202604191342-0001",
             params={"action": "nuke"},
         )
         assert r.status_code == 400
