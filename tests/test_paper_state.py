@@ -122,9 +122,21 @@ class TestPaperState:
     def test_win_rate_empty(self, state):
         assert state._win_rate() == 0.0
 
-    def test_deal_id_increments(self, state):
-        assert state.new_deal_id() == "PAPER-0001"
-        assert state.new_deal_id() == "PAPER-0002"
+    def test_deal_id_shape(self, state):
+        """Post-collision-fix: ids are YYYYMMDDHHMM-RRRR (see core/ids
+        + test_ids.py). No per-instance counter, so sequential calls
+        can't be asserted by value — only by format.
+        """
+        from core.ids import DEAL_ID_RE
+        assert DEAL_ID_RE.match(state.new_deal_id())
+        assert DEAL_ID_RE.match(state.new_deal_id())
+
+    def test_deal_ids_are_unique(self, state):
+        """100 rapid calls must produce distinct ids (same-minute
+        collision probability from the 10_000-slot random suffix is
+        below the birthday-problem floor at this sample)."""
+        ids = {state.new_deal_id() for _ in range(100)}
+        assert len(ids) >= 98
 
     def test_open_snapshot_is_copy(self, state, deal):
         state.open_deal(deal)

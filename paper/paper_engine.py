@@ -4,7 +4,7 @@
 # web portal can read it without shared memory.
 
 import queue
-import re
+import sqlite3
 import threading
 import time
 import logging
@@ -21,6 +21,7 @@ from core.liquidation_guard import LiquidationGuard
 from core.drawdown_guard import DrawdownGuard, DrawdownGuardConfig
 from core import deal_store
 from core.database import init_db as _init_db
+from core.ids import DEAL_ID_RE
 
 # Backwards-compatible aliases for the deal-serialisation helpers. Tests
 # and other external callers import these from paper.paper_engine; they
@@ -31,13 +32,14 @@ _dict_to_deal = dict_to_deal
 
 logger = logging.getLogger(__name__)
 
-# Deal IDs produced by PaperState.new_deal_id() follow "PAPER-0001".
-# Validate extracted sentinel filenames against this shape so a spoofed
-# filename (e.g. "mybot.deal_close_..") cannot flow through to a dict
-# lookup or downstream log. The web layer already enforces the same
-# regex on inbound POSTs (web/app.py:_DEAL_ID_RE); this is defence in
-# depth at the engine boundary.
-_DEAL_ID_RE = re.compile(r"^[A-Z]+-\d{1,6}$")
+# Deal IDs produced by PaperState.new_deal_id() follow YYYYMMDDHHMM-RRRR
+# (see core/ids.py). Validate extracted sentinel filenames against this
+# shape so a spoofed filename (e.g. "mybot.deal_close_..") cannot flow
+# through to a dict lookup or downstream log. The web layer enforces the
+# same regex on inbound POSTs (web/app.py re-exports core.ids.DEAL_ID_RE
+# as _DEAL_ID_RE); this alias keeps back-compat for anyone importing the
+# private attribute from this module.
+_DEAL_ID_RE = DEAL_ID_RE
 
 # ═══ Tick-loop tuning constants ═════════════════════════════════════════════
 # Previously scattered magic numbers; hoisted here so operators and
@@ -269,6 +271,14 @@ class PaperEngine:
         return True
 
     def _db_save_deal(self, deal: PaperDeal) -> None:
+        """Upsert an already-tracked deal. Used by DCA / state migration.
+
+        Treats cross-owner collision (sqlite3.IntegrityError) as an
+        application bug — logs WARNING and gives up for this tick
+        rather than silently regenerating the id underneath an already
+        in-memory deal. For the new-deal path use
+        ``_db_create_deal_with_retry`` which owns the id regeneration.
+        """
         if not self._bot_slug:
             return
         try:
@@ -277,6 +287,48 @@ class PaperEngine:
             )
         except Exception as e:
             logger.warning("deal_store.save_deal failed: %s", e)
+
+    def _db_create_deal_with_retry(
+        self, deal: PaperDeal, max_attempts: int = 3,
+    ) -> bool:
+        """INSERT a brand-new deal row with collision retry.
+
+        The new globally-unique id generator (core/ids.py) makes
+        same-minute collisions a 1-in-10_000 event; a 3-attempt retry
+        takes the compound probability to 1e-12 which is effectively
+        impossible. On exhaustion we log ERROR and refuse the deal —
+        caller must skip the in-memory state mutation too so the
+        engine doesn't track a deal the DB doesn't know about.
+
+        Returns True on success, False on slug-less engine or after
+        ``max_attempts`` consecutive IntegrityErrors.
+        """
+        if not self._bot_slug:
+            return False
+        for attempt in range(1, max_attempts + 1):
+            try:
+                deal_store.create_deal(
+                    deal, self._bot_slug, self.config.name,
+                    user_id=self.user_id,
+                )
+                return True
+            except sqlite3.IntegrityError:
+                old_id = deal.id
+                deal.id = self.state.new_deal_id()
+                logger.warning(
+                    "Deal id collision on %s (attempt %d/%d) — "
+                    "retrying as %s",
+                    old_id, attempt, max_attempts, deal.id,
+                )
+            except Exception as e:
+                logger.warning("deal_store.create_deal failed: %s", e)
+                return False
+        logger.error(
+            "Deal id collision not resolved after %d attempts — "
+            "refusing to open deal (last id attempted: %s)",
+            max_attempts, deal.id,
+        )
+        return False
 
     def _db_save_order(self, order: PaperOrder, deal_id: str, fee: float) -> None:
         if not self._bot_slug:
@@ -381,10 +433,9 @@ class PaperEngine:
 
         Called once from __init__. If no state file exists we keep the
         clean PaperState created above (first ever startup). If one does
-        exist we rehydrate balance, fees, deal counter, closed history
-        and any open deal that was in flight when the bot stopped — so
-        that the engine resumes monitoring it instead of silently
-        forgetting it.
+        exist we rehydrate balance, fees, closed history and any open
+        deal that was in flight when the bot stopped — so the engine
+        resumes monitoring it instead of silently forgetting it.
 
         Orphan .tmp cleanup and raw JSON parsing live in StateIO.load();
         this method owns only the "what to do with the restored dict"
@@ -444,18 +495,10 @@ class PaperEngine:
             except Exception as e:
                 logger.warning("Skipping unparseable open deal: %s", e)
 
-        # Deal counter must be ahead of any restored ID so new_deal_id()
-        # never collides with a resurrected one. IDs follow PAPER-XXXX.
-        max_idx = 0
-        for deal in list(self.state.open_deals.values()) + self.state.closed_deals:
-            try:
-                idx = int(deal.id.rsplit("-", 1)[-1])
-                if idx > max_idx:
-                    max_idx = idx
-            except (ValueError, AttributeError):
-                continue
-        if max_idx > self.state._deal_counter:
-            self.state._deal_counter = max_idx
+        # Post-collision-fix (2026-04-19): the old per-instance counter
+        # that needed to be advanced past restored IDs is gone. Deal
+        # IDs are now globally-unique YYYYMMDDHHMM-RRRR strings minted
+        # on demand by core.ids — no state to resynchronise on restart.
 
         logger.info(
             "Resumed state from %s — balance=%.8f BTC, open=%d, closed=%d, fees=%.8f",
@@ -1117,7 +1160,13 @@ class PaperEngine:
         return size * self.config.dca.taker_fee
 
     def _open_deal(self, price: float, entry_trigger: dict | None = None):
-        """Open a new paper deal at the current price."""
+        """Open a new paper deal at the current price.
+
+        Ordering: persist to DB FIRST (so a cross-bot collision fails
+        loud before we mutate in-memory state), then record balance
+        deduction + notify. The DB create path uses retry-with-new-id;
+        on exhaustion the open is refused and state stays clean.
+        """
         deal_id    = self.state.new_deal_id()
         base_order = PaperOrder(
             order_number=1,
@@ -1151,13 +1200,25 @@ class PaperEngine:
             entry_trigger=entry_trigger if isinstance(entry_trigger, dict) else None,
         )
 
+        # Slug-less engines (tests that skip DB wiring) persist nothing
+        # but must still open the deal in-memory — so the create-retry
+        # is only gated on having a slug. With a slug, refuse the open
+        # entirely on DB failure so in-memory never diverges from DB.
+        if self._bot_slug:
+            if not self._db_create_deal_with_retry(deal):
+                logger.error(
+                    "Refusing to open deal — DB create failed for %s",
+                    self.config.name,
+                )
+                return
+
         self.state.open_deal(deal)
         fee = self._calc_fee(base_order.size)
-        self._deduct_balance(fee, f"entry_fee:{deal_id}")
+        # Use the possibly-rewritten deal.id (retry may have replaced it).
+        self._deduct_balance(fee, f"entry_fee:{deal.id}")
         self._fees_paid_btc    += fee
-        self._db_save_deal(deal)
         self._db_save_order(base_order, deal.id, fee)
-        logger.info(f"Deal opened: {deal_id} at ${price:,.2f} (fee {fee:.8f} BTC)")
+        logger.info(f"Deal opened: {deal.id} at ${price:,.2f} (fee {fee:.8f} BTC)")
 
         self._notify(
             self.notifier.notify_entry,

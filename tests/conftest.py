@@ -30,8 +30,17 @@ def make_order(price, size=0.001, order_type="base", order_number=1):
     return PaperOrder(order_number=order_number, price=price, size=size,
                       timestamp=datetime.now(UTC), order_type=order_type)
 
+def make_deal_id(suffix: int = 1) -> str:
+    """Return a well-formed deal id in the post-collision-fix format
+    (YYYYMMDDHHMM-RRRR) for test fixtures. The timestamp prefix is
+    fixed so assertions stay deterministic — we don't rely on the
+    real generator, which uses wall-clock UTC. ``suffix`` goes into
+    the random-slot half so tests can mint distinct IDs."""
+    return f"202604191342-{suffix:04d}"
+
+
 def make_deal(entry_price=80000.0, size=0.001, side="long", leverage=1):
-    return PaperDeal(id="TEST-0001", bot_name="test-bot", symbol="BTC/USD",
+    return PaperDeal(id=make_deal_id(1), bot_name="test-bot", symbol="BTC/USD",
                      side=side, leverage=leverage, orders=[make_order(entry_price, size)])
 
 def make_notifier():
