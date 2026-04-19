@@ -541,6 +541,35 @@ class BotInfo:
         }
 
 
+# ── Fail-closed cache voor _scan_user_dirs (audit v25 Finding #1) ────────────
+# Vóór de fix viel _scan_user_dirs bij een get_active_user_ids()-failure
+# terug op integer-name-only matching — fail-open. In een multi-user
+# Phase-3 omgeving kan één transient DB-glitch dan stil een orphan dir
+# als valide tenant accepteren. Nu houden we de laatste bekend-goede
+# users-set vast en hergebruiken die tot ``_MAX_STALE_REFRESHES`` achter
+# elkaar falen; daarna returnt de scan leeg (fail-closed) met een
+# ERROR in de log.
+#
+# _previously_logged_orphans voorkomt ook de Finding #7 log-spam:
+# een orphan dir die bij elke 5-seconden scan opnieuw gelogd zou
+# worden komt hier maar eenmaal doorheen totdat 'ie weer verschijnt.
+_cached_active_users: set[int] | None = None
+_db_failure_count: int = 0
+_MAX_STALE_REFRESHES: int = 5  # ≈ 25 s bij de 5 s registry-refresh TTL
+_previously_logged_orphans: set[Path] = set()
+
+
+def _reset_user_dirs_cache() -> None:
+    """Reset de module-level fail-closed state. Alleen voor gebruik
+    door tests — productie-code raakt deze globals niet direct aan.
+    """
+    global _cached_active_users, _db_failure_count
+    global _previously_logged_orphans
+    _cached_active_users = None
+    _db_failure_count = 0
+    _previously_logged_orphans = set()
+
+
 class BotRegistry:
     """In-memory index of every bot YAML keyed on ``(user_id, slug)``.
 
@@ -572,38 +601,82 @@ class BotRegistry:
     def _scan_user_dirs(self) -> list[tuple[int, Path]]:
         """Return a list of ``(user_id, user_dir)`` for every integer-
         named subdirectory under CONFIG_DIR whose id matches an active
-        row in the users table. Non-integer names (e.g. leftover
-        backup folders) are skipped silently — they're not errors,
-        just not user dirs. Integer-named dirs that don't match any
-        active user (orphans from operator mistakes, stale state,
-        deactivated tenants) are skipped with a WARNING so the log
-        surfaces the drift.
-        """
-        out: list[tuple[int, Path]] = []
-        if not CONFIG_DIR.exists():
-            return out
+        row in the users table.
 
-        # Cross-check tegen de users tabel zodat orphan dirs niet
-        # stilletjes als echte tenant in de registry landen. Eén query
-        # per refresh (5 s TTL in de caller), goedkoop op de PK-index.
-        # Importeer hier binnen de functie zodat circular imports
-        # niet optreden als core.user ooit bij init naar web.app zou
-        # willen kijken.
+        Non-integer names (backup folders, operator-placed directories)
+        are skipped silently. Integer-named dirs that don't match any
+        active user (operator typo, stale state, deactivated tenant)
+        are skipped with a WARNING — but only once per drift event,
+        not per 5 s scan (see ``_previously_logged_orphans``).
+
+        Fail-closed at DB-failure (audit v25 Finding #1): if
+        ``get_active_user_ids()`` raises, we reuse the last bekend-
+        goede set for up to ``_MAX_STALE_REFRESHES`` cycles; after
+        that we return an empty list and log ERROR. A single transient
+        glitch therefore never surfaces an orphan as a tenant.
+        """
+        global _cached_active_users, _db_failure_count
+        global _previously_logged_orphans
+
+        out: list[tuple[int, Path]] = []
+
+        # Cross-check tegen de users tabel. Importeer hier binnen de
+        # functie zodat circular imports niet optreden als core.user
+        # ooit bij init naar web.app zou willen kijken. De DB-query
+        # komt vóór de CONFIG_DIR.exists() short-circuit zodat de
+        # cache-invariant (ververst bij elke scan) onafhankelijk is
+        # van of er al bot-yamls op disk staan — een fresh install
+        # zonder yamls populeert alsnog de cache zodat latere failures
+        # niet direct fail-closed gaan.
         try:
             from core.user import get_active_user_ids
-            active = get_active_user_ids()
+            active: set[int] = get_active_user_ids()
+            _cached_active_users = active
+            _db_failure_count = 0
         except Exception as e:
-            # Als de DB nog niet bestaat (bijvoorbeeld tijdens een
-            # eerste boot vóór init_db) fallen we terug op het oude
-            # gedrag: alle integer dirs zien we als valid. Beter dan
-            # de boot te crashen op een transient connection issue.
+            _db_failure_count += 1
+            if (
+                _cached_active_users is None
+                or _db_failure_count > _MAX_STALE_REFRESHES
+            ):
+                logger.error(
+                    "_scan_user_dirs DB-failure: %s "
+                    "(failure count=%d, cache=%s). Returning empty "
+                    "registry (fail-closed). Reason: %s",
+                    (
+                        "no prior cache"
+                        if _cached_active_users is None
+                        else f">{_MAX_STALE_REFRESHES} stale cycles"
+                    ),
+                    _db_failure_count,
+                    (
+                        "empty"
+                        if _cached_active_users is None
+                        else f"{len(_cached_active_users)} users"
+                    ),
+                    e,
+                )
+                # Clear orphan dedup — als de registry leeg is heeft
+                # een volgende scan (bv. na DB-recovery) een schone
+                # lei nodig om orphans opnieuw te signaleren.
+                _previously_logged_orphans = set()
+                return []
             logger.warning(
-                "could not cross-check user dirs against users table "
-                "(%s) — falling back to integer-name-only matching",
-                e,
+                "_scan_user_dirs DB-failure (%d/%d stale cycles, "
+                "using cached users-set). Reason: %s",
+                _db_failure_count, _MAX_STALE_REFRESHES, e,
             )
-            active = None
+            active = _cached_active_users
 
+        # `active` is nu een vertrouwde set (live óf cache). Als er
+        # nog geen CONFIG_DIR is (fresh install) is er niks te
+        # scannen — return de lege lijst met de cache al netjes
+        # ververst hierboven.
+        if not CONFIG_DIR.exists():
+            _previously_logged_orphans = set()
+            return out
+
+        current_orphans: set[Path] = set()
         for child in sorted(CONFIG_DIR.iterdir()):
             if not child.is_dir():
                 continue
@@ -611,13 +684,19 @@ class BotRegistry:
                 uid = int(child.name)
             except ValueError:
                 continue
-            if active is not None and uid not in active:
+            if uid in active:
+                out.append((uid, child))
+                continue
+            current_orphans.add(child)
+            if child not in _previously_logged_orphans:
                 logger.warning(
                     "orphan user dir %s (no matching active user in DB), skipped",
                     str(child),
                 )
-                continue
-            out.append((uid, child))
+        # Dedup-baseline voor de volgende scan. Orphans die verdwenen
+        # zijn (operator ruimt op) vallen uit de set, en als ze ooit
+        # terugkomen worden ze opnieuw gelogd.
+        _previously_logged_orphans = current_orphans
         return out
 
     def _refresh_locked(self) -> None:
