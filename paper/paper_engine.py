@@ -19,7 +19,7 @@ from paper.state_io import StateIO, deal_to_dict, dict_to_deal
 from strategies.indicator_engine import IndicatorEngine
 from core.liquidation_guard import LiquidationGuard
 from core.drawdown_guard import DrawdownGuard, DrawdownGuardConfig
-from core import deal_store
+from core import deal_store, paths
 from core.database import init_db as _init_db
 from core.ids import DEAL_ID_RE
 
@@ -981,12 +981,15 @@ class PaperEngine:
     def _check_deal_sentinels(self, price: float):
         """Consume deal_edit / deal_cancel / deal_close sentinel files.
 
-        The portal writes these to logs/{slug}.deal_{action}_{deal_id}
-        and the engine picks them up on the next tick. This is the same
-        fire-and-forget pattern as the manual_trigger sentinel.
+        The portal writes these to
+        ``logs/<user_id>/{slug}.deal_{action}_{deal_id}`` via
+        ``paths.user_logs_dir(user.id)`` (see web/routes/deals.py:184).
+        The engine must scan the same user-scoped directory; a bare
+        ``Path("logs")`` would miss every sentinel in Phase-2 layout
+        — bug found 2026-04-19 during operator deal-close testing.
         """
         slug = self.config.name.lower().replace(" ", "_")
-        log_dir = Path("logs")
+        log_dir = paths.user_logs_dir(self.user_id)
         if not log_dir.exists():
             return
         for sentinel in log_dir.glob(f"{slug}.deal_*"):
