@@ -20,8 +20,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.database import get_db, init_db, set_db_path  # noqa: E402
 from scripts.parity_compare import (  # noqa: E402
     DEFAULT_MATCH_WINDOW_S,
+    MIN_DEALS_FOR_PARITY_VERDICT,
     Pair,
     _aggregates,
+    _interpretation,
     compute_flags,
     match_deals,
     render_json,
@@ -395,9 +397,13 @@ class TestReportGeneration:
         ])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Paper deals      | 0" in out
-        assert "Live deals       | 0" in out
-        assert "Matched pairs    | 0" in out
+        # Summary is now a paper | live matrix; the empty-state row
+        # reads "Total deals | 0 | 0".
+        assert "Total deals" in out
+        assert "Matched pairs (total)" in out
+        # Empty-state interpretation fires, not "Low parity".
+        assert "No deals yet" in out
+        assert "Low parity" not in out
 
     def test_custom_window(self, capsys):
         """Pairs that match with window=120 must STOP matching at
@@ -411,8 +417,8 @@ class TestReportGeneration:
         assert rc == 0
         out = capsys.readouterr().out
         # With window=10 only LIV-1 (12s from PAP-1) is outside window,
-        # so actually NO pairs match. Adjust expectation: expect 0 pairs.
-        assert "Matched pairs    | 0" in out
+        # so actually NO pairs match.
+        assert "Matched pairs (total)  | 0" in out
 
     def test_stderr_summary_line(self, capsys):
         self._seed_happy_path()
@@ -433,8 +439,9 @@ class TestRenderers:
             unmatched_paper=[], unmatched_live=[],
             window_s=120,
         )
-        assert "Paper deals      | 0" in out
-        assert "Live deals       | 0" in out
+        # New format: paper | live matrix row for the empty state.
+        assert "Total deals   | 0 | 0" in out
+        assert "Matched pairs (total)  | 0" in out
         # No unmatched sections when both lists are empty.
         assert "Unmatched paper deals" not in out
 
@@ -466,3 +473,134 @@ class TestRenderers:
         # "Low parity" must NOT appear — that's the old behaviour we
         # explicitly guarded against.
         assert "Low parity" not in body
+
+
+# ── Open-deal symmetry + open-pair matching (fix/parity-compare-open-deals) ──
+
+
+class TestOpenDealSymmetry:
+    """Regressie-guard voor de eerste live parity-run: paper- en live-
+    side moeten open deals identiek tellen. De oude versie loste deze
+    counts asymmetrisch af waardoor "paper=0 live=1" leek op een bug in
+    parity_compare terwijl de werkelijke asymmetrie upstream zat. Deze
+    tests pinnen dat de matrix altijd symmetrisch is."""
+
+    def test_open_deals_counted_symmetrically(self):
+        """1 open paper + 1 open live → matrix toont 1+1, niet 0+1."""
+        paper = [_deal("p", "P-1", 0, status="open")]
+        live  = [_deal("l", "L-1", 0, status="open")]
+        out = render_markdown(
+            "paper", "live", since=None,
+            paper_deals=paper, live_deals=live,
+            # No pairs/unmatched parameter — the caller wiring that up
+            # is tested via main(); here we only pin the summary matrix.
+            pairs=[], unmatched_paper=paper, unmatched_live=live,
+            window_s=120,
+        )
+        # Paper = 1 total, 1 open, 0 closed. Live idem. The matrix row
+        # reads "Total deals | 1 | 1" + "Open | 1 | 1" + "Closed | 0 | 0".
+        assert "Total deals   | 1 | 1" in out
+        assert "Open          | 1 | 1" in out
+        assert "Closed        | 0 | 0" in out
+
+    def test_json_open_counts_symmetric(self):
+        paper = [_deal("p", "P-1", 0, status="open")]
+        live  = [_deal("l", "L-1", 0, status="open")]
+        body = render_json(
+            "paper", "live", since=None,
+            paper_deals=paper, live_deals=live,
+            pairs=[], unmatched_paper=paper, unmatched_live=live,
+            window_s=120,
+        )
+        payload = json.loads(body)
+        assert payload["paper_total"] == 1
+        assert payload["live_total"] == 1
+        assert payload["paper_open"] == 1
+        assert payload["live_open"] == 1
+
+
+class TestOpenPairMatching:
+    """Twee open deals binnen het window horen als open-pair gematcht
+    te worden. De matching is al open/closed-agnostisch; deze tests
+    bevestigen het en pinnen de ``Pair.is_open`` afleiding."""
+
+    def test_open_pair_matches_on_timing_and_price(self):
+        """Beide open, 3 min apart (binnen --window 600), prijs 6bp uit
+        elkaar. Parity-compare behoort dit als open-pair te matchen
+        zodat de operator ziet dat de timing tracks vóór er een close
+        is."""
+        paper = [_deal(
+            "p", "P-1", 0, status="open", initial_price=80_000.0,
+        )]
+        live  = [_deal(
+            "l", "L-1", 180, status="open", initial_price=80_048.0,  # +6bp
+        )]
+        pairs, unp, unl = match_deals(paper, live, window_s=600)
+        assert len(pairs) == 1
+        assert pairs[0].is_open is True
+        assert pairs[0].delta_s == 180
+        assert unp == [] and unl == []
+
+    def test_open_pair_no_match_if_far_apart_in_time(self):
+        """Beide open, 30 min apart — ver buiten elk realistisch window.
+        Parity-compare mag ze niet forceren als pair: dan zou elke
+        open deal uiteindelijk matchen met elke andere en het rapport
+        verliest z'n signaal."""
+        paper = [_deal(
+            "p", "P-1", 0, status="open", initial_price=80_000.0,
+        )]
+        live  = [_deal(
+            "l", "L-1", 1800, status="open", initial_price=80_000.0,
+        )]
+        pairs, unp, unl = match_deals(paper, live, window_s=120)
+        assert pairs == []
+        assert len(unp) == 1 and len(unl) == 1
+
+
+class TestInterpretationVolumeGuard:
+    """De "Low parity, meaningfully different decisions" regel vuurde
+    in de eerste live run op 0/1 deals — wat onzin is op zo'n kleine
+    sample. Deze tests pinnen de volume-aware fallback én de regressie-
+    guard dat op grotere volumes de oude divergentie-waarschuwing
+    gewoon blijft werken."""
+
+    def test_interpretation_with_few_deals(self):
+        """1 paper / 1 live, 0 matches — verdict moet "Early data" zijn,
+        niet "Low parity". Ook met 0/0 of 0/1 mag de match-rate-branch
+        niet triggeren."""
+        lines = _interpretation(
+            match_rate=0.0, agg={}, flag_counts={"_pair_total": 0},
+            total_paper=1, total_live=1,
+            closed_pairs=0, open_pairs=0,
+        )
+        text = " ".join(lines)
+        assert "Low parity" not in text
+        assert "Partial parity" not in text
+        assert "High parity" not in text
+        assert "Early data" in text
+        assert f"≥ {MIN_DEALS_FOR_PARITY_VERDICT}" in text
+
+    def test_interpretation_early_mentions_open_pairs(self):
+        """Bij early-data runs met een open-pair moet de lezer zien dat
+        er al timing-tracking is — niet alleen een kaal "wacht af"."""
+        lines = _interpretation(
+            match_rate=1.0, agg={}, flag_counts={"_pair_total": 1},
+            total_paper=1, total_live=1,
+            closed_pairs=0, open_pairs=1,
+        )
+        text = " ".join(lines)
+        assert "open pair" in text
+
+    def test_interpretation_with_many_deals_preserves_old_behavior(self):
+        """50 paper / 50 live / 0 matches — dit moet nog steeds de
+        "Low parity" divergentie-waarschuwing triggeren. Regressie-
+        guard: de volume-gate mag niet de echte divergentie-detectie
+        per ongeluk dempen."""
+        lines = _interpretation(
+            match_rate=0.0, agg={}, flag_counts={"_pair_total": 0},
+            total_paper=50, total_live=50,
+            closed_pairs=0, open_pairs=0,
+        )
+        text = " ".join(lines)
+        assert "Low parity" in text
+        assert "meaningfully different decisions" in text
