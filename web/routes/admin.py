@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import threading
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
@@ -27,7 +26,6 @@ from fastapi.responses import JSONResponse, Response
 
 from web.app import (
     _audit,
-    _do_portal_restart,
     _request_actor,
     limiter,
     registry,
@@ -136,20 +134,6 @@ async def api_emergency_stop(
         "failed": failed,
         "triggered_by": actor,
     }
-
-
-@router.post("/api/portal/restart")
-@limiter.limit("5/minute")
-async def api_portal_restart(
-    request: Request, actor: str = Depends(_request_actor),
-):
-    """Restart the portal process via os.execv in a background thread
-    so the HTTP response reaches the browser before the replace."""
-    _audit("portal_restart", "-", actor)
-    logger.info("Portal restart requested via API")
-    t = threading.Thread(target=_do_portal_restart, daemon=True)
-    t.start()
-    return {"ok": True, "message": "Portal restarting — reconnecting in a few seconds..."}
 
 
 @router.get("/api/portal/status")
