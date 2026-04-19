@@ -11,10 +11,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is the oldest supported (3.10+ union syntax is used).
         # 3.12 is the primary dev version.
         # 3.13 is smoke-tested; some deps may lag.
-        python-version: ['3.11', '3.12', '3.13']
+        # 3.11 was dropped: pandas-ta==0.4.71b0 requires 3.12+ and
+        # the codebase uses 3.10+ union syntax, so 3.11 support was
+        # aspirational at best.
+        python-version: ['3.12', '3.13']
 
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +31,7 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install -r requirements-ml.txt
           .venv/bin/pip install ruff pip-audit pytest-cov
 
       - name: Lint (ruff)
