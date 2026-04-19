@@ -40,6 +40,16 @@ def generate_deal_id(now_utc: datetime | None = None) -> str:
     ``now_utc`` is an injection point for tests — pass a fixed datetime
     to make the timestamp prefix deterministic. Production callers
     always let it default to ``datetime.now(timezone.utc)``.
+
+    Known edge cases:
+        If the system clock jumps backward (e.g. NTP correction after
+        a drift), the YYYYMMDDHHMM prefix can repeat for up to one
+        minute. Collision resolution is handled at persistence time
+        by ``_db_create_deal_with_retry``: the UNIQUE constraint on
+        deals.id triggers a retry (max 3) with a fresh random
+        suffix. The 4-digit random component (10_000 possibilities
+        per minute) makes repeat collisions statistically negligible
+        even under clock-backward conditions.
     """
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
