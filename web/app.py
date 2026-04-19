@@ -1479,6 +1479,14 @@ def _validate_bot_payload(payload: dict) -> BotConfig:
 # ── WebSocket log streaming ───────────────────────────────────────────────────
 
 class LogBroadcaster:
+    # TODO(phase-3): broadcast() moet per-user filteren zodra multi-
+    # tenant WS-delivery werkelijkheid wordt. Nu werkt het omdat er
+    # maar één user is (id=1) en ws_logs zelf al user-scoped de
+    # registry consulteert — een user kan dus alleen subscriben op
+    # slugs die 'ie bezit, en de tail_logs producer broadcast alleen
+    # naar clients die op een specifieke slug subscriben. Zodra
+    # Phase-3 echte multi-user auth activeert moet connect() ook de
+    # user_id opslaan en broadcast() filteren. Zie docs/phase-3.md §3.
     def __init__(self):
         self._clients: dict[str, set[WebSocket]] = {}
         # asyncio.Lock — essentieel zodra uvicorn meerdere workers krijgt
@@ -1576,6 +1584,15 @@ class StateBroadcaster:
     Mirrors LogBroadcaster, but shares one flat client set (state
     updates are bot-agnostic — every client wants every update).
     """
+    # TODO(phase-3): broadcast() moet per-user filteren zodra multi-
+    # tenant WS-delivery werkelijkheid wordt. Nu werkt het omdat er
+    # maar één user is (id=1) en ws_state hydrateert z'n initial
+    # snapshot al user-scoped uit registry.all(user_id=...). De
+    # periodieke broadcasts uit watch_state_files zijn echter NOG
+    # niet user-gefilterd — zodra Phase-3 echte multi-user auth
+    # activeert moet connect() de user_id opslaan en broadcast()
+    # snapshots filteren op de eigenaar van elke bot. Zie
+    # docs/phase-3.md §3.
 
     def __init__(self):
         self._clients: set[WebSocket] = set()
@@ -1623,6 +1640,12 @@ async def watch_state_files():
     """
     while True:
         try:
+            # Infrastructure task: scan ALL bots across ALL users.
+            # Per-user filtering happens at broadcaster-delivery time
+            # (WS clients are already user-scoped via their session
+            # cookie), so this scan SHOULD cross users. Not a bug —
+            # intentional. See also the TODO on StateBroadcaster for
+            # the Phase-3 delivery-side fix.
             bots = await registry.all()
             for bot in bots:
                 try:
@@ -1666,14 +1689,18 @@ async def watch_state_files():
 async def ws_state(websocket: WebSocket):
     # Session cookie gate — mirrors ws_logs. The legacy ?api_key=
     # query-string fallback was intentionally dropped portal-wide.
-    if not _verify_session_cookie(websocket.cookies.get(_SESSION_COOKIE)):
+    # _ws_extract_user_id is the WS-equivalent of Depends(_request_user);
+    # we use its user_id to scope the initial-snapshot registry call so
+    # one user's client never receives another user's bot state.
+    user_id = _ws_extract_user_id(websocket)
+    if user_id is None:
         await websocket.close(code=4401)
         return
     await state_broadcaster.connect(websocket)
     try:
         # Initial snapshot so the SPA can render without waiting for a
         # file-change event.
-        bots = await registry.all()
+        bots = await registry.all(user_id=user_id)
         snapshot: list[dict] = []
         for bot in bots:
             try:
@@ -1712,7 +1739,12 @@ async def ws_state(websocket: WebSocket):
 async def tail_logs():
     last: dict[str, int] = {}
     while True:
-        # Tail all bot logs + portal log
+        # Infrastructure task: tail ALL bot logs across ALL users.
+        # Per-user filtering happens at broadcaster-delivery time
+        # (WS clients are user-scoped via their session cookie on
+        # connect, see ws_logs), so this scan SHOULD cross users.
+        # Not a bug — intentional. See also the TODO on
+        # LogBroadcaster for the Phase-3 delivery-side fix.
         log_files: list[tuple[str, Path]] = [
             (bot.slug, bot.log_file) for bot in await registry.all()
         ]
