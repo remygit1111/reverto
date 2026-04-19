@@ -103,6 +103,22 @@ class TestDirCreation:
         mode = d.stat().st_mode & 0o777
         assert mode == 0o700, f"credentials dir mode {oct(mode)}, expected 0700"
 
+    def test_credentials_parent_dir_is_0700(self, _sandboxed_base):
+        """Audit v24 LOW #4 regression guard: the PARENT ``credentials/``
+        directory must also be 0700, not just the per-user children.
+        Pre-fix, ``Path.mkdir(parents=True)`` created the parent with
+        the system umask (0755 typically) because the ``mode`` argument
+        only applies to the leaf. A 0755 parent leaks the user-id
+        listing to any local user — the per-user content stays
+        encrypted but the tenant set itself becomes visible."""
+        paths.user_credentials_dir(1)
+        parent = _sandboxed_base / "credentials"
+        mode = parent.stat().st_mode & 0o777
+        assert mode == 0o700, (
+            f"credentials/ parent mode {oct(mode)}, expected 0o700 "
+            f"(v24 LOW #4 regressed)"
+        )
+
     def test_user_keys_dir_is_0700(self, _sandboxed_base):
         d = paths.user_keys_dir()
         mode = d.stat().st_mode & 0o777
