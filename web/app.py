@@ -566,18 +566,51 @@ class BotRegistry:
 
     def _scan_user_dirs(self) -> list[tuple[int, Path]]:
         """Return a list of ``(user_id, user_dir)`` for every integer-
-        named subdirectory under CONFIG_DIR. Non-integer names (e.g.
-        leftover backup folders) are skipped with no warning — they're
-        not errors, just not user dirs."""
+        named subdirectory under CONFIG_DIR whose id matches an active
+        row in the users table. Non-integer names (e.g. leftover
+        backup folders) are skipped silently — they're not errors,
+        just not user dirs. Integer-named dirs that don't match any
+        active user (orphans from operator mistakes, stale state,
+        deactivated tenants) are skipped with a WARNING so the log
+        surfaces the drift.
+        """
         out: list[tuple[int, Path]] = []
         if not CONFIG_DIR.exists():
             return out
+
+        # Cross-check tegen de users tabel zodat orphan dirs niet
+        # stilletjes als echte tenant in de registry landen. Eén query
+        # per refresh (5 s TTL in de caller), goedkoop op de PK-index.
+        # Importeer hier binnen de functie zodat circular imports
+        # niet optreden als core.user ooit bij init naar web.app zou
+        # willen kijken.
+        try:
+            from core.user import get_active_user_ids
+            active = get_active_user_ids()
+        except Exception as e:
+            # Als de DB nog niet bestaat (bijvoorbeeld tijdens een
+            # eerste boot vóór init_db) fallen we terug op het oude
+            # gedrag: alle integer dirs zien we als valid. Beter dan
+            # de boot te crashen op een transient connection issue.
+            logger.warning(
+                "could not cross-check user dirs against users table "
+                "(%s) — falling back to integer-name-only matching",
+                e,
+            )
+            active = None
+
         for child in sorted(CONFIG_DIR.iterdir()):
             if not child.is_dir():
                 continue
             try:
                 uid = int(child.name)
             except ValueError:
+                continue
+            if active is not None and uid not in active:
+                logger.warning(
+                    "orphan user dir %s (no matching active user in DB), skipped",
+                    str(child),
+                )
                 continue
             out.append((uid, child))
         return out

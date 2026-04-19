@@ -19,6 +19,7 @@ from core import database  # noqa: E402
 from core.user import (  # noqa: E402
     DEFAULT_USER,
     User,
+    get_active_user_ids,
     get_default_user,
     get_user_by_id,
     get_user_by_username,
@@ -117,3 +118,44 @@ class TestGetUserByUsername:
         u = get_user_by_username("inactive")
         assert u is not None
         assert u.active is False
+
+
+class TestGetActiveUserIds:
+    """``get_active_user_ids`` backs the Phase-2 cross-check in
+    BotRegistry._scan_user_dirs. It must return only rows with
+    active=1, and must stay cheap (one indexed PK scan)."""
+
+    def test_default_seed_contains_admin(self):
+        """After init_db the admin (id=1) is the only active user."""
+        assert get_active_user_ids() == {1}
+
+    def test_includes_all_active_users(self):
+        conn = database.get_db()
+        conn.execute("INSERT INTO users (id, username) VALUES (2, 'bob')")
+        conn.execute("INSERT INTO users (id, username) VALUES (3, 'carol')")
+        conn.commit()
+        assert get_active_user_ids() == {1, 2, 3}
+
+    def test_excludes_inactive_users(self):
+        """active=0 rows must NOT land in the set — the registry's
+        cross-check treats deactivated users like orphans."""
+        conn = database.get_db()
+        conn.execute(
+            "INSERT INTO users (id, username, active) VALUES (5, 'frozen', 0)"
+        )
+        conn.execute(
+            "INSERT INTO users (id, username) VALUES (6, 'thawed')"
+        )
+        conn.commit()
+        ids = get_active_user_ids()
+        assert 5 not in ids
+        assert 6 in ids
+        assert 1 in ids  # admin
+
+    def test_returns_set_for_o1_membership(self):
+        """Return type must be a set so callers can do ``x in ids``
+        in O(1) instead of O(n). Minor contract pin — if someone
+        ever changes it to a list the registry's hot-path perf
+        quietly degrades."""
+        result = get_active_user_ids()
+        assert isinstance(result, set)
