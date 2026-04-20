@@ -1304,3 +1304,204 @@ class TestBotEndpointBodySizeCap:
             },
         )
         assert r.status_code == 413
+
+
+class TestBotImportExportDuplicate:
+    """Export → YAML download with metadata; duplicate → server-side
+    copy; import → YAML body validated via Pydantic before touching
+    disk. Every path in all three endpoints has a happy-path case plus
+    the realistic failure modes (404/409/400/413).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sweep_iex_bots(self):
+        """Sweep all pytest_iex_* YAMLs + sidecars before and after
+        each test. Matches the isolation pattern used by
+        TestBotEndpointBodySizeCap.
+
+        Also resets the slowapi rate-limiter bucket — these endpoints
+        have 10/min caps and the full suite accumulates POST traffic
+        that would otherwise push this class past 429 when run after
+        TestPostBotsSmoke + TestBotEndpointBodySizeCap.
+        """
+        import glob as _glob
+        import pathlib as _pl
+
+        def _sweep():
+            for pattern in (
+                f"config/bots/{_TEST_USER_ID}/pytest_iex_*.yaml",
+                f"logs/{_TEST_USER_ID}/pytest_iex_*.state.json",
+                f"logs/{_TEST_USER_ID}/pids/pytest_iex_*.pid",
+                f"logs/{_TEST_USER_ID}/pytest_iex_*.log",
+            ):
+                for p in _glob.glob(pattern):
+                    try:
+                        _pl.Path(p).unlink()
+                    except OSError:
+                        pass
+        _sweep()
+        from web.app import limiter as _limiter
+        try: _limiter.reset()
+        except Exception: pass
+        yield
+        _sweep()
+
+    def _create_source_bot(self, slug: str = "pytest_iex_src") -> str:
+        """Create a bot to act as the source for export/duplicate
+        tests. Returns the slug."""
+        payload = _make_payload(name=slug.replace("_", " ").title())
+        r = CLIENT.post("/api/bots", json=payload, headers=JSON)
+        assert r.status_code == 200, r.text
+        return r.json()["slug"]
+
+    # ── GET /api/bots/{slug}/export ─────────────────────────────────
+
+    def test_export_returns_yaml_with_header_metadata(self):
+        slug = self._create_source_bot()
+        r = CLIENT.get(f"/api/bots/{slug}/export", headers=AUTH)
+        assert r.status_code == 200
+        body = r.text
+        assert body.startswith("# Reverto bot export\n")
+        assert f"# Original slug: {slug}" in body
+        assert "# Exported:" in body
+        assert "# Reverto version:" in body
+        # Content-Disposition triggers the browser download with a
+        # filename matching the slug.
+        cd = r.headers.get("content-disposition", "")
+        assert f'filename="{slug}.yaml"' in cd
+        # Everything below the header block must still parse as valid
+        # YAML — a broken export would be silently unusable otherwise.
+        import yaml as _yaml
+        parsed = _yaml.safe_load(body)
+        assert isinstance(parsed, dict)
+        assert "bot" in parsed
+
+    def test_export_404_on_unknown_bot(self):
+        r = CLIENT.get("/api/bots/pytest_iex_does_not_exist/export", headers=AUTH)
+        assert r.status_code == 404
+
+    # ── POST /api/bots/{slug}/duplicate ─────────────────────────────
+
+    def test_duplicate_creates_copy_with_new_slug(self):
+        src = self._create_source_bot()
+        r = CLIENT.post(
+            f"/api/bots/{src}/duplicate",
+            json={"new_slug": "pytest_iex_dup"},
+            headers=JSON,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == {"ok": True, "slug": "pytest_iex_dup"}
+        assert os.path.exists(
+            f"config/bots/{_TEST_USER_ID}/pytest_iex_dup.yaml"
+        )
+        # The duplicate must not carry the source slug's state/history.
+        # Because we only copy the YAML, there is simply no state.json
+        # for the new slug — the engine rebuilds it on first start.
+        assert not os.path.exists(
+            f"logs/{_TEST_USER_ID}/pytest_iex_dup.state.json"
+        )
+
+    def test_duplicate_409_on_existing_target_slug(self):
+        src = self._create_source_bot()
+        # Pre-create target to force the conflict.
+        self._create_source_bot(slug="pytest_iex_dup_conflict")
+        # _make_payload's slugify turns the name we used into a slug —
+        # the source + target below are distinct YAML paths.
+        r = CLIENT.post(
+            f"/api/bots/{src}/duplicate",
+            json={"new_slug": "pytest_iex_dup_conflict"},
+            headers=JSON,
+        )
+        assert r.status_code == 409
+        assert "already exists" in r.json().get("detail", "")
+
+    def test_duplicate_400_on_invalid_slug_shape(self):
+        src = self._create_source_bot()
+        r = CLIENT.post(
+            f"/api/bots/{src}/duplicate",
+            json={"new_slug": "has spaces"},
+            headers=JSON,
+        )
+        assert r.status_code == 400
+        assert "Invalid slug" in r.json().get("detail", "")
+
+    def test_duplicate_404_on_unknown_source(self):
+        r = CLIENT.post(
+            "/api/bots/pytest_iex_nosrc/duplicate",
+            json={"new_slug": "pytest_iex_newdup"},
+            headers=JSON,
+        )
+        assert r.status_code == 404
+
+    # ── POST /api/bots/import ───────────────────────────────────────
+
+    def _valid_import_yaml(self) -> str:
+        """Realistic YAML body mirroring the export format — a bot
+        block nested under {"bot": ...}."""
+        import yaml as _yaml
+        payload = _make_payload(name="Imported Bot")
+        return _yaml.safe_dump(payload, sort_keys=False)
+
+    def test_import_creates_bot_from_valid_yaml(self):
+        yaml_body = self._valid_import_yaml()
+        r = CLIENT.post(
+            "/api/bots/import?slug=pytest_iex_imp",
+            content=yaml_body,
+            headers={**AUTH, "Content-Type": "application/x-yaml"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == {"ok": True, "slug": "pytest_iex_imp"}
+        assert os.path.exists(
+            f"config/bots/{_TEST_USER_ID}/pytest_iex_imp.yaml"
+        )
+
+    def test_import_400_on_invalid_yaml(self):
+        r = CLIENT.post(
+            "/api/bots/import?slug=pytest_iex_bad",
+            content=b"name: [ unterminated",
+            headers={**AUTH, "Content-Type": "application/x-yaml"},
+        )
+        assert r.status_code == 400
+        assert "Invalid YAML" in r.json().get("detail", "")
+
+    def test_import_400_on_schema_validation_failure(self):
+        # Missing required sub-blocks — BotConfig rejects it.
+        r = CLIENT.post(
+            "/api/bots/import?slug=pytest_iex_bad",
+            content=b"bot:\n  name: x\n  mode: paper\n  exchange: bitget\n",
+            headers={**AUTH, "Content-Type": "application/x-yaml"},
+        )
+        assert r.status_code == 400
+        assert "Schema validation failed" in r.json().get("detail", "")
+
+    def test_import_409_on_existing_target_slug(self):
+        self._create_source_bot(slug="pytest_iex_existing")
+        r = CLIENT.post(
+            "/api/bots/import?slug=pytest_iex_existing",
+            content=self._valid_import_yaml(),
+            headers={**AUTH, "Content-Type": "application/x-yaml"},
+        )
+        assert r.status_code == 409
+
+    def test_import_400_on_invalid_slug_param(self):
+        r = CLIENT.post(
+            "/api/bots/import?slug=not%20valid",
+            content=self._valid_import_yaml(),
+            headers={**AUTH, "Content-Type": "application/x-yaml"},
+        )
+        assert r.status_code == 400
+
+    def test_import_body_size_cap_enforced(self, auth_client):
+        """Oversized YAML → 413 before any parsing. Uses auth_client
+        to exercise the same session-cookie path that real browser
+        uploads take."""
+        from web.routes.bots import MAX_CONFIG_BODY_BYTES
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        bloat = b"x" * (MAX_CONFIG_BODY_BYTES + 1000)
+        r = auth_client.post(
+            "/api/bots/import?slug=pytest_iex_big",
+            content=bloat,
+            headers={"Content-Type": "application/x-yaml"},
+        )
+        assert r.status_code == 413

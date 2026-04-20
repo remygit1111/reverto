@@ -522,6 +522,11 @@ tr:hover td { background: rgba(128,128,128,.04); }
   cursor: pointer;
 }
 .bot-card:hover { border-color: var(--accent); }
+.bot-card.menu-open {
+  overflow: visible;
+  z-index: 10;
+  position: relative;
+}
 
 .bot-card-top {
   display: flex;
@@ -536,6 +541,63 @@ tr:hover td { background: rgba(128,128,128,.04); }
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+}
+
+.bot-card-top-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bot-card-menu-wrap {
+  position: relative;
+}
+.bot-card-menu-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.bot-card-menu-btn:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+.bot-card-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  padding: 4px 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+.bot-card-menu-item {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.bot-card-menu-item:hover {
+  background: var(--surface2);
+}
+.bot-card-menu-danger {
+  color: var(--red);
+}
+.bot-card-menu-danger:hover {
+  background: var(--surface2);
+  color: var(--red);
 }
 
 .bot-card-meta {
@@ -832,7 +894,17 @@ tr:hover td { background: rgba(128,128,128,.04); }
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 10px;
   padding: 16px 20px 0;
+}
+.btn-secondary-ghost {
+  border-color: var(--border);
+  color: var(--muted);
+  background: transparent;
+}
+.btn-secondary-ghost:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .btn-primary {

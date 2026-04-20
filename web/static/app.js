@@ -1245,8 +1245,26 @@ function renderBotCard(b) {
   <div class="bot-card" data-slug="${safeText(b.slug)}">
     <div class="bot-card-top">
       <span class="bot-card-name">${safeText(b.bot_name || b.slug)}</span>
-      <div class="pill ${running ? 'running' : 'stopped'} tab-pill-static">
-        <div class="dot"></div><span>${running ? 'Running' : 'Stopped'}</span>
+      <div class="bot-card-top-right">
+        <div class="pill ${running ? 'running' : 'stopped'} tab-pill-static">
+          <div class="dot"></div><span>${running ? 'Running' : 'Stopped'}</span>
+        </div>
+        <div class="bot-card-menu-wrap">
+          <button class="bot-card-menu-btn" data-action="menu"
+                  data-slug="${safeText(b.slug)}" aria-label="Bot actions"
+                  aria-haspopup="true" aria-expanded="false">⋮</button>
+          <div class="bot-card-menu hidden" data-menu-for="${safeText(b.slug)}">
+            <button class="bot-card-menu-item" data-action="edit"
+                    data-slug="${safeText(b.slug)}">Edit config</button>
+            <button class="bot-card-menu-item" data-action="duplicate"
+                    data-slug="${safeText(b.slug)}">Duplicate</button>
+            <button class="bot-card-menu-item" data-action="export"
+                    data-slug="${safeText(b.slug)}">Export</button>
+            <button class="bot-card-menu-item bot-card-menu-danger"
+                    data-action="delete" data-slug="${safeText(b.slug)}"
+                    data-name="${safeText(b.bot_name || b.slug)}">Delete</button>
+          </div>
+        </div>
       </div>
     </div>
     ${stateBadge}
@@ -1298,6 +1316,18 @@ function renderBotCard(b) {
 // Click delegation — slug komt uit data-slug (escaped via safeText), nooit
 // in een onclick-string, dus kan niet uit het attribuut breken.
 document.addEventListener('click', e => {
+  // Kebab dropdowns: click outside any open menu closes all of them.
+  // Runs before the bot-card handler so clicking ⋮ doesn't also open
+  // the detail view underneath.
+  const menuBtn = e.target.closest('.bot-card-menu-btn');
+  const insideMenu = e.target.closest('.bot-card-menu');
+  if (!menuBtn && !insideMenu) {
+    document.querySelectorAll('.bot-card-menu').forEach(m => m.classList.add('hidden'));
+    document.querySelectorAll('.bot-card.menu-open')
+      .forEach(c => c.classList.remove('menu-open'));
+    document.querySelectorAll('.bot-card-menu-btn[aria-expanded="true"]')
+      .forEach(b => b.setAttribute('aria-expanded', 'false'));
+  }
   // Bot card click — open detail unless a button was clicked
   const card = e.target.closest('.bot-card');
   if (card && !e.target.closest('[data-action]') && !e.target.closest('.deal-btn')) {
@@ -1310,6 +1340,31 @@ document.addEventListener('click', e => {
   const slug = el.dataset.slug;
   if (!slug) return;
   if (action === 'open') openBot(slug);
+  else if (action === 'menu') {
+    // Toggle the dropdown for this card, closing every other open menu
+    // first so only one is visible at a time. The .menu-open class on
+    // the card overrides overflow:hidden so the dropdown can escape
+    // the card boundary — without it the menu is clipped.
+    e.stopPropagation();
+    const wrap = el.closest('.bot-card-menu-wrap');
+    const menu = wrap && wrap.querySelector('.bot-card-menu');
+    if (!menu) return;
+    const wasOpen = !menu.classList.contains('hidden');
+    document.querySelectorAll('.bot-card-menu').forEach(m => m.classList.add('hidden'));
+    document.querySelectorAll('.bot-card.menu-open')
+      .forEach(c => c.classList.remove('menu-open'));
+    document.querySelectorAll('.bot-card-menu-btn[aria-expanded="true"]')
+      .forEach(b => b.setAttribute('aria-expanded', 'false'));
+    if (!wasOpen) {
+      menu.classList.remove('hidden');
+      el.setAttribute('aria-expanded', 'true');
+      const card = el.closest('.bot-card');
+      if (card) card.classList.add('menu-open');
+    }
+  }
+  else if (action === 'edit') { editBot(slug); }
+  else if (action === 'duplicate') { duplicateBot(slug); }
+  else if (action === 'export') { exportBot(slug); }
   else if (action === 'delete') deleteBot(slug, el.dataset.name || slug);
   else if (action === 'reset-drawdown') { handleResetDrawdown(slug); e.stopPropagation(); }
   else if (action === 'start-dry-run') {
@@ -1392,6 +1447,87 @@ async function deleteBot(slug, name) {
   // If we're currently inside this bot's detail view, bounce back to Bots.
   if (currentSlug === slug) goBots();
   else fetchOverview();
+}
+
+// ── Duplicate / Export / Import ─────────────────────────────────────────────
+// Slug shape must match the backend _BOT_SLUG_RE — keep in sync with
+// web/app.py:412.
+const _BOT_SLUG_RE_CLIENT = /^[A-Za-z0-9_\-]+$/;
+
+async function duplicateBot(slug) {
+  const proposed = prompt(
+    `Duplicate '${slug}'\n\nNew slug (letters, digits, _ and - only):`,
+    `${slug}_copy`,
+  );
+  if (!proposed) return;
+  const newSlug = proposed.trim();
+  if (!_BOT_SLUG_RE_CLIENT.test(newSlug)) {
+    _dealToast('Invalid slug — use letters, digits, _ and - only', 'toast-warn');
+    return;
+  }
+  try {
+    const r = await fetch(`/api/bots/${encodeURIComponent(slug)}/duplicate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_slug: newSlug }),
+    });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      _dealToast(err.detail || 'Duplicate failed', 'toast-warn');
+      return;
+    }
+    _dealToast(`Bot '${newSlug}' created from '${slug}'`);
+    fetchOverview();
+  } catch (e) {
+    _dealToast('Network error', 'toast-warn');
+  }
+}
+
+function exportBot(slug) {
+  // Browser handles the download via Content-Disposition on the response.
+  // Using window.location keeps session cookies intact — a fetch+blob
+  // dance would work too but adds no value here.
+  window.location = `/api/bots/${encodeURIComponent(slug)}/export`;
+}
+
+function importBot() {
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.yaml,.yml';
+  fileInput.onchange = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    let yamlText;
+    try { yamlText = await file.text(); }
+    catch (err) { _dealToast('Could not read file', 'toast-warn'); return; }
+    const defaultSlug = file.name.replace(/\.(yaml|yml)$/i, '');
+    const proposed = prompt('Import bot as slug:', defaultSlug);
+    if (!proposed) return;
+    const slug = proposed.trim();
+    if (!_BOT_SLUG_RE_CLIENT.test(slug)) {
+      _dealToast('Invalid slug — use letters, digits, _ and - only', 'toast-warn');
+      return;
+    }
+    try {
+      const r = await fetch(`/api/bots/import?slug=${encodeURIComponent(slug)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-yaml' },
+        body: yamlText,
+      });
+      if (r.status === 401) { _handle401(); return; }
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        _dealToast(err.detail || 'Import failed', 'toast-warn');
+        return;
+      }
+      _dealToast(`Bot '${slug}' imported`);
+      fetchOverview();
+    } catch (err) {
+      _dealToast('Network error', 'toast-warn');
+    }
+  };
+  fileInput.click();
 }
 
 // ── Bot actions ───────────────────────────────────────────────────────────────
@@ -6045,6 +6181,8 @@ function setupEventListeners() {
   // view via the main Bots tab or the browser back button (popstate).
 
   $('new-bot-btn').addEventListener('click', goNewBot);
+  const importBtn = $('import-bot-btn');
+  if (importBtn) importBtn.addEventListener('click', importBot);
   const deCancel = $('deal-edit-cancel-btn');
   if (deCancel) deCancel.addEventListener('click', () => {
     $('deal-edit-modal').classList.remove('show');
