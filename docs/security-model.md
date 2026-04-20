@@ -1,0 +1,1075 @@
+# Reverto Security Model
+
+**Status:** Engineering-spec, v1 (2026-04-20).
+**Scope:** Multi-tenant SaaS-transitie, horizon 12-24 maanden.
+**Audience:** Eigen team + toekomstige externe security-review.
+
+Dit document is de referentie voor alle security-gerelateerde keuzes.
+Het beschrijft de _doel_-architectuur, niet de huidige code.
+Gaps tussen huidige state en target worden expliciet gemaakt zodat de
+migration-roadmap (Part 4) per laag stuurbaar blijft.
+
+---
+
+## Part 1 · Context & Principes
+
+### 1.1 Waarom dit document bestaat
+
+Reverto draait nu als single-tenant bot-platform op één operator-host
+(Mele, WSL2 + local Python). Phase-3a (gemerged 2026-04-20) heeft de
+auth-laag op DB-basis gezet en de `_request_user` bridge opgeleverd, wat
+de foundation legt voor multi-user. Het concrete doel is om binnen
+12-24 maanden een multi-tenant SaaS te draaien waar andere users hun
+eigen bots kunnen aanmaken, hun eigen exchange-credentials opslaan en
+hun eigen trades laten uitvoeren.
+
+Multi-tenant SaaS met custody-achtige properties (we bewaren exchange
+API-keys) verandert het threat-model fundamenteel. Eén gecompromitteerde
+host betekent in de single-tenant wereld "de operator is zijn eigen
+geld kwijt"; in de SaaS wereld betekent hetzelfde "N users zijn hun
+geld kwijt en Reverto is stuk." Dit document beschrijft hoe we dat
+tweede scenario voorkomen, of ten minste welke maatregelen blijven
+overeind als delen van de stack alsnog vallen.
+
+### 1.2 Referentie-incident: 3Commas (december 2022)
+
+3Commas was een custodial bot-platform vergelijkbaar met Reverto. In
+december 2022 zijn API-keys van duizenden users gelekt. Het aanvalspad
+is nooit volledig publiek gemaakt; consensus in de community is dat
+ofwel een insider ofwel een server-compromise de credential-store heeft
+uitgelezen. Users verloren tot honderden miljoenen USD cumulatief.
+
+Relevante lessen voor Reverto:
+
+- **API-keys zonder withdrawal-permission zijn niet waardeloos.** De
+  attacker kan met trade-only keys nog steeds pump-and-dump-achtige
+  market-manipulation orders plaatsen om de balance uit te wassen
+  tegen een pre-bepaalde coin die de attacker vooruit heeft gekocht.
+- **IP-whitelisting op exchange-niveau hielp users die het hadden
+  gezet.** Users die deze stap hadden overgeslagen bij onboarding
+  verloren wel, users met IP-whitelist verloren niet (de attacker kon
+  orders plaatsen maar niet vanaf het attacker-IP).
+- **Detection was traag.** Users merkten het pas toen hun balance
+  al weg was. Geen onafhankelijk monitoring-systeem vergeleek
+  expected-state met actual-balance.
+
+Deze drie observaties sturen Part 3.5 (exchange-hardening bij
+onboarding) en Part 3.6 Laag 7 (onafhankelijke watchdog).
+
+### 1.3 Core principes
+
+**Defense-in-depth.** Geen enkele laag is sufficient. Als de
+hoofd-applicatie volledig gecompromitteerd is, moeten nog steeds
+meerdere defense-mechanismen overeind blijven — in de limiet moet
+één gecompromitteerde Reverto-server _niet_ alle users' balance
+kunnen legen. Elke laag in Part 3.6 wordt getoetst op deze
+voorwaarde (zie Part 3.7 Independence Verification).
+
+**Least-privilege.** Elke credential heeft de minimale scope die de
+functie vereist. Exchange-keys krijgen alleen trade-permissions
+(geen withdraw). De hoofdapp heeft geen toegang tot
+exchange-api-secrets (die leven in de signing-service). Nieuwe
+operators krijgen `role='user'`, niet `admin`.
+
+**Independent defenses.** Defense-mechanismen die op dezelfde
+infrastructuur leven als wat ze beschermen, beschermen tegen
+domheid maar niet tegen compromise. Daarom krijgt de watchdog
+(Part 3.6 Laag 7) een aparte deployment en leven approval-keys op
+user-devices (Part 3.3).
+
+**Fail-closed defaults.** Bij twijfel zegt het systeem nee. Een
+defecte cap-calculatie weigert de trade. Een onbeschikbare
+signing-service schort trading op. Een missende onboarding-
+verification blokkeert account-activatie. Dit principe is al in
+Phase-3a toegepast op `_scan_user_dirs` (fail-closed na N
+DB-failures) en `verify_password` (NULL hash = weigeren).
+
+### 1.4 Non-goals
+
+Expliciet niet in scope van dit document:
+
+- **On-chain / DeFi trading.** Reverto is een CEX-bot-platform
+  (Bitget, Kraken). On-chain wallets en smart contracts liggen
+  buiten de architectuur.
+- **Fiat-onramp.** Users brengen zelf hun balance naar de exchange.
+  Reverto raakt geen fiat.
+- **KYC / AML.** De exchange doet de KYC op hun kant. Reverto
+  gebruikt daaromheen.
+- **Custody van coins.** Reverto houdt geen coins vast — alleen
+  exchange-credentials om te handelen namens de user op zijn eigen
+  exchange-account.
+- **Real-time market-making of HFT strategies.** Reverto is DCA /
+  swing-trading; de latency-requirements zijn seconds-scale, niet
+  millisecond.
+- **Jurisdiction-compliance spec.** Apart document zodra we de
+  eerste jurisdictie kiezen (zie Part 6).
+
+---
+
+## Part 2 · Threat Model
+
+Zeven scenarios. Per scenario: welke aanvaller, welke capabilities,
+wat de huidige state (single-tenant Mele) biedt, wat de target state
+(multi-tenant SaaS) moet bieden. Elke rij in de vergelijkings-tabel
+benoemt één capability — de aanvals-capability wordt uitgesplitst
+zodat gaps per laag zichtbaar blijven.
+
+### 2.1 Scenario: Reverto-server compromise (full infra takeover)
+
+Attacker heeft root/admin op de Reverto-host. Kan bestanden lezen,
+processen starten, netwerk-verkeer onderscheppen, de DB muteren. Het
+klassieke post-breach scenario.
+
+| Capability | Current state (single-tenant Mele) | Target state (multi-tenant SaaS) |
+|------------|------------------------------------|----------------------------------|
+| Lees alle user passwords | bcrypt-gehasht, niet plaintext. `password_hash` is in DB — hashes leaken, passwords niet tenzij zwak. | Ongewijzigd: bcrypt rounds=12. Reverse vereist offline cracking. |
+| Lees alle exchange API-keys | **Ja** — `credentials/<uid>/*.enc` + `keys/<uid>.key` staan beide op dezelfde host. Fernet-decrypt is triviaal met beide files. | **Nee** — API-secrets leven in de signing-service, niet in de main app. Main app ziet alleen de public `api_key` voor display/routing. |
+| Plaats orders namens users | **Ja** — direct via de geladen credentials. | Alleen binnen de scope-whitelist van de signing-service, en alleen onder de rolling caps. Kan niet buiten de user's daily/weekly/monthly limits trade. |
+| Withdraw user funds | **Nee**, mits user IP-whitelist + withdraw-blacklist heeft gezet op exchange (dit is de onboarding-requirement uit Part 3.5). | Ongewijzigd: exchange-side hardening. Reverto kan deze step niet overslaan. |
+| Modify cap-settings | **N/A** single-user, operator is zichzelf. | Caps-wijziging vereist user-approval via PWA WebAuthn of TOTP plus cooldown. Server-side code-wijziging raakt de user-device approval niet. |
+| Ontsla onafhankelijke watchdog | **N/A** geen aparte watchdog. | Watchdog leeft op separate infrastructuur (Part 3.6 Laag 7); main-app compromise raakt de watchdog niet. |
+| Draai emergency-stop en rollback balances | **Nee** — balance zit op exchange, niet bij Reverto. | Ongewijzigd — structurele eigenschap van custodial-API, niet custodial-fund model. |
+
+Belangrijkste delta: de main-app bezit niet langer de sleutels die
+nodig zijn om te handelen. Server-compromise kan signing requests
+uitlokken, maar alleen binnen de scope die de signing-service toestaat.
+
+### 2.2 Scenario: User-credential compromise (phishing, credential stuffing)
+
+Attacker heeft een geldig `username + password` paar van de user.
+Phishing, credential-stuffing uit een ander lek, of gewoon een zwak
+password dat offline is gekraakt.
+
+| Capability | Current state | Target state |
+|------------|---------------|--------------|
+| Inloggen op Reverto-portal | **Ja** — alleen password vereist. | **Nee** — TOTP is verplicht (Part 3.3). Password zonder TOTP-code levert een 401. |
+| Inloggen als TOTP-seed ook gelekt | **N/A** geen TOTP. | Ja — compromise van zowel password als TOTP-seed is een device-compromise (Part 2.3). Valt terug op WebAuthn/YubiKey approvals voor mutating operations. |
+| Placeholder-trades binnen threshold | **Ja**, volledige trading-access. | Ja tot per-trade threshold; erboven vereist approval-channel. |
+| Grote trade plaatsen (> per-trade threshold) | **Ja**. | **Nee** — approval-channel blokkeert (Part 3.4). |
+| Dagelijkse / wekelijkse caps verhogen | **N/A** geen caps. | Alleen met approval-channel + cooldown (Part 3.4: 48h voor cap-changes). |
+| Nieuwe exchange-key toevoegen | **Ja**. | Alleen met approval-channel + cooldown (24h voor new-key; onboarding-verification blijft). |
+| Dead-man-switch omzeilen | **N/A**. | **Nee** — dead-man-switch hangt op user-device activity, niet op login. Een passwordlekker kan niet de user-device namaken. |
+
+### 2.3 Scenario: User-device compromise (malware op PC/telefoon)
+
+Attacker heeft de browser-session of PWA-token van de user, of zelfs
+volledige control over het user-device. Kan de user-UI sessie
+overnemen, cookies exfiltreren, pasted TOTP-codes lezen.
+
+| Capability | Current state | Target state |
+|------------|---------------|--------------|
+| Session-cookie stelen | **Ja** via XSS of device-compromise. `samesite=strict` + `httponly` beperken exfil via JS/CSS maar niet via volledige device-compromise. | Ongewijzigd qua cookie-properties. TOTP bij login nog niet ingewisseld = de session bestaat niet om te stelen; TOTP bij login ingewisseld = dezelfde exposure als nu. |
+| Bypass TOTP | **N/A**. | TOTP-code is niet her-bruikbaar na gebruik (30s window + 1-use enforcement serverside) — device-compromise tijdens actieve session leest geen TOTP-code omdat die al verbruikt is. |
+| Plaats trades via PWA | **N/A**. | Alleen binnen threshold (Part 3.4) zonder re-approval. Grote trades vereisen tap-to-sign op de PWA — een browser-session-diefstal kan deze device-bound key niet gebruiken, want de private key staat niet in de cookie maar op het device (secure-enclave waar beschikbaar, OS keystore anders). |
+| Register new approval device | **N/A**. | Vereist approval van existing device + 48h cooldown. Device-compromise kan niet een tweede device koppelen zonder óf de eerste device te verliezen óf 48 uur te wachten terwijl de user merkt. |
+| Exfiltreer exchange-credentials | **Ja** als device de volledige Reverto-sessie heeft — portal kan `has_keys` listen en implicit de api_key (niet de secret) tonen. | API-secrets leven nooit in de browser. Main-app toont alleen masked api_key strings. Signing-service is de enige die secrets heeft. |
+| Dead-man-switch omzeilen | **N/A**. | Kan alleen omzeild worden door actief te blijven op het device — maar dan ziet de user het user-interface activity buiten zijn eigen sessies. Dead-man-timeout reset alleen op user-device authenticated actions, niet op passive cookie-present. |
+
+Device-compromise is in elk threat-model het hardst — dit is waarom
+WebAuthn en hardware-keys bestaan, en waarom de approval-hierarchy
+(Part 3.4) zware acties aan device-bound keys koppelt, niet aan
+"iemand heeft het cookie."
+
+### 2.4 Scenario: Insider threat (medewerker met DB-access)
+
+Attacker is operator / on-call engineer / contractor met legitieme
+DB-access. Leest rows rechtstreeks, misschien zelfs DROP/UPDATE.
+
+| Capability | Current state | Target state |
+|------------|---------------|--------------|
+| Lees password-hashes | **Ja** — `users.password_hash` in DB. bcrypt maakt offline cracking nodig. | Ongewijzigd. |
+| Lees TOTP-seeds | **N/A**. | TOTP-seeds zijn encrypted met een key die niet in de main-DB leeft (Part 3.2). Access tot main-DB ≠ access tot decryption key. |
+| Lees exchange-credentials | **Ja** — `keys/` + `credentials/` staan op de main-host. | **Nee** — credentials leven in signing-service, die eigen DB + sleutels heeft. Insider met main-DB-access heeft geen credentials-decryption capability. |
+| Reset user session | **Ja** — `UPDATE users SET session_epoch = session_epoch + 999`. Effect: user wordt uitgelogd, moet opnieuw inloggen (vereist TOTP target state). | Ongewijzigd — deze capability is acceptabel (operator moet users kunnen uitloggen voor incident-response) maar gelogd in audit-trail. |
+| Flip `active=0` om user te blokkeren | **Ja** — direct via DB. | Ongewijzigd, maar dit triggert watchdog alert (unexpected user-state change buiten portal-API). |
+| Bypass caps door DB-state te muteren | **N/A**. | Cap-state leeft deels in signing-service (rolling counters); main-DB insider kan user's "max-balance" veld muteren maar niet de signing-service counters resetten zonder ook signing-service compromise. |
+| Forge audit-log-entry | **Ja** — DB write-access. | Audit-log zou naar append-only store (apart filesystem of externe log-aggregator) moeten gaan; hierdoor wordt falsificatie detectable door ontbrekende of inconsistente records. |
+
+Insider threat is in multi-tenant SaaS een reëel scenario. Key design
+choice is dat de signing-service een aparte trust-boundary is — een
+insider met main-app access komt nog niet bij exchange-credentials of
+bij trading-execution-keys.
+
+### 2.5 Scenario: Supply-chain attack (compromised dependency)
+
+Attacker heeft een PyPI-package gecompromitteerd die Reverto
+installeert (direct of transitive). Malicious code runt met dezelfde
+rechten als de hoofd-process.
+
+| Capability | Current state | Target state |
+|------------|---------------|--------------|
+| Detectie van bekende CVE's | `pip-audit --strict` in CI blocking op direct deps; transitive non-blocking. | Ongewijzigd, aangevuld met periodieke quarterly review van transitive deps (runbook). |
+| Runtime verificatie van package-hashes | **Nee** — pin-by-version, geen `--require-hashes`. | Pin-by-hash in `requirements.txt` (pip kan dit als `package==X --hash=sha256:...` per line). |
+| Attacker bypasst pip-audit door een net-niet-gerapporteerde backdoor | **Ja** — `pip-audit` detecteert alleen CVE's die in OSV/GHSA/etc staan. Een fresh supply-chain attack (xz-util-pattern) duurt dagen tot weken om publiek te worden. | Dezelfde limiet — `pip-audit` is probabilistic, niet deterministic. Mitigatie: minimaal aantal deps, pin-by-hash, smoke-import check (reeds in CI). |
+| Extract exchange-secrets bij runtime | **Ja** — credentials zijn in het proces-geheugen gedurende `_user_fernet(uid).decrypt(...)`. | Main-app heeft geen secrets. Signing-service wel, maar is een veel kleiner stuk code met een smalle dependency-graph (Fernet + HTTP server + audit-log — ideaal enkele tientallen deps). Kleinere blast-radius. |
+| Extract TOTP-seeds | **N/A**. | Seeds leven in DB van de main-app encrypted; de encryption-key leeft in de signing-service (Part 3.2). Main-app process-heap bevat TOTP-seeds alleen tijdens login-verify en dan kort. |
+
+### 2.6 Scenario: Exchange-side API-leak
+
+Attacker heeft de user's exchange-API-key + secret. Route irrelevant
+— kan via phishing op een andere site zijn, een browser-extension,
+een oude YAML-dump van de user zelf. Reverto is niet de bron van het
+lek; de exchange-credentials zijn elders gecompromitteerd.
+
+| Capability | Current state | Target state |
+|------------|---------------|--------------|
+| Plaats orders buiten Reverto | Ja, als exchange geen IP-whitelist heeft. | Ongewijzigd — dit is exchange-side. Reverto kan user onboarden met IP-whitelist als harde verificatie (Part 3.5). |
+| Withdraw user funds | Alleen als API-key `withdraw` permission heeft. | Onboarding-flow verifieert dat de API-key _niet_ `withdraw` permission heeft — weigert anders account-activatie (Part 3.5). |
+| Detect dat keys gelekt zijn | **Nee** — Reverto merkt niet dat een attacker orders plaatst buitenom. | Watchdog (Part 3.6 Laag 7) vergelijkt expected balance met actual balance; significant drift triggert alert. |
+| Rotate keys snel | Manual: user moet in portal nieuwe keys uploaden + oude verwijderen, naar de exchange gaan om oude te revoken. | Onboarding UI heeft een "rotate keys" flow die de user door beide stappen heen loopt, plus watchdog-pauze tijdens rotation. |
+
+### 2.7 Scenario: Key-rotation race
+
+Reverto rotateert een user's exchange-keys (of zijn eigen Fernet-key).
+Gedurende de rotation is er een venster waarin zowel oude als nieuwe
+keys geldig zijn.
+
+| Capability | Current state | Target state |
+|------------|---------------|--------------|
+| Rotation semantiek | `core/credentials.py:rotate_fernet_key(user_id=...)` roteert per-user; commit-order is key-first dan .enc-files. Backup in `.bak.<ts>`. | Ongewijzigd qua per-user Fernet-key. Exchange-key rotation is een nieuwe flow (niet geïmplementeerd in current) — spec: pause trading, rotate, verify new key works, kill old key. |
+| Zichtbare race-window | Sub-seconde voor Fernet-rotation (bestands-ops). Exchange-key rotation is minutes-scale door user-interaction op exchange. | Exchange-key rotation tijdens de verify-step: trading is gepauzeerd, dus attacker met oude keys kan bij Reverto geen orders meer plaatsen via portal, maar wel direct bij de exchange. IP-whitelist blokkeert dat. |
+| Crash-recovery mid-rotation | `.bak.<ts>` backup geeft rollback-pad; geen automatische detection van half-rotate state. | Explicit rotation-state in DB (`users.rotation_state in ('none', 'pending', 'verifying', 'complete')`) zodat het proces bij restart weet waar het stopte. |
+
+---
+
+## Part 3 · Architectural Target State
+
+### 3.1 Service Separation (Optie C, Niveau 2)
+
+Het doel is één trust-boundary tussen de hoofd-applicatie en de
+credential-opslag/signing-operatie. De hoofd-applicatie weet niet hoe
+je een signed HMAC request naar Bitget bouwt — die kennis leeft in de
+signing-service.
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ Internet                                                       │
+└────────────────────────────────────────────────────────────────┘
+                         │  HTTPS / TLS
+                         ▼
+┌────────────────────────────────────────────────────────────────┐
+│ Reverse proxy (nginx / caddy)                                  │
+│ ├── TLS termination                                            │
+│ ├── Rate-limiting (L7)                                         │
+│ └── Trusted-proxy X-Forwarded-For parsing                      │
+└────────────────────────────────────────────────────────────────┘
+                         │  HTTP + real client IP
+                         ▼
+┌────────────────────────────────────────────────────────────────┐
+│ reverto-web (main app)                                         │
+│ ├── FastAPI + AuthMiddleware (bcrypt + TOTP + session cookie)  │
+│ ├── User management (users, sessions, caps-settings)           │
+│ ├── Strategy engine orchestration (paper + live bots spawnen)  │
+│ ├── Portal UI + PWA bootstrap                                  │
+│ ├── Deal / order ledger                                        │
+│ └── Dependencies: strategy + indicator + DB client             │
+│                                                                │
+│ Reads: users, deals, orders, annotations, caps_config,          │
+│        approvals_pending                                       │
+│ Writes: audit_log entry bij elke auth + cap-change             │
+│                                                                │
+│ BEZIT NOOIT: exchange api_secret, TOTP-seed decryption key,    │
+│              signing-service audit-log, watchdog-state.        │
+└────────────────────────────────────────────────────────────────┘
+                │                                │
+                │ mTLS + request-signing         │ mTLS read-only
+                │ RPC (JSON over HTTPS)          │ monitor-protocol
+                ▼                                ▼
+┌─────────────────────────────────┐  ┌─────────────────────────────┐
+│ reverto-signer (signing-service)│  │ reverto-watchdog            │
+│ ├── Exchange credential store   │  │ ├── Read-only exchange API  │
+│ │   (Fernet-encrypted per user) │  │ │   pulls (balances)        │
+│ ├── Scope whitelist per call    │  │ ├── Expected-balance model  │
+│ ├── Cap-counters (rolling)      │  │ ├── Discrepancy detection   │
+│ ├── Order-signing + idempotency │  │ ├── Alert pipeline          │
+│ ├── Approval verification       │  │ └── Kill-switch naar signer │
+│ ├── Independent audit log       │  │                             │
+│ └── Separate DB                 │  │ Separate deployment         │
+│                                 │  │ (ander VPS, ander OS-image) │
+│ Exposes RPC:                    │  └─────────────────────────────┘
+│   place_trade(user_id, intent)  │
+│   update_caps(user_id, ...)     │
+│   register_exchange_key(...)    │
+│   rotate_key(...)               │
+│                                 │
+│ Refuses silently on:            │
+│   - scope outside whitelist     │
+│   - cap exceeded                │
+│   - missing approval-token      │
+│   - watchdog kill-signal active │
+└─────────────────────────────────┘
+                │
+                │ HMAC-signed requests
+                ▼
+        ┌───────────────────┐
+        │ Exchange API      │
+        │ (Bitget / Kraken) │
+        └───────────────────┘
+```
+
+**Reverto-web (main app).** Bevat het huidige `web/app.py`, alle route
+modules, de `PaperEngine`/`LiveEngine` orchestration, en de deal/order
+ledger. Heeft toegang tot de `users` + `deals` + `orders` +
+`annotations` tabellen. Heeft GEEN toegang tot exchange-credentials,
+TOTP-decryption-keys, of de watchdog-kill-switch.
+
+**Reverto-signer.** Nieuw component. Eigen DB (Postgres, separate
+schema of database). Bevat:
+
+- `exchange_credentials(user_id, exchange, encrypted_blob)` — de
+  api_key/api_secret paren.
+- `fernet_keys(user_id, key_material)` — per-user decryption keys.
+  Key-material kan in een envelope-encryption setup met een
+  master-key uit het OS-keystore/KMS staan, niet in DB-plaintext.
+- `caps_rolling_counters(user_id, exchange, window, amount_consumed,
+  window_start)` — de daily/weekly/monthly running totals.
+- `approval_tokens(token_id, user_id, action, expires_at, consumed)`
+  — kortstondige approval-tokens die de main-app heeft opgeslagen bij
+  een approval-request en die bij de signing-call worden meegestuurd.
+- `signer_audit_log(...)` — elke operation, met timestamp,
+  caller (main-app via mTLS client-cert), user_id, scope, result.
+
+**Reverto-watchdog.** Derde component, bij voorkeur op compleet
+aparte infrastructuur (tweede VPS, andere provider). Gebruikt
+read-only API-keys (separate van de trade-keys, onboarding verifies
+dat ook deze alleen read-permission hebben), poll exchange-balances
+elke paar minuten, vergelijkt met het expected-model uit de main-app,
+stuurt op discrepancy een kill-signal naar de signer.
+
+**Interne communicatie.** mTLS tussen alle drie. Client-certs per
+service, CA gerund door operator. Een gecompromitteerde main-app kan
+niet de watchdog impersonaten (ander cert). Request-signing bovenop
+mTLS voor audit-trail-robuustheid (incoming requests bevatten een
+HMAC die in de signer-audit-log komt).
+
+**Wat niet verandert.** De exchange-HTTPS-naar-Bitget-of-Kraken
+verandert niet. ccxt blijft de lib. De `BaseExchange` interface
+(`exchanges/base_exchange.py`) verhuist naar de signer maar behoudt
+zijn vorm.
+
+### 3.2 Database Separation
+
+Drie stores:
+
+**Main DB (Postgres post-SQLite-migratie).** `users` (id, username,
+password_hash, role, session_epoch, active, created_at), `deals`,
+`orders`, `chart_annotations`, `backtest_runs`, `caps_config`
+(user_id, per_trade_threshold, daily_cap_pct, etc.),
+`approval_requests` (pending approvals, token_hash, expires_at),
+`audit_log_main` (auth events, config changes).
+
+TOTP-seed leeft hier **encrypted** — ciphertext is in de DB, maar de
+decryption key is niet. De key wordt via een envelope uit de
+signing-service opgevraagd bij login-verify, met een korte TTL. Een
+DB-insider ziet alleen ciphertext.
+
+**Signer DB.** `exchange_credentials` (encrypted),
+`caps_rolling_counters`, `approval_tokens_consumed`,
+`signer_audit_log`. Separate schema in een separate Postgres DB, of
+separate Postgres cluster — de trust-boundary is op DB-niveau, niet
+alleen op applicatie-niveau.
+
+**Watchdog store.** Kleine DB (SQLite acceptabel — single-writer
+service). `expected_balance_snapshots` (periodiek), `discrepancy_events`,
+`kill_signals_sent`. Write-only vanuit de watchdog-process. Wordt
+nooit door main-app of signer uitgelezen.
+
+**Backup-strategie.**
+
+- Main DB: nightly dumps, 30 dagen retentie, encrypted at rest in
+  object-storage.
+- Signer DB: nightly dumps, 90 dagen retentie (langere voor
+  forensic), aparte encryption-key dan main-DB dumps, apart
+  object-storage account. Waarom apart: dumps-access zou een
+  insider-compromise kunnen compenseren — een insider met
+  main-backup-access heeft geen signer-backup-access.
+- Watchdog store: 30 dagen retentie is genoeg; historische
+  discrepancy-events worden naar de operator (Slack/email) gestuurd
+  zodra ze optreden, niet uit backup gelezen.
+
+### 3.3 Authentication Stack
+
+Drie lagen:
+
+**Login-gate.** Username + bcrypt-verified password + verplichte
+TOTP-code. Nieuwe wiring bovenop huidige Phase-3a `verify_password`
+flow:
+
+- Na succesvolle `verify_password`: nog geen cookie gemint.
+- User's TOTP-seed wordt decrypt door de signer (main-app stuurt de
+  encrypted seed + login-session-intent, signer decrypt en vergelijkt
+  de aangeleverde TOTP-code tegen `pyotp.TOTP(seed).now()` binnen
+  een 30s window).
+- Alleen na beide stappen wordt het session-cookie gemint.
+- Rate-limiter op login gaat al per-IP; moet aangevuld met
+  per-username limiter (anders kan één IP alle accounts proberen
+  via password-spray).
+
+**Session-cookie.** Ongewijzigd qua format (itsdangerous signed
+payload, uid + u + ep). TTL blijft 24h absolute (geen sliding).
+Cookie geeft toegang tot **read-only** operations en
+kleine-threshold trades; boven de threshold komt approval erbij.
+
+**Approval-channel.** Voor mutating operations boven threshold. Twee
+kanalen per user, configureerbaar bij onboarding:
+
+- **PWA WebAuthn (primair).** User installeert Reverto-PWA op
+  telefoon/laptop. Bij onboarding wordt een WebAuthn-key ingeschreven
+  die device-bound is (secure-enclave waar beschikbaar — iOS
+  Passkeys, Android StrongBox, Windows Hello, macOS Touch ID). Voor
+  een approval-prompt stuurt de server een challenge; het device
+  signed met de private key; signing-service verifieert de
+  signature.
+- **TOTP (fallback).** Users zonder PWA kunnen approvals doen met
+  TOTP-code. Zelfde seed als login-TOTP maar een apart "approval
+  context" ruimte — een TOTP-code gebruikt voor login mag niet
+  hergebruikt worden voor een pending approval binnen hetzelfde
+  window. TOTP-only users krijgen lagere default-caps (Part 3.4
+  Premium-column).
+- **YubiKey (premium tier).** Hardware-key voor users die
+  config-wijzigingen met extra assurance willen doen. WebAuthn-based
+  FIDO2 — protocol-compatible met PWA-key, andere device-class.
+
+Users kiezen bij onboarding tussen: PWA-only, TOTP-only, PWA+YubiKey.
+Downgrade van PWA naar TOTP-only vereist een 48h cooldown (net als
+register-new-device, zie Part 3.4) om "attacker verliest de
+device-bound key, downgradet naar het zwakkere kanaal" te
+voorkomen.
+
+### 3.4 Approval Channel Hierarchy
+
+Welke actie vereist welk minimum-kanaal. "Session" = het normale
+session-cookie. "TOTP" = een TOTP-code door de user ingegeven.
+"PWA WebAuthn" = tap-to-sign op het user-device. "YubiKey" =
+hardware-FIDO2 key. Cooldown = tijd tussen aanvraag en effectuering
+gedurende welke de user kan annuleren en na afloop een tweede
+approval-step nodig heeft.
+
+| Actie | Session | TOTP | PWA WebAuthn | YubiKey | Cooldown |
+|-------|:-------:|:----:|:------------:|:-------:|:--------:|
+| Read dashboard | ✓ | | | | — |
+| Start/stop bot (paper) | ✓ | | | | — |
+| Start/stop bot (live) | | ✓ | recommended | | — |
+| Place trade ≤ per-trade threshold | ✓ | | | | — |
+| Place trade > per-trade threshold | | ✓ | recommended | | — |
+| Manual trade (portal-initiated) | | | ✓ | | — |
+| Change per-trade threshold | | ✓ | | | 24h |
+| Change daily/weekly/monthly cap | | | ✓ | | 48h |
+| Add new exchange API-key | | ✓ | | | 24h |
+| Rotate existing exchange-key | | ✓ | recommended | | 12h |
+| Delete exchange-key | | ✓ | | | — |
+| Register new approval device | | ✓ | ✓ (existing) | | 48h |
+| Remove approval device | | ✓ | ✓ (existing) | | 24h |
+| Downgrade approval channel (PWA → TOTP-only) | | | ✓ | | 48h |
+| Change password | | ✓ | | | — |
+| Change dead-man-switch timeout | | ✓ | | | 24h |
+| Disable dead-man-switch entirely | | | ✓ | ✓ premium | 72h |
+| Emergency stop (user's own bots) | ✓ | | | | — |
+| Emergency stop (admin cross-user) | | ✓ | ✓ recommended | | — |
+| Cross-user admin action | | | ✓ | recommended premium | — |
+| Transfer ownership of account | | | ✓ | ✓ | 168h (7d) |
+
+**Cooldown semantiek.** De cooldown is geen throttle op aanroep-
+frequentie maar een delay tussen aanvraag en effectuering. Een
+cap-wijziging wordt ingediend door de user, token wordt gemint met
+`effectuate_at = now + 48h`, en de user krijgt een mail/PWA-alert
+"Over 48h gaat je daily cap naar 15% tenzij je klikt op Cancel." De
+user kan tot effectuation-tijd annuleren met een enkele session-
+bevestiging. Dit is waarom cooldown bij daily-cap 48h is: geeft de
+legitimate user tijd om te merken dat iemand anders een wijziging
+indient.
+
+**Pending-approval count caps.** Een user kan niet tientallen
+pending approvals stapelen — max 5 in vlucht per type. Boven dat
+weigert de portal nieuwe approvals tot er eentje geannuleerd of
+effectgeworden is. Voorkomt dat een attacker tijdens de cooldown
+zoveel aanvragen stapelt dat de user de cancel-signalen mist.
+
+### 3.5 Exchange-Side Hardening (Onboarding Requirements)
+
+Wat de user MOET doen op de exchange voordat het Reverto-account
+kan worden geactiveerd. De onboarding-flow verifieert dit actief —
+een api_key die deze eisen niet haalt wordt geweigerd en de user
+krijgt instructies per exchange.
+
+**Algemene requirements (alle exchanges):**
+
+- **Trade-only permissions.** De API-key mag GEEN `withdraw`
+  permission hebben. Onboarding-flow probeert een read-call
+  (`fetch_balance`) + een simulate-withdraw (of vraagt de exchange
+  om de key's permission-set als de API dat ondersteunt) en weigert
+  als `withdraw` aanstaat. Bitget: `tradeScope` field in de API-key
+  response toont permissions. Kraken: `key-description` / futures-
+  key permissions. Exact mapping per exchange hieronder.
+- **IP-whitelist actief.** De key moet op de exchange gekoppeld zijn
+  aan een IP-allowlist die de Reverto-signer IP bevat. Onboarding
+  stuurt een dummy-order vanuit de signer-IP (en een simultaan
+  vanuit een ander IP waar dat kan); als de tweede slaagt staat
+  er geen whitelist en wordt de account geweigerd.
+- **Sub-account (recommended, niet verplicht).** User maakt een
+  sub-account aan met alleen de balance die voor Reverto bestemd
+  is. Hoofd-account balance blijft buiten Reverto's blast-radius.
+  Kraken support dit goed; Bitget's sub-account feature is retail-
+  beschikbaar maar minder goed gedocumenteerd — onboarding flow
+  informeert, forceert niet.
+
+**Per-exchange checklist:**
+
+Bitget:
+- Login op bitget.com → User Center → API Management.
+- Create API Key → naam "reverto-trade-only".
+- Permissions: vink **alleen** "Contract Trading" en "Read" aan.
+  **NIET** vinken: "Spot Trading" (tenzij user expliciet spot-
+  strategie heeft), "Withdraw" (nooit), "Transfer".
+- IP Bind: paste de signer-IP (onboarding toont deze). Multiple
+  IPs kan met komma's; voor de watchdog een aparte key met alleen
+  read.
+- Passphrase: door user gekozen tijdens key-creation. Reverto vraagt
+  deze apart, encrypt en slaat op in de signer (samen met api_key +
+  api_secret).
+- Copy api_key + api_secret + passphrase direct — Bitget toont
+  secret maar één keer.
+
+Kraken:
+- Login op kraken.com → Settings → API.
+- Generate New Key → description "reverto-trade".
+- Permissions: check **alleen** "Query Funds", "Query Open Orders",
+  "Create & Modify Orders", "Cancel Orders", "Query Ledger Entries".
+  **NIET** check: "Withdraw Funds" (nooit), "Deposit Funds",
+  "Staking", "WebSocket Open Orders & Trades" (optioneel).
+- API-key IP restriction: set to the signer IP.
+- Futures API vereist een afzonderlijke key-set (Kraken-futures is
+  een separate product met eigen API) — onboarding handelt dit af
+  als twee keys per user als Kraken-futures gekozen is.
+- Nonce window: default 1000ms is ok. Reverto gebruikt monotonic
+  nonces per ccxt-default.
+
+**Ongoing requirements.** Quarterly recheck: signer probeert bij
+de user's eerste trade van het kwartaal een no-op withdraw; als die
+slaagt is er ergens permission-drift en wordt de user gealerteerd
++ trading gepauzeerd tot re-verification. Vangt de case waar user
+"per ongeluk" op de exchange een permission-upgrade heeft gedaan
+omdat een andere tool die vroeg.
+
+### 3.6 Defense-in-Depth Layers
+
+Acht lagen. Elke laag is apart toegewijd aan bepaalde attack-
+scenarios; geen laag beschermt tegen alles. De Independence-tabel
+in Part 3.7 benoemt welke lagen overleven welke compromise.
+
+**Laag 1 — Per-trade threshold met approval-escalation.**
+
+Elke trade > threshold vereist approval-channel (zie Part 3.4).
+Threshold is percentage van rolling-max balance over de laatste
+30 dagen: default 2%, user-configureerbaar 1-5% (wijziging vereist
+approval zelf).
+
+Beschermt tegen: grote unauthorized trades bij session-compromise
+(Scenario 2.2, 2.3).
+Beschermt niet tegen: salami-attack binnen threshold (Laag 2
+vangt dit); exchange-side lek (2.6, Laag 7 vangt dit).
+
+Waar leeft dit: signing-service, niet main-app. Main-app genereert
+intent; signer checkt threshold en weigert zonder approval-token.
+
+**Laag 2 — Daily volume cap (percentage-based).**
+
+Cumulatief daily trading-volume binnen 10% van rolling-max balance
+laatste 30 dagen (default). User-configureerbaar 5-15%. Per
+exchange, niet cross-exchange samengeteld — compromise van één
+exchange-key stopt op die exchange's cap, niet op de som.
+
+Rolling-max window: 30 dagen zodat een dip niet de cap-limit
+direct verlaagt (user die 50% drawdown doet heeft nog steeds de
+originele cap voor een tijdje). Update-frequency: daily snapshot
+om 00:00 UTC.
+
+Beschermt tegen: salami-attack (Scenario 2.2, 2.3, 2.6); volume-
+wash bij exchange-lek.
+Beschermt niet tegen: een-shot grote trade (Laag 1); attack die
+balance transfereren naar attacker's exchange-account (impossible
+want trade-only keys); trade-frequency anomalies (Laag 6).
+
+Waar leeft dit: signing-service, rolling counter per
+`(user_id, exchange, day)`. Reset om middernacht UTC.
+
+**Laag 3 — Weekly en monthly caps.**
+
+Dezelfde structuur als Laag 2, maar:
+- Weekly: 20% van rolling-max laatste 30 dagen, per exchange. Reset
+  op Monday 00:00 UTC.
+- Monthly: 35% van rolling-max laatste 90 dagen, per exchange.
+  Reset eerste-van-de-maand 00:00 UTC.
+
+Bestaat omdat een daily cap van 10% theoretisch naar 70% per week
+kan accumuleren — weekly + monthly zijn de dampers die zeggen "ook
+als je elke dag de daily hit, mag je niet bliksemsnel al je balance
+wegtraden."
+
+Beschermt tegen: slow-burn attacks die respecteren daily-cap
+(attacker verdeelt stelen over meerdere dagen).
+Beschermt niet tegen: wat Laag 2 niet vangt sneller in de tijd.
+
+Waar leeft dit: signing-service, idem als Laag 2.
+
+**Laag 4 — Performance-gemoduleerde cap-scaling.**
+
+De signing-service tracked realized P&L van de user's bots over
+het laatste 30d-window vs. het expected-range van de strategy
+(komt uit backtest-metrics: verwachte winrate + avg-loss + Sharpe
+per config).
+
+Trigger-logica (concreet):
+
+- Rolling window: 30d realized P&L, herberekend per 24h.
+- Significant underperformance: realized ≤ (expected - 2σ) voor 3
+  opeenvolgende dagen → caps (Laag 2 + 3) dalen naar 50% van
+  normaal + user-alert "caps geknepen door underperformance, review
+  je bot-config."
+- Herstel: pas bij realized ≥ (expected - 1σ) voor 7 opeenvolgende
+  dagen.
+- Cool-down tussen scaling-events: 14 dagen. Voorkomt flapping.
+- Outperformance (realized > expected): GEEN cap-relaxation. Dit is
+  by design — outperformance-detection zou als attacker-incentive
+  werken ("ik steal in één dag, wait for cap-increase, steal more").
+
+Beschermt tegen: attack waar attacker systematisch geld verliest
+(pump-and-dump naar attacker-gekozen coin, adversarial order-
+placement); ook tegen genuine broken strategies die geld verliezen
+zonder attack.
+Beschermt niet tegen: attack die binnen expected-range blijft
+(attacker die toevallig winst draait).
+
+Waar leeft dit: signing-service heeft de cap-counters; main-app
+berekent performance-metrics uit de deal-ledger en pusht naar
+signer als `{user_id, performance_state}`. Signer past scaling
+toe.
+
+**Laag 5 — Emergency floor.**
+
+Trading stopt volledig als balance onder 60% van rolling-max over
+90 dagen komt. User krijgt alert, bots staan op pause, re-
+activation vereist user-action + 72h cooldown + 7d enhanced-
+scrutiny mode (alle trades vereisen approval, caps 50% van
+normaal).
+
+Beschermt tegen: runaway-loss scenario — als een attack / broken
+strategy voorbij Laag 2/3/4 is gekomen en toch significante
+drawdown veroorzaakt, stopt Laag 5 het bloeden voordat de balance
+volledig weg is.
+Beschermt niet tegen: attacks die balance > 60% laten (zal veel
+andere lagen eerder triggeren); exchange-side lek (Laag 7).
+
+Waar leeft dit: signing-service, met rolling-max-monitor per user.
+
+**Laag 6 — Anomaly detection.**
+
+Drie detectoren, elk met eigen actie:
+
+- **Trade-frequency baseline.** Per-bot gemiddelde trades/week
+  laatste 60d. Significant afwijkend (>3σ, bijv. 10x meer trades in
+  een week dan historisch) → alleen loggen + alert in portal. Niet
+  weigeren — volatility kan legitieme burst zijn.
+- **Trade-timing anomalies.** Trades buiten user's normale active
+  hours (historisch afgeleid uit portal-login-timestamps +
+  manual-trade-timestamps). Niet-strategic buiten-uur trades →
+  approval-channel vereist.
+- **Asymmetric patterns.** Alleen-buy of alleen-sell bursts > 5
+  opeenvolgende orders zonder tegenkant → weigeren tot user
+  explicit approval geeft. Vangt de "pump-jezelf-in" pattern.
+
+Per detector expliciet: log-only, approval-required, of reject-
+outright. Alle drie alerten in portal; user heeft 24h om te
+reageren anders pause-trading.
+
+Beschermt tegen: patterns die niet door caps worden gevangen omdat
+ze qua volume binnen limits blijven maar qua shape verdacht zijn.
+Beschermt niet tegen: patterns die legitimate strategy-behavior
+mimicen.
+
+Waar leeft dit: main-app (heeft de deal-ledger + timing-data).
+Detectie-output triggert signer om approval te vragen of reject.
+
+**Laag 7 — Balance-drop detection (read-only watchdog).**
+
+Onafhankelijke service (reverto-watchdog), eigen infrastructuur.
+Poll elke 3-5 minuten de exchange-balance via read-only API. Vergelijk
+met expected-balance (opbouw: opening balance + realized PnL tot nu
++ expected position unrealized) die uit main-app komt. Drift > 5% of
+> absolute-drop-threshold (bijv. $500) triggert:
+
+1. Immediate alert naar user (email + SMS + PWA push) + operator.
+2. Kill-signal naar signer: "weiger alle trades voor deze user tot
+   handmatige reset."
+3. Freeze user's caps-wijziging endpoints.
+
+Beschermt tegen: elk scenario waar de attacker Reverto-side buiten
+is maar exchange-side wel geld wegtrekt. Incl. exchange-side lek
+(2.6), insider met direct-exchange-access.
+Beschermt niet tegen: scenarios waar zowel Reverto als watchdog zijn
+gecompromitteerd (dan heb je al verloren, maar separate infra +
+read-only keys maakt dit veel minder waarschijnlijk).
+
+Waar leeft dit: `reverto-watchdog` op aparte VPS/provider. Eigen
+read-only API-keys per user. Eigen DB. Communiceert alleen naar
+signer via mTLS "kill(user_id)" calls — kan user-state veranderen,
+niet credentials uitlezen.
+
+**Laag 8 — Dead man's switch.**
+
+User-configureerbare inactivity timeout (default 7 dagen, range
+3-30 dagen). Meet: user-device authenticated actions (login, PWA
+tap, manual trade, cap-wijziging). Passive cookie-present telt NIET
+als activity.
+
+Na timeout: alle bots pauzeren, alert naar user (email + SMS), 24h
+pending-state waarin de user kan reactiveren zonder verdere checks;
+daarna vol approval-channel nodig.
+
+Beschermt tegen: attacker die rustig de tijd neemt nadat user
+vakantie/ziek is; user die het niet meer merkt omdat ze de portal
+niet bezoeken.
+Beschermt niet tegen: attacker die zelf "activity" genereert op het
+user-device (device-compromise, scenario 2.3) — maar dan heeft de
+attacker sowieso al echte problemen voor de user.
+
+Waar leeft dit: main-app (activity-tracker), signer (enforces pause
+na timeout-trigger).
+
+### 3.7 Independence Verification
+
+De cruciale tabel. Voor elke laag: als de reverto-web host (main-
+app) volledig gecompromitteerd is — attacker heeft root, leest
+alles, muteert DB vrij — blijft deze defense dan overeind?
+
+| Layer | Survives main-app compromise? | Depends on |
+|-------|:-----------------------------:|------------|
+| **L1** per-trade threshold + approval | Ja | Approval-token verificatie leeft in signer; user-device bezit de WebAuthn-key. Main-app kan approval-requests posten, niet forgen. |
+| **L2** daily cap | Ja | Cap-counters + rolling-max-berekening leeft in signer's DB. Main-app kan een cap-wijziging indienen maar die vereist approval + cooldown voordat de signer 'm honoreert. |
+| **L3** weekly / monthly caps | Ja | Zelfde als L2 — signer-state. |
+| **L4** performance-scaling | Gedeeltelijk | Performance-metrics komen uit main-app (main-DB heeft de deal-ledger). Een gecompromitteerde main-app kan fake-metrics pushen om underperformance te maskeren. Echter: het _doel_ van L4 is conservatief-op-underperformance, niet relax-op-outperformance, dus een attacker die main-app heeft kan caps niet verhogen via deze route. Downgrade-pad (manual user-action alleen) is acceptabel. |
+| **L5** emergency floor | Ja | Floor-trigger berekent rolling-max uit signer's eigen balance-snapshots (onafhankelijk van main-app-data), plus watchdog-balance-reads. Main-app compromise kan de floor niet verhogen. |
+| **L6** anomaly detection | Nee | Detector-output komt uit main-app; gecompromitteerde main-app stuurt gewoon "alles is normaal." Deze laag is dus een operator-visibility tool, geen hard-defense. Expliciet niet vertrouwd als independent layer. |
+| **L7** watchdog | Ja, mits echt separate infra | Aparte VPS + andere provider + eigen read-only API-keys. Main-app compromise raakt watchdog niet. Kritieke eis: watchdog-kill-signaal is alleen valide met watchdog's eigen mTLS-cert. |
+| **L8** dead-man-switch | Gedeeltelijk | Activity-tracker leeft in main-app; compromise kan fake-activity injecteren. Echter: activity-signal is ingebed in user-device authenticated actions (WebAuthn challenge-response, TOTP-codes). Main-app kan niet een TOTP-code verzinnen zonder ook de TOTP-seed te hebben — en die leeft in signer. Dus gedeeltelijk independent: attacker kan dead-man-timer resetten door de user te laten tapp'en, maar niet uit zichzelf. |
+| **IP-whitelist (exchange-side)** | Ja | Exchange enforces. Main-app + signer-IPs zijn bekend bij de exchange; attacker op Reverto-infra moet vanuit Reverto's IP trade'en, wat hij mag — maar een attacker die via een ander kanaal keys heeft exfiltreerd kan niet vanuit attacker-IP. Tevens: watchdog detecteert buiten-Reverto trades. |
+| **Withdraw-blacklist (exchange-side)** | Ja | Exchange enforces. Key-permissions-check op onboarding weigert withdraw-enabled keys; als user later op exchange de permissie aanpast, detect quarterly recheck + watchdog. |
+| **TOTP / PWA WebAuthn / YubiKey private keys** | Ja | Private-keys leven op user-device. Main-app weet de challenges maar kan niet signen. |
+| **bcrypt password hashes** | Ja, in de offline-cracking zin | Hashes kunnen gelezen worden; rounds=12 maakt offline cracking per-account duur. |
+| **Audit-log forgery detection** | Afhankelijk van store | Main-app audit-log is muteerbaar door main-app compromise; signer-audit-log is niet. Append-only externe log-aggregator (CloudWatch Logs / Loki / external syslog) zou ook main-app-logs robuust maken. |
+
+**Conclusie.** Drie lagen (L1, L2/3, L5, L7) overleven volledig; één
+(L4) overleeft in één richting (kan niet relaxed worden); twee (L6,
+L8) zijn partial defenses. De gaten bij L6 en L8 zijn bewust — L6 is
+een observability-tool, niet een hard-gate; L8 leunt op user-device-
+activity die main-app niet kan vervalsen, maar wel passief kan
+doen-alsof.
+
+Dit dwingt: de signing-service isolatie en de aparte watchdog-
+infrastructuur zijn niet optioneel. Zonder één van beide valt de hele
+defense-in-depth stack.
+
+---
+
+## Part 4 · Migration Roadmap
+
+Fasen volgen elkaar op maar zonder harde datum-commits. Elke fase
+heeft concrete deliverables; ordering is bewust zodat een halverwege-
+gestaakt project niet in een half-werkende state eindigt.
+
+### Phase A — Foundation (huidige state → kort termijn)
+
+**Deliverables:**
+- Audit v26 findings: alle HIGH + blocker-MEDIUMs (v26-15h, v26-01,
+  v26-02, v26-10, v26-16, v26-19) fixed.
+- `CredentialProvider` interface-abstractie toegevoegd in
+  `core/credentials.py`: de huidige per-user Fernet-implementatie
+  wordt een concrete implementation van een abstract interface, zonder
+  nu een tweede implementation te bouwen. Voorbereiding voor Phase C.
+- Exchange-call audit: matrix van elke call in `exchanges/bitget.py` +
+  `exchanges/kraken.py` met de minimale permission-scope die hij
+  nodig heeft. Output: `docs/exchange-permissions.md` als
+  implementatie-referentie voor Phase D key-permissions-verifier.
+- Structured audit-logging: huidige `_audit(action, slug, actor)` in
+  `web/app.py` uitbreiden naar JSON-structuur met timestamp, user_id,
+  ip, result. Preparatie voor externe log-aggregator in Phase G.
+- Dit document (v1).
+
+### Phase B — Authentication Hardening
+
+**Deliverables:**
+- TOTP 2FA-layer: nieuwe kolom `users.totp_seed_encrypted` +
+  bijbehorende encryption-key-management (nog in main-app, verhuist
+  in Phase C).
+- TOTP-seed rotation endpoint (voor users die hun authenticator-app
+  verliezen; requires admin-action initially).
+- TOTP-verify endpoint + integratie in `/auth/login` flow.
+- Password-rotation prompt: forced password change elke 6 maanden
+  voor admin-role; optional voor user-role.
+- Rate-limiting per-user toegevoegd aan login-path
+  (momenteel alleen per-IP).
+- Cookie-posture regression test (audit v26 v26-22).
+
+### Phase C — Service Separation
+
+**Deliverables:**
+- PostgreSQL migratie vanaf SQLite. Alembic-based migrations.
+- Docker Compose setup met drie services: `reverto-web`,
+  `reverto-signer`, `reverto-db`. Gedeelde network + isolated
+  data-volumes per service. Nog op Mele — geen cloud-migratie in
+  deze fase.
+- `reverto-signer` scaffolding: FastAPI app, eigen Postgres schema,
+  mTLS-ready. Begint als dumb-proxy (forwardt calls naar
+  exchange-client) zonder scope-enforcement — scope whitelist komt
+  incrementeel in Phase D.
+- mTLS-setup met self-signed CA (operator-rooted).
+- Move credential-store naar signer's DB. Main-app verliest
+  read-access tot `keys/` en `credentials/`.
+- Migration-script om bestaande credentials uit main-app naar signer
+  te verhuizen zonder user-downtime.
+
+### Phase D — User-Facing Security
+
+**Deliverables:**
+- PWA met WebAuthn enrollment-flow. Web-manifest, service-worker,
+  installable op iOS/Android/desktop browsers.
+- Approval-request endpoints: main-app creëert een request, PWA
+  haalt openstaande requests op, user tapt om te signen, signature
+  gaat naar signer-service voor verificatie.
+- Onboarding-wizard: exchange-key upload + permission-check
+  (weigert withdraw-enabled) + IP-whitelist verification (attempt
+  order from wrong IP, expect exchange-rejection).
+- Onboarding UI voor TOTP-fallback setup + recovery-codes.
+- YubiKey registration-flow (FIDO2) — premium-tier later
+  ontgrendelbaar.
+
+### Phase E — Defense Layers
+
+**Deliverables:**
+- Percentage-based caps in signer-DB (Laag 2 + 3).
+  `caps_rolling_counters` tabel + update-job op elke trade.
+- Rolling-max berekening + user-visible dashboard van "current cap
+  consumption this week/month."
+- Performance-scaling (Laag 4): backtest-expected-range stored in
+  `bot_configs` (nieuwe kolom), realized-vs-expected berekening,
+  30d-rolling trigger.
+- Emergency floor (Laag 5): floor-calculation + pause-trading on
+  trigger.
+- Anomaly detectors (Laag 6) per type; start met asymmetric-
+  patterns (makkelijkst, hoogste signal).
+- Dead-man-switch (Laag 8): activity-tracker + timeout-worker.
+
+### Phase F — Independent Watchdog
+
+**Deliverables:**
+- Aparte VPS bij een andere provider dan de main-app. Andere OS-image
+  (bijv. Debian waar main-app Ubuntu draait).
+- `reverto-watchdog` service: read-only API-key storage per user,
+  polling-loop, expected-balance-model, kill-signal-emitter.
+- Watchdog onboarding: elke new user moet bij Phase F-launch ook
+  een read-only API-key uploaden; onboarding-wizard krijgt stap
+  "maak tweede read-only key voor monitoring."
+- Kill-signal-protocol: watchdog → signer mTLS endpoint.
+
+### Phase G — SaaS-launch readiness
+
+**Deliverables:**
+- Migratie van Mele → Hetzner / Linode / comparable VPS. DNS,
+  TLS-cert-management (Let's Encrypt auto-renew), backup-strategy
+  naar object-storage.
+- Incident-response plan (apart document). Concrete runbooks voor:
+  server-compromise, user-compromise, exchange-lek, watchdog-alert,
+  mass-payout-request.
+- Terms of Service met disclaimer-secties: geen guarantees, niet
+  aansprakelijk voor trading-verliezen, custody-disclosure.
+- Privacy-policy (GDPR-compliant voor EU users).
+- Status-page (status.reverto.example) met uptime en recent incidents.
+- External security-review: scoped aan infrastructure, auth-stack,
+  credential-handling, signing-service scope-enforcement. Bij
+  voorkeur een firm die cripto-bot-platforms eerder heeft gereviewed.
+- Go/no-go beslissing: alle HIGH + MEDIUM audit-v26 findings
+  gesloten, externe review zonder HIGHs, first 3 beta-users
+  gedraaid ≥ 30 dagen zonder incident.
+
+---
+
+## Part 5 · Explicit Non-Decisions
+
+Wat we expliciet NIET doen in dit model, en waarom. Elke keuze
+blijft open voor heroverweging maar heeft een reden om voor nu niet.
+
+- **Geen non-custodial architectuur.** UX-incompatible met de
+  bot-markt: non-custodial zou vereisen dat de user voor elke trade
+  real-time tap-to-sign doet, wat de hele waarde van een 24/7 DCA-
+  bot ondermijnt. Alle concurrenten (3Commas, Pionex, Cryptohopper,
+  Shrimpy) zijn custodial om dezelfde reden. Risico wordt
+  gemitigeerd door Part 3.1 + 3.6 en door expliciete Terms of
+  Service disclosure.
+
+- **Geen hardware-wallet integratie voor trading.** Ledger/Trezor
+  hebben geen CEX-API signing-modus — ze signen on-chain transactions
+  en arbitrary-data-signing is niet overal consistent gesupported door
+  Bitget/Kraken. YubiKey-WebAuthn voor portal-approvals is een andere
+  (wel werkende) usage.
+
+- **Geen MPC threshold-signing.** Techniek bestaat (Fireblocks, Copper)
+  maar vereist dedicated co-signer-infrastructuur. Voegt complexiteit
+  toe waar defense-in-depth al de gewenste robustness biedt. Mogelijk
+  future R&D voor enterprise-tier — zie Part 6.
+
+- **Geen SMS-based 2FA.** SIM-swap is de bekende aanvalsroute;
+  Robinhood-2020 incident als case study. TOTP via een authenticator-
+  app is toegankelijk voor dezelfde user-populatie zonder deze
+  zwakheid.
+
+- **Geen email-based trade-approval.** Email is een phishing-anchor:
+  user klikt op een link die er officieel uitziet, belandt op
+  attacker-portal, doet approve "trade." Email is OK als
+  kennisgevings-kanaal (de alert dat er een cap-wijziging wacht met
+  48h cooldown) maar niet als approval-channel zelf.
+
+- **Geen GraphQL API.** REST is genoeg voor de huidige scope; GraphQL
+  voegt attack-surface (query complexity, batching, introspection) toe
+  zonder proportioneel voordeel.
+
+- **Geen webhook-callbacks naar user-URLs.** Zou een SSRF-surface
+  openen. Alerts lopen alleen via de kanalen die wij beheren
+  (portal-UI, PWA push, email, optionele Telegram).
+
+- **Geen multi-region deployment vóór SaaS-launch.** Single-region
+  is simpler en sufficient voor de beta-scale. Multi-region wordt
+  pas interessant bij > 1000 users of regulatory-data-residency
+  requirements.
+
+---
+
+## Part 6 · Open Questions & Future Research
+
+Dingen die we nog niet kunnen beslissen, of waar meer onderzoek
+nodig is. Sorted op prioriteit voor resolution.
+
+- **Bitget consumer-grade subaccount support.** Docs suggereren het
+  bestaat voor retail users, maar de API-flow om een subaccount-
+  specific API-key aan te maken is onduidelijk. Belangrijk voor
+  Part 3.5 "recommended sub-account usage" — als het niet goed werkt
+  moeten we die recommendation intrekken.
+
+- **TOTP-seed encryption-key management.** In Phase B leeft de
+  encryption-key in de main-app (praktisch nodig voor login-flow).
+  In Phase C verhuist 'ie naar de signer. De overgang vereist een
+  key-rotation dance: alle seeds moeten met main-key worden
+  gedecrypt en met signer-key worden her-encrypt, zonder user-
+  downtime. Technisch oplosbaar maar niet triviaal; concrete
+  sequence te schrijven in een Phase C implementation-doc.
+
+- **Threshold voor "grote trade".** User-configureerbaar (2% default,
+  1-5% range) of platform-mandated? User-configureerbaar past bij de
+  custodial-no-paternalistic-stance; platform-mandated dwingt een
+  minimum-prudence af. Voorlopig user-configureerbaar, overwegen
+  floor-value te introduceren als Laag 2/3 usage patroon toont dat
+  users caps te hoog zetten.
+
+- **Incident-response playbook.** Apart document nodig; niet in scope
+  van deze spec. Bij voorkeur geschreven door iemand met
+  incident-response-ervaring (onze security-reviewer in Phase G
+  kan adviseren).
+
+- **Compliance per jurisdictie.** Nederland (AFM), EU (MiCA),
+  mogelijk UK (FCA) — regulatory status voor custodial bot-
+  platforms is moving target. Beslissen welke jurisdictie(s) te
+  targeten heeft implicaties op: KYC-niveau, licentie-requirements,
+  insurance-requirements, data-residency. Apart beleidsdocument
+  zodra een target gekozen is.
+
+- **Watchdog infra-provider keuze.** Main-app likely op Hetzner;
+  watchdog idealiter op een verschillende provider. Kandidaten:
+  DigitalOcean, Linode, OVHcloud. Geen hard-onderzoek gedaan; 
+  main-criteria: andere netwerk-paden + onafhankelijke billing +
+  geen gedeelde shared-hosting infra.
+
+- **MPC-based signing voor enterprise-tier.** Technisch interessant
+  voor users met > significant balance. Fireblocks + vergelijkbare
+  providers hebben commercial APIs; vereist contract + monthly fees.
+  Pas relevant als we enterprise-customers onboarden.
+
+- **Passkeys via iOS/Android OS-level.** Apple en Google syncen
+  Passkeys via iCloud/Google-account. Dit is user-vriendelijk maar
+  introduceert dependency op Apple/Google account-security. Voor
+  ons doel (trading-custody) misschien te permissive. Te beslissen
+  per Phase D: alleen device-bound keys accepteren, of ook Passkey-
+  gesynchroniseerde keys?
+
+- **Dead-man-switch-reset bij lange legitieme afwezigheid.** User
+  gaat 3 weken op vakantie, had 7d-timeout gezet, bots pauzeren na
+  7d. Heropstart-flow bij terugkomst moet simple zijn; als 'ie té
+  simple is wordt de defense zinloos. Balance: 24h-pending-state
+  plus one-tap reactivation is in Part 3.6 Laag 8 ingeschat;
+  user-testing moet aantonen of dit werkt.
+
+---
+
+## Part 7 · Appendix: Cross-references
+
+**Audit v26 findings die aan dit document raken:**
+
+| Finding | Severity | Sectie in dit doc |
+|---------|----------|-------------------|
+| v26-15h | HIGH | Part 2.1 (server-compromise emergency-stop als mitigatie), Part 4 Phase A |
+| v26-01 | MEDIUM | Part 3.3 authentication stack — consolidatie `_require_session` en `_request_user` |
+| v26-02 | MEDIUM | Part 3.4 approval hierarchy — emergency-stop admin role |
+| v26-03 | MEDIUM | Part 3.3 password policy — consolidatie min-length |
+| v26-10 | MEDIUM | Part 4 Phase C PostgreSQL-migratie — operator-gate op destructieve migrations |
+| v26-16 | MEDIUM | Part 3.1 service-separation — WS broadcaster per-user filtering is forward-looking requirement |
+| v26-18 | MEDIUM | Part 3.5 onboarding — exchange-permissions-check is een concreet soort van "config path must be user-scoped" |
+| v26-19 | MEDIUM | Part 4 Phase A — runbook-updates + setup-admin documentatie |
+
+**Phase-3 scoping document (`docs/phase-3.md`):**
+
+Dit security-model document breidt `docs/phase-3.md` uit op drie
+punten:
+- Phase-3a auth is shipped; dit doc beschrijft Phase-3b (TOTP), C
+  (service-separation), D (user-facing security), E (defense-layers),
+  F (watchdog).
+- De emergency-stop admin-cross-user design in §2 van phase-3.md is
+  hier geconcretiseerd in Part 3.4 met expliciete approval-channel
+  requirements.
+- Per-user credential-opslag uit §2 van phase-3.md blijft geldig; het
+  MOVE-target verandert: niet alleen per-user directory, maar per-user
+  in de signer-service DB (Part 3.2).
+
+**Runbook entries die moeten worden bijgewerkt:**
+
+- `docs/runbook.md` "Startup checklist": uitbreiden met
+  `make setup-admin` (audit v26 v26-19) en — post-Phase-B — een TOTP-
+  enrollment stap.
+- `docs/runbook.md` "Credential rotation": uitbreiden met per-user
+  Fernet-key rotation + exchange-key rotation als aparte procedures
+  zodra Phase D er is.
+- Nieuwe sectie "Incident response" — scope en volume vallen buiten
+  deze spec (zie Part 6). Pas schrijven als incident-response
+  playbook bestaat.
+
+**Bestaande codebase-hooks waar target-state werk aan raakt:**
+
+| File | Huidige rol | Target-state aanpassing |
+|------|-------------|-------------------------|
+| `web/app.py` AuthMiddleware | gatekeeps HTTP requests | Unchanged qua structuur; TOTP-check erin gehaakt (Phase B). |
+| `web/routes/auth.py` | login / logout / change-password | Uitbreiden met `/auth/totp/enroll`, `/auth/totp/verify`, `/auth/webauthn/*` routes (Phase B+D). |
+| `core/user_store.py` | DB-based user helpers | Uitbreiden met `totp_seed_get/set` + `webauthn_credentials` (Phase B+D). Password-policy constante consolideren (v26-03). |
+| `core/credentials.py` | per-user Fernet + per-exchange .enc | Verhuist naar signer in Phase C. Main-app-side wordt een `CredentialProvider` interface die naar signer RPC calls doet. |
+| `exchanges/base_exchange.py` | ccxt abstraction | Verhuist naar signer (Phase C). Main-app houdt alleen market-data calls (read-only, no api_secret). |
+| `live/live_engine.py:281` | `NotImplementedError` voor real orders | Wordt RPC-call naar signer's `place_trade(user_id, intent)` (Phase C). |
+| `scripts/setup_admin.py` | admin password provisioning | Uitbreiden met TOTP-bootstrap (Phase B). |
+
+**Independence-matrix (Part 3.7) als hard-requirement:**
+
+Elke Phase waarin een defense-laag wordt gebouwd moet de
+independence-tabel expliciet raken. Reviewer voegt bij Phase-end
+een kolom toe: "implemented as designed?" — zonder dat wordt de
+defense-in-depth stack incompleet.
+
+---
+
+_Document eind. v1 (2026-04-20). Revisie gepland bij start van
+Phase C; eerder bij significante audit-findings of bij discovery van
+niet-gemodelleerde threats._
