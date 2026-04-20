@@ -34,7 +34,7 @@ from pathlib import Path
 # Repo-root bootstrap so imports work no matter where the script is run from.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.database import init_db  # noqa: E402
+from core.database import DatabaseMigrationError, init_db  # noqa: E402
 from core.user_store import (  # noqa: E402
     get_user_by_username,
     set_password,
@@ -46,8 +46,16 @@ _MIN_PW_LEN = 10
 def main() -> int:
     # Idempotent — ensures schema is at v4 and the admin row exists.
     # Safe to run even on a fully-migrated DB; this is a no-op apart
-    # from the password UPDATE.
-    init_db()
+    # from the password UPDATE. A destructive migration (v<4 → v4)
+    # will raise here unless REVERTO_DESTRUCTIVE_MIGRATE=1 is set;
+    # setup-admin is the first thing an operator runs post-upgrade,
+    # so we translate that into a clean stderr message instead of
+    # a traceback.
+    try:
+        init_db()
+    except DatabaseMigrationError as e:
+        print(f"\n[FATAL] {e}\n", file=sys.stderr)
+        return 1
 
     admin = get_user_by_username("admin")
     if admin is None:

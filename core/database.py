@@ -36,12 +36,35 @@
 #   password_hash is NULL on the seeded admin row.
 
 import logging
+import os
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+class DatabaseMigrationError(Exception):
+    """Raised when a schema migration cannot proceed safely.
+
+    Typical cause: a destructive migration would drop user data
+    (deals, orders, annotations, backtest_runs, users state)
+    without explicit operator opt-in via the
+    ``REVERTO_DESTRUCTIVE_MIGRATE`` environment variable.
+
+    Audit v26 v26-10 regression guard. Pre-fix ``init_db()`` would
+    silently DROP + recreate owned tables on a version mismatch,
+    which meant a routine ``make start`` after upgrading the code
+    could wipe live parity-test or production data without any
+    operator acknowledgement.
+    """
+    pass
+
+
+# Env-var name operators set to opt-in to destructive schema migration.
+_DESTRUCTIVE_OPT_IN_ENV = "REVERTO_DESTRUCTIVE_MIGRATE"
 
 _BASE_DIR = Path(__file__).parent.parent
 _DB_PATH: Path = _BASE_DIR / "logs" / "reverto.db"
@@ -289,6 +312,63 @@ def get_db() -> sqlite3.Connection:
 SCHEMA_VERSION = 4
 
 
+def _has_existing_owned_data(conn: sqlite3.Connection) -> bool:
+    """True if any owned table already contains rows.
+
+    Used to distinguish a fresh install (no data to lose → migration
+    is just CREATE TABLE statements) from an upgrade of an existing
+    install (where DROP actually destroys operator data). Fresh
+    installs never trigger the destructive-migration guard.
+
+    A table that does not exist yet is ignored (``OperationalError``
+    on SELECT) — that means it's about to be created, not dropped.
+    """
+    for table in _OWNED_TABLES:
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {table} LIMIT 1",
+            ).fetchone()
+            if row and int(row[0]) > 0:
+                return True
+        except sqlite3.OperationalError:
+            # Table doesn't exist — nothing to drop for this one.
+            continue
+    return False
+
+
+def _create_pre_migration_backup() -> Path:
+    """Create a WAL-aware SQLite backup before destructive migration.
+
+    Uses ``sqlite3.Connection.backup()`` (not ``shutil.copy``) so
+    WAL-mode databases are captured consistently. Without this,
+    uncommitted pages in the WAL file would be missed by a plain
+    file copy and the "backup" would be silently partial.
+
+    Returns the path to the backup file. Caller is expected to log
+    it prominently so the operator can find it post-migration.
+    Format: ``logs/pre-migration-backup-YYYYMMDD-HHMMSS.db``.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = _DB_PATH.parent
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = backup_dir / f"pre-migration-backup-{timestamp}.db"
+
+    # Open a fresh sqlite3 connection to the source — NOT the one
+    # that `_migrate_schema` is using, because that connection is in
+    # the middle of a transaction. A dedicated connection sees the
+    # committed state, which is exactly what we want to snapshot.
+    source = sqlite3.connect(str(_DB_PATH))
+    try:
+        dest = sqlite3.connect(str(backup_path))
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+    return backup_path
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """Apply any pending migration to the current DB.
 
@@ -296,21 +376,53 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     recreate of the owned tree. Older in-line schema-alter attempts
     are avoided: SQLite's ALTER TABLE set is narrow, and back-filling
     NOT NULL / UNIQUE constraints on an existing table requires a full
-    rewrite anyway. We emit a WARNING so operators see it in
-    portal.log at default verbosity; data-loss is intentional and
-    documented in the module docstring + docs/architecture.md, and
-    guarded by scripts/reset_db.py which backs up the old DB first.
+    rewrite anyway.
+
+    Audit v26 v26-10 guard: when the DB already contains owned-table
+    data, the destructive path requires explicit operator opt-in via
+    ``REVERTO_DESTRUCTIVE_MIGRATE=1``. A pre-migration backup is
+    auto-created just before the DROP so the operator can roll back
+    if the new schema turns out to be wrong. Fresh installs (no
+    owned-table rows) skip the guard — there is no data to destroy.
     """
     current = conn.execute("PRAGMA user_version").fetchone()[0] or 0
     if current == SCHEMA_VERSION:
         return
     if current < SCHEMA_VERSION:
+        destructive = _has_existing_owned_data(conn)
+        if destructive:
+            if os.getenv(_DESTRUCTIVE_OPT_IN_ENV) != "1":
+                raise DatabaseMigrationError(
+                    f"Destructive schema migration required "
+                    f"(v{current} → v{SCHEMA_VERSION}). This will DROP "
+                    f"owned tables (deals, orders, annotations, "
+                    f"backtest_runs, and user password/role/"
+                    f"session_epoch data).\n"
+                    f"To proceed, restart with "
+                    f"{_DESTRUCTIVE_OPT_IN_ENV}=1 set. A pre-migration "
+                    f"backup will be created automatically at "
+                    f"logs/pre-migration-backup-YYYYMMDD-HHMMSS.db.\n"
+                    f"See docs/runbook.md section 'Schema migrations' "
+                    f"for details including restore procedure."
+                )
+            backup_path = _create_pre_migration_backup()
+            logger.warning(
+                "Destructive migration v%d → v%d authorized via %s=1. "
+                "Pre-migration backup created: %s",
+                current, SCHEMA_VERSION,
+                _DESTRUCTIVE_OPT_IN_ENV, backup_path,
+            )
+        else:
+            # Fresh install — no data to lose, guard doesn't apply.
+            logger.info(
+                "Schema initialisation from v%d to v%d (no existing "
+                "owned-table data — fresh install, no backup needed).",
+                current, SCHEMA_VERSION,
+            )
         logger.warning(
             "Schema migration: dropping owned tables from v%d and "
             "recreating at v%d. Deal/order/annotation/backtest + user "
-            "password/role/session_epoch data is wiped. Run "
-            "scripts/reset_db.py first if you haven't already — it "
-            "backs up the DB before calling init_db(). After the "
+            "password/role/session_epoch data is wiped. After the "
             "migration, run scripts/setup_admin.py to provision the "
             "admin password (login is blocked until you do).",
             current, SCHEMA_VERSION,
