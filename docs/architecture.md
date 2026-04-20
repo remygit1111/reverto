@@ -349,6 +349,30 @@ Beschikbaar via het kebab-menu (⋮) per bot-card in de portal.
   round-trip. Ook alleen strategy; de duplicate start met lege
   state en zonder history.
 
+### Admin provisioning (post-Phase-3a)
+
+Bij fresh install of na een destructieve schema-migratie (v<4 →
+v4, of toekomstige vergelijkbare bumps) is de `users.password_hash`
+voor de seeded admin-row `NULL`. Login is geblokkeerd tot
+`scripts/setup_admin.py` is gedraaid — typisch via:
+
+```bash
+REVERTO_ADMIN_PW="<password>" make setup-admin
+```
+
+Het script schrijft een bcrypt-hash (rounds=12) naar
+`users.password_hash` voor user_id=1. Zonder deze stap blijft elke
+login 401 omdat `verify_password()` in `core/user_store.py`
+fails-closed op NULL hash (zie `docs/security-model.md` Part 3.3).
+
+Destructieve schema-migraties zelf vereisen sinds audit v26-10
+(2026-04-20) een expliciete operator-opt-in via
+`REVERTO_DESTRUCTIVE_MIGRATE=1` bij `make start`, met
+auto-gegenereerde pre-migration backup naar
+`logs/pre-migration-backup-YYYYMMDD-HHMMSS.db`. Zie
+`docs/runbook.md` "Schema migrations" voor de volledige flow +
+restore-procedure.
+
 ## Key inter-module contracts
 
 - **exchanges.base_exchange** — the `BaseExchange` ABC is the single
