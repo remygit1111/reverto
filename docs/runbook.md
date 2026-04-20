@@ -4,6 +4,168 @@ Operational procedures for running Reverto in paper or (Phase-3+) live
 mode. Follow these instead of hunting through source when something
 needs attention.
 
+## First-time setup
+
+Bij een fresh install — of na een destructieve schema-migratie (zie
+"Schema migrations" hieronder) — moet het admin-wachtwoord handmatig
+worden ingesteld voordat login mogelijk is. De `users` tabel seedt
+wel een admin-row, maar `password_hash` staat op `NULL`:
+`verify_password()` faalt closed op NULL, dus zonder setup-admin
+blijft elke login 401.
+
+**Stap 1: install dependencies**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+**Stap 2: zet env-vars (eenmalig per host)**
+
+```bash
+export REVERTO_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+export REVERTO_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+# Lokale dev over plain HTTP:
+export REVERTO_INSECURE_COOKIES=1
+```
+
+Paste desnoods in `~/.bashrc`. Zonder `REVERTO_API_KEY` /
+`REVERTO_SECRET_KEY` genereert Reverto ephemeral keys met een
+WARNING; dat is OK voor eerste kennismaking maar verliest alle
+sessies bij elke restart.
+
+**Stap 3: initialize database**
+
+```bash
+make start          # runt init_db() die de schema op v4 zet
+# wacht tot "Portal started" in logs/portal.log
+# dan: Ctrl-C om te stoppen
+```
+
+Op een fresh install maakt `init_db()` lege owned-tabellen +
+admin-seed zonder tussenkomst. Bij een upgrade van een eerdere
+schema-versie zie "Schema migrations" voor de opt-in flow.
+
+**Stap 4: zet admin-wachtwoord**
+
+```bash
+REVERTO_ADMIN_PW="een_sterk_wachtwoord" make setup-admin
+```
+
+Dit roept `scripts/setup_admin.py` aan die een bcrypt-hash (rounds=12)
+schrijft naar `users.password_hash` voor user_id=1. Minimum lengte
+is 10 tekens (`_MIN_PW_LEN` in het script); kortere wachtwoorden
+worden geweigerd.
+
+Het script is idempotent — herhaald aanroepen met een andere
+env-var overschrijft de hash. Let op: setup-admin bumpt **niet**
+`session_epoch`, dus bestaande sessies blijven geldig tot ze
+verlopen of de gebruiker expliciet uitlogt.
+
+**Stap 5: login**
+
+```bash
+make start
+make status     # confirm pid + log
+```
+
+Browse naar `http://localhost:8080` en login met username `admin`
++ het hierboven gezette wachtwoord. Sanity-check:
+`curl http://localhost:8080/healthz` returns 200.
+
+**Password wijzigen na setup**
+
+Twee paden:
+
+- **Via portal** (aanbevolen): login, profile-menu → Change
+  Password. Dit roept `/api/auth/change-password` aan, die ook
+  `session_epoch` bumpt zodat elke andere open sessie meteen
+  uitlogt.
+- **Via CLI**: `REVERTO_ADMIN_PW="nieuw" make setup-admin` — snel
+  maar bumpt geen epoch, dus oude sessies blijven geldig.
+
+## Schema migrations
+
+Reverto versioneert zijn DB-schema via `PRAGMA user_version`. Bij
+opstart detecteert `init_db()` de huidige versie en migreert
+indien nodig.
+
+**Non-destructive migrations** (`ADD COLUMN`, nieuwe tabellen zonder
+bestaande-data-conflict) lopen automatisch bij `make start`. Geen
+opt-in, geen backup nodig — er is niks dat gedropt wordt.
+
+**Destructive migrations** (DROP + CREATE van owned tables) vereisen
+een expliciete operator-opt-in sinds audit v26-10 (2026-04-20). Dit
+voorkomt dat een routine `make start` na een version-upgrade stil
+alle deals/orders/users wist. Bij een vereiste destructieve
+migratie weigert `init_db()` en toont:
+
+```
+[FATAL] Destructive schema migration required (v3 → v4). This will
+DROP owned tables (deals, orders, annotations, backtest_runs, and
+user password/role/session_epoch data).
+To proceed, restart with REVERTO_DESTRUCTIVE_MIGRATE=1 set. A
+pre-migration backup will be created automatically at
+logs/pre-migration-backup-YYYYMMDD-HHMMSS.db.
+See docs/runbook.md section 'Schema migrations' for details
+including restore procedure.
+```
+
+Om door te gaan:
+
+1. **Lees de release notes** om te bevestigen welke data wordt
+   gewist (in Phase-3a bijvoorbeeld: alle deal/order/annotation/
+   backtest history + users.password_hash).
+
+2. **Overweeg een handmatige backup** bovenop de automatische. De
+   guard maakt zelf een backup (zie stap 4), maar een extra
+   handmatige snapshot voor belangrijke data schaadt nooit:
+
+   ```bash
+   sqlite3 logs/reverto.db ".backup logs/manual-backup-$(date +%Y%m%d-%H%M).db"
+   ```
+
+3. **Start met opt-in env-var**:
+
+   ```bash
+   REVERTO_DESTRUCTIVE_MIGRATE=1 make start
+   ```
+
+4. **Locate de pre-migration backup**. De guard schrijft
+   automatisch naar `logs/pre-migration-backup-YYYYMMDD-HHMMSS.db`
+   via `sqlite3.Connection.backup()` (WAL-aware). Bewaar deze
+   file tot je zeker weet dat het nieuwe schema correct werkt.
+
+5. **Post-migratie: setup-admin opnieuw** als de destructieve
+   migratie de users-tabel raakte (zoals v3 → v4 Phase-3a). Zonder
+   een nieuwe password_hash is login weer onmogelijk. Zie
+   "First-time setup" stap 4.
+
+### Restore procedure
+
+Als de destructieve migratie ongewenst is (bv. operator heeft per
+ongeluk opt-in gezet, of de nieuwe schema blijkt bugs te hebben):
+
+```bash
+# 1. Stop de portal (Ctrl-C in make start terminal, of make stop)
+make stop
+
+# 2. Vervang de huidige DB met de pre-migration backup
+cp logs/pre-migration-backup-YYYYMMDD-HHMMSS.db logs/reverto.db
+
+# 3. Downgrade code naar de versie van vóór de migratie
+git log --oneline    # zoek de laatste pre-migration commit
+git checkout <sha>   # of checkout de branch van voor de upgrade
+
+# 4. Start opnieuw — init_db() ziet een DB op de oude versie en
+#    de code verwacht dezelfde versie, dus geen migratie nodig.
+make start
+```
+
+De backup is een volwaardige SQLite-file; `sqlite3 <backup>.db
+'PRAGMA user_version'` laat zien op welke schema-versie 'ie zit.
+
 ## Database reset (multi-tenant migration)
 
 Voor de migratie van pre-MT (schema ≤ 2) naar v3 is een eenmalige
@@ -86,6 +248,10 @@ welk user tree hij bedient.
 
 ## Startup checklist (fresh machine)
 
+Zie "First-time setup" bovenaan dit document voor de volledige
+flow (install → env-vars → init_db → setup-admin → login).
+Samenvatting voor wie al bekend is:
+
 ```bash
 # 1. Venv + deps
 python3 -m venv .venv
@@ -97,12 +263,18 @@ export REVERTO_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(
 # For localhost dev only:
 export REVERTO_INSECURE_COOKIES=1
 
-# 3. Start portal
+# 3. Init database + set admin password
+make start          # runs init_db(); stop after "Portal started"
+REVERTO_ADMIN_PW="een_sterk_wachtwoord" make setup-admin
+
+# 4. Start portal
 make start
 make status   # confirm pid + log
 ```
 
 Sanity: `curl http://localhost:8080/healthz` returns 200.
+Login: `http://localhost:8080`, username `admin` + het gezette
+wachtwoord.
 
 ## Graceful shutdown
 

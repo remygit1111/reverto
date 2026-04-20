@@ -24,7 +24,7 @@ from typing import Optional
 from config.config_loader import load_bot_config
 from config.models import BotConfig, Mode
 from core import paths, user_store
-from core.database import init_db as _init_db
+from core.database import DatabaseMigrationError, init_db as _init_db
 from core.ids import DEAL_ID_RE
 from core.user import User, get_default_user
 from notifications.telegram import TelegramNotifier
@@ -1167,6 +1167,15 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONR
 # until that runs.
 try:
     _init_db()
+except DatabaseMigrationError as _dbe:
+    # Audit v26-10 guard: destructive schema migration was refused
+    # because the operator hasn't opted in. Fail HARD at startup
+    # with a stderr-visible message — the alternative (logging a
+    # warning and continuing) leaves the portal running against a
+    # stale schema, which was the original bug this guard closes.
+    sys.stderr.write(f"\n[FATAL] {_dbe}\n\n")
+    sys.stderr.flush()
+    sys.exit(1)
 except Exception as _e:  # pragma: no cover - defensive
     logger.warning("init_db failed on portal startup: %s", _e)
 
