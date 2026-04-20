@@ -1,5 +1,11 @@
 # Reverto Security Model
 
+**Classification:** Internal — bedoeld voor intern gebruik binnen
+Reverto development. Niet extern delen zonder review, omdat het
+document concrete drempel-waarden, detection-windows en architectural
+specifics bevat die in een latere phase naar een separate restricted
+operational-params document kunnen verhuizen.
+
 **Status:** Engineering-spec, v1 (2026-04-20).
 **Scope:** Multi-tenant SaaS-transitie, horizon 12-24 maanden.
 **Audience:** Eigen team + toekomstige externe security-review.
