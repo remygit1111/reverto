@@ -230,6 +230,89 @@ keys geldig zijn.
 | Zichtbare race-window | Sub-seconde voor Fernet-rotation (bestands-ops). Exchange-key rotation is minutes-scale door user-interaction op exchange. | Exchange-key rotation tijdens de verify-step: trading is gepauzeerd, dus attacker met oude keys kan bij Reverto geen orders meer plaatsen via portal, maar wel direct bij de exchange. IP-whitelist blokkeert dat. |
 | Crash-recovery mid-rotation | `.bak.<ts>` backup geeft rollback-pad; geen automatische detection van half-rotate state. | Explicit rotation-state in DB (`users.rotation_state in ('none', 'pending', 'verifying', 'complete')`) zodat het proces bij restart weet waar het stopte. |
 
+### 2.8 Scenario: Signing-service compromise
+
+Aanvaller heeft volledige toegang tot de signing-service
+infrastructure: leest de credential-DB, kan de Master Key ontsluiten
+en daarmee DEK's + TOTP-seeds + exchange-credentials decrypten, kan
+detection-logica wijzigen, kan de interne audit-log manipuleren,
+kan arbitrary signed trade-requests naar exchanges sturen. Dit
+scenario is architectural-critical omdat Part 3.1's service-
+separatie juist de signing-service als trust-boundary centraal
+plaatst — een compromise hier is een systemic failure, geen
+geïsoleerd incident.
+
+| Capability | Current state (single-tenant Mele) | Target state (multi-tenant SaaS) |
+|------------|------------------------------------|----------------------------------|
+| Lees alle user API-keys in plaintext | **N/A** — signing-service bestaat nog niet; credentials leven in main-app. Scenario 2.1 dekt die current-state. | **Ja** — volledige exfiltratie van credentials mogelijk; alle per-user `.enc` files zijn decryptbaar met MK. |
+| Bypass Lagen 2/3 (volume-caps) | **N/A** | **Ja** — de cap-counters en rolling-max-berekeningen leven in de signing-service DB. Enforcement wordt door de aanvaller gemaskeerd of uitgeschakeld. |
+| Bypass Laag 4 (performance-scaling) | **N/A** | **Ja** — tier-evaluatie-logica en baseline-state leven hier. Anti-gaming asymmetry (alleen strengere caps bij underperformance) is weg zodra logic wordt omzeild. |
+| Bypass Laag 6 (anomaly detection) | **N/A** | **Ja** — baseline-storage en detection-logica leven hier. |
+| Bypass Laag 5 (emergency floor) | **N/A** | **Ja** — floor-berekening en pause-mechanisme leven hier. |
+| Genereer valide trade-signatures zonder user-approval | **N/A** | **Ja** — scope-whitelist en approval-token-verificatie zijn lokaal in de signing-service. |
+| Omzeilen van exchange-side IP-whitelist | Nee | Nee (exchange-side enforcement, leeft niet bij Reverto). Beperkt echter niet wat een aanvaller vanuit de signing-service-IP zelf doet. |
+| Omzeilen van exchange-side withdraw-whitelist | Nee | Nee (exchange-side). Trade-only keys blijven trade-only. |
+| Omzeilen van exchange-side trade-only permission | Nee | Nee (exchange-side). |
+| Bypass watchdog balance-drop detection | N/A | Nee — mits de watchdog echt onafhankelijk gedeployed is per Laag 7 requirements 1-4. De watchdog-data-feed-eis (Part 3.6 Laag 7 requirement 4) zorgt dat de aanvaller niet via main-app of signing-service de expected-state kan manipuleren. |
+| Bypass dead-man-switch (Laag 8) | N/A | Gedeeltelijk — signing-service enforced de pause, dus aanvaller kan de enforcement uitschakelen. User-device activity blijft echter onvervalsbaar; de watchdog kan ontbrekende user-activity detecteren. |
+| Verzwijg audit-trail | N/A | Ja binnen signing-service; extern-shipped audit-log (naar append-only store) blijft intact als die bestaat. |
+
+**Kernobservatie.** Signing-service compromise is een systemic
+failure. Vrijwel alle interne defenses (Lagen 2, 3, 4, 5, 6 en
+delen van 8) vallen tegelijk omdat ze architecturaal op dezelfde
+trust-boundary hangen. De enige overblijvende verdediging is wat
+**buiten Reverto's eigen infrastructure** leeft:
+
+- Exchange-side hardening (trade-only keys, IP-whitelist,
+  withdraw-whitelist, sub-account scope waar beschikbaar) — blijft
+  intact. Beperkt wat een aanvaller maximaal kan doen met gestolen
+  credentials.
+- Onafhankelijke watchdog per Laag 7 eisen — blijft intact mits
+  echt onafhankelijk gedeployed (separate credentials, deployment-
+  pipeline, alerting-channel, én data-feed). Detecteert balance-
+  drift en stuurt kill-signal.
+- User-device approval-keys (WebAuthn, YubiKey) — blijven intact.
+  Aanvaller heeft de device-private-keys niet; kan approval-
+  tokens verifiëren uit-zetten binnen de signing-service maar kan
+  geen valide user-signatures produceren voor endpoints die buiten
+  de signing-service checken (bv. watchdog-side config-changes in
+  Phase F+).
+
+**Mitigatie-strategie.**
+
+- **Attack-surface-minimalisatie van de signing-service.** Smalle
+  RPC-interface met whitelist-enforced endpoints, beperkte
+  dependency-graph (smaller dan main-app — doel: enkele tientallen
+  deps), geen userland-HTTP-server beyond het RPC-endpoint, geen
+  directe SSH-access voor operators (deploys via pipeline + mTLS-
+  gauthenticeerde restart-endpoint).
+- **Hardened deployment.** Eigen VPS of container met strict
+  sysctl-hardening, auditd-style syscall-logging gekopieerd naar
+  een externe append-only store, immutable-filesystem base-image
+  waar praktisch. Operationele details in de apart
+  aan-te-maken operational runbook (zie Part 7).
+- **Defense-in-depth buiten Reverto.** Exchange-side controls en
+  onafhankelijke watchdog zijn de laatste-lijn verdediging tegen
+  dit scenario. Deze spec eist daarom dat exchange-onboarding alle
+  hardening afdwingt (Part 3.5) en dat de watchdog écht
+  onafhankelijk is (Laag 7 requirements).
+- **Monitoring van signing-service zelf.** Een apart watchdog-type
+  monitoring-proces dat ongebruikelijke sign-activity detecteert
+  (plotselinge piek in trade-signatures, signatures zonder
+  voorafgaand approval-token, baseline-config-wijzigingen zonder
+  cooldown). Overlapt deels met Laag 7 maar richt zich op
+  signing-service-interne signalen i.p.v. externe balance-drift.
+
+**Bewuste limitation van single-signing-service architectuur.** De
+signing-service is en blijft een single point of failure in dit
+architectuur-model. Horizontale scaling (meerdere signing-services
+met quorum- of threshold-signing) is R&D-spoor (zie Part 6.2b MPC
+threshold-signing) dat deze limitation kan reduceren maar niet
+elimineren — bij een compromise van ≥ threshold-many signing-
+services valt de defense alsnog. Acceptatie: de spec kiest voor
+één gehardende signing-service met externe watchdog-controle; MPC
+is toekomst-R&D zonder nu de complexiteit te adopteren.
+
 ---
 
 ## Part 3 · Architectural Target State
@@ -282,7 +365,7 @@ signing-service.
 │ ├── Scope whitelist per call    │  │ ├── Expected-balance model  │
 │ ├── Cap-counters (rolling)      │  │ ├── Discrepancy detection   │
 │ ├── Order-signing + idempotency │  │ ├── Alert pipeline          │
-│ ├── Approval verification       │  │ └── Kill-switch → signer    │
+│ ├── Approval verification       │  │ └── Kill → signing-service  │
 │ ├── Independent audit log       │  │                             │
 │ └── Separate DB                 │  │ Separate deployment         │
 │                                 │  │ (ander VPS, ander OS-image) │
@@ -694,7 +777,10 @@ balance transfereren naar attacker's exchange-account (impossible
 want trade-only keys); trade-frequency anomalies (Laag 6).
 
 Waar leeft dit: signing-service, rolling counter per
-`(user_id, exchange, day)`. Reset om middernacht UTC.
+`(user_id, exchange, day)`. Reset om middernacht UTC. Dit maakt
+Laag 2 afhankelijk van signing-service integrity — zie Part 2
+Scenario 2.8 voor behandeling van signing-service compromise als
+threat-scenario.
 
 *Ramp-up period voor nieuwe users.*
 
@@ -734,6 +820,29 @@ springen. In Phase E wordt overwogen om deposits-detection aan de
 signing-service toe te voegen met een soft-ramp-up bij > N×-balance-
 events, maar dat valt buiten de v1 spec-scope.
 
+*Legitiem-grote initial trades tijdens of direct na ramp-up.*
+
+Een user die een legitieme grote trade wil doen boven de ramp-up
+cap of boven de normale daily cap (bijvoorbeeld een bewuste grote
+DCA-entry na een research-periode) heeft een tijdelijke cap-
+verhoging nodig. De flow is:
+
+- User dient via PWA-signed config-change een cap-verhoging in voor
+  één-dag-window — dezelfde approval-channel en cooldown als
+  reguliere cap-wijzigingen (Part 3.4).
+- Cooldown-waarde zoals standaard voor daily-cap-wijziging (24-48
+  uur voordat de verhoging actief wordt). Deze wachtperiode is
+  bewust: legitieme strategy-setup plant zich niet op de minuut,
+  maar een attacker die net credentials heeft buitgemaakt wil juist
+  binnen minuten handelen.
+- Na window-expiry terugval naar de voorheen geldende caps; de
+  verhoging persisteert niet.
+
+Dit voorkomt dat ramp-up of post-ramp-up caps legitieme strategy-
+start blokkeren, zonder de security-eigenschappen te ondermijnen
+(wijziging blijft auth'd + cooldown'd + tijdelijk + gelogd in de
+signing-service audit-trail).
+
 **Laag 3 — Weekly en monthly caps.**
 
 Dezelfde structuur als Laag 2, maar:
@@ -751,7 +860,9 @@ Beschermt tegen: slow-burn attacks die respecteren daily-cap
 (attacker verdeelt stelen over meerdere dagen).
 Beschermt niet tegen: wat Laag 2 niet vangt sneller in de tijd.
 
-Waar leeft dit: signing-service, idem als Laag 2.
+Waar leeft dit: signing-service, idem als Laag 2. Laag 3 valt dus
+samen met Laag 2 onder hetzelfde signing-service integrity-model;
+zie Part 2 Scenario 2.8 voor de compromise-analyse.
 
 **Laag 4 — Performance-gemoduleerde cap-scaling.**
 
@@ -873,7 +984,10 @@ p_and_l_data}` als input voor de signing-service's eigen tier-
 evaluatie. Een gecompromitteerde main-app kan kleinere P&L-waardes
 injecteren (waardoor caps strenger worden — dat is acceptabel) maar
 kan niet een hogere tier forceren of tier-drempels versoepelen
-zonder ook in de signing-service te komen.
+zonder ook in de signing-service te komen. Dit maakt Laag 4
+afhankelijk van signing-service integrity — zie Part 2 Scenario
+2.8 voor de behandeling van signing-service compromise als
+threat-scenario.
 
 **Laag 5 — Emergency floor.**
 
@@ -891,6 +1005,10 @@ Beschermt niet tegen: attacks die balance > 60% laten (zal veel
 andere lagen eerder triggeren); exchange-side lek (Laag 7).
 
 Waar leeft dit: signing-service, met rolling-max-monitor per user.
+Dit maakt Laag 5 afhankelijk van signing-service integrity — zie
+Part 2 Scenario 2.8. De watchdog (Laag 7) is de externe redundantie
+op deze floor: bij signing-service compromise waar de floor stil
+wordt gezet, detecteert de watchdog de balance-drop onafhankelijk.
 
 **Laag 6 — Anomaly detection.**
 
@@ -998,6 +1116,9 @@ signing-service via het normale RPC-kanaal (elke trade-intent is
 een signing-service call); die data voedt ook de anomaly-detectie.
 Baseline-reset en detector-configuratie wijzigingen vereisen user-
 approval via PWA en kunnen niet door main-app alleen worden gedaan.
+Dit maakt Laag 6 afhankelijk van signing-service integrity — zie
+Part 2 Scenario 2.8 voor de behandeling van signing-service
+compromise als threat-scenario.
 
 **Laag 7 — Balance-drop detection (read-only watchdog).**
 
@@ -1055,6 +1176,34 @@ harde requirement voor Phase F deployment:
    maken. Praktisch: watchdog krijgt eigen `@watchdog.reverto.example`
    subdomain en eigen alert-ontvanger (operator-persoonlijke
    telefoon-nummer of een fysiek secondary device).
+
+4. **Geverifieerde data-feed voor expected-state vergelijkingen.**
+   De watchdog moet weten wat de "verwachte balance" per user is
+   om discrepancies te kunnen detecteren. Die informatie komt uit
+   Reverto's eigen systemen (main-DB of signing-service state),
+   maar het feed-kanaal zelf moet gehard zijn:
+
+   - Watchdog pollt expected-state via eigen read-only credentials
+     tegen een dedicated read-only endpoint — **geen push** van de
+     main-app naar de watchdog. Pull-architectuur voorkomt dat een
+     gecompromitteerde main-app fake expected-values actief
+     injecteert op het moment dat de watchdog drift zou detecteren.
+   - Elke watchdog-poll valideert data-feed integrity (signed
+     messages, HMAC of vergelijkbaar; sleutel-materiaal apart van
+     main-app's cookie-signing key om cross-key-misbruik te
+     voorkomen).
+   - Bij verlies van data-feed — endpoint onbereikbaar, timeout,
+     of signature-mismatch — treat-as-potential-compromise: alert
+     naar operator, bevries caps-wijziging voor álle users tot
+     manual recovery. Liever false-positive halt dan stille blind-
+     spot-periode.
+
+   Zonder deze requirement kan een aanvaller met main-app-
+   compromise de expected-state feed zo manipuleren dat een reële
+   balance-drop "legitiem" lijkt en dus niet alerteert. De
+   watchdog is dan in zichzelf nog beschikbaar maar leest verkeerde
+   vergelijkingsdata — een zwakker-dan-bedoelde defense zonder dat
+   iemand het merkt.
 
 Aanvullend: overweeg een aparte cloud-provider of geografische regio
 voor de watchdog. Niet verplicht als basis-requirement, wel expliciete
@@ -1117,6 +1266,34 @@ defense-in-depth stack. Specifiek voor L4 en L6: als de implementatie
 in Phase E / Phase C afdwaalt en deze lagen in main-app belandt, is
 de declaratie in deze tabel gelogen — daarom pint Part 7 Appendix
 expliciet dat elke Phase-implementatie deze tabel moet raken.
+
+**Signing-service als single point of failure.**
+
+De spiegel-kant van bovenstaande tabel: omdat deze defense-in-depth
+stack leunt op signing-service isolatie, neutraliseert een succesvolle
+signing-service compromise de Lagen 2, 3, 4, 5 en 6 simultaan. De
+interne defenses vallen als één — ze zijn architecturaal gekoppeld
+aan dezelfde trust-boundary. Alleen defenses **buiten** Reverto's
+infrastructure blijven dan intact:
+
+- Exchange-side hardening (IP-whitelist, trade-only permission,
+  withdraw-whitelist) — scenario 6-achtige exchange-controls op
+  wat een aanvaller maximaal kan doen.
+- Onafhankelijke watchdog (Laag 7) — mits écht onafhankelijk
+  gedeployed volgens de 4 requirements uit Part 3.6 Laag 7,
+  inclusief de geverifieerde data-feed.
+- User-device approval-keys (WebAuthn, YubiKey) — private-keys
+  leven op het device, niet in Reverto-infra.
+
+Detectie + response in dit scenario verloopt via:
+- Watchdog balance-drop alerts (Laag 7).
+- Exchange-side permission-enforcement (scenario 6-style
+  beperkingen op attacker-capability).
+- User-observable symptoms (onverwachte trades, balance-movement
+  zichtbaar in UI).
+
+Voor de volledige dreigingsanalyse + mitigatie-strategie zie
+Part 2 Scenario 2.8.
 
 ---
 
