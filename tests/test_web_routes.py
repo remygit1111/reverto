@@ -173,8 +173,6 @@ class TestInvalidPayload:
 # API key cookie so we're testing the session path, not the legacy API-key
 # bypass.
 
-import bcrypt  # noqa: E402
-
 from web import app as webapp  # noqa: E402
 
 _KNOWN_PW = "pytest-known-password-123"
@@ -182,8 +180,10 @@ _KNOWN_PW = "pytest-known-password-123"
 
 @pytest.fixture
 def auth_client():
-    """TestClient with the known password provisioned in .auth.json.
-    Yields the client and restores the original auth blob afterwards.
+    """TestClient met admin-user die een password heeft gezet via
+    user_store.set_password(). De DB is al ge-isoleerd via autouse
+    fixture ``_isolate_reverto_db`` in conftest.py, dus elke test
+    start met een verse admin-row.
 
     Forces _COOKIE_SECURE=False for the duration of the test because
     TestClient serves over plain http:// and a browser-equivalent
@@ -191,13 +191,10 @@ def auth_client():
     this override the post-login cookie would never reach the next
     request and every authed assertion would 401.
     """
-    original = webapp._load_auth()
-    webapp._save_auth({
-        "username": "admin",
-        "password_hash": bcrypt.hashpw(
-            _KNOWN_PW.encode("utf-8"), bcrypt.gensalt(rounds=4)
-        ).decode("utf-8"),
-    })
+    from core import user_store
+    admin = user_store.get_user_by_username("admin")
+    assert admin is not None, "admin seed missing — check init_db"
+    user_store.set_password(admin.id, _KNOWN_PW)
     prev_secure = webapp._COOKIE_SECURE
     webapp._COOKIE_SECURE = False
     client = TestClient(webapp.app)
@@ -205,8 +202,6 @@ def auth_client():
         yield client
     finally:
         webapp._COOKIE_SECURE = prev_secure
-        if original:
-            webapp._save_auth(original)
 
 
 class TestAuth:
