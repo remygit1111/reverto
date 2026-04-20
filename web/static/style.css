@@ -2374,6 +2374,22 @@ html.compact .modal-card { padding: 19px; }
   border-radius: 3px;
 }
 .bt-dca-row span:last-child { color: var(--muted); }
+.bt-dca-section {
+  margin-bottom: 12px;
+}
+.bt-dca-section:last-child {
+  margin-bottom: 0;
+}
+.bt-dca-section-title {
+  font-size: 0.85em;
+  color: var(--muted);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.bt-dca-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 
 .bt-modal-card {
   min-width: 720px; max-width: 90vw;
