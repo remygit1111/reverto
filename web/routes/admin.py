@@ -106,10 +106,12 @@ async def api_emergency_stop(
 ):
     """Stop every running bot immediately (audit-logged + rate-limited).
 
-    Uses the existing ``stop_bot(slug)`` plumbing so SIGTERM + notify
+    Uses the ``stop_bot(user_id, slug)`` plumbing so SIGTERM + notify
     drain still happens per bot — we're not pulling the rug out from
     under any in-flight order logic, just sending everyone the same
-    graceful-stop signal.
+    graceful-stop signal. Phase-3 spec treats this as admin-cross-user
+    by design, so we iterate every bot in the registry regardless of
+    the caller's own user.
     """
     _audit("emergency_stop", "-", actor)
     logger.error("EMERGENCY STOP requested by %s", actor)
@@ -120,12 +122,26 @@ async def api_emergency_stop(
         if not bot.running:
             continue
         try:
-            result = await stop_bot(bot.slug)
+            # Audit v26 v26-15h: pre-fix this called stop_bot(bot.slug)
+            # with a missing user_id, which raised TypeError and landed
+            # every bot in ``failed`` without ever sending SIGTERM.
+            # bot.user_id comes from BotInfo's composite key (see
+            # web/app.py:431) so the scan stays multi-tenant-correct.
+            result = await stop_bot(bot.user_id, bot.slug)
             if result.get("ok"):
                 stopped.append(bot.slug)
             else:
                 failed.append({"slug": bot.slug, "error": result.get("error")})
         except Exception as e:
+            # logger.exception captures the stacktrace so future
+            # signature regressions (or any other unexpected error)
+            # surface in portal.log instead of being swallowed into
+            # the JSON response. The caller still gets the per-bot
+            # error string for UI display.
+            logger.exception(
+                "emergency_stop: stop_bot(user_id=%s, slug=%r) raised",
+                getattr(bot, "user_id", None), bot.slug,
+            )
             failed.append({"slug": bot.slug, "error": str(e)[:200]})
 
     return {
