@@ -18,17 +18,27 @@
 # Multi-tenant foundation (Fase 1, SCHEMA_VERSION = 3):
 #   A ``users`` table was introduced and every OWNED table (deals, orders,
 #   chart_annotations, backtest_runs) gained a NOT NULL FK on users(id).
-#   Phase 1 only seeds one admin row (id=1); Phase 2 will wire session-
-#   based user resolution. The migration from older schemas is destructive
-#   (drop + recreate) — by design, because the pre-MT schema had no
-#   user_id column and back-filling every historical row with user_id=1
-#   before adding the NOT NULL constraint would have required a second
-#   migration step with its own failure modes. See docs/architecture.md
-#   "Multi-tenant foundation (Fase 1)".
+#   Phase 1 only seeds one admin row (id=1); Phase 2 wired session-based
+#   resolution to the composite (user_id, slug) key. The migration from
+#   older schemas is destructive (drop + recreate) — by design, because
+#   the pre-MT schema had no user_id column.
+#
+# Phase-3a DB-based auth (SCHEMA_VERSION = 4):
+#   The ``users`` table gained three columns that used to live in
+#   logs/.auth.json: ``password_hash`` (bcrypt, nullable — provisioned
+#   via scripts/setup_admin.py post-migration), ``role`` ('admin'|'user'),
+#   and ``session_epoch`` (per-user invalidation counter; was global).
+#   v3 → v4 is ALSO destructive because the users table is re-created;
+#   deals/orders/annotations/backtest_runs are on its FK chain so they
+#   get wiped too. Operator SLA: run scripts/reset_db.py first (backup),
+#   then `make start` (runs migration), then `make setup-admin` to set
+#   the admin password. Without the third step, NOBODY can log in —
+#   password_hash is NULL on the seeded admin row.
 
 import logging
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -36,9 +46,37 @@ logger = logging.getLogger(__name__)
 _BASE_DIR = Path(__file__).parent.parent
 _DB_PATH: Path = _BASE_DIR / "logs" / "reverto.db"
 
+# Phase-3a: legacy auth blob that pre-migration installs used for
+# admin credentials. Archived on first init_db() so operators don't
+# keep a stale file that no runtime-path reads anymore.
+_LEGACY_AUTH_FILE: Path = _BASE_DIR / "logs" / ".auth.json"
+_LEGACY_INITIAL_PW_FILE: Path = _BASE_DIR / "logs" / ".initial_password"
+
 # One connection per thread. sqlite3 raises if a connection created on thread
 # A is used from thread B, and we have multiple threads touching the DB.
 _connection_cache = threading.local()
+
+# Monotonic counter bumped on every ``set_db_path`` call. Each thread's
+# ``_connection_cache`` records the version its cached conn was opened
+# under; on the next ``get_db`` the thread compares cached vs. current
+# version and drops its stale conn if they diverge.
+#
+# Why this is needed: conftest.py's autouse ``_isolate_reverto_db``
+# fixture calls ``set_db_path(tmp)`` + ``init_db()`` before every test,
+# then ``close_db()`` on teardown. ``close_db()`` only closes the
+# caller thread's conn — the TestClient's anyio worker-pool threads
+# persist between tests with a cached conn pointing at the previous
+# test's tmp-DB. Any read/write on that stale conn lands in the wrong
+# SQLite file, and the test that triggered the path-change sees
+# phantom "user not found" / "no row" responses.
+#
+# This surfaces deterministically on Python 3.13 (stricter
+# ResourceWarning handling + different GC timing for the old tmp dirs);
+# 3.12 + WSL2 happened to get lucky. No lock needed — a worker that
+# races the counter just sees the mismatch on its *next* ``get_db``
+# and self-corrects. A one-request window of stale reads is acceptable
+# because production never calls ``set_db_path`` at runtime.
+_DB_PATH_VERSION: int = 0
 
 
 # ── Schema definitions ─────────────────────────────────────────────────────
@@ -47,15 +85,22 @@ _connection_cache = threading.local()
 _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS users (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        username    TEXT NOT NULL UNIQUE,
-        active      INTEGER NOT NULL DEFAULT 1,
-        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        username       TEXT NOT NULL UNIQUE,
+        password_hash  TEXT,
+        role           TEXT NOT NULL DEFAULT 'user',
+        session_epoch  INTEGER NOT NULL DEFAULT 0,
+        active         INTEGER NOT NULL DEFAULT 1,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now'))
     )
     """,
     # Seed the single admin user. INSERT OR IGNORE keeps init_db
     # idempotent — re-running against a populated DB is a no-op.
-    "INSERT OR IGNORE INTO users (id, username) VALUES (1, 'admin')",
+    # password_hash stays NULL: the operator provisions it via
+    # scripts/setup_admin.py post-migration. Without that step no
+    # login succeeds (verify_password fails closed on NULL hash).
+    "INSERT OR IGNORE INTO users (id, username, role) "
+    "VALUES (1, 'admin', 'admin')",
     """
     CREATE TABLE IF NOT EXISTS deals (
         id          TEXT PRIMARY KEY,
@@ -188,10 +233,24 @@ def get_db() -> sqlite3.Connection:
     enabled (so readers never block on a writer), foreign keys are turned
     on, and row_factory is set to sqlite3.Row so callers can use
     dict-style access.
+
+    Version check: if ``set_db_path`` bumped ``_DB_PATH_VERSION`` since
+    the cached conn was minted, the cached conn is pointing at a
+    now-stale file path. Drop it + reopen against the current path.
     """
     conn = getattr(_connection_cache, "conn", None)
-    if conn is not None:
+    cached_version = getattr(_connection_cache, "version", -1)
+    if conn is not None and cached_version == _DB_PATH_VERSION:
         return conn
+
+    # Stale cache (path changed) or first call on this thread. Close
+    # any lingering handle before opening the new one so the old
+    # sqlite file descriptor is released cleanly.
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
 
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(_DB_PATH))
@@ -212,6 +271,7 @@ def get_db() -> sqlite3.Connection:
     # of truth and the DB ledger is append-only history).
     conn.execute("PRAGMA synchronous=NORMAL")
     _connection_cache.conn = conn
+    _connection_cache.version = _DB_PATH_VERSION
     return conn
 
 
@@ -219,32 +279,40 @@ def get_db() -> sqlite3.Connection:
 # Bump this whenever a schema change lands. _migrate_schema inspects the
 # stored value and applies the appropriate transition:
 #   * < 3  → destructive drop-and-recreate (multi-tenant foundation).
-#     Pre-MT deals/backtest_runs had no user_id column and the NOT NULL
-#     constraint can't be added without a full table rewrite anyway.
-#   * == 3 → no-op.
-SCHEMA_VERSION = 3
+#     Pre-MT deals/backtest_runs had no user_id column.
+#   * < 4  → destructive drop-and-recreate (Phase-3a DB-based auth).
+#     users gains password_hash/role/session_epoch — since every owned
+#     table FK-references users, we drop the whole tree to recreate it
+#     on a clean slate. Operator SLA: backup first, provision admin
+#     password after (see scripts/setup_admin.py).
+#   * == 4 → no-op.
+SCHEMA_VERSION = 4
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """Apply any pending migration to the current DB.
 
-    v3 (multi-tenant foundation) is a CLEAN SLATE migration: older
-    schemas are dropped and recreated. We emit a WARNING level log so
-    operators see it in portal.log even at default verbosity; the
-    data-loss is intentional (documented in the module docstring and
-    docs/architecture.md, and guarded by scripts/reset_db.py which
-    backs up the old DB first).
+    Every migration path we currently know is a CLEAN SLATE drop +
+    recreate of the owned tree. Older in-line schema-alter attempts
+    are avoided: SQLite's ALTER TABLE set is narrow, and back-filling
+    NOT NULL / UNIQUE constraints on an existing table requires a full
+    rewrite anyway. We emit a WARNING so operators see it in
+    portal.log at default verbosity; data-loss is intentional and
+    documented in the module docstring + docs/architecture.md, and
+    guarded by scripts/reset_db.py which backs up the old DB first.
     """
     current = conn.execute("PRAGMA user_version").fetchone()[0] or 0
     if current == SCHEMA_VERSION:
         return
     if current < SCHEMA_VERSION:
         logger.warning(
-            "Multi-tenant schema migration: dropping owned tables from "
-            "schema v%d and recreating at v%d. All deal/order/annotation/"
-            "backtest history will be wiped. Run scripts/reset_db.py "
-            "first if you haven't already — it backs up the DB before "
-            "calling init_db().",
+            "Schema migration: dropping owned tables from v%d and "
+            "recreating at v%d. Deal/order/annotation/backtest + user "
+            "password/role/session_epoch data is wiped. Run "
+            "scripts/reset_db.py first if you haven't already — it "
+            "backs up the DB before calling init_db(). After the "
+            "migration, run scripts/setup_admin.py to provision the "
+            "admin password (login is blocked until you do).",
             current, SCHEMA_VERSION,
         )
         for table in _OWNED_TABLES:
@@ -259,21 +327,51 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
+def _archive_legacy_auth_file() -> None:
+    """Rename logs/.auth.json → logs/.auth.json.pre_phase3.<ts> on
+    the first init_db() call that sees it. Phase-3a moved auth state
+    into users.*; the old Fernet blob has no readers anymore, so
+    archiving it (rather than unlinking) preserves the audit trail
+    without leaving a misleading file that an operator might think
+    still matters.
+
+    Idempotent — if the file is absent (fresh install, or previous
+    init_db() already archived it) this is a no-op. ``.initial_password``
+    gets the same treatment since it was always a sidecar of .auth.json.
+    """
+    for src in (_LEGACY_AUTH_FILE, _LEGACY_INITIAL_PW_FILE):
+        if not src.exists():
+            continue
+        dst = src.with_suffix(src.suffix + f".pre_phase3.{int(time.time())}")
+        try:
+            src.rename(dst)
+            logger.warning(
+                "Phase-3a migration: archived %s → %s. Use "
+                "scripts/setup_admin.py to provision the admin password.",
+                src.name, dst.name,
+            )
+        except OSError as e:
+            logger.warning("could not archive %s: %s", src, e)
+
+
 def init_db() -> None:
     """Bring the DB up to the current schema version + seed admin user.
 
     Migration-first: if the stored version is below SCHEMA_VERSION we
     drop the owned tables BEFORE running _SCHEMA_STATEMENTS, so the
-    CREATE TABLE statements land on a clean slate. Idempotent at v3:
+    CREATE TABLE statements land on a clean slate. Idempotent at v4:
     re-running against an already-migrated DB is a no-op (the
     ``CREATE TABLE IF NOT EXISTS`` and ``INSERT OR IGNORE`` keep it
-    safe).
+    safe). As a Phase-3a side-effect, logs/.auth.json is archived on
+    first run so the legacy blob doesn't linger beside a DB-based
+    auth flow.
     """
     conn = get_db()
     with conn:
         _migrate_schema(conn)
         for stmt in _SCHEMA_STATEMENTS:
             conn.execute(stmt)
+    _archive_legacy_auth_file()
 
 
 def close_db() -> None:
@@ -285,15 +383,19 @@ def close_db() -> None:
         except sqlite3.Error:
             pass
         _connection_cache.conn = None
+        _connection_cache.version = -1
 
 
 def set_db_path(path: Path) -> None:
     """Point the module at a different DB file (used by tests).
 
-    Closes the current thread's cached connection so the next get_db()
-    call reopens against the new path. Tests swap this to a tmp_path
-    fixture so they never touch the real logs/reverto.db.
+    Bumps ``_DB_PATH_VERSION`` so every thread's cached connection
+    is invalidated on its next ``get_db`` call — not just the caller
+    thread. The old per-thread ``close_db`` path only closed the
+    caller's conn, leaving anyio worker-pool threads holding stale
+    handles to the previous tmp-DB across tests.
     """
-    global _DB_PATH
+    global _DB_PATH, _DB_PATH_VERSION
     close_db()
     _DB_PATH = Path(path)
+    _DB_PATH_VERSION += 1

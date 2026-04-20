@@ -2,15 +2,13 @@
 
 Routes:
   POST /auth/login                 — bcrypt-checked login, sets session cookie
-  POST /auth/logout                — bumps session epoch + clears cookie
+  POST /auth/logout                — bumps per-user session epoch + clears cookie
   GET  /auth/status                — returns auth state (no auth required)
   POST /api/auth/change-password   — rotates password + session epoch
 
-Uses session + auth-file primitives still defined in web/app.py
-(_load_auth, _save_auth, _verify_session_cookie, _create_session_cookie,
-_bump_session_epoch, _require_session, _SESSION_COOKIE, _SESSION_TTL,
-_COOKIE_SECURE, _INITIAL_PW_FILE). These are imported from web.app
-below and reused verbatim.
+Phase-3a: every auth-state read/write goes via ``core.user_store``
+(DB-backed). The .auth.json blob is gone — admin password is
+provisioned via ``scripts/setup_admin.py`` post-migration.
 """
 
 from __future__ import annotations
@@ -18,20 +16,16 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from core import user_store
+from web import app as _webapp
 from web.app import (
     _audit,
-    _bump_session_epoch,
-    _COOKIE_SECURE,
     _create_session_cookie,
-    _INITIAL_PW_FILE,
-    _load_auth,
     _require_session,
-    _save_auth,
     _SESSION_COOKIE,
     _SESSION_TTL,
     _verify_session_cookie,
@@ -56,45 +50,51 @@ class ChangePasswordBody(BaseModel):
 @router.post("/auth/login")
 @limiter.limit("5/minute")
 async def auth_login(body: LoginBody, request: Request):
-    auth = _load_auth() or {}
-    stored_hash = auth.get("password_hash", "")
-    stored_user = auth.get("username", "")
-    ok = False
-    if stored_user and stored_hash and body.username == stored_user:
-        try:
-            ok = bcrypt.checkpw(
-                body.password.encode("utf-8"), stored_hash.encode("utf-8"),
-            )
-        except ValueError:
-            ok = False
-    if not ok:
-        # Damp brute force without blocking the event loop.
+    user = user_store.verify_password(body.username, body.password)
+    if user is None:
+        # Damp brute force without blocking the event loop. Identical
+        # timing + generic error across every failure mode (missing
+        # user, inactive user, NULL hash, wrong password) so an
+        # attacker can't enumerate usernames via response differences.
         await asyncio.sleep(0.1)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = _create_session_cookie(stored_user)
+    token = _create_session_cookie(user)
     resp = JSONResponse({"ok": True})
+    # Look up cookie flags on the module at call-time (not at import)
+    # so tests can override _COOKIE_SECURE / _COOKIE_SAMESITE on the
+    # web.app module and have the change take effect without touching
+    # this file's local bindings.
     resp.set_cookie(
         key=_SESSION_COOKIE,
         value=token,
         max_age=_SESSION_TTL,
         httponly=True,
-        samesite="strict",
-        secure=_COOKIE_SECURE,
+        samesite=_webapp._COOKIE_SAMESITE,
+        secure=_webapp._COOKIE_SECURE,
         path="/",
     )
-    _audit("auth_login", stored_user, "-")
+    _audit("auth_login", user.username, "-")
     return resp
 
 
 @router.post("/auth/logout")
-async def auth_logout():
-    """Bump session epoch so every browser holding this cookie is
-    rejected on the next request, not just the one calling logout."""
-    try:
-        _bump_session_epoch()
-    except Exception as e:
-        logger.warning("logout: failed to bump session epoch (%s)", e)
+async def auth_logout(request: Request):
+    """Bump the caller's session epoch so every browser holding this
+    cookie is rejected on the next request, not just the one calling
+    logout. Other users' sessions are unaffected (Phase-3a moved
+    epoch-tracking from a global counter to a per-user column)."""
+    # Best-effort: resolve the caller from their cookie so we bump the
+    # right row. A missing / invalid cookie still returns 200 — logout
+    # is idempotent from the client's perspective.
+    payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if payload:
+        uid = payload.get("uid")
+        if isinstance(uid, int) and uid > 0:
+            try:
+                user_store.bump_session_epoch(uid)
+            except Exception as e:
+                logger.warning("logout: bump_session_epoch failed (%s)", e)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(_SESSION_COOKIE, path="/")
     return resp
@@ -121,32 +121,17 @@ async def auth_change_password(
             status_code=400,
             detail="New password must be at least 8 characters",
         )
-    auth = _load_auth() or {}
-    stored_hash = auth.get("password_hash", "")
-    try:
-        ok = bool(stored_hash) and bcrypt.checkpw(
-            body.current_password.encode("utf-8"),
-            stored_hash.encode("utf-8"),
-        )
-    except ValueError:
-        ok = False
-    if not ok:
+    username = session.get("u", "")
+    user = user_store.verify_password(username, body.current_password)
+    if user is None:
         await asyncio.sleep(0.1)
         raise HTTPException(status_code=401, detail="Current password is incorrect")
-    new_hash = bcrypt.hashpw(
-        body.new_password.encode("utf-8"), bcrypt.gensalt(rounds=12),
-    ).decode("utf-8")
-    auth["password_hash"] = new_hash
-    try:
-        current_epoch = int(auth.get("session_epoch", 0))
-    except (TypeError, ValueError):
-        current_epoch = 0
-    auth["session_epoch"] = current_epoch + 1
-    _save_auth(auth)
-    if _INITIAL_PW_FILE.exists():
-        try:
-            _INITIAL_PW_FILE.unlink()
-        except OSError:
-            pass
-    _audit("auth_change_password", session.get("u", "-"), "-")
+    if not user_store.set_password(user.id, body.new_password):
+        raise HTTPException(status_code=500, detail="Failed to update password")
+    # Bump this user's epoch so every existing cookie for them (incl.
+    # the one that just made this request) is invalidated. A security-
+    # routing choice: forcing a fresh login after password-change is
+    # the standard expectation.
+    user_store.bump_session_epoch(user.id)
+    _audit("auth_change_password", username, "-")
     return {"ok": True}

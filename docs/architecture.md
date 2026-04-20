@@ -161,9 +161,12 @@ construction gebeurt via `core/paths.py`; nooit hardcoded strings.
 | Per-exchange enc  | `credentials/<user_id>/<exchange>.enc`  (0600)      |
 
 Systeem-bestanden (`logs/reverto.db`, `logs/audit.log`,
-`logs/portal.log`, `logs/.credentials.key`, `logs/.auth.json`,
+`logs/portal.log`, `logs/.credentials.key`,
 `logs/.api_key_ephemeral`) blijven op hun bestaande locatie —
-die zijn operator/system state, niet tenant data.
+die zijn operator/system state, niet tenant data. Phase-3a heeft
+`logs/.auth.json` uit de runtime-paden verwijderd; het bestand
+wordt op eerste `init_db()` automatisch naar
+`.auth.json.pre_phase3.<ts>` gearchiveerd.
 
 ### Composite bot slug
 
@@ -183,9 +186,11 @@ is het nieuwe veld dat door elke file-path helper wordt gelezen.
   zelfs bij volledige filesystem-toegang. Dit is de primaire
   security property van Fase 2.
 - **System key** (`logs/.credentials.key`) blijft bestaan voor
-  `save_encrypted` / `load_encrypted` — die encrypten de portal-
-  auth blob (`logs/.auth.json`). Portal-login is operator-level
-  state, geen tenant data.
+  `save_encrypted` / `load_encrypted` — generic Fernet helpers
+  voor eventuele system-level encrypted files buiten de exchange-
+  credentials scope. Phase-3a heeft de portal-auth blob
+  (`.auth.json`) afgeschaft; password_hash + session_epoch leven
+  nu in `users` (DB-backed, via `core.user_store`).
 
 `rotate_fernet_key(user_id=...)` is nu per-user: rotate user 1's
 key + re-encrypt zijn hele `credentials/1/` tree zonder user 2 te
