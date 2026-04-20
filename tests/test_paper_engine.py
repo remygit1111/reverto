@@ -568,3 +568,122 @@ class TestGracefulShutdownTiming:
             "stop_bot's deadline stays coupled to the engine budget"
         )
         assert hasattr(webapp, "_STOP_SAFETY_MARGIN_S")
+
+
+class TestDealCreationContract:
+    """Audit v25 Finding #13. The contract between
+    ``_db_create_deal_with_retry`` and ``_open_deal`` is subtle:
+
+      * On IntegrityError the retry MUTATES ``deal.id`` in place.
+        ``_open_deal`` holds a reference to the same deal object and
+        later calls ``self.state.open_deal(deal)`` — that call must
+        observe the rewritten id, not the original.
+      * The helper only returns True after a successful DB persist.
+        Only on True may the caller mutate ``self.state``; on False
+        the open is refused entirely so in-memory state never diverges
+        from the DB.
+
+    The tests below pin both halves so a future refactor that reorders
+    state-mutation vs. DB-persist, or that drops the in-place deal.id
+    mutation for a copy, fails loudly.
+    """
+
+    def _make_deal(self) -> PaperDeal:
+        """Fresh deal shaped like what ``_open_deal`` constructs."""
+        return PaperDeal(
+            id="202604201400-0001",
+            bot_name="TestBot",
+            symbol="BTC/USD",
+            side="long",
+            leverage=1,
+            orders=[
+                PaperOrder(
+                    order_number=1,
+                    price=50_000.0,
+                    size=0.001,
+                    timestamp=datetime.now(UTC),
+                    order_type="base",
+                ),
+            ],
+        )
+
+    def test_successful_create_keeps_deal_id_stable(
+        self, engine, monkeypatch,
+    ):
+        """First-try success → no id mutation, helper returns True."""
+        import core.deal_store as _ds
+        calls = {"n": 0}
+
+        def _create_ok(*args, **kwargs):
+            calls["n"] += 1
+            return None  # deal_store.create_deal returns None on success
+
+        monkeypatch.setattr(_ds, "create_deal", _create_ok)
+
+        deal = self._make_deal()
+        original_id = deal.id
+        ok = engine._db_create_deal_with_retry(deal)
+        assert ok is True
+        assert deal.id == original_id
+        assert calls["n"] == 1
+
+    def test_collision_retry_mutates_deal_id_in_place(
+        self, engine, monkeypatch,
+    ):
+        """IntegrityError on the first attempt must rewrite ``deal.id``
+        so the subsequent ``_open_deal`` state mutation references the
+        retry id. Without the in-place assignment the engine would
+        happily persist the deal under NEW_ID but track it in memory
+        under OLD_ID — every later DCA/TP/SL write would fail to find
+        its DB row."""
+        import sqlite3 as _sqlite3
+        import core.deal_store as _ds
+
+        calls = {"n": 0}
+
+        def _create_collide_once(deal, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _sqlite3.IntegrityError("UNIQUE constraint failed: deals.id")
+            return None  # second attempt succeeds
+
+        monkeypatch.setattr(_ds, "create_deal", _create_collide_once)
+
+        deal = self._make_deal()
+        original_id = deal.id
+        ok = engine._db_create_deal_with_retry(deal)
+        assert ok is True
+        assert calls["n"] == 2, "expected exactly one retry"
+        assert deal.id != original_id, (
+            "deal.id must be rewritten in place on IntegrityError so the "
+            "caller's state.open_deal(deal) records the retry id"
+        )
+
+    def test_exhausted_retries_returns_false_so_caller_skips_state_mutation(
+        self, engine, monkeypatch,
+    ):
+        """All 3 attempts collide → False return → _open_deal MUST NOT
+        add the deal to state.open_deals. We exercise the full
+        _open_deal path and assert that state stays empty on exhaustion,
+        documenting the "refuse the open entirely" contract.
+        """
+        import sqlite3 as _sqlite3
+        import core.deal_store as _ds
+
+        def _always_collide(*args, **kwargs):
+            raise _sqlite3.IntegrityError("UNIQUE constraint failed: deals.id")
+
+        monkeypatch.setattr(_ds, "create_deal", _always_collide)
+
+        # Directly test the helper too so the contract is pinned at the
+        # function boundary, not just indirectly through _open_deal.
+        deal = self._make_deal()
+        assert engine._db_create_deal_with_retry(deal, max_attempts=3) is False
+
+        # And confirm _open_deal honours the False by skipping
+        # state.open_deal. Pre-call state should be empty.
+        assert engine.state.get_open_deals_snapshot() == {}
+        engine._open_deal(50_000.0)
+        assert engine.state.get_open_deals_snapshot() == {}, (
+            "refused DB create must not leave an in-memory phantom deal"
+        )

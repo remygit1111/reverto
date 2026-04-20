@@ -297,3 +297,34 @@ class TestWipeStateFiles:
                 out = json.loads(state.read_text(encoding="utf-8"))
                 assert out["open_deals"] == []
                 assert out["open_deals_count"] == 0
+
+
+class TestConcurrentWipeLock:
+    """Audit v25 Finding #9 — twee gelijktijdige ``wipe-deals`` calls
+    mochten niet kunnen interleaven. _wipe_lock neemt exclusieve
+    fcntl.flock; een parallelle poging raised RuntimeError met
+    'already in progress'.
+    """
+
+    def test_concurrent_wipe_is_blocked_by_flock(self, sandboxed_base):
+        """Terwijl proces A binnen ``with _wipe_lock(base)`` zit, moet
+        proces B afketsen op BlockingIOError → RuntimeError. We
+        simuleren dit met twee geneste context-managers binnen één
+        proces — fcntl.flock is advisory per-file-descriptor, dus de
+        tweede open() + LOCK_EX|LOCK_NB trippt net zoals vanuit een
+        tweede proces zou gebeuren.
+        """
+        base = sandboxed_base
+        with wipe_deals._wipe_lock(base):
+            # A houdt de lock; B moet nu afketsen. We wikkelen het in
+            # een pytest.raises zodat de tweede context-manager niet
+            # onbedoeld onze eigen lock alsnog weet te grijpen.
+            with pytest.raises(RuntimeError, match="already in progress"):
+                with wipe_deals._wipe_lock(base):
+                    pytest.fail("second lock should not be reachable")
+        # Na release: lock file bestaat nog (flock is advisory) maar is
+        # weer acquireerbaar.
+        lock_path = base / wipe_deals._WIPE_LOCK_FILE
+        assert lock_path.exists()
+        with wipe_deals._wipe_lock(base):
+            pass  # acquire + release succeeds again

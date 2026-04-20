@@ -23,15 +23,25 @@ Safety rails:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
 import sqlite3
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 BASE: Path = Path(__file__).resolve().parent.parent
 DB_PATH: Path = BASE / "logs" / "reverto.db"
+
+# Exclusive-lock sentinel. Audit v25 Finding #9 — pre-fix opende een
+# TOCTOU window tussen _check_no_bots_running() (scan pid-files) en de
+# eerste DELETE: een bot-start in dat venster kon een pid-file schrijven
+# dat nooit gezien werd en een deel van de wipe bij een al actieve bot
+# afronden. Flock sluit het venster voor concurrent wipe-aanroepen;
+# een parallelle bot-start zelf valt buiten scope (Phase-3 werk).
+_WIPE_LOCK_FILE: str = "logs/.wipe.lock"
 
 # Fields reset to their "fresh start" value on wipe. Balance has its
 # own rule (use initial_balance_btc as the target) so it's handled
@@ -55,6 +65,42 @@ _RESET_OPTIONAL_KEYS: tuple[str, ...] = ("closed_deals",)
 # Suffix appended to a state.json path for the pre-wipe backup. Kept
 # as a module constant so tests can assert on the exact spelling.
 _BACKUP_SUFFIX: str = ".pre_wipe_backup"
+
+
+# ── Concurrent-wipe lock ────────────────────────────────────────────────────
+
+@contextmanager
+def _wipe_lock(base_dir: Path):
+    """Exclusive ``fcntl.flock`` rond de wipe-flow. Voorkomt dat twee
+    parallelle ``wipe-deals`` invocaties elkaar destructief kruisen
+    (één wist deals terwijl de ander state.json reset op half-gewiste
+    ids). Kernel-level lock, dus robuust tegen twee Python-processen —
+    geen polling, geen manual unlock op crash.
+
+    Een bot-start die in hetzelfde venster een nieuwe pid-file probeert
+    te schrijven valt buiten scope — dat zou een flock in de engine
+    vereisen. Voor nu concentreren we op het concurrent-wipe paar.
+    """
+    lock_path = base_dir / _WIPE_LOCK_FILE
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as f:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(
+                "Another wipe operation is already in progress. "
+                "If this persists, check for a stale lock holder: "
+                f"fuser {lock_path} (or rm {lock_path} after confirming "
+                "no other wipe-deals process is running)."
+            )
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    # Lock-file blijft bestaan na release — flock is kernel-level en
+    # maakt zich niet druk om de onderliggende inode. Een unlink hier
+    # zou juist een race openen (twee processen die kort na elkaar
+    # unlinken + open doen).
 
 
 # ── pid-liveness + safety gate ───────────────────────────────────────────────
@@ -223,31 +269,41 @@ def main() -> int:
     init_db()
     user_ids = get_active_user_ids()
 
-    # Safety gate — refuse BEFORE any destructive op if a bot is alive.
-    _check_no_bots_running(BASE, user_ids)
-
-    # DB wipe.
-    conn = sqlite3.connect(str(DB_PATH))
+    # Exclusive flock spans the pid-scan → DB-wipe → state-reset
+    # sequence so two concurrent wipe-deals processes can't interleave.
+    # A parallel bot-start that writes a pid-file inside this critical
+    # section is a separate (Phase-3) race — see _wipe_lock docstring.
     try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        # Orders FK-reference deals; delete orders first so the deals
-        # DELETE doesn't trip FK enforcement.
-        with conn:
-            cur = conn.execute("DELETE FROM orders")
-            print(f"  orders:  {cur.rowcount} rows removed")
-            cur = conn.execute("DELETE FROM deals")
-            print(f"  deals:   {cur.rowcount} rows removed")
-        conn.execute("VACUUM")
-    finally:
-        conn.close()
-    close_db()
+        with _wipe_lock(BASE):
+            # Safety gate — refuse BEFORE any destructive op if a bot is alive.
+            _check_no_bots_running(BASE, user_ids)
 
-    # state.json wipe (after the DB so a cancelled DB wipe never
-    # leaves state.json in a reset-but-DB-untouched position).
-    print()
-    print(" Resetting state.json files:")
-    n_files = _wipe_state_files(BASE, user_ids)
-    print(f"  state files reset: {n_files}")
+            # DB wipe.
+            conn = sqlite3.connect(str(DB_PATH))
+            try:
+                conn.execute("PRAGMA foreign_keys=ON")
+                # Orders FK-reference deals; delete orders first so the
+                # deals DELETE doesn't trip FK enforcement.
+                with conn:
+                    cur = conn.execute("DELETE FROM orders")
+                    print(f"  orders:  {cur.rowcount} rows removed")
+                    cur = conn.execute("DELETE FROM deals")
+                    print(f"  deals:   {cur.rowcount} rows removed")
+                conn.execute("VACUUM")
+            finally:
+                conn.close()
+            close_db()
+
+            # state.json wipe (after the DB so a cancelled DB wipe
+            # never leaves state.json in a reset-but-DB-untouched
+            # position).
+            print()
+            print(" Resetting state.json files:")
+            n_files = _wipe_state_files(BASE, user_ids)
+            print(f"  state files reset: {n_files}")
+    except RuntimeError as e:
+        print(f"\n{e}")
+        return 1
 
     print()
     print("Wipe complete. Restart bots via the portal.")
