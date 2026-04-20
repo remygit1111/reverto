@@ -1,12 +1,13 @@
 """Tests for POST /api/emergency-stop and /api/bots/{slug}/drawdown/reset.
 
 We reuse the API-KEY header path the rest of test_web_routes.py uses,
-which keeps us off the .auth.json session-epoch path entirely — any
-stateful session fixture that writes to .auth.json leaks across test
-files and breaks unrelated API-key auth tests.
+which keeps us off the session-cookie path entirely — any stateful
+session fixture that mutates the shared DB leaks across test files
+and breaks unrelated API-key auth tests.
 """
 
 import json
+import logging
 import os
 import sys
 
@@ -17,10 +18,25 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from web import app as webapp  # noqa: E402
+from web.routes import admin as _admin_routes  # noqa: E402
 
 
 CLIENT = TestClient(webapp.app)
 AUTH = {"X-API-Key": "testkey-for-pytest"}
+
+
+class _FakeBotInfo:
+    """Minimal BotInfo stand-in for the emergency-stop tests. Mirrors
+    the attributes ``api_emergency_stop`` reads: ``user_id``, ``slug``,
+    and the ``running`` property. Shaped as a class so
+    ``bot.user_id`` / ``bot.slug`` / ``bot.running`` look like the
+    real BotInfo (see ``web/app.py:423``).
+    """
+
+    def __init__(self, user_id: int, slug: str, running: bool = True):
+        self.user_id = user_id
+        self.slug = slug
+        self.running = running
 
 
 class TestEmergencyStop:
@@ -45,6 +61,115 @@ class TestEmergencyStop:
         assert body["ok"] is True
         assert body["stopped_bots"] == []
         assert body["failed"] == []
+
+    def test_calls_stop_bot_for_each_registered_bot(self, monkeypatch):
+        """Audit v26 v26-15h regression guard: exercise the loop body,
+        not just the empty-registry branch. Pre-fix this endpoint called
+        ``stop_bot(bot.slug)`` with a missing ``user_id`` argument —
+        the TypeError was swallowed by the bare ``except`` and every
+        bot landed in ``failed`` without a SIGTERM. This test pins
+        that ``stop_bot`` is invoked once per running bot with the
+        ``(int, str)`` signature.
+        """
+        bots = [
+            _FakeBotInfo(user_id=1, slug="alpha"),
+            _FakeBotInfo(user_id=1, slug="beta"),
+        ]
+
+        async def _fake_all():
+            return bots
+
+        calls: list[tuple] = []
+
+        async def _fake_stop_bot(user_id, slug):
+            calls.append((user_id, slug))
+            return {"ok": True}
+
+        monkeypatch.setattr(webapp.registry, "all", _fake_all)
+        monkeypatch.setattr(_admin_routes, "stop_bot", _fake_stop_bot)
+
+        r = CLIENT.post("/api/emergency-stop", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert sorted(body["stopped_bots"]) == ["alpha", "beta"]
+        assert body["failed"] == []
+
+        # Two bots → two calls, each with (int user_id, str slug).
+        assert len(calls) == 2
+        for uid, slug in calls:
+            assert isinstance(uid, int)
+            assert uid > 0
+            assert isinstance(slug, str)
+            assert slug in ("alpha", "beta")
+
+    def test_skips_bots_that_are_not_running(self, monkeypatch):
+        """Only the ``running`` bots reach stop_bot. A stale pid-file
+        (running=False) is a registry row but not a stop target."""
+        bots = [
+            _FakeBotInfo(user_id=1, slug="alive", running=True),
+            _FakeBotInfo(user_id=1, slug="dead", running=False),
+        ]
+
+        async def _fake_all():
+            return bots
+
+        calls: list[tuple] = []
+
+        async def _fake_stop_bot(user_id, slug):
+            calls.append((user_id, slug))
+            return {"ok": True}
+
+        monkeypatch.setattr(webapp.registry, "all", _fake_all)
+        monkeypatch.setattr(_admin_routes, "stop_bot", _fake_stop_bot)
+
+        r = CLIENT.post("/api/emergency-stop", headers=AUTH)
+        assert r.status_code == 200
+        assert r.json()["stopped_bots"] == ["alive"]
+        assert calls == [(1, "alive")]
+
+    def test_type_error_surfaces_in_logs(self, monkeypatch, caplog):
+        """Audit v26 v26-15h defence-in-depth: if stop_bot ever raises
+        a TypeError again (signature drift, refactor mistake), the
+        error must land in the portal log with a stacktrace — the
+        pre-fix bare ``except`` swallowed it into the JSON response
+        only, where it was invisible to operators.
+        """
+        bots = [_FakeBotInfo(user_id=1, slug="broken")]
+
+        async def _fake_all():
+            return bots
+
+        async def _broken_stop_bot(user_id, slug):
+            raise TypeError("simulated signature mismatch")
+
+        monkeypatch.setattr(webapp.registry, "all", _fake_all)
+        monkeypatch.setattr(_admin_routes, "stop_bot", _broken_stop_bot)
+
+        with caplog.at_level(logging.ERROR, logger="web.routes.admin"):
+            r = CLIENT.post("/api/emergency-stop", headers=AUTH)
+
+        # Endpoint still returns 200 with the broken bot in `failed` —
+        # matches the contract for any per-bot error.
+        assert r.status_code == 200
+        body = r.json()
+        assert body["stopped_bots"] == []
+        assert len(body["failed"]) == 1
+        assert body["failed"][0]["slug"] == "broken"
+        # The error string survives in the JSON payload (trimmed to 200).
+        assert "simulated signature mismatch" in body["failed"][0]["error"]
+
+        # And logger.exception captured the stacktrace in portal.log.
+        messages = [rec.message for rec in caplog.records]
+        assert any("emergency_stop" in m for m in messages), (
+            f"expected an emergency_stop error record, got {messages}"
+        )
+        # exc_info was attached by logger.exception.
+        assert any(
+            rec.exc_info is not None
+            for rec in caplog.records
+            if "emergency_stop" in rec.message
+        ), "logger.exception should attach exc_info for stacktrace visibility"
 
 
 class TestDrawdownReset:
