@@ -5,17 +5,32 @@ engine, backtest engine, and a Phase-1 live-trading scaffold.
 
 ## Quick start
 
+Eerste keer op een fresh install:
+
 ```bash
 cd ~/reverto
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-make start          # launches the portal on :8080
+
+# Initialiseer de DB (stop na "Portal started" in logs)
+make start
+
+# Zet het admin-wachtwoord (zonder deze stap blijft login 401)
+REVERTO_ADMIN_PW="een_sterk_wachtwoord" make setup-admin
+
+# Start het portal voor gebruik
+make start
 ```
 
-Open [http://localhost:8080](http://localhost:8080), create a bot via
-the wizard, and start it from the dashboard. The portal spawns one
-`main_paper.py` subprocess per bot and keeps state in
-`logs/<slug>.state.json`.
+Open [http://localhost:8080](http://localhost:8080), login met
+username `admin` + bovenstaand wachtwoord, maak een bot aan via de
+wizard en start 'm vanuit het dashboard. Het portal spawnt per bot
+één `main_paper.py` subprocess en houdt state in
+`logs/<user_id>/<slug>.state.json`.
+
+Volledige setup-gids (env-vars, schema-migraties, restore-flow):
+[docs/runbook.md](docs/runbook.md) "First-time setup" +
+"Schema migrations".
 
 ## Layout
 
