@@ -16,8 +16,12 @@ ml/candle_cache/
 notebooks/.ipynb_checkpoints/
 *.log
 *:Zone.Identifier
-# Audit rapporten — lokaal bewaard, niet in git
-audits/
+# Audit rapporten — lokaal bewaard, niet in git.
+# Leading slash zodat alleen de top-level audits/ directory wordt
+# genegeerd. Zonder slash matcht `audits/` ook nested dirs zoals
+# docs/audits/, en dat is waar v26-report + latere security-docs
+# landen.
+/audits/
 audit_*.docx
 audit_out/
 backups/
