@@ -173,8 +173,6 @@ class TestInvalidPayload:
 # API key cookie so we're testing the session path, not the legacy API-key
 # bypass.
 
-import bcrypt  # noqa: E402
-
 from web import app as webapp  # noqa: E402
 
 _KNOWN_PW = "pytest-known-password-123"
@@ -182,8 +180,10 @@ _KNOWN_PW = "pytest-known-password-123"
 
 @pytest.fixture
 def auth_client():
-    """TestClient with the known password provisioned in .auth.json.
-    Yields the client and restores the original auth blob afterwards.
+    """TestClient met admin-user die een password heeft gezet via
+    user_store.set_password(). De DB is al ge-isoleerd via autouse
+    fixture ``_isolate_reverto_db`` in conftest.py, dus elke test
+    start met een verse admin-row.
 
     Forces _COOKIE_SECURE=False for the duration of the test because
     TestClient serves over plain http:// and a browser-equivalent
@@ -191,22 +191,26 @@ def auth_client():
     this override the post-login cookie would never reach the next
     request and every authed assertion would 401.
     """
-    original = webapp._load_auth()
-    webapp._save_auth({
-        "username": "admin",
-        "password_hash": bcrypt.hashpw(
-            _KNOWN_PW.encode("utf-8"), bcrypt.gensalt(rounds=4)
-        ).decode("utf-8"),
-    })
+    from core import user_store
+    admin = user_store.get_user_by_username("admin")
+    assert admin is not None, "admin seed missing — check init_db"
+    user_store.set_password(admin.id, _KNOWN_PW)
     prev_secure = webapp._COOKIE_SECURE
+    prev_samesite = webapp._COOKIE_SAMESITE
     webapp._COOKIE_SECURE = False
+    # httpx/TestClient in CI (Ubuntu, Python 3.13) drops strict-samesite
+    # cookies on follow-up requests that lack an Origin header — and
+    # TestClient doesn't synthesise one. Flip to 'lax' for the duration
+    # of the test so the post-login cookie actually reaches /api/bots.
+    # Production stays on 'strict' (real browsers always carry an
+    # Origin/Referer so the strict policy fires as intended there).
+    webapp._COOKIE_SAMESITE = "lax"
     client = TestClient(webapp.app)
     try:
         yield client
     finally:
         webapp._COOKIE_SECURE = prev_secure
-        if original:
-            webapp._save_auth(original)
+        webapp._COOKIE_SAMESITE = prev_samesite
 
 
 class TestAuth:
@@ -268,22 +272,49 @@ class TestAuth:
         assert r.status_code == 401
 
 
-class TestSessionEpochInvalidation:
-    """Server-side session invalidation via the .auth.json session_epoch.
-    Logout and password change both bump the epoch, so any cookie minted
-    under the previous epoch is rejected on the next request."""
+class TestPerUserSessionEpoch:
+    """Phase-3a: session_epoch moved from a single .auth.json integer
+    to a per-user DB column. Logout and password-change bump ONLY the
+    caller's row; other users' cookies survive. The fresh-login-after-
+    logout test runs unconditionally now — pre-Phase-3a it was
+    @pytest.mark.skipif on CI because the file-based epoch invited
+    races between WSL2 and Ubuntu runners. DB-backed UPDATE ... SET
+    removes that class of flakiness entirely.
+    """
 
     def test_logout_invalidates_existing_cookie(self, auth_client):
         token = webapp._create_session_cookie("admin")
         auth_client.cookies.set("reverto_session", token)
         # Cookie works before logout.
         assert auth_client.get("/api/bots").status_code == 200
-        # Logout bumps the epoch.
+        # Logout bumps THIS user's epoch.
         assert auth_client.post("/auth/logout").status_code == 200
         # Same cookie value, but the server now rejects it because the
-        # embedded epoch no longer matches the on-disk one.
+        # embedded epoch no longer matches the DB epoch for uid=1.
         auth_client.cookies.set("reverto_session", token)
         assert auth_client.get("/api/bots").status_code == 401
+
+    def test_logout_bumps_only_callers_epoch(self, auth_client):
+        """Insert a second user, bump admin's epoch, confirm the second
+        user's epoch is untouched. Pre-Phase-3a this test would have
+        been meaningless — epoch was global."""
+        from core import user_store
+        from core.database import get_db
+        conn = get_db()
+        with conn:
+            conn.execute(
+                "INSERT INTO users (username, role) VALUES ('bob', 'user')",
+            )
+        bob = user_store.get_user_by_username("bob")
+        admin_before = user_store.get_session_epoch(1)
+        bob_before = user_store.get_session_epoch(bob.id)
+
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
+        auth_client.post("/auth/logout")
+
+        assert user_store.get_session_epoch(1) == admin_before + 1
+        assert user_store.get_session_epoch(bob.id) == bob_before
 
     def test_password_change_invalidates_existing_cookie(self, auth_client):
         token = webapp._create_session_cookie("admin")
@@ -297,27 +328,23 @@ class TestSessionEpochInvalidation:
         auth_client.cookies.set("reverto_session", token)
         assert auth_client.get("/api/bots").status_code == 401
 
-    @pytest.mark.skipif(
-        os.getenv("CI") == "true",
-        reason=(
-            "Session-epoch test fails on GitHub Actions but passes "
-            "locally. TODO: investigate cookie/TestClient behaviour "
-            "difference between WSL2 and Ubuntu CI runners. "
-            "Tracked for follow-up — do not remove this skip without "
-            "understanding why the CI failure occurs."
-        ),
-    )
     def test_fresh_login_after_logout_works(self, auth_client):
-        # Bump the epoch via logout first.
+        """Used to be @pytest.mark.skipif(CI) — pre-Phase-3a the
+        .auth.json file-based epoch had a race window between WSL2 and
+        CI filesystems that flaked on Ubuntu runners. Post-Phase-3a
+        this is a straight SQLite UPDATE followed by a SELECT. The
+        separate samesite='lax' override in the ``auth_client`` fixture
+        covers a TestClient quirk where httpx drops strict-samesite
+        cookies on follow-up requests that lack an Origin header."""
+        token = webapp._create_session_cookie("admin")
+        auth_client.cookies.set("reverto_session", token)
         auth_client.post("/auth/logout")
-        # New login mints a cookie under the new epoch and works.
+        auth_client.cookies.clear()
         r = auth_client.post(
             "/auth/login",
             json={"username": "admin", "password": _KNOWN_PW},
         )
         assert r.status_code == 200
-        # The TestClient picks up the Set-Cookie automatically and the
-        # next request is authenticated.
         assert auth_client.get("/api/bots").status_code == 200
 
 

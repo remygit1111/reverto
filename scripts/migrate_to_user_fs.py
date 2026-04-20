@@ -42,6 +42,12 @@ BASE = Path(__file__).resolve().parent.parent
 USER_ID = 1
 
 # Files under logs/ that are NOT per-bot state and must stay put.
+# Phase-3a note: ``.auth.json`` is an obsolete artefact from the
+# pre-Phase-3 auth flow. init_db() now archives it as
+# ``.auth.json.pre_phase3.<ts>`` on first run, so for freshly-installed
+# systems this entry never matches. Kept in the keep-list so a legacy
+# install that runs fs-migration BEFORE first init_db() doesn't
+# accidentally move the blob into a user subdir.
 _SYSTEM_LOG_FILES = {
     "reverto.db", "reverto.db-wal", "reverto.db-shm",
     "audit.log", "audit.log.1", "audit.log.2", "audit.log.3",

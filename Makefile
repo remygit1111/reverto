@@ -152,3 +152,11 @@ wipe-deals:
 # per-user Fernet key at keys/1.key.
 migrate-fs:
 	$(PYTHON) scripts/migrate_to_user_fs.py
+
+# setup-admin — Phase-3a post-migration password provisioning. Run
+# ONCE after `make start` has seeded the admin row via init_db().
+# Accepts REVERTO_ADMIN_PW env-var for automation, otherwise prompts.
+# Without this step, nobody can log in (verify_password fails closed
+# on a NULL password_hash).
+setup-admin:
+	$(PYTHON) scripts/setup_admin.py
