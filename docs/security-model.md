@@ -495,6 +495,47 @@ register-new-device, zie Part 3.4) om "attacker verliest de
 device-bound key, downgradet naar het zwakkere kanaal" te
 voorkomen.
 
+**Rate-limiting architectuur.**
+
+Rate-limiting in Reverto dient meerdere security-doelen tegelijk:
+
+- Voorkomt credential-stuffing attacks op het login-endpoint.
+- Voorkomt brute-force op TOTP-verificatie (30s window × N pogingen
+  = lottery, niet gegarandeerd onmogelijk).
+- Voorkomt API-quota-exhaustion naar exchanges. Bitget en Kraken
+  leggen per-API-key rate-limits op die significant lager zijn dan
+  de som van N actieve bots; per-user isolation voorkomt dat één
+  agressieve user andere users' trading blokkeert.
+- Mitigeert DDoS-by-legitimate-users bij plotselinge load (bv.
+  market-crash triggert alle users tegelijk).
+
+Reverto past drie onafhankelijke rate-limit-dimensies toe:
+
+- **Per-IP rate-limiting** — huidige implementatie via SlowAPI
+  (`web/app.py:1165`). Blijft ongewijzigd voor unauthenticated
+  endpoints (login, register, password-reset). Handelt DDoS-
+  achtige scenarios af op pre-auth niveau.
+- **Per-user rate-limiting** — nieuwe laag bovenop per-IP,
+  geactiveerd na authentication. Voorkomt dat een aanvaller met
+  gestolen credentials via veel verschillende IPs brute-force of
+  spray kan uitvoeren op user-specific operations (cap-wijzigingen,
+  device-registration, config-endpoints). Keyed op `user_id` uit
+  het session-cookie of PWA-request.
+- **Per-exchange rate-limiting** — beschermt tegen exchange
+  rate-limit bans door aggressive bot-activity. De signing-service
+  handhaaft een maximum-API-calls-per-second per exchange per user,
+  en een platform-brede ceiling om exchange-kant "Reverto draait
+  te veel requests" bans te voorkomen. Ongeacht hoeveel users
+  trades tegelijk triggeren, worden calls ge-queued zodat exchange-
+  limits niet overschreden.
+
+Concrete waarden worden gecalibreerd in Phase B (authentication
+hardening). Drempel-configuratie zelf valt onder de normale
+security-gate: wijzigingen op per-user-limieten vereisen user-
+approval via PWA; platform-level ceilings worden beheerd via
+admin-role-only config met audit-trail. Audit v26 v26-01 (per-
+user rate-limit) zit in deze laag.
+
 ### 3.4 Approval Channel Hierarchy
 
 Welke actie vereist welk minimum-kanaal. "Session" = het normale
@@ -655,6 +696,44 @@ want trade-only keys); trade-frequency anomalies (Laag 6).
 Waar leeft dit: signing-service, rolling counter per
 `(user_id, exchange, day)`. Reset om middernacht UTC.
 
+*Ramp-up period voor nieuwe users.*
+
+Rolling-max heeft pas statistical betekenis na een periode van
+activiteit. Scenario: user registreert op dag 1, stort €10 000, doet
+zijn eerste trade van €3 000. Met een dag-1 rolling-max van €10 000
+is de daily cap €1 000 (10%) — de trade wordt geweigerd, de user is
+in de war. Naast dat het UX-probleem de onboarding-conversie raakt,
+is het ook een security-probleem omdat het de user naar workarounds
+drijft (caps verhogen zonder goede reden).
+
+De eerste 14 dagen na account-activation draait daarom met
+gereduceerde caps:
+
+- **Daily:** 5% van current balance (lager percentage dan mature
+  account) met absolute ceiling €500. Ceiling beschermt nieuwe
+  accounts met klein saldo; percentage beschermt grote instappers.
+- **Weekly:** 10% van current balance met absolute ceiling €2 000.
+- **Monthly:** nog niet actief — er is geen 30-dagen-window om
+  tegen te meten in de ramp-up-periode.
+
+Na 14 dagen gaat de user over naar de normale percentage-based caps
+gebaseerd op de rolling-max-tot-dan-toe. De overgang is **gradueel**,
+niet abrupt: daily-cap-factor verhoogt stapsgewijs 5% → 7% → 10%
+over 3 dagen transition, idem voor weekly 10% → 15% → 20%. Monthly
+cap wordt op dag 14 actief met zijn normale 35% drempel.
+
+User-experience: de onboarding-UI maakt expliciet dat caps lager zijn
+tijdens ramp-up, met countdown tot full-caps activation en tot het
+moment dat monthly-cap actief wordt. Voorkomt de "waarom wordt mijn
+trade geweigerd" confusion.
+
+Ramp-up geldt ook na een significant deposit-event: als een user na
+30 dagen plotseling 10× zijn balance bijstort, wordt de rolling-max
+over-weighted door de nieuwe balance en kunnen caps onverwacht
+springen. In Phase E wordt overwogen om deposits-detection aan de
+signing-service toe te voegen met een soft-ramp-up bij > N×-balance-
+events, maar dat valt buiten de v1 spec-scope.
+
 **Laag 3 — Weekly en monthly caps.**
 
 Dezelfde structuur als Laag 2, maar:
@@ -720,6 +799,15 @@ data. Een conservatieve strategy waar −2% in 7d een normale dip is,
 verdient een per-strategy override — die mogelijkheid komt in het
 portal-UI als deel van Phase-E implementatie.
 
+*Tier 1 is een early-warning signal, geen zelfstandige defense.* Een
+aanvaller die binnen tier-1 range blijft (bijvoorbeeld 2-4% verlies
+per week) zou cumulatief significante schade kunnen doen zonder dat
+Laag 4 escaleert. Absolute limitering bij tier-1-range verliezen
+wordt geleverd door Laag 2 (daily cap), Laag 3 (weekly/monthly
+caps) en Laag 5 (emergency floor). Tier 1 signaleert alleen aan de
+user dat iets aandacht verdient; het is niet de plek waar het
+bloeden stopt.
+
 **C. Recovery-paden.**
 
 Tier 2:
@@ -775,15 +863,17 @@ strategies die geld verliezen zonder attack.
 (attacker die toevallig winst draait); attacks op nieuwe bots binnen
 het 14d observation-window (nog geen baseline).
 
-**Waar leeft dit.** Cap-counters in de signing-service; de main-app
-berekent performance-metrics uit de deal-ledger en pusht per
-`{user_id, bot_id, tier, recommended_cap_factor}` naar de signing-
-service. De signing-service past tier en cap-factor toe; een
-gecompromitteerde main-app kan een lagere tier pushen (waardoor caps
-strenger worden — dat is acceptabel) maar kan niet een hogere tier
-forceren zonder ook in de signing-service te komen, omdat de signing-
-service tier-escalaties auto-accepteert maar tier-de-escalaties
-checked tegen haar eigen rolling baseline.
+**Waar leeft dit.** Performance-tracker en tier-evaluatie-logica
+leven in de signing-service, niet in de main-app. De main-app kan
+P&L-metrics lezen (read-only) voor UI-rendering, maar kan cap-
+drempels of tier-grenzen niet wijzigen zonder user-approval via een
+PWA-signed config-change request. Cap-counters leven óók in de
+signing-service; main-app pusht alleen `{user_id, bot_id,
+p_and_l_data}` als input voor de signing-service's eigen tier-
+evaluatie. Een gecompromitteerde main-app kan kleinere P&L-waardes
+injecteren (waardoor caps strenger worden — dat is acceptabel) maar
+kan niet een hogere tier forceren of tier-drempels versoepelen
+zonder ook in de signing-service te komen.
 
 **Laag 5 — Emergency floor.**
 
@@ -880,24 +970,34 @@ uitkomst-gebaseerd.
 
 *Onafhankelijkheid-caveat.*
 
-Detector-output leeft in de main-app. Een gecompromitteerde main-app
-kan "alles is normaal" pushen naar de signing-service en anomaly-
-detection neutraliseren. Dit is waarom Laag 6 in de Part 3.7
-independence-tabel als "Nee" staat — deze laag is een operator-
-visibility tool, niet een hard-defense. Independent detection-output
-zou vereisen dat de watchdog (Laag 7) ook anomaly-analyse doet,
-wat mogelijk is maar niet gepland in de huidige roadmap.
+Baseline-storage en detection-logica leven in de signing-service.
+Baseline-reset via legitimate user-trigger vereist PWA-approval (zie
+Part 3.4 approval-hierarchy). Main-app compromise kan dus niet stil
+de baseline herzetten om detection te verblinden.
+
+De zwakkere kant: main-app levert de deal-stream waar detection op
+draait. Een gecompromitteerde main-app kan trades zodanig voorfilteren
+(niet rapporteren aan signing-service) dat anomaly-patterns niet
+oppoppen. Dit is een scope-beperking, niet een defense-bypass: de
+trades zelf moeten nog steeds door signing-service's cap-counters
+(Laag 2/3) en per-trade-threshold (Laag 1), dus ongereporteerde
+trades blokkeren niet de andere lagen. Laag 6 verliest wel zijn
+pattern-detection-sterkte in dat scenario.
 
 **Beschermt tegen.** Patterns die niet door caps worden gevangen
 omdat ze qua volume binnen limits blijven maar qua shape verdacht
 zijn (asymmetric burst, off-hours, frequency-spike).
 
 **Beschermt niet tegen.** Patterns die legitimate strategy-behavior
-mimicen; main-app compromise die detection-output vervalst.
+mimicen; selective trade-underreporting door gecompromitteerde
+main-app (andere lagen vangen wel volume, niet shape).
 
-**Waar leeft dit.** Main-app (heeft de deal-ledger + timing-data).
-Detectie-output triggert de signing-service om approval te vragen of
-te rejecten.
+**Waar leeft dit.** Baseline-storage en detection-logica leven in
+de signing-service. De main-app stuurt trade-events naar de
+signing-service via het normale RPC-kanaal (elke trade-intent is
+een signing-service call); die data voedt ook de anomaly-detectie.
+Baseline-reset en detector-configuratie wijzigingen vereisen user-
+approval via PWA en kunnen niet door main-app alleen worden gedaan.
 
 **Laag 7 — Balance-drop detection (read-only watchdog).**
 
@@ -923,6 +1023,43 @@ Waar leeft dit: `reverto-watchdog` op aparte VPS/provider. Eigen
 read-only API-keys per user. Eigen DB. Communiceert alleen naar
 signing-service via mTLS "kill(user_id)" calls — kan user-state veranderen,
 niet credentials uitlezen.
+
+*Minimale onafhankelijkheids-eisen voor watchdog.*
+
+Een watchdog is alleen zinvol als hij onafhankelijk blijft tijdens
+compromise van de hoofd-infrastructuur. "Separate infra" is breed —
+kan variëren van "andere container op dezelfde host" tot "andere
+cloud-provider." Dit document pint drie minimale scheidingen als
+harde requirement voor Phase F deployment:
+
+1. **Separate access-credentials.** De watchdog deelt geen SSH-keys,
+   cloud-IAM-rollen, VPN-credentials of API-tokens met de main
+   Reverto-infrastructuur. Een aanvaller die de main-app heeft
+   gecompromitteerd kan niet via dezelfde credentials ook de
+   watchdog bereiken. Praktisch: aparte SSH-key per service, geen
+   shared-key-agent, aparte cloud-accounts (of minimaal aparte
+   IAM-users met strict-disjoint permission-sets).
+
+2. **Separate deployment-pipeline.** Watchdog-code wordt niet via
+   dezelfde CI/CD-flow gedeployed als de hoofdapp. Compromise van
+   het CI/CD-systeem (GitHub Actions, self-hosted runners) raakt
+   niet automatisch de watchdog. Watchdog-deploys zijn manual of
+   via een fundamenteel andere pipeline (bv. een andere CI-provider,
+   of een aparte self-hosted runner met eigen secrets).
+
+3. **Separate alerting-channel.** Watchdog-alerts gaan via een
+   andere route dan normale Reverto-alerts — niet dezelfde
+   email-domain, niet dezelfde Slack-workspace, niet dezelfde
+   Telegram-bot. Anders kan een aanvaller met main-app-compromise
+   beide kanalen tegelijk muten en de watchdog-trigger onzichtbaar
+   maken. Praktisch: watchdog krijgt eigen `@watchdog.reverto.example`
+   subdomain en eigen alert-ontvanger (operator-persoonlijke
+   telefoon-nummer of een fysiek secondary device).
+
+Aanvullend: overweeg een aparte cloud-provider of geografische regio
+voor de watchdog. Niet verplicht als basis-requirement, wel expliciete
+consideration in de Phase F deployment-planning. Kandidaat-providers
+(DigitalOcean, Linode, OVHcloud) staan in Part 6 research-spoor.
 
 **Laag 8 — Dead man's switch.**
 
@@ -956,9 +1093,9 @@ alles, muteert DB vrij — blijft deze defense dan overeind?
 | **L1** per-trade threshold + approval | Ja | Approval-token verificatie leeft in de signing-service; user-device bezit de WebAuthn-key. Main-app kan approval-requests posten, niet forgen. |
 | **L2** daily cap | Ja | Cap-counters + rolling-max-berekening leeft in de signing-service DB. Main-app kan een cap-wijziging indienen maar die vereist approval + cooldown voordat de signing-service 'm honoreert. |
 | **L3** weekly / monthly caps | Ja | Zelfde als L2 — signing-service state. |
-| **L4** performance-scaling | Gedeeltelijk | Performance-metrics komen uit main-app (main-DB heeft de deal-ledger). Een gecompromitteerde main-app kan fake-metrics pushen om underperformance te maskeren. Echter: het _doel_ van L4 is conservatief-op-underperformance, niet relax-op-outperformance, dus een attacker die main-app heeft kan caps niet verhogen via deze route. Downgrade-pad (manual user-action alleen) is acceptabel. |
+| **L4** performance-scaling | Alleen als performance-metrics en tier-logica in de signing-service leven, en config-wijzigingen (inclusief tier-drempel-wijzigingen) user-approval vereisen | Signing-service isolatie + baseline-locking tegen unauthorized config-writes. Anti-gaming (geen cap-relaxation bij outperformance) voegt een tweede lock toe: zelfs als main-app P&L-data vervalst, kan dat alleen naar strengere caps leiden, niet naar versoepelde caps. |
 | **L5** emergency floor | Ja | Floor-trigger berekent rolling-max uit de signing-service's eigen balance-snapshots (onafhankelijk van main-app-data), plus watchdog-balance-reads. Main-app compromise kan de floor niet verhogen. |
-| **L6** anomaly detection | Nee | Detector-output komt uit main-app; gecompromitteerde main-app stuurt gewoon "alles is normaal." Deze laag is dus een operator-visibility tool, geen hard-defense. Expliciet niet vertrouwd als independent layer. |
+| **L6** anomaly detection | Alleen als baseline-storage en detection-logica in de signing-service leven | Signing-service isolatie. Als baseline in main-app leeft: defense is waardeloos bij main-app compromise. Architectural requirement uit Part 3.6 Laag 6: baseline-reset vereist PWA-approval. Zwakte die blijft: selective trade-underreporting door main-app kan patterns verbergen; andere lagen (L1/L2/L3) vangen nog steeds het volume. |
 | **L7** watchdog | Ja, mits echt separate infra | Aparte VPS + andere provider + eigen read-only API-keys. Main-app compromise raakt watchdog niet. Kritieke eis: watchdog-kill-signaal is alleen valide met watchdog's eigen mTLS-cert. |
 | **L8** dead-man-switch | Gedeeltelijk | Activity-tracker leeft in main-app; compromise kan fake-activity injecteren. Echter: activity-signal is ingebed in user-device authenticated actions (WebAuthn challenge-response, TOTP-codes). Main-app kan niet een TOTP-code verzinnen zonder ook de TOTP-seed te hebben — en die leeft in de signing-service. Dus gedeeltelijk independent: attacker kan dead-man-timer resetten door de user te laten tapp'en, maar niet uit zichzelf. |
 | **IP-whitelist (exchange-side)** | Ja | Exchange enforces. Main-app + signing-service IP's zijn bekend bij de exchange; attacker op Reverto-infra moet vanuit Reverto's IP trade'en, wat hij mag — maar een attacker die via een ander kanaal keys heeft exfiltreerd kan niet vanuit attacker-IP. Tevens: watchdog detecteert buiten-Reverto trades. |
@@ -967,16 +1104,19 @@ alles, muteert DB vrij — blijft deze defense dan overeind?
 | **bcrypt password hashes** | Ja, in de offline-cracking zin | Hashes kunnen gelezen worden; rounds=12 maakt offline cracking per-account duur. |
 | **Audit-log forgery detection** | Afhankelijk van store | Main-app audit-log is muteerbaar door main-app compromise; signing-service audit-log is niet. Append-only externe log-aggregator (CloudWatch Logs / Loki / external syslog) zou ook main-app-logs robuust maken. |
 
-**Conclusie.** Drie lagen (L1, L2/3, L5, L7) overleven volledig; één
-(L4) overleeft in één richting (kan niet relaxed worden); twee (L6,
-L8) zijn partial defenses. De gaten bij L6 en L8 zijn bewust — L6 is
-een observability-tool, niet een hard-gate; L8 leunt op user-device-
-activity die main-app niet kan vervalsen, maar wel passief kan
-doen-alsof.
+**Conclusie.** Vier lagen (L1, L2/3, L5, L7) overleven volledig; twee
+(L4, L6) overleven **alleen** als hun logica en state in de signing-
+service leven — de architectuur-keuze is hun hele defense. Eén (L8)
+blijft een partial defense die leunt op user-device-activity. De
+zwakte bij L8 is bewust — main-app kan activity niet vervalsen maar
+wel passief doen-alsof dat de user er is.
 
 Dit dwingt: de signing-service isolatie en de aparte watchdog-
 infrastructuur zijn niet optioneel. Zonder één van beide valt de hele
-defense-in-depth stack.
+defense-in-depth stack. Specifiek voor L4 en L6: als de implementatie
+in Phase E / Phase C afdwaalt en deze lagen in main-app belandt, is
+de declaratie in deze tabel gelogen — daarom pint Part 7 Appendix
+expliciet dat elke Phase-implementatie deze tabel moet raken.
 
 ---
 
@@ -1251,6 +1391,36 @@ launch-blocker is maar wel aandacht verdient op langere termijn.
 
 ### 6.2 Research-spoor (geen launch-blocker)
 
+Gegroepeerd voor scanability. Geen nieuwe items t.o.v. de vorige
+revisie — alleen herpositioneerd in drie categorieën.
+
+#### 6.2a Compliance & regulatory
+
+- **Compliance-requirements per EU jurisdictie.** Nederland (AFM,
+  DNB-voor-custody-aspecten), EU algemeen (MiCA van toepassing per
+  2024-2025), mogelijk UK (FCA) — regulatory status voor custodial
+  bot-platforms is een moving target. Beslissen welke
+  jurisdictie(s) te targeten heeft implicaties op: KYC-niveau,
+  licentie-requirements, insurance-requirements, data-residency,
+  audit-log retention (zie Part 5). Apart beleidsdocument zodra een
+  target gekozen is. Sub-items die in dat beleidsdocument horen:
+
+  - GDPR data-subject-rights implementatie (recht op inzage, recht
+    op vergetelheid, bewaartermijnen per data-categorie).
+  - MiCA-implicaties: custodial-obligations, capital-requirements
+    voor crypto-asset service providers, white-paper publishing
+    eisen.
+  - Nederland-specifieke compliance: DNB registratie-plicht,
+    AFM-marktoezicht-positie voor trading-bot-platforms.
+
+- **Incident-response playbook.** Apart document nodig; niet in
+  scope van deze spec. Bij voorkeur geschreven door iemand met
+  incident-response-ervaring (onze security-reviewer in Phase G
+  kan adviseren). Zie ook Part 5 "Incident-response communication
+  protocol".
+
+#### 6.2b Technical R&D
+
 - **MPC threshold-signing voor enterprise-tier.** Technisch
   interessant voor users met significant balance. Fireblocks +
   vergelijkbare providers hebben commercial APIs; vereist contract
@@ -1259,48 +1429,68 @@ launch-blocker is maar wel aandacht verdient op langere termijn.
 
 - **Ledger/Trezor API-signing compatibility.** Hardware-wallets
   kunnen on-chain transactions signen, maar CEX-API HMAC-signing
-  is een andere primitive. Onderzoek of Ledger's developer-SDK
-  een pad biedt waar een hardware-device een Bitget- of Kraken-
-  API-request kan signen. Nu als non-decision gedocumenteerd
-  (Part 5); kan heropend worden als hardware-support verschijnt.
+  is een andere primitive. Onderzoek of Ledger's developer-SDK een
+  pad biedt waar een hardware-device een Bitget- of Kraken-API-
+  request kan signen. Nu als non-decision gedocumenteerd (Part 5);
+  kan heropend worden als hardware-support verschijnt.
 
-- **Compliance-requirements per EU jurisdictie.** Nederland (AFM),
-  EU algemeen (MiCA van toepassing per 2024-2025), mogelijk UK
-  (FCA) — regulatory status voor custodial bot-platforms is een
-  moving target. Beslissen welke jurisdictie(s) te targeten heeft
-  implicaties op: KYC-niveau, licentie-requirements,
-  insurance-requirements, data-residency, audit-log retention
-  (zie Part 5). Apart beleidsdocument zodra een target gekozen
-  is.
+- **Master Key rotation operational-overgangspad.** Tijdens Phase B
+  leeft de Master Key voor envelope-encryption praktisch in de
+  main-app (nog geen signing-service). In Phase C verhuist hij
+  naar de signing-service. De migratie vereist een key-rotation
+  dance: elke bestaande DEK moet worden ge-re-encrypt met de
+  nieuwe MK-locatie, idealiter zonder user-downtime. Technisch
+  oplosbaar (zie MK-rotation flow in Part 3.2) maar niet triviaal;
+  concrete sequence te schrijven in een Phase-C implementation-doc.
 
-- **TOTP-seed key management overgangspad.** Tijdens Phase B leeft
-  de Master Key voor envelope-encryption praktisch in de main-app
-  (nog geen signing-service). In Phase C verhuist hij naar de
-  signing-service. De migratie vereist een key-rotation dance:
-  elke bestaande DEK moet worden ge-re-encrypt met de nieuwe MK-
-  locatie, idealiter zonder user-downtime. Technisch oplosbaar
-  (zie MK-rotation flow in Part 3.2) maar niet triviaal; concrete
-  sequence te schrijven in een Phase-C implementation-doc.
-
-- **Threshold voor "grote trade" — user-configureerbaar vs
-  platform-mandated.** User-configureerbaar (2% default, 1-5%
-  range) past bij een custodial-no-paternalistic stance; platform-
-  mandated dwingt minimum-prudence af. Voorlopig user-
-  configureerbaar; overwegen een platform-floor te introduceren als
-  Laag 2/3 usage-patroon toont dat users caps te hoog zetten.
+- **Exchange-subaccount-mapping per exchange (waar supported).**
+  Bitget en Kraken documenteren subaccount-API verschillend;
+  onduidelijk of elke onboarded user een volledige
+  subaccount-isolatie via de API kan krijgen zonder handmatige
+  exchange-UI-stappen. Blocker voor automatische subaccount-
+  onboarding in Part 3.5. Separate van Part 6.1 Bitget-vraag —
+  dit stuk is breder (alle exchanges, alle flows, inclusief
+  provisioning + teardown).
 
 - **Watchdog infra-provider keuze.** Main-app likely op Hetzner;
   watchdog idealiter op een andere provider. Kandidaten:
   DigitalOcean, Linode, OVHcloud. Geen hard-onderzoek gedaan;
   main-criteria: andere netwerk-paden + onafhankelijke billing +
-  geen gedeelde shared-hosting infra.
+  geen gedeelde shared-hosting infra. Zie ook Laag 7 "Minimale
+  onafhankelijkheids-eisen voor watchdog" (Part 3.6).
+
+#### 6.2c Product positioning
+
+- **Tier-modelering (basic TOTP vs PWA vs YubiKey premium) en
+  pricing-security-tradeoff.** Part 3.3 noemt YubiKey als
+  premium-tier optie zonder de feature-breakdown, pricing-strategy,
+  of security-impact-tradeoff uit te werken. Hoe ver moet de
+  security-downgrade gaan voor TOTP-only users voordat het een
+  UX-probleem wordt? Gaat PWA altijd gratis zijn of ook achter een
+  tier? Research nodig op: concurrent-benchmarks (3Commas, Pionex
+  tier-structuren), user-research op onboarding-friction bij
+  verschillende auth-methoden, cost-structure per tier.
+
+- **Threshold-calibratie per strategy-type (DCA vs grid vs scalp).**
+  Part 3.6 Laag 4 drempels (−2% / −5% / −10% over 7d) zijn voor
+  DCA-achtige strategies gecalibreerd. Grid- en scalp-strategies
+  hebben structureel andere volatility-profielen. Per-strategy
+  override is geplande feature (Laag 4 subsection E), maar calibratie
+  per strategy-type moet met real-world data gebeuren. Vergelijkbaar
+  met de user-configureerbare-vs-platform-mandated threshold vraag
+  voor "grote trade" (2% default, 1-5% range) — user-configureerbaar
+  past bij een custodial-no-paternalistic stance; platform-mandated
+  dwingt minimum-prudence af. Voorlopig user-configureerbaar;
+  overwegen een platform-floor te introduceren als Laag 2/3
+  usage-patroon toont dat users caps te hoog zetten.
 
 - **Passkeys via iOS/Android OS-level.** Apple en Google syncen
   Passkeys via iCloud/Google-account. Dit is user-vriendelijk maar
   introduceert dependency op Apple/Google account-security. Voor
   trading-custody mogelijk te permissive. Te beslissen tijdens
   Phase D: alleen device-bound keys accepteren, of ook Passkey-
-  gesynchroniseerde keys?
+  gesynchroniseerde keys? Raakt de tier-modelering hierboven —
+  strictere account types kunnen device-bound-only afdwingen.
 
 - **Dead-man-switch-reset bij lange legitieme afwezigheid.** User
   gaat 3 weken op vakantie, had 7d-timeout gezet, bots pauzeren na
@@ -1308,12 +1498,6 @@ launch-blocker is maar wel aandacht verdient op langere termijn.
   simple is wordt de defense zinloos. Balance: 24h-pending-state
   plus one-tap reactivation is in Part 3.6 Laag 8 ingeschat;
   user-testing moet aantonen of dit werkt.
-
-- **Incident-response playbook.** Apart document nodig; niet in
-  scope van deze spec. Bij voorkeur geschreven door iemand met
-  incident-response-ervaring (onze security-reviewer in Phase G
-  kan adviseren). Zie ook Part 5 "Incident-response communication
-  protocol".
 
 ---
 
@@ -1376,6 +1560,30 @@ Elke Phase waarin een defense-laag wordt gebouwd moet de
 independence-tabel expliciet raken. Reviewer voegt bij Phase-end
 een kolom toe: "implemented as designed?" — zonder dat wordt de
 defense-in-depth stack incompleet.
+
+**Operational runbook (separate document, nog aan te maken):**
+
+De volgende operational concerns worden meermaals verwezen in dit
+security-model maar worden hier niet uitgewerkt. Bij
+implementatie-start moet `docs/operational-runbook.md` worden
+aangemaakt als separate document met minimaal:
+
+- **Incident-response communication protocol** — ref: Part 5
+  non-decisions "Incident-response communication protocol".
+- **Business continuity bij service-outage** — ref: Part 5
+  non-decisions "Business continuity bij service-outage".
+- **Backup-restore procedures per data-store** — ref: Part 3.2
+  Backup-strategie en MK-rotation.
+- **Audit-log retention en access-control** — ref: Part 5
+  non-decisions "Audit-log retention en GDPR-compliance".
+- **User-communication bij security-relevant events** — ref:
+  Part 3.6 Laag 7 (watchdog-alerts) en Laag 8 (dead-man-switch
+  triggers).
+
+Dit document blijft focus op security-architectuur; operational
+execution is een cross-cutting concern die apart wordt gemanaged.
+Dangling references in dit doc naar "separate operational runbook"
+wijzen straks naar dat bestand.
 
 ---
 
