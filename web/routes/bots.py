@@ -8,6 +8,9 @@ Routes:
   GET    /api/bots/{slug}/config          — read YAML
   PUT    /api/bots/{slug}/config          — overwrite YAML
   DELETE /api/bots/{slug}                 — delete YAML (bot must be stopped)
+  GET    /api/bots/{slug}/export          — YAML download with metadata header
+  POST   /api/bots/{slug}/duplicate       — server-side copy to new slug
+  POST   /api/bots/import                 — create a new bot from uploaded YAML
   POST   /api/bots/{slug}/start           — spawn main_paper.py subprocess
   POST   /api/bots/{slug}/start-dry-run   — spawn main_live.py --dry-run
   POST   /api/bots/{slug}/stop            — SIGTERM running bot
@@ -24,9 +27,13 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 
 from core import paths
 from core.user import User
@@ -509,3 +516,185 @@ async def delete_bot(
     await registry.invalidate()
     _audit("bot_delete", slug, actor)
     return {"ok": True, "slug": slug}
+
+
+# ── Import / Export / Duplicate ─────────────────────────────────────────────
+
+def _reverto_version() -> str:
+    """Best-effort version string for export metadata. Short git SHA when
+    available, 'unknown' otherwise so the header never crashes the export
+    on a deployment without git in PATH."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2.0,
+            cwd=Path(__file__).resolve().parent.parent.parent,
+        )
+        if result.returncode == 0:
+            sha = result.stdout.strip()
+            if sha:
+                return sha
+    except Exception:
+        pass
+    return "unknown"
+
+
+@router.get("/api/bots/{slug}/export")
+@limiter.limit("30/minute")
+async def export_bot(
+    slug: str,
+    request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
+):
+    """Export a bot config as YAML. Strategy-only: no credentials, no
+    state, no deal history — just the YAML the operator could re-import
+    on another deployment. Header comments record export metadata so a
+    future compatibility check has something to anchor on."""
+    path = _bot_yaml_path(user.id, slug)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    config_yaml = path.read_text(encoding="utf-8")
+    header = (
+        "# Reverto bot export\n"
+        f"# Exported: {datetime.now(timezone.utc).isoformat()}\n"
+        f"# Original slug: {slug}\n"
+        f"# Reverto version: {_reverto_version()}\n"
+        "#\n"
+        "# Import via: Portal → Bots → Import bot\n"
+        "\n"
+    )
+
+    _audit("bot_export", slug, actor)
+    return Response(
+        content=header + config_yaml,
+        media_type="application/x-yaml",
+        headers={
+            "Content-Disposition": f'attachment; filename="{slug}.yaml"',
+        },
+    )
+
+
+@router.post("/api/bots/{slug}/duplicate")
+@limiter.limit("10/minute")
+async def duplicate_bot(
+    slug: str,
+    request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
+):
+    """Duplicate a bot config to a new slug. Request body is a JSON
+    object with ``new_slug``. State, deals, orders, and credentials are
+    NOT copied — the duplicate starts fresh."""
+    body_bytes = await _read_body_with_cap(request, MAX_CONFIG_BODY_BYTES)
+    body = _parse_json_object_body(body_bytes)
+    new_slug = str(body.get("new_slug", "")).strip()
+
+    if not _BOT_SLUG_RE.match(new_slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid slug. Must match {_BOT_SLUG_RE.pattern}",
+        )
+
+    source_path = _bot_yaml_path(user.id, slug)
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="Source bot not found")
+
+    target_path = _bot_yaml_path(user.id, new_slug)
+    if target_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bot with slug '{new_slug}' already exists",
+        )
+
+    try:
+        raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=500, detail=f"Source YAML parse error: {e}")
+
+    # Keep the source layout: _bot_yaml_path files are all wrapped in
+    # {"bot": {...}} by create_bot/update_bot_config, so the duplicate
+    # round-trips through the same envelope.
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=500, detail="Source YAML is malformed")
+    inner = raw.get("bot", raw)
+    if isinstance(inner, dict) and "name" in inner:
+        # Human-readable name: derive from the new slug so the card
+        # label matches the identifier. Operator can rename afterwards
+        # via the config editor if they prefer something else.
+        inner["name"] = new_slug.replace("_", " ").replace("-", " ").title()
+
+    paths.user_bots_dir(user.id)
+    target_path.write_text(
+        yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    await registry.invalidate()
+    _audit(f"bot_duplicate from={slug}", new_slug, actor)
+    return {"ok": True, "slug": new_slug}
+
+
+@router.post("/api/bots/import")
+@limiter.limit("10/minute")
+async def import_bot(
+    request: Request,
+    actor: str = Depends(_request_actor),
+    user: User = Depends(_request_user),
+):
+    """Create a new bot from a YAML body. Target slug comes from the
+    ``?slug=`` query param so the operator can pick a non-conflicting
+    name at import time. Full Pydantic schema validation runs before
+    anything hits disk — bad YAML or schema violations are refused
+    without side effects."""
+    target_slug = request.query_params.get("slug", "").strip()
+    if not _BOT_SLUG_RE.match(target_slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query param 'slug' must match {_BOT_SLUG_RE.pattern}",
+        )
+
+    target_path = _bot_yaml_path(user.id, target_slug)
+    if target_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bot with slug '{target_slug}' already exists",
+        )
+
+    body_bytes = await _read_body_with_cap(request, MAX_CONFIG_BODY_BYTES)
+    try:
+        yaml_text = body_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Body must be UTF-8 YAML")
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=400, detail="YAML must be a top-level object",
+        )
+
+    # _validate_bot_payload accepts both {"bot": {...}} (standard export
+    # format) and the flat {...} fallback, so either import shape works.
+    try:
+        _validate_bot_payload(parsed)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400, detail=f"Schema validation failed: {e}",
+        )
+
+    inner = parsed.get("bot", parsed)
+    if isinstance(inner, dict) and "name" in inner:
+        inner["name"] = target_slug.replace("_", " ").replace("-", " ").title()
+
+    paths.user_bots_dir(user.id)
+    target_path.write_text(
+        yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    await registry.invalidate()
+    _audit("bot_import", target_slug, actor)
+    return {"ok": True, "slug": target_slug}
