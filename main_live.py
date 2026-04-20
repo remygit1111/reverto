@@ -21,6 +21,7 @@ from pathlib import Path
 from config.config_loader import load_bot_config
 from config.models import Mode
 from core import paths
+from core.logging_setup import parse_log_level_env
 from exchanges.public_exchange import PublicExchange
 from live.live_engine import LiveEngine
 from notifications.telegram import TelegramNotifier
@@ -38,8 +39,10 @@ _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "y", "on"})
 def _env_is_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _TRUE_ENV_VALUES
 
+# Level resolves from REVERTO_LOG_LEVEL (default INFO) so an operator
+# can opt into DEBUG-on-disk for a single restart without a code edit.
 logging.basicConfig(
-    level=logging.INFO,
+    level=parse_log_level_env(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     force=True,

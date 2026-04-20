@@ -66,6 +66,7 @@ jobs:
           import core.drawdown_guard
           import core.ids
           import core.liquidation_guard
+          import core.logging_setup
           import core.paths
           import core.schedule_guard
           import core.user

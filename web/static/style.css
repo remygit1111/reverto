@@ -779,6 +779,24 @@ tr:hover td { background: rgba(128,128,128,.04); }
   padding: 4px 0;
 }
 .log-clear-btn { font-size: 10px; height: 24px; }
+/* Log-level filter — zelfde visuele gewicht als de Clear-knop:
+   kleine inline control die naast Auto-scroll past. Gebruikt
+   theme-tokens zodat 'ie in dark-mode niet wit wordt. */
+.log-level-filter {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 3px 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  height: 24px;
+  cursor: pointer;
+}
+.log-level-filter:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
 .log-controls {
   display: flex;
   align-items: center;

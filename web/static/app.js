@@ -3588,6 +3588,36 @@ function connectWS(slug) {
   ws.onerror = () => ws.close();
 }
 
+// ── Log-level filter (UI-only, client-side tekstpatroon) ──────────────────────
+// _logLevelFilter is een globale preference: geldt voor ALLE bots, blijft
+// bewaard bij tab-switch en bij CLEAR. Twee standen:
+//   'all'         — toon elke regel (default)
+//   'warn-error'  — alleen regels met [WARNING]/[ERROR]/[CRITICAL] prefix
+// Pure tekstmatching op de levelname die logging.basicConfig meestuurt;
+// geen wijziging aan de WS-payload of backend.
+let _logLevelFilter = 'all';
+
+function _lineMatchesFilter(text) {
+  if (_logLevelFilter === 'all') return true;
+  if (_logLevelFilter === 'warn-error') {
+    return (
+      text.includes('[WARNING]') ||
+      text.includes('[ERROR]') ||
+      text.includes('[CRITICAL]')
+    );
+  }
+  return true;
+}
+
+function _applyLogLevelFilter() {
+  const body = $('log-body');
+  if (!body) return;
+  for (const line of body.children) {
+    const text = line.textContent || '';
+    line.style.display = _lineMatchesFilter(text) ? '' : 'none';
+  }
+}
+
 function appendLog(text) {
   if (text === '__ping__') return;
   const out = $('log-body');
@@ -3595,6 +3625,9 @@ function appendLog(text) {
   el.className = 'log-line ' + logCls(text);
   el.textContent = text;
   out.appendChild(el);
+  // Apply filter to the freshly-added line so streaming WARNING+ERROR
+  // stays strict even while new INFO lines arrive in the background.
+  if (!_lineMatchesFilter(text)) el.style.display = 'none';
   while (out.children.length > 500) out.removeChild(out.firstChild);
   const auto = $('autoscroll');
   if (auto && auto.checked) out.scrollTop = out.scrollHeight;
@@ -6093,6 +6126,16 @@ function setupEventListeners() {
 
   $('log-clear-btn').addEventListener('click', clearLog);
   $('ov-log-clear-btn').addEventListener('click', () => { $('ov-log-body').innerHTML = ''; });
+
+  // Log-level filter — re-filter existing DOM so historical lines
+  // hide/show immediately on dropdown change, not only new lines.
+  const _logLevelSelect = $('log-level-filter');
+  if (_logLevelSelect) {
+    _logLevelSelect.addEventListener('change', (e) => {
+      _logLevelFilter = e.target.value;
+      _applyLogLevelFilter();
+    });
+  }
 
   // ── Bot detail: Config tab actions ────────────────────────────────────────
   $('d-edit-btn').addEventListener('click', () => {
