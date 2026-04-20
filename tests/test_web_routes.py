@@ -324,21 +324,65 @@ class TestPerUserSessionEpoch:
         .auth.json file-based epoch had a race window between WSL2 and
         CI filesystems that flaked on Ubuntu runners. Post-Phase-3a
         this is a straight SQLite UPDATE followed by a SELECT — no
-        file-write visibility window, no flakiness. Skip removed."""
-        # Bump the epoch via logout first.
+        file-write visibility window, no flakiness. Skip removed.
+
+        NOTE: currently adding printf diagnostics to understand why
+        CI still fails. Will be replaced by a proper fix in a follow-
+        up commit once we see the actual failure mode."""
+        import sys
+        from core import user_store
+
+        admin_before = user_store.get_user_by_username("admin")
+        print(f"[DIAG-1] admin before: id={admin_before.id} "
+              f"epoch={admin_before.session_epoch}", file=sys.stderr, flush=True)
+        print(f"[DIAG-1] DB epoch (direct): "
+              f"{user_store.get_session_epoch(admin_before.id)}",
+              file=sys.stderr, flush=True)
+
         token = webapp._create_session_cookie("admin")
+        print(f"[DIAG-2] initial token: {token[:40]}...", file=sys.stderr, flush=True)
         auth_client.cookies.set("reverto_session", token)
-        auth_client.post("/auth/logout")
+
+        logout_resp = auth_client.post("/auth/logout")
+        print(f"[DIAG-3] logout status: {logout_resp.status_code}",
+              file=sys.stderr, flush=True)
+        print(f"[DIAG-3] DB epoch after logout: "
+              f"{user_store.get_session_epoch(admin_before.id)}",
+              file=sys.stderr, flush=True)
+
         auth_client.cookies.clear()
-        # New login mints a cookie under the new epoch and works.
+        print(f"[DIAG-4] jar after clear: {dict(auth_client.cookies)}",
+              file=sys.stderr, flush=True)
+
         r = auth_client.post(
             "/auth/login",
             json={"username": "admin", "password": _KNOWN_PW},
         )
+        print(f"[DIAG-5] login status: {r.status_code}", file=sys.stderr, flush=True)
+        print(f"[DIAG-5] Set-Cookie: "
+              f"{r.headers.get('set-cookie', 'NONE')[:120]}",
+              file=sys.stderr, flush=True)
+        print(f"[DIAG-5] DB epoch after login: "
+              f"{user_store.get_session_epoch(admin_before.id)}",
+              file=sys.stderr, flush=True)
+        print(f"[DIAG-5] jar after login: {dict(auth_client.cookies)}",
+              file=sys.stderr, flush=True)
         assert r.status_code == 200
-        # The TestClient picks up the Set-Cookie automatically and the
-        # next request is authenticated.
-        assert auth_client.get("/api/bots").status_code == 200
+
+        bots_resp = auth_client.get("/api/bots")
+        print(f"[DIAG-6] bots status: {bots_resp.status_code}",
+              file=sys.stderr, flush=True)
+        print(f"[DIAG-6] bots request cookies: "
+              f"{bots_resp.request.headers.get('cookie', 'NONE')[:120]}",
+              file=sys.stderr, flush=True)
+        print(f"[DIAG-6] DB epoch at final: "
+              f"{user_store.get_session_epoch(admin_before.id)}",
+              file=sys.stderr, flush=True)
+        if bots_resp.status_code != 200:
+            print(f"[DIAG-6] response body: {bots_resp.text[:250]}",
+                  file=sys.stderr, flush=True)
+
+        assert bots_resp.status_code == 200
 
 
 class TestDbAnnotationsRoutes:
