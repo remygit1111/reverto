@@ -280,17 +280,37 @@ def _request_actor(request: Request) -> str:
 def _request_user(request: Request) -> User:
     """FastAPI dependency — resolve the request to a User instance.
 
-    Phase 1 of the multi-tenant migration: always returns the admin
-    user (id=1). Phase 2 will read the user_id from the session cookie
-    and hydrate via ``core.user.get_user_by_id``. Routes that already
-    take ``Depends(_request_actor)`` keep working — that dependency is
-    still the source of truth for audit-log strings. Use
-    ``Depends(_request_user)`` whenever you need the full User object
-    (e.g. to pass user_id into deal_store calls).
+    Phase-3a: reads ``uid`` from the signed session cookie, looks up
+    the row in users, and refuses the request if the user is missing
+    or deactivated. Pre-Phase-3a this helper hardcoded the admin user
+    because session cookies carried only a username and Phase-1/2
+    only ever had one real user; that Phase-1 assumption is now gone.
+
+    API-key callers (``X-API-Key``) bypass the session cookie and get
+    the Phase-1 admin stub — they're server-to-server traffic and
+    don't carry a user context. Routes that care about the real
+    caller must enforce cookie-auth explicitly.
     """
-    # TODO Phase 2: look up session → user_id → get_user_by_id.
-    # For now, every authenticated request is admin.
-    return get_default_user()
+    cookie = request.cookies.get(_SESSION_COOKIE)
+    payload = _verify_session_cookie(cookie)
+    if payload is None:
+        # No valid cookie — check for API-key. If that's the auth path,
+        # fall back to the admin stub (matches the pre-3a behaviour
+        # for script/CI traffic). If neither, the AuthMiddleware has
+        # already short-circuited with 401 so this code path is only
+        # reachable via an explicitly-exempted route — in that case
+        # default to admin so audit trails stay consistent.
+        provided = request.headers.get("X-API-Key")
+        if provided and secrets.compare_digest(provided, _API_KEY):
+            return get_default_user()
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id = payload.get("uid")
+    if not isinstance(user_id, int) or user_id <= 0:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    user = user_store.get_user_by_id(user_id)
+    if user is None or not user.active:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
 
 
 def _ws_extract_user_id(websocket: WebSocket) -> Optional[int]:
@@ -300,21 +320,19 @@ def _ws_extract_user_id(websocket: WebSocket) -> Optional[int]:
 
     ``BaseHTTPMiddleware`` does not run on WS upgrades, so WS-
     endpoints can't use ``Depends(_request_user)`` — this helper is
-    the equivalent. Phase-1/2: mirrors ``_request_user()`` — every
-    valid session resolves to admin (id=1). Phase-3 wiring point:
-    when the cookie payload carries a user_id (or we resolve via
-    ``get_user_by_username`` on the ``"u"`` field), this helper
-    starts returning the actual caller's id. The signature is
-    Phase-3-ready on purpose so WS endpoints don't need to change
-    again.
+    the equivalent. Phase-3a: reads ``uid`` from the cookie and
+    validates the user exists + is active.
     """
     payload = _verify_session_cookie(websocket.cookies.get(_SESSION_COOKIE))
     if payload is None:
         return None
-    # Phase-1/2: hardcoded admin, same as _request_user() HTTP path.
-    # TODO Phase-3: switch to payload.get("uid") once auth.py mints
-    # cookies with a user_id field + get_user_by_id() check.
-    return get_default_user().id
+    uid = payload.get("uid")
+    if not isinstance(uid, int) or uid <= 0:
+        return None
+    user = user_store.get_user_by_id(uid)
+    if user is None or not user.active:
+        return None
+    return uid
 
 # Module-level ccxt client — reused across /api/price calls so we don't pay
 # instantiation overhead on every request.
