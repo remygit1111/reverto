@@ -162,6 +162,16 @@ else:
         "— only safe on localhost / private LAN)."
     )
 
+# SameSite policy. "strict" is the production default — it stops every
+# cross-site request from carrying the session cookie, which is the
+# strongest CSRF mitigation short of custom headers. The test fixture
+# flips this to "lax" temporarily because httpx/TestClient in CI
+# respects strict SameSite more aggressively than the local WSL2 build
+# and drops the cookie on follow-up requests that lack an Origin header
+# (TestClient doesn't synthesise one). Production clients always have
+# a real Origin/Referer so the same strict policy behaves as intended.
+_COOKIE_SAMESITE: str = "strict"
+
 # ── Phase-3a: auth state lives in the users table ─────────────────────────
 # Pre-Phase-3a the bootstrap wrote a random admin password to
 # logs/.auth.json and printed it to logs/.initial_password. Post-
