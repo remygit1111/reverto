@@ -7304,19 +7304,44 @@ class RevertoBacktest {
       pnlHistogram.push({ bucket_pct: b, count: histMap.get(b) || 0 });
     }
 
-    // DCA price levels — count occurrences of DCA fill prices
-    const dcaMap = new Map();
+    // DCA usage breakdown:
+    //  (A) per-level trigger counts — hoe vaak werd DCA #1 gebruikt,
+    //      DCA #2, etc. Order binnen deal.orders (sorted op tijd)
+    //      bepaalt de level-sequentie.
+    //  (B) per-deal depth histogram — verdeling van deals over
+    //      dca_count (0 = geen DCA gedaan, N = N DCA-fills).
+    const dcaLevelCounts = new Map();
     for (const d of deals) {
+      let level = 0;
       for (const o of d.orders) {
         if (o.type !== 'dca') continue;
-        const p = Math.round(o.price);
-        dcaMap.set(p, (dcaMap.get(p) || 0) + 1);
+        level += 1;
+        dcaLevelCounts.set(level, (dcaLevelCounts.get(level) || 0) + 1);
       }
     }
-    const dcaLevels = Array.from(dcaMap.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([price, count]) => ({ price, count }));
+    const totalDcaTriggers = Array.from(dcaLevelCounts.values())
+      .reduce((s, c) => s + c, 0);
+    const dcaLevelBreakdown = Array.from(dcaLevelCounts.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([level, count]) => ({
+        level,
+        count,
+        pct: totalDcaTriggers > 0 ? (count / totalDcaTriggers) * 100 : 0,
+      }));
+
+    const dcaDepthMap = new Map();
+    for (const d of deals) {
+      const depth = d.dca_count || 0;
+      dcaDepthMap.set(depth, (dcaDepthMap.get(depth) || 0) + 1);
+    }
+    const totalDeals = deals.length;
+    const dcaDepthHistogram = Array.from(dcaDepthMap.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([depth, count]) => ({
+        depth,
+        count,
+        pct: totalDeals > 0 ? (count / totalDeals) * 100 : 0,
+      }));
 
     return {
       summary: {
@@ -7354,7 +7379,9 @@ class RevertoBacktest {
       monthly_pnl: monthlyPnl,
       deals,
       pnl_histogram: pnlHistogram,
-      dca_levels: dcaLevels,
+      dca_level_breakdown: dcaLevelBreakdown,
+      dca_depth_histogram: dcaDepthHistogram,
+      total_dca_triggers: totalDcaTriggers,
     };
   }
 }
@@ -8736,14 +8763,44 @@ function btRenderResults(res) {
     el.style.height = el.dataset.h + '%';
   });
 
-  // DCA levels
+  // DCA usage — two-part widget:
+  //   (A) Per-level breakdown: hoe vaak elke DCA-level triggerde
+  //   (B) Per-deal depth histogram: hoe diep gaan deals meestal
   const dEl = $('bt-dca-levels');
-  if (!res.dca_levels.length) {
+  const breakdown = res.dca_level_breakdown || [];
+  const depthHist = res.dca_depth_histogram || [];
+  const totalTriggers = res.total_dca_triggers || 0;
+
+  if (breakdown.length === 0) {
     dEl.innerHTML = '<div class="empty-grid">No DCA fills</div>';
   } else {
-    dEl.innerHTML = res.dca_levels.map(l =>
-      `<div class="bt-dca-row"><span>$${fmtPrice(l.price)}</span><span>×${l.count}</span></div>`
+    const breakdownRows = breakdown.map(b =>
+      `<div class="bt-dca-row">
+         <span>DCA ${b.level}</span>
+         <span class="bt-dca-count">${b.count}× (${b.pct.toFixed(1)}%)</span>
+       </div>`
     ).join('');
+
+    const depthRows = depthHist.map(h => {
+      const label = h.depth === 0
+        ? 'No DCA'
+        : `${h.depth} DCA${h.depth === 1 ? '' : 's'}`;
+      return `<div class="bt-dca-row">
+         <span>${label}</span>
+         <span class="bt-dca-count">${h.count} deal${h.count === 1 ? '' : 's'} (${h.pct.toFixed(1)}%)</span>
+       </div>`;
+    }).join('');
+
+    dEl.innerHTML = `
+      <div class="bt-dca-section">
+        <div class="bt-dca-section-title">DCA-level gebruik (totaal ${totalTriggers})</div>
+        ${breakdownRows}
+      </div>
+      <div class="bt-dca-section">
+        <div class="bt-dca-section-title">Deal-diepte verdeling</div>
+        ${depthRows}
+      </div>
+    `;
   }
 }
 
