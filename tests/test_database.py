@@ -417,11 +417,21 @@ def test_migrate_schema_idempotent():
     assert conn.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
 
 
-def test_migrate_from_pre_mt_schema_drops_and_recreates(tmp_path):
+def test_migrate_from_pre_mt_schema_drops_and_recreates(tmp_path, monkeypatch):
     """Pre-MT DB (user_version < 3, no user_id column) must be wiped
     clean by init_db so every table lands at v3 with the FK. The
     migration is destructive by design — ALTER TABLE can't add a
-    NOT NULL FK on an existing table that has rows."""
+    NOT NULL FK on an existing table that has rows.
+
+    Audit v26-10 guard: a destructive migration on a DB with rows
+    now requires the REVERTO_DESTRUCTIVE_MIGRATE=1 opt-in. This
+    test exercises the authorized path, so we set the env-var.
+    """
+    # Explicit opt-in — this test targets the destructive path on
+    # purpose. The guard is exercised separately in
+    # TestDestructiveMigrationGuard.
+    monkeypatch.setenv("REVERTO_DESTRUCTIVE_MIGRATE", "1")
+
     legacy_db = tmp_path / "legacy.db"
     import sqlite3
     raw = sqlite3.connect(str(legacy_db))
@@ -478,6 +488,205 @@ def test_migrate_refuses_future_schema(tmp_path):
     database.set_db_path(future_db)
     with pytest.raises(RuntimeError, match="schema is at version"):
         database.init_db()
+
+
+# ── Audit v26-10: destructive migration guard ───────────────────────────────
+
+
+class TestDestructiveMigrationGuard:
+    """Regression coverage for audit v26-10: init_db() must refuse a
+    destructive schema migration (DROP of owned tables that contain
+    rows) unless the operator has opted in via
+    ``REVERTO_DESTRUCTIVE_MIGRATE=1``, and must create a WAL-aware
+    pre-migration backup before proceeding.
+
+    Pre-fix a routine ``make start`` after upgrading the code could
+    silently wipe live data — exactly what happened to the operator
+    during the Phase-3a rollout.
+    """
+
+    def _write_legacy_db(self, path):
+        """Materialise a pre-MT SQLite DB at ``path`` with one deal
+        row so the destructive-migration trigger fires."""
+        import sqlite3 as _sqlite
+        raw = _sqlite.connect(str(path))
+        try:
+            raw.execute(
+                """
+                CREATE TABLE deals (
+                    id TEXT PRIMARY KEY,
+                    bot_slug TEXT NOT NULL,
+                    bot_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    initial_price REAL NOT NULL,
+                    total_size REAL NOT NULL
+                )
+                """
+            )
+            raw.execute(
+                "INSERT INTO deals (id, bot_slug, bot_name, status, "
+                "opened_at, initial_price, total_size) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("LEGACY-1", "tb", "tb", "open",
+                 "2024-01-01T00:00:00Z", 80000.0, 0.001),
+            )
+            raw.execute("PRAGMA user_version = 2")
+            raw.commit()
+        finally:
+            raw.close()
+
+    def test_destructive_migration_refused_without_env_var(
+        self, tmp_path, monkeypatch,
+    ):
+        """Without the opt-in env-var, init_db raises
+        DatabaseMigrationError instead of dropping tables."""
+        monkeypatch.delenv("REVERTO_DESTRUCTIVE_MIGRATE", raising=False)
+        db_path = tmp_path / "legacy.db"
+        self._write_legacy_db(db_path)
+
+        database.set_db_path(db_path)
+        with pytest.raises(database.DatabaseMigrationError) as exc_info:
+            database.init_db()
+
+        msg = str(exc_info.value)
+        assert "REVERTO_DESTRUCTIVE_MIGRATE" in msg
+        assert "backup" in msg.lower()
+        assert "docs/runbook.md" in msg
+
+        # Data still there — the raise happened BEFORE the DROP.
+        import sqlite3 as _sqlite
+        conn = _sqlite.connect(str(db_path))
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+            assert count == 1, "legacy row must survive a refused migration"
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            assert version == 2, "user_version must not change on refusal"
+        finally:
+            conn.close()
+
+    def test_destructive_migration_proceeds_with_env_var(
+        self, tmp_path, monkeypatch,
+    ):
+        """With env-var set, migration proceeds AND auto-creates a
+        pre-migration backup next to the DB file."""
+        monkeypatch.setenv("REVERTO_DESTRUCTIVE_MIGRATE", "1")
+        db_path = tmp_path / "legacy.db"
+        self._write_legacy_db(db_path)
+
+        database.set_db_path(db_path)
+        database.init_db()
+
+        # Migration landed — schema is at v4, legacy row is gone.
+        conn = database.get_db()
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert version == database.SCHEMA_VERSION
+        assert conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0] == 0
+
+        # Pre-migration backup was created in the same dir as the DB.
+        backups = sorted(tmp_path.glob("pre-migration-backup-*.db"))
+        assert len(backups) == 1, (
+            f"expected exactly one pre-migration backup, got {backups}"
+        )
+
+        # The backup is a valid SQLite file at the OLD schema version,
+        # with the legacy row still present.
+        import sqlite3 as _sqlite
+        bconn = _sqlite.connect(str(backups[0]))
+        try:
+            bver = bconn.execute("PRAGMA user_version").fetchone()[0]
+            assert bver == 2, f"backup should be at v2, got v{bver}"
+            rows = bconn.execute(
+                "SELECT id FROM deals"
+            ).fetchall()
+            assert [r[0] for r in rows] == ["LEGACY-1"]
+        finally:
+            bconn.close()
+
+    def test_fresh_install_skips_guard_and_backup(
+        self, tmp_path, monkeypatch,
+    ):
+        """A brand-new DB (no owned-table data) is not "destructive"
+        even though user_version goes 0 → SCHEMA_VERSION. No opt-in
+        env-var needed, no backup created — fresh installs are the
+        common case and must stay frictionless.
+        """
+        monkeypatch.delenv("REVERTO_DESTRUCTIVE_MIGRATE", raising=False)
+        db_path = tmp_path / "fresh.db"
+        # Don't pre-create anything. init_db() sees user_version=0 + no
+        # owned tables with rows → treats as fresh install.
+
+        database.set_db_path(db_path)
+        database.init_db()  # must not raise
+
+        conn = database.get_db()
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
+
+        # No pre-migration backup on a fresh install.
+        backups = list(tmp_path.glob("pre-migration-backup-*.db"))
+        assert backups == [], (
+            f"fresh install must not create a backup, got {backups}"
+        )
+
+    def test_backup_uses_sqlite_backup_not_file_copy(
+        self, tmp_path, monkeypatch,
+    ):
+        """The backup must use sqlite3.Connection.backup() so WAL-mode
+        pages are captured correctly. Test by writing a row on a
+        fresh WAL connection (so the row sits in WAL, not yet
+        checkpointed to the main file) and asserting the backup
+        contains the row. ``shutil.copy`` of the main file alone
+        would miss WAL content and fail this assertion.
+        """
+        monkeypatch.setenv("REVERTO_DESTRUCTIVE_MIGRATE", "1")
+        db_path = tmp_path / "wal.db"
+
+        # Create a legacy-schema DB in WAL mode + insert a row without
+        # a manual checkpoint. The row lives in the -wal file until
+        # commit forces a page write; backup() must see it regardless.
+        import sqlite3 as _sqlite
+        raw = _sqlite.connect(str(db_path))
+        try:
+            raw.execute("PRAGMA journal_mode=WAL")
+            raw.execute(
+                """
+                CREATE TABLE deals (
+                    id TEXT PRIMARY KEY, bot_slug TEXT NOT NULL,
+                    bot_name TEXT NOT NULL, status TEXT NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    initial_price REAL NOT NULL,
+                    total_size REAL NOT NULL
+                )
+                """
+            )
+            raw.execute(
+                "INSERT INTO deals VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("WAL-ROW", "t", "t", "open",
+                 "2024-01-01T00:00:00Z", 80000.0, 0.001),
+            )
+            raw.execute("PRAGMA user_version = 2")
+            raw.commit()
+        finally:
+            raw.close()
+
+        database.set_db_path(db_path)
+        database.init_db()
+
+        backups = list(tmp_path.glob("pre-migration-backup-*.db"))
+        assert len(backups) == 1
+
+        # Backup must contain WAL-ROW — proves backup() was used
+        # (shutil.copy on main file only would miss WAL content on
+        # some OS/FS combinations that defer write-ahead merging).
+        bconn = _sqlite.connect(str(backups[0]))
+        try:
+            rows = bconn.execute("SELECT id FROM deals").fetchall()
+            assert ("WAL-ROW",) in rows, (
+                "backup missing WAL-mode row — likely not using "
+                "sqlite3.Connection.backup()"
+            )
+        finally:
+            bconn.close()
 
 
 # ── Users table contract ─────────────────────────────────────────────────────
