@@ -1,5 +1,16 @@
 # Phase-3 scoping
 
+> **Status note (Phase-3a shipped):** de DB-based auth refactor is
+> gemerged. `users` heeft nu `password_hash` + `role` +
+> `session_epoch` kolommen, `logs/.auth.json` is uit de runtime-paden
+> verdwenen (wordt automatisch gearchiveerd op eerste init_db()),
+> `_request_user` / `_ws_extract_user_id` resolven uit cookie-`uid`,
+> en `core/user_store.py` is de canonieke auth-API. Secties hieronder
+> die dat proces beschrijven zijn historisch — actuele docs staan in
+> `docs/architecture.md` (module-structure) en `docs/runbook.md`
+> (`setup-admin` flow). Phase-3b (multi-user login UI) + Phase-3c
+> (admin-portal) + Phase-3d (password-reset) blijven pending.
+
 Stand-van-zaken document. De multi-tenant foundation (Fase 1 + 2)
 staat. Dit is wat we tot nu toe besloten hebben over Phase-3, welke
 vragen nog open zijn, en welke call-sites in Phase-3 aandacht vragen.

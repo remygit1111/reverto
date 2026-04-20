@@ -64,13 +64,16 @@ Wat NIET verhuist (system files blijven staan):
 
 - `logs/reverto.db` + `-wal` + `-shm` (SQLite, system state).
 - `logs/audit.log` + gerotateerde variants.
-- `logs/portal.log`, `logs/.api_key_ephemeral`, `logs/.auth.json`.
+- `logs/portal.log`, `logs/.api_key_ephemeral`.
 - `logs/.credentials.key` + zijn `.bak.*` backups (system Fernet
-  voor `.auth.json`, blijft op zijn plek).
+  key voor eventuele portal-level encrypted files).
 - `logs/credentials.json` wordt geleegd wat exchanges betreft (de
   plaintext daaruit is in de per-user `.enc` files beland), maar
   het bestand zelf wordt niet verwijderd — operator doet dat na
   handmatige verificatie dat alle exchanges correct werken.
+- `logs/.auth.json` (pre-Phase-3a auth blob) wordt door `init_db()`
+  automatisch naar `.auth.json.pre_phase3.<ts>` gearchiveerd zodra
+  de portal de eerste keer boot na de v4 migratie.
 
 Backups worden NIET automatisch gemaakt door `migrate-fs` — de
 migratie is een move, niet een copy. Bij twijfel maak eerst een

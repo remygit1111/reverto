@@ -38,12 +38,19 @@
 import logging
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path(__file__).parent.parent
 _DB_PATH: Path = _BASE_DIR / "logs" / "reverto.db"
+
+# Phase-3a: legacy auth blob that pre-migration installs used for
+# admin credentials. Archived on first init_db() so operators don't
+# keep a stale file that no runtime-path reads anymore.
+_LEGACY_AUTH_FILE: Path = _BASE_DIR / "logs" / ".auth.json"
+_LEGACY_INITIAL_PW_FILE: Path = _BASE_DIR / "logs" / ".initial_password"
 
 # One connection per thread. sqlite3 raises if a connection created on thread
 # A is used from thread B, and we have multiple threads touching the DB.
@@ -283,21 +290,51 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
+def _archive_legacy_auth_file() -> None:
+    """Rename logs/.auth.json → logs/.auth.json.pre_phase3.<ts> on
+    the first init_db() call that sees it. Phase-3a moved auth state
+    into users.*; the old Fernet blob has no readers anymore, so
+    archiving it (rather than unlinking) preserves the audit trail
+    without leaving a misleading file that an operator might think
+    still matters.
+
+    Idempotent — if the file is absent (fresh install, or previous
+    init_db() already archived it) this is a no-op. ``.initial_password``
+    gets the same treatment since it was always a sidecar of .auth.json.
+    """
+    for src in (_LEGACY_AUTH_FILE, _LEGACY_INITIAL_PW_FILE):
+        if not src.exists():
+            continue
+        dst = src.with_suffix(src.suffix + f".pre_phase3.{int(time.time())}")
+        try:
+            src.rename(dst)
+            logger.warning(
+                "Phase-3a migration: archived %s → %s. Use "
+                "scripts/setup_admin.py to provision the admin password.",
+                src.name, dst.name,
+            )
+        except OSError as e:
+            logger.warning("could not archive %s: %s", src, e)
+
+
 def init_db() -> None:
     """Bring the DB up to the current schema version + seed admin user.
 
     Migration-first: if the stored version is below SCHEMA_VERSION we
     drop the owned tables BEFORE running _SCHEMA_STATEMENTS, so the
-    CREATE TABLE statements land on a clean slate. Idempotent at v3:
+    CREATE TABLE statements land on a clean slate. Idempotent at v4:
     re-running against an already-migrated DB is a no-op (the
     ``CREATE TABLE IF NOT EXISTS`` and ``INSERT OR IGNORE`` keep it
-    safe).
+    safe). As a Phase-3a side-effect, logs/.auth.json is archived on
+    first run so the legacy blob doesn't linger beside a DB-based
+    auth flow.
     """
     conn = get_db()
     with conn:
         _migrate_schema(conn)
         for stmt in _SCHEMA_STATEMENTS:
             conn.execute(stmt)
+    _archive_legacy_auth_file()
 
 
 def close_db() -> None:
