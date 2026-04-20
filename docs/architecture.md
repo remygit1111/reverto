@@ -259,6 +259,27 @@ engine.start()
          └── _write_state(price, is_open)   [atomic tmp+rename]
 ```
 
+## Deal-ID format (post-v25)
+
+Deals hebben een globally-unique id met format `YYYYMMDDHHMM-RRRR`
+(bv. `202604201430-8421`). De ISO-prefix geeft time-sortability en
+gemakkelijk debuggen ("welke deal is dit?"); de 4-digit random
+suffix voorkomt collisions binnen dezelfde minuut
+(10 000 mogelijkheden → 1-in-10 000 per bot per minuut).
+
+Generatie via `core/ids.py:generate_deal_id()`. Persistence via
+`core.deal_store.create_deal()` — INSERT-only, collisions raisen
+`sqlite3.IntegrityError`. De retry-on-collision logic leeft in
+`paper/paper_engine.py:_db_create_deal_with_retry` (max 3 attempts,
+mutatie van `deal.id` in-place zodat de caller na retry de nieuwe
+id gebruikt).
+
+Edge case: NTP-backward clock correcties kunnen de
+`YYYYMMDDHHMM-` prefix herhalen. De UNIQUE constraint op `deals.id`
+vangt dat en de retry regenereert de suffix. De compound
+probability van 3 opeenvolgende collisions is ~1e-12 — effectief
+onmogelijk.
+
 ## State file lifecycle
 
 `logs/<slug>.state.json` is the shared contract between the engine
@@ -276,6 +297,52 @@ swept by `_load_state` before any deal hydration.
 | `closed_deals[]`     | Last N (CLOSED_DEALS_UI_CAP) for the UI         |
 | `drawdown_guard`     | Peak + triggered + reason — **persisted**       |
 | `paused_by_drawdown` | Blocks new entries until operator resets        |
+
+## Operator interventions
+
+### wipe-deals
+
+Complete reset van deal / order / annotation / backtest history.
+Behoudt users, bot-configs, credentials.
+
+```bash
+make wipe-deals
+```
+
+Weigert te draaien als er actieve bot-subprocesses zijn (via
+pid-file scan + `os.kill(pid, 0)` liveness check). Neemt een
+exclusieve `fcntl.flock` op `logs/.wipe.lock` om concurrent wipes
+te voorkomen — twee parallelle wipe-deals processen kunnen elkaar
+niet destructief kruisen. Zie `docs/runbook.md` voor de volledige
+flow + recovery.
+
+### Log level override
+
+Standaard loggen bot-subprocesses op INFO. Voor retrospective
+DEBUG-info:
+
+```bash
+REVERTO_LOG_LEVEL=DEBUG make restart
+```
+
+Werkt voor `main_paper.py` en `main_live.py`. Portal-UI heeft een
+aparte dropdown-filter per bot-log tab (ALL / WARNING+ERROR) —
+dat is client-side visibility, beïnvloedt niet wat naar disk
+geschreven wordt.
+
+### Bot config import / export / duplicate
+
+Beschikbaar via het kebab-menu (⋮) per bot-card in de portal.
+
+- **Export** produceert YAML met een metadata-header (Reverto
+  versie, export timestamp, origineel slug). Geen credentials,
+  geen state, geen deal-history — puur de strategy-config.
+- **Import** valideert het geüploade YAML via
+  `config.models.BotConfig` (volledige Pydantic schema-check).
+  Slug-conflict → 409; operator kiest een andere naam.
+- **Duplicate** is server-side, schoner dan export+import
+  round-trip. Ook alleen strategy; de duplicate start met lege
+  state en zonder history.
 
 ## Key inter-module contracts
 

@@ -320,6 +320,12 @@ class TestUserDirScanCacheFallback:
         caplog.clear()
         with caplog.at_level("WARNING", logger="web.app"):
             for _ in range(3):
+                # Force elke iteratie door de DB-path heen — zonder
+                # deze reset short-circuit de happy-path cache
+                # (_CACHE_TTL_S=30s) en worden de fail-closed counters
+                # nooit aangeraakt. Dit test-scenario valideert juist
+                # het DB-failure gedrag, niet de cache.
+                webapp._cache_last_refresh_ts = 0.0
                 result = reg._scan_user_dirs()
                 # Elke stale-cycle levert nog steeds (1, …) en (2, …).
                 uids = {uid for uid, _dir in result}
@@ -357,7 +363,10 @@ class TestUserDirScanCacheFallback:
         with caplog.at_level("ERROR", logger="web.app"):
             result = None
             # _MAX_STALE_REFRESHES=5; de 6e call moet fail-closed gaan.
+            # Force DB-path per iteratie — de 30s happy-path cache zou
+            # anders 5 van de 6 iteraties wegoptimaliseren.
             for _ in range(webapp._MAX_STALE_REFRESHES + 1):
+                webapp._cache_last_refresh_ts = 0.0
                 result = reg._scan_user_dirs()
 
         assert result == [], (
@@ -385,11 +394,14 @@ class TestUserDirScanCacheFallback:
         _seed_user(2, "bob")
         reg = BotRegistry()
 
-        # Twee mislukte scans.
+        # Twee mislukte scans. Force DB-path — binnen TTL (30s) zou
+        # de happy-path cache anders de failure stilletjes wegslikken.
         def _boom():
             raise RuntimeError("hiccup")
         monkeypatch.setattr("core.user.get_active_user_ids", _boom)
+        webapp._cache_last_refresh_ts = 0.0
         reg._scan_user_dirs()
+        webapp._cache_last_refresh_ts = 0.0
         reg._scan_user_dirs()
         assert webapp._db_failure_count == 2
 
@@ -398,6 +410,7 @@ class TestUserDirScanCacheFallback:
         # Seed user 2 opnieuw omdat monkeypatch.undo() de fixture-
         # installatie niet verwijdert maar onze monkeypatch wel.
         # (sandbox_registry zelf blijft gelden.)
+        webapp._cache_last_refresh_ts = 0.0
         reg._scan_user_dirs()
 
         assert webapp._db_failure_count == 0
@@ -541,3 +554,94 @@ class TestOrphanLogDedup:
             f"expected 999 to re-log exactly once after recreation, got "
             f"{len(orphan_msgs)}: {orphan_msgs}"
         )
+
+
+# ── Audit v25 Finding #6: happy-path DB-cache TTL ──────────────────────────
+
+
+class TestUserDirScanCacheTTL:
+    """Finding #6: vóór de fix draaide ``_scan_user_dirs`` elke scan
+    (≈ elke 5 s per portal) een verse ``get_active_user_ids()`` DB-call,
+    ook als niets in de users-tabel veranderde. De ``_CACHE_TTL_S``
+    gate (30 s) hergebruikt nu de cached set tussen scans — de
+    DB-failure fail-closed paden hierboven (TestUserDirScanCacheFallback)
+    worden pas bereikt als de cache expired of ontbreekt.
+    """
+
+    def test_cache_hit_within_ttl_skips_db_call(
+        self, sandbox_registry, monkeypatch,
+    ):
+        """Twee scans binnen TTL = één DB-call. Zonder TTL-gate telt
+        de counter door naar 2 (en doet elke bot-tick een extra query)."""
+        import web.app as webapp
+        _seed_user(2, "bob")
+
+        calls = {"n": 0}
+        from core import user as _user_mod
+        orig = _user_mod.get_active_user_ids
+
+        def _counting():
+            calls["n"] += 1
+            return orig()
+        monkeypatch.setattr("core.user.get_active_user_ids", _counting)
+
+        reg = BotRegistry()
+        # BotRegistry() doet al 1 scan via __init__ → _refresh_locked.
+        # Nul de counter zodat dit pad niet meetelt in de assertion.
+        initial = calls["n"]
+        reg._scan_user_dirs()
+        reg._scan_user_dirs()
+        assert calls["n"] == initial, (
+            f"expected cache-hits to skip DB; counter went {initial} → {calls['n']}"
+        )
+
+    def test_cache_refresh_after_ttl_expires(
+        self, sandbox_registry, monkeypatch,
+    ):
+        """Na TTL-expiry is de volgende scan een cache-miss en raakt
+        de DB weer. Gesimuleerd door de timestamp terug te zetten."""
+        import web.app as webapp
+        _seed_user(2, "bob")
+
+        calls = {"n": 0}
+        from core import user as _user_mod
+        orig = _user_mod.get_active_user_ids
+
+        def _counting():
+            calls["n"] += 1
+            return orig()
+        monkeypatch.setattr("core.user.get_active_user_ids", _counting)
+
+        reg = BotRegistry()
+        initial = calls["n"]
+        reg._scan_user_dirs()  # cache-hit
+        # Simuleer TTL-expiry door de timestamp terug in de tijd te zetten.
+        webapp._cache_last_refresh_ts = 0.0
+        reg._scan_user_dirs()  # cache-miss → DB call
+        assert calls["n"] == initial + 1, (
+            f"expected exactly one DB call after TTL expiry; counter "
+            f"went {initial} → {calls['n']}"
+        )
+
+    def test_cache_reset_helper_also_clears_timestamp(
+        self, sandbox_registry,
+    ):
+        """``_reset_user_dirs_cache()`` moet ook de TTL-timestamp nullen
+        — anders zou een test-fixture die de cache clear'd de volgende
+        scan nog steeds als een cache-hit zien en de DB niet raken."""
+        import web.app as webapp
+        _seed_user(2, "bob")
+
+        reg = BotRegistry()  # primt de cache + timestamp
+        assert webapp._cache_last_refresh_ts > 0
+        assert webapp._cached_active_users == {1, 2}
+
+        _reset_user_dirs_cache()
+        assert webapp._cache_last_refresh_ts == 0.0
+        assert webapp._cached_active_users is None
+
+        # Een volgende scan moet dan gegarandeerd de DB raken (cache is
+        # leeg, dus de TTL-check slaat over op `_cached_active_users is
+        # None` en de try/except DB-path wordt doorlopen).
+        reg._scan_user_dirs()
+        assert webapp._cached_active_users == {1, 2}

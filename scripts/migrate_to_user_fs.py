@@ -144,6 +144,19 @@ def migrate_pid_files() -> int:
         if _move(pid_file, dst_dir / pid_file.name):
             moved += 1
     print(f"[pids] {moved} moved")
+
+    # V24 LOW #5 — na een succesvolle migratie mag de legacy src_dir
+    # leeg blijven staan. De portal verwacht pid-files onder het
+    # user-scoped pad; een achterblijvende lege dir verwart nieuwe
+    # operators ("waarom staat hier nog een pids/?"). Alleen rmdir'en
+    # als er écht niets meer in staat — operator-placed bestanden
+    # willen we niet stilletjes weggooien.
+    try:
+        if not any(src_dir.iterdir()):
+            src_dir.rmdir()
+            print(f"[pids] removed empty {src_dir}")
+    except OSError as e:
+        print(f"[pids] could not remove {src_dir}: {e}")
     return moved
 
 
