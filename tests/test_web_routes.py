@@ -178,6 +178,20 @@ from web import app as webapp  # noqa: E402
 _KNOWN_PW = "pytest-known-password-123"
 
 
+def _admin_cookie() -> str:
+    """Test helper: mint a session cookie for the seeded admin user.
+
+    Audit v26-05 removed the username-string fallback from
+    ``_create_session_cookie``; it now accepts only ``User``
+    instances. Centralising the admin-User lookup in one helper
+    keeps every test-site to a single readable call.
+    """
+    from core import user_store
+    admin = user_store.get_user_by_username("admin")
+    assert admin is not None, "admin seed missing — check init_db"
+    return webapp._create_session_cookie(admin)
+
+
 @pytest.fixture
 def auth_client():
     """TestClient met admin-user die een password heeft gezet via
@@ -247,14 +261,14 @@ class TestAuth:
         assert r.status_code == 401
 
     def test_gated_endpoint_with_session_cookie_works(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.get("/api/bots")
         assert r.status_code == 200
         assert "bots" in r.json()
 
     def test_change_password_rejects_short(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post(
             "/api/auth/change-password",
@@ -263,13 +277,53 @@ class TestAuth:
         assert r.status_code == 400
 
     def test_change_password_rejects_wrong_current(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post(
             "/api/auth/change-password",
             json={"current_password": "not-it", "new_password": "longenough1"},
         )
         assert r.status_code == 401
+
+    def test_logout_rate_limited(self, auth_client):
+        """Audit v26-04: /auth/logout had no @limiter.limit decorator,
+        which meant an attacker with a valid session could flood
+        logout to force session-termination noise. Now 10/minute.
+        After 10 successful logouts in rapid succession, the 11th
+        must return 429 Too Many Requests.
+        """
+        # Reset the slowapi bucket so this test is hermetic against
+        # other rate-limited calls that may have happened earlier in
+        # the suite.
+        try:
+            webapp.limiter.reset()
+        except Exception:
+            pass
+
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+
+        try:
+            for i in range(10):
+                r = auth_client.post("/auth/logout")
+                # Each of the first 10 must succeed (200) or, after
+                # the first logout bumps the epoch, silently
+                # idempotent (still 200 per the endpoint contract).
+                assert r.status_code == 200, (
+                    f"request {i+1}/10 unexpectedly got {r.status_code}"
+                )
+
+            # The 11th request in the same minute must be rate-limited.
+            r = auth_client.post("/auth/logout")
+            assert r.status_code == 429
+        finally:
+            # Drain the consumed bucket so subsequent tests in the
+            # same class / session don't inherit a full /auth/logout
+            # limiter slot.
+            try:
+                webapp.limiter.reset()
+            except Exception:
+                pass
 
 
 class TestPerUserSessionEpoch:
@@ -283,7 +337,7 @@ class TestPerUserSessionEpoch:
     """
 
     def test_logout_invalidates_existing_cookie(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         # Cookie works before logout.
         assert auth_client.get("/api/bots").status_code == 200
@@ -309,7 +363,7 @@ class TestPerUserSessionEpoch:
         admin_before = user_store.get_session_epoch(1)
         bob_before = user_store.get_session_epoch(bob.id)
 
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         auth_client.post("/auth/logout")
 
@@ -317,7 +371,7 @@ class TestPerUserSessionEpoch:
         assert user_store.get_session_epoch(bob.id) == bob_before
 
     def test_password_change_invalidates_existing_cookie(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         # Successful change → epoch bump → cookie no longer valid.
         r = auth_client.post(
@@ -336,7 +390,7 @@ class TestPerUserSessionEpoch:
         separate samesite='lax' override in the ``auth_client`` fixture
         covers a TestClient quirk where httpx drops strict-samesite
         cookies on follow-up requests that lack an Origin header."""
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         auth_client.post("/auth/logout")
         auth_client.cookies.clear()
@@ -355,21 +409,21 @@ class TestDbAnnotationsRoutes:
     return 200 with a valid session cookie."""
 
     def test_get_annotations_registered(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.get("/api/db/annotations?bot_slug=nope&timeframe=1h")
         assert r.status_code == 200
         assert r.json() == []
 
     def test_get_annotations_without_timeframe(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.get("/api/db/annotations?bot_slug=nope")
         assert r.status_code == 200
         assert r.json() == []
 
     def test_get_annotations_missing_bot_slug_is_422_not_404(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.get("/api/db/annotations")
         # Missing required query param is a validation error, not a
@@ -387,7 +441,7 @@ class TestWsStateSmoke:
     """
 
     def test_ws_state_accepts_session_cookie(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         with auth_client.websocket_connect("/ws/state") as ws:
             # We should receive at least one frame — either a bot_state
@@ -413,7 +467,7 @@ class TestCandlesRange:
         assert len(routes) == 1, "/api/candles must be registered exactly once"
 
     def test_invalid_timeframe_is_400(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.get(
             "/api/candles/BTCUSD/99h",
@@ -423,7 +477,7 @@ class TestCandlesRange:
         assert "timeframe" in r.json()["detail"]
 
     def test_start_after_end_is_400(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.get(
             "/api/candles/BTCUSD/1h",
@@ -432,7 +486,7 @@ class TestCandlesRange:
         assert r.status_code == 400
 
     def test_malformed_timestamp_is_400(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.get(
             "/api/candles/BTCUSD/1h",
@@ -531,7 +585,7 @@ class TestDealEndpoints:
     format and writes sentinel files for valid requests."""
 
     def test_patch_invalid_deal_id_is_422(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         # Post-collision-fix format is YYYYMMDDHHMM-RRRR. Legacy
         # PAPER-NNNN IDs now also fail validation (intentional — old
@@ -548,7 +602,7 @@ class TestDealEndpoints:
 
     def test_patch_valid_deal_id_is_200(self, auth_client):
         from core import paths
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.patch(
             "/api/bots/test/deals/202604191342-0001",
@@ -563,7 +617,7 @@ class TestDealEndpoints:
 
     def test_delete_cancel_valid(self, auth_client):
         from core import paths
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
             "/api/bots/test/deals/202604191342-0002",
@@ -577,7 +631,7 @@ class TestDealEndpoints:
 
     def test_delete_close_valid(self, auth_client):
         from core import paths
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
             "/api/bots/test/deals/202604191342-0003",
@@ -590,7 +644,7 @@ class TestDealEndpoints:
             sentinel.unlink()
 
     def test_delete_invalid_deal_id_is_422(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
             "/api/bots/test/deals/evil-inject",
@@ -599,7 +653,7 @@ class TestDealEndpoints:
         assert r.status_code == 422
 
     def test_delete_invalid_action_is_400(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete(
             "/api/bots/test/deals/202604191342-0001",
@@ -612,7 +666,7 @@ class TestDealEndpoints:
 
 class TestAnnotationPost:
     def test_save_annotation_valid(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post("/api/db/annotations", json={
             "bot_slug": "test", "type": "hline", "timeframe": "1h",
@@ -622,7 +676,7 @@ class TestAnnotationPost:
         assert "id" in r.json()
 
     def test_save_annotation_missing_slug_is_422(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post("/api/db/annotations", json={
             "type": "hline", "timeframe": "1h", "x1": 1700000000,
@@ -630,7 +684,7 @@ class TestAnnotationPost:
         assert r.status_code == 422
 
     def test_save_annotation_x1_out_of_range(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post("/api/db/annotations", json={
             "bot_slug": "test", "type": "hline", "timeframe": "1h",
@@ -643,7 +697,7 @@ class TestAnnotationPost:
 
 class TestDeleteBacktestRuns:
     def test_delete_valid_run(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         # Create a run first
         r = auth_client.post("/api/backtest/save", json={
@@ -660,7 +714,7 @@ class TestDeleteBacktestRuns:
         assert r2.json().get("ok") is True
 
     def test_delete_nonexistent_run_is_404(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.delete("/api/backtest/runs/999999")
         assert r.status_code == 404
@@ -717,7 +771,7 @@ class TestStartDryRun:
             raise AssertionError("Popen must not run for paper-mode bots")
         monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
 
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         # Seed a paper-mode YAML via the normal create endpoint.
         create = auth_client.post("/api/bots", json=_make_payload())
@@ -759,7 +813,7 @@ class TestStartDryRun:
 
         monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
 
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         assert auth_client.post(
             "/api/bots", json=self._live_payload(),
@@ -790,7 +844,7 @@ class TestStartDryRun:
             raise AssertionError("Popen must not run for unknown bot")
         monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
 
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post("/api/bots/does_not_exist_anywhere/start-dry-run")
         # Helper returns {"ok": False, ...} rather than raising — the
@@ -809,7 +863,7 @@ class TestStartDryRun:
             raise AssertionError("Popen must not run for invalid slug")
         monkeypatch.setattr("web.app.subprocess.Popen", _fake_popen)
 
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         # Semicolon + dots aren't in _BOT_SLUG_RE but are kept intact
         # as path params by FastAPI's URL router.
@@ -841,7 +895,7 @@ class TestApiBotsReturnsMode:
     hardcoded mode=paper for never-started bots."""
 
     def test_live_yaml_without_state_returns_mode_live(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         # Seed a live-mode YAML via the create endpoint. No bot
@@ -870,7 +924,7 @@ class TestApiBotsReturnsMode:
             auth_client.delete(f"/api/bots/{_TEST_SLUG}")
 
     def test_paper_yaml_returns_mode_paper(self, auth_client):
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         assert auth_client.post(
@@ -889,7 +943,7 @@ class TestApiBotsReturnsMode:
         """If the YAML was edited from paper to live but the engine has
         not yet re-written state.json, the UI must already see 'live'."""
         import json as _json
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         # Create a live YAML.
@@ -949,7 +1003,7 @@ class TestValidateConfigEndpoint:
         base. Pre-v25 this was refused at LiveEngine.__init__; now it
         must parse successfully AND surface at least one high-level
         warning so the wizard flags the risk."""
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         payload = _make_payload()
@@ -974,7 +1028,7 @@ class TestValidateConfigEndpoint:
         thresholds (50× / 150×) so no high flag should fire. Also
         under the medium thresholds (20× / 100×) so cumulative is
         clean; the endpoint may still return an empty warnings list."""
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         r = auth_client.post("/api/bots/validate-config", json=_make_payload())
@@ -992,7 +1046,7 @@ class TestValidateConfigEndpoint:
     def test_live_mode_large_base_warns(self, auth_client):
         """Live bots with base > 0.001 BTC pick up a specific warning
         pointing at dca.base_order_size."""
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         payload = _make_payload()
@@ -1006,7 +1060,7 @@ class TestValidateConfigEndpoint:
 
     def test_malformed_config_is_400(self, auth_client):
         """Missing required field → BotConfig validation → 400."""
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         # name is required; drop it.
@@ -1020,7 +1074,7 @@ class TestValidateConfigEndpoint:
         or create state files. Repeat calls with a paper config + verify
         no file lands in config/bots/."""
         import pathlib
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         payload = _make_payload()
@@ -1035,7 +1089,7 @@ class TestValidateConfigEndpoint:
         """Content-Length > MAX_CONFIG_BODY_BYTES → 413, body never
         parsed. Guards against authenticated DoS via huge JSON."""
         from web.routes.bots import MAX_CONFIG_BODY_BYTES
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         # Pad a valid payload past the cap. Using a giant filler key
@@ -1049,7 +1103,7 @@ class TestValidateConfigEndpoint:
 
     def test_rejects_invalid_content_length(self, auth_client):
         """Malformed Content-Length header → 400, not 500."""
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         # httpx auto-populates Content-Length. Override it to garbage
@@ -1070,7 +1124,7 @@ class TestValidateConfigEndpoint:
         as long as the streamed body stays under the cap. The handler
         reads lazily and only aborts once the limit is crossed."""
         import json as _json
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         payload_bytes = _json.dumps(_make_payload()).encode("utf-8")
@@ -1093,7 +1147,7 @@ class TestValidateConfigEndpoint:
         """Chunked client streams > cap → 413 during streaming, no
         OOM. Pin the streaming-path guard specifically."""
         from web.routes.bots import MAX_CONFIG_BODY_BYTES
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         # Emit chunks totalling > cap.
@@ -1211,7 +1265,7 @@ class TestBotEndpointBodySizeCap:
         """Padded body above MAX_CONFIG_BODY_BYTES → 413 before any
         JSON parsing touches the payload."""
         from web.routes.bots import MAX_CONFIG_BODY_BYTES
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         payload = _make_payload(name="Pytest Bodycap Post A")
@@ -1225,7 +1279,7 @@ class TestBotEndpointBodySizeCap:
         """Chunked client (no Content-Length) still bounded — the
         streaming path must abort mid-read."""
         from web.routes.bots import MAX_CONFIG_BODY_BYTES
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         bloat = b"x" * (MAX_CONFIG_BODY_BYTES // 2 + 100)
@@ -1250,7 +1304,7 @@ class TestBotEndpointBodySizeCap:
         """Sanity guard — the cap refactor must not break normal
         create flow. Without this, a bug that rejected every POST
         would still pass the refusal tests above."""
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post(
             "/api/bots",
@@ -1263,7 +1317,7 @@ class TestBotEndpointBodySizeCap:
         """Malformed Content-Length → 400, same contract as
         validate-config so clients get one consistent error path
         across the three config-ingesting endpoints."""
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post(
             "/api/bots",
@@ -1281,7 +1335,7 @@ class TestBotEndpointBodySizeCap:
     def test_put_config_rejects_oversized_content_length(self, auth_client):
         """Update path: same 413 refusal on an over-cap Content-Length."""
         from web.routes.bots import MAX_CONFIG_BODY_BYTES
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         # Create a bot first so the PUT has a target — otherwise the
@@ -1304,7 +1358,7 @@ class TestBotEndpointBodySizeCap:
     def test_put_config_rejects_streamed_oversized_body(self, auth_client):
         """Update path: chunked variant."""
         from web.routes.bots import MAX_CONFIG_BODY_BYTES
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
 
         create = auth_client.post(
@@ -1523,7 +1577,7 @@ class TestBotImportExportDuplicate:
         to exercise the same session-cookie path that real browser
         uploads take."""
         from web.routes.bots import MAX_CONFIG_BODY_BYTES
-        token = webapp._create_session_cookie("admin")
+        token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         bloat = b"x" * (MAX_CONFIG_BODY_BYTES + 1000)
         r = auth_client.post(

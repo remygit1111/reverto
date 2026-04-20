@@ -79,6 +79,7 @@ async def auth_login(body: LoginBody, request: Request):
 
 
 @router.post("/auth/logout")
+@limiter.limit("10/minute")
 async def auth_logout(request: Request):
     """Bump the caller's session epoch so every browser holding this
     cookie is rejected on the next request, not just the one calling
