@@ -23,14 +23,13 @@ from typing import Optional
 
 from config.config_loader import load_bot_config
 from config.models import BotConfig, Mode
-from core import credentials, paths
+from core import paths, user_store
 from core.database import init_db as _init_db
 from core.ids import DEAL_ID_RE
 from core.user import User, get_default_user
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import NOTIFY_DRAIN_TIMEOUT_S
 
-import bcrypt
 import ccxt
 import uvicorn
 import yaml
@@ -126,8 +125,9 @@ if not _API_KEY:
 # Username/password authentication for the portal UI. The session cookie is
 # signed (not encrypted) with REVERTO_SECRET_KEY — falls back to an ephemeral
 # key with a WARNING so casual local usage still works. Credentials themselves
-# live in logs/.auth.json as an encrypted blob, reusing the Fernet master key
-# from core.credentials.
+# live in the ``users`` table (Phase-3a) — password_hash + per-user
+# session_epoch. Resolved via core.user_store helpers; no .auth.json in
+# the request-flow anymore.
 
 _SECRET_KEY = os.environ.get("REVERTO_SECRET_KEY")
 if not _SECRET_KEY:
@@ -162,97 +162,56 @@ else:
         "— only safe on localhost / private LAN)."
     )
 
-_AUTH_FILE = Path(__file__).parent.parent / "logs" / ".auth.json"
-_INITIAL_PW_FILE = Path(__file__).parent.parent / "logs" / ".initial_password"
+# ── Phase-3a: auth state lives in the users table ─────────────────────────
+# Pre-Phase-3a the bootstrap wrote a random admin password to
+# logs/.auth.json and printed it to logs/.initial_password. Post-
+# Phase-3a, scripts/setup_admin.py is the explicit provisioning path
+# — users.password_hash starts NULL after init_db() and login fails
+# closed until the operator runs the script.
 
 
-def _bootstrap_auth_if_missing() -> None:
-    """Create logs/.auth.json on first run with a random admin password.
-
-    The plaintext password is written ONCE to logs/.initial_password with
-    mode 0600 so the operator can retrieve it from disk. It is never
-    logged — logging it would leak it into portal.log and any log tail
-    that ships to stdout / remote collectors. The file is deleted
-    automatically on the first successful password change.
-
-    `session_epoch` starts at 0 and is bumped on every logout and
-    password change so old session cookies are immediately invalid.
+def _create_session_cookie(username_or_user) -> str:
+    """Sign + emit the session cookie. Accepts either a username string
+    (legacy shape — resolved via ``get_user_by_username``) or a
+    ``User`` instance. The cookie payload carries the user_id so
+    verify can do a per-user session_epoch check without re-resolving
+    the username on every request.
     """
-    if _AUTH_FILE.exists():
-        return
-    pw = secrets.token_urlsafe(12)
-    pw_hash = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
-    credentials.save_encrypted(_AUTH_FILE, {
-        "username": "admin",
-        "password_hash": pw_hash,
-        "session_epoch": 0,
-    })
-    try:
-        _INITIAL_PW_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _INITIAL_PW_FILE.write_text(pw + "\n", encoding="utf-8")
-        os.chmod(_INITIAL_PW_FILE, 0o600)
-    except OSError as e:
-        # Fall back to logging the password only if we can't write the
-        # file at all — losing the credential would be worse than the
-        # log leak, and this branch should never hit in practice.
-        logger.error(
-            "First run — could not write %s (%s). Password: %s",
-            _INITIAL_PW_FILE, e, pw,
-        )
-        return
-    logger.warning(
-        "First run — default credentials created for user 'admin'. "
-        "Initial password written to %s (mode 0600). "
-        "Log in, change the password, and delete that file.",
-        _INITIAL_PW_FILE,
-    )
-
-
-def _load_auth() -> Optional[dict]:
-    return credentials.load_encrypted(_AUTH_FILE)
-
-
-def _save_auth(data: dict) -> None:
-    credentials.save_encrypted(_AUTH_FILE, data)
-
-
-def _current_session_epoch() -> int:
-    """Read the current session epoch from .auth.json. Defaults to 0.
-
-    Bumping this integer instantly invalidates every previously-issued
-    session cookie because each cookie embeds the epoch it was minted
-    under and _verify_session_cookie compares the two.
-    """
-    auth = _load_auth() or {}
-    try:
-        return int(auth.get("session_epoch", 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _bump_session_epoch() -> int:
-    """Increment the session epoch and persist. Used on logout and on
-    password change to nuke every outstanding cookie at once."""
-    auth = _load_auth() or {}
-    current = 0
-    try:
-        current = int(auth.get("session_epoch", 0))
-    except (TypeError, ValueError):
-        current = 0
-    auth["session_epoch"] = current + 1
-    _save_auth(auth)
-    return current + 1
-
-
-def _create_session_cookie(username: str) -> str:
+    from core.user import User as _User
+    if isinstance(username_or_user, _User):
+        user = username_or_user
+    else:
+        user = user_store.get_user_by_username(str(username_or_user))
+        if user is None:
+            # Fallback: sign a cookie with uid=-1 so _verify_session_cookie
+            # rejects on the server epoch lookup. The login endpoint
+            # should never reach this branch — verify_password returns
+            # the User on success — but a defensive minted-bad-cookie
+            # beats raising a 500.
+            return _session_serializer.dumps({
+                "uid": -1,
+                "u": str(username_or_user),
+                "iat": int(time.time()),
+                "ep": 0,
+            })
     return _session_serializer.dumps({
-        "u": username,
+        "uid": user.id,
+        "u": user.username,
         "iat": int(time.time()),
-        "ep": _current_session_epoch(),
+        "ep": user_store.get_session_epoch(user.id),
     })
 
 
 def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
+    """Return the decoded payload when the cookie is valid, else None.
+
+    Validation order:
+      1. itsdangerous signature + TTL
+      2. payload shape (dict, has 'uid' and 'u')
+      3. per-user session_epoch match against DB
+
+    Any failure returns None — callers translate that to 401.
+    """
     if not token:
         return None
     try:
@@ -267,15 +226,19 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
         return None
     if not isinstance(data, dict) or not data.get("u"):
         return None
-    # Epoch check — any cookie minted under an older epoch is rejected
-    # immediately, so logout / password-change invalidate every browser
-    # that's holding a copy. Cookies minted before the epoch field
-    # existed (legacy) get treated as epoch 0.
+    # Per-user epoch check — reject every cookie whose embedded epoch
+    # doesn't match the current DB value for the user. Logout / pw-
+    # change bumps only the caller's row, so other users' sessions
+    # survive (unlike the pre-Phase-3a global epoch).
     try:
         cookie_epoch = int(data.get("ep", 0))
+        cookie_uid = int(data.get("uid", 0))
     except (TypeError, ValueError):
         return None
-    if cookie_epoch != _current_session_epoch():
+    if cookie_uid <= 0:
+        return None
+    server_epoch = user_store.get_session_epoch(cookie_uid)
+    if cookie_epoch != server_epoch:
         return None
     return data
 
@@ -1169,10 +1132,11 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONR
     return JSONResponse(status_code=429, content={"detail": "Too many requests"})
 
 
-_bootstrap_auth_if_missing()
-
 # Initialise the SQLite ledger on portal boot. Idempotent — safe to call
 # on every restart; creates logs/reverto.db + schema on first run.
+# Phase-3a: admin password is NULL after init; operator provisions via
+# scripts/setup_admin.py. Login endpoint's verify_password fails closed
+# until that runs.
 try:
     _init_db()
 except Exception as _e:  # pragma: no cover - defensive
