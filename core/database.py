@@ -56,6 +56,28 @@ _LEGACY_INITIAL_PW_FILE: Path = _BASE_DIR / "logs" / ".initial_password"
 # A is used from thread B, and we have multiple threads touching the DB.
 _connection_cache = threading.local()
 
+# Monotonic counter bumped on every ``set_db_path`` call. Each thread's
+# ``_connection_cache`` records the version its cached conn was opened
+# under; on the next ``get_db`` the thread compares cached vs. current
+# version and drops its stale conn if they diverge.
+#
+# Why this is needed: conftest.py's autouse ``_isolate_reverto_db``
+# fixture calls ``set_db_path(tmp)`` + ``init_db()`` before every test,
+# then ``close_db()`` on teardown. ``close_db()`` only closes the
+# caller thread's conn — the TestClient's anyio worker-pool threads
+# persist between tests with a cached conn pointing at the previous
+# test's tmp-DB. Any read/write on that stale conn lands in the wrong
+# SQLite file, and the test that triggered the path-change sees
+# phantom "user not found" / "no row" responses.
+#
+# This surfaces deterministically on Python 3.13 (stricter
+# ResourceWarning handling + different GC timing for the old tmp dirs);
+# 3.12 + WSL2 happened to get lucky. No lock needed — a worker that
+# races the counter just sees the mismatch on its *next* ``get_db``
+# and self-corrects. A one-request window of stale reads is acceptable
+# because production never calls ``set_db_path`` at runtime.
+_DB_PATH_VERSION: int = 0
+
 
 # ── Schema definitions ─────────────────────────────────────────────────────
 # Ordered: users first (everything else FK-references it).
@@ -211,10 +233,24 @@ def get_db() -> sqlite3.Connection:
     enabled (so readers never block on a writer), foreign keys are turned
     on, and row_factory is set to sqlite3.Row so callers can use
     dict-style access.
+
+    Version check: if ``set_db_path`` bumped ``_DB_PATH_VERSION`` since
+    the cached conn was minted, the cached conn is pointing at a
+    now-stale file path. Drop it + reopen against the current path.
     """
     conn = getattr(_connection_cache, "conn", None)
-    if conn is not None:
+    cached_version = getattr(_connection_cache, "version", -1)
+    if conn is not None and cached_version == _DB_PATH_VERSION:
         return conn
+
+    # Stale cache (path changed) or first call on this thread. Close
+    # any lingering handle before opening the new one so the old
+    # sqlite file descriptor is released cleanly.
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
 
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(_DB_PATH))
@@ -235,6 +271,7 @@ def get_db() -> sqlite3.Connection:
     # of truth and the DB ledger is append-only history).
     conn.execute("PRAGMA synchronous=NORMAL")
     _connection_cache.conn = conn
+    _connection_cache.version = _DB_PATH_VERSION
     return conn
 
 
@@ -346,15 +383,19 @@ def close_db() -> None:
         except sqlite3.Error:
             pass
         _connection_cache.conn = None
+        _connection_cache.version = -1
 
 
 def set_db_path(path: Path) -> None:
     """Point the module at a different DB file (used by tests).
 
-    Closes the current thread's cached connection so the next get_db()
-    call reopens against the new path. Tests swap this to a tmp_path
-    fixture so they never touch the real logs/reverto.db.
+    Bumps ``_DB_PATH_VERSION`` so every thread's cached connection
+    is invalidated on its next ``get_db`` call — not just the caller
+    thread. The old per-thread ``close_db`` path only closed the
+    caller's conn, leaving anyio worker-pool threads holding stale
+    handles to the previous tmp-DB across tests.
     """
-    global _DB_PATH
+    global _DB_PATH, _DB_PATH_VERSION
     close_db()
     _DB_PATH = Path(path)
+    _DB_PATH_VERSION += 1
