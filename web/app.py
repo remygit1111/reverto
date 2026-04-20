@@ -180,30 +180,18 @@ _COOKIE_SAMESITE: str = "strict"
 # closed until the operator runs the script.
 
 
-def _create_session_cookie(username_or_user) -> str:
-    """Sign + emit the session cookie. Accepts either a username string
-    (legacy shape — resolved via ``get_user_by_username``) or a
-    ``User`` instance. The cookie payload carries the user_id so
-    verify can do a per-user session_epoch check without re-resolving
-    the username on every request.
+def _create_session_cookie(user: User) -> str:
+    """Sign + emit the session cookie for the given ``User`` instance.
+
+    Audit v26-05: de pre-Phase-3a signature accepteerde ook een
+    username-string met een fallback die uid=-1 mintte als de
+    username niet resolvde. Die fallback was onbereikbaar — de login-
+    flow passeert altijd een al-geresolvede User uit
+    ``verify_password`` — dus de branch is nu weg. Tests die voorheen
+    ``_create_session_cookie("admin")`` aanriepen moeten de admin-User
+    zelf ophalen via ``user_store.get_user_by_username`` (of een
+    test-helper daaromheen).
     """
-    from core.user import User as _User
-    if isinstance(username_or_user, _User):
-        user = username_or_user
-    else:
-        user = user_store.get_user_by_username(str(username_or_user))
-        if user is None:
-            # Fallback: sign a cookie with uid=-1 so _verify_session_cookie
-            # rejects on the server epoch lookup. The login endpoint
-            # should never reach this branch — verify_password returns
-            # the User on success — but a defensive minted-bad-cookie
-            # beats raising a 500.
-            return _session_serializer.dumps({
-                "uid": -1,
-                "u": str(username_or_user),
-                "iat": int(time.time()),
-                "ep": 0,
-            })
     return _session_serializer.dumps({
         "uid": user.id,
         "u": user.username,

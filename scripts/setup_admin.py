@@ -66,7 +66,12 @@ def main() -> int:
         )
         return 1
 
-    password = os.environ.get("REVERTO_ADMIN_PW")
+    # Audit v26-07: `os.environ.get(...)` returns an empty string when
+    # the env-var is set to "" — pre-fix that silently skipped the
+    # interactive prompt and then failed the length check with a
+    # confusing error. Treat unset AND empty as "no password supplied"
+    # and fall back to the interactive prompt.
+    password = os.environ.get("REVERTO_ADMIN_PW") or None
     if password is None:
         print(f"Setting password for admin (user_id={admin.id})")
         password = getpass.getpass("New password: ")
