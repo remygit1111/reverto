@@ -21,9 +21,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core import user_store
+from web import app as _webapp
 from web.app import (
     _audit,
-    _COOKIE_SECURE,
     _create_session_cookie,
     _require_session,
     _SESSION_COOKIE,
@@ -61,13 +61,17 @@ async def auth_login(body: LoginBody, request: Request):
 
     token = _create_session_cookie(user)
     resp = JSONResponse({"ok": True})
+    # Look up cookie flags on the module at call-time (not at import)
+    # so tests can override _COOKIE_SECURE / _COOKIE_SAMESITE on the
+    # web.app module and have the change take effect without touching
+    # this file's local bindings.
     resp.set_cookie(
         key=_SESSION_COOKIE,
         value=token,
         max_age=_SESSION_TTL,
         httponly=True,
-        samesite="strict",
-        secure=_COOKIE_SECURE,
+        samesite=_webapp._COOKIE_SAMESITE,
+        secure=_webapp._COOKIE_SECURE,
         path="/",
     )
     _audit("auth_login", user.username, "-")
