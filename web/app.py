@@ -588,6 +588,15 @@ _cached_active_users: set[int] | None = None
 _db_failure_count: int = 0
 _MAX_STALE_REFRESHES: int = 5  # ≈ 25 s bij de 5 s registry-refresh TTL
 _previously_logged_orphans: set[Path] = set()
+# TTL voor de DB-cache in _scan_user_dirs (audit v25 Finding #6). Zonder
+# deze short-circuit deed elke 5 s scan een verse get_active_user_ids()
+# call, terwijl de users-tabel in steady-state zelden verandert. 30 s
+# is ruim binnen de refresh-cadans en scheelt ~6 DB-reads per minuut
+# per portal. Een user-create/-delete endpoint kan
+# ``_cache_last_refresh_ts = 0`` zetten om expliciet te invalideren
+# (Phase-3 werk; nu pure-TTL).
+_CACHE_TTL_S: float = 30.0
+_cache_last_refresh_ts: float = 0.0
 
 
 def _reset_user_dirs_cache() -> None:
@@ -595,10 +604,51 @@ def _reset_user_dirs_cache() -> None:
     door tests — productie-code raakt deze globals niet direct aan.
     """
     global _cached_active_users, _db_failure_count
-    global _previously_logged_orphans
+    global _previously_logged_orphans, _cache_last_refresh_ts
     _cached_active_users = None
     _db_failure_count = 0
     _previously_logged_orphans = set()
+    _cache_last_refresh_ts = 0.0
+
+
+def _scan_active_dirs(active: set[int]) -> list[tuple[int, Path]]:
+    """Match ``config/bots/<int>/`` directories tegen een vertrouwde
+    active-set. Gedeeld tussen de cache-hit en cache-miss paden van
+    ``BotRegistry._scan_user_dirs`` — een orphan-log-dedup is daarom
+    onafhankelijk van of de DB dit tick geraadpleegd werd.
+
+    ``active`` is áltijd pas gevalideerd door de caller (DB live óf
+    last-known-good cache); deze helper doet geen DB-call.
+    """
+    global _previously_logged_orphans
+
+    out: list[tuple[int, Path]] = []
+    if not CONFIG_DIR.exists():
+        _previously_logged_orphans = set()
+        return out
+
+    current_orphans: set[Path] = set()
+    for child in sorted(CONFIG_DIR.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            uid = int(child.name)
+        except ValueError:
+            continue
+        if uid in active:
+            out.append((uid, child))
+            continue
+        current_orphans.add(child)
+        if child not in _previously_logged_orphans:
+            logger.warning(
+                "orphan user dir %s (no matching active user in DB), skipped",
+                str(child),
+            )
+    # Dedup-baseline voor de volgende scan. Orphans die verdwenen zijn
+    # (operator ruimt op) vallen uit de set, en als ze ooit terugkomen
+    # worden ze opnieuw gelogd.
+    _previously_logged_orphans = current_orphans
+    return out
 
 
 class BotRegistry:
@@ -645,11 +695,25 @@ class BotRegistry:
         goede set for up to ``_MAX_STALE_REFRESHES`` cycles; after
         that we return an empty list and log ERROR. A single transient
         glitch therefore never surfaces an orphan as a tenant.
+
+        Happy-path cache (audit v25 Finding #6): within ``_CACHE_TTL_S``
+        of a successful DB-call we reuse ``_cached_active_users``
+        without touching the DB at all. Skips ~6 queries/minute per
+        portal when the users-table is steady.
         """
         global _cached_active_users, _db_failure_count
-        global _previously_logged_orphans
+        global _cache_last_refresh_ts
 
-        out: list[tuple[int, Path]] = []
+        now = time.time()
+        # Cache-hit pad: cache vers genoeg → skip de DB-call en meteen
+        # door naar de directory-scan. De DB-failure counter raken we
+        # niet aan; een volgende cache-miss (na TTL-expiry) herleeft
+        # de happy/failure-split normaal.
+        if (
+            _cached_active_users is not None
+            and now - _cache_last_refresh_ts < _CACHE_TTL_S
+        ):
+            return _scan_active_dirs(_cached_active_users)
 
         # Cross-check tegen de users tabel. Importeer hier binnen de
         # functie zodat circular imports niet optreden als core.user
@@ -664,6 +728,7 @@ class BotRegistry:
             active: set[int] = get_active_user_ids()
             _cached_active_users = active
             _db_failure_count = 0
+            _cache_last_refresh_ts = now
         except Exception as e:
             _db_failure_count += 1
             if (
@@ -690,7 +755,7 @@ class BotRegistry:
                 # Clear orphan dedup — als de registry leeg is heeft
                 # een volgende scan (bv. na DB-recovery) een schone
                 # lei nodig om orphans opnieuw te signaleren.
-                _previously_logged_orphans = set()
+                globals()["_previously_logged_orphans"] = set()
                 return []
             logger.warning(
                 "_scan_user_dirs DB-failure (%d/%d stale cycles, "
@@ -699,36 +764,7 @@ class BotRegistry:
             )
             active = _cached_active_users
 
-        # `active` is nu een vertrouwde set (live óf cache). Als er
-        # nog geen CONFIG_DIR is (fresh install) is er niks te
-        # scannen — return de lege lijst met de cache al netjes
-        # ververst hierboven.
-        if not CONFIG_DIR.exists():
-            _previously_logged_orphans = set()
-            return out
-
-        current_orphans: set[Path] = set()
-        for child in sorted(CONFIG_DIR.iterdir()):
-            if not child.is_dir():
-                continue
-            try:
-                uid = int(child.name)
-            except ValueError:
-                continue
-            if uid in active:
-                out.append((uid, child))
-                continue
-            current_orphans.add(child)
-            if child not in _previously_logged_orphans:
-                logger.warning(
-                    "orphan user dir %s (no matching active user in DB), skipped",
-                    str(child),
-                )
-        # Dedup-baseline voor de volgende scan. Orphans die verdwenen
-        # zijn (operator ruimt op) vallen uit de set, en als ze ooit
-        # terugkomen worden ze opnieuw gelogd.
-        _previously_logged_orphans = current_orphans
-        return out
+        return _scan_active_dirs(active)
 
     def _refresh_locked(self) -> None:
         """Voer de glob uit; caller moet de lock vasthouden (of init zijn)."""
