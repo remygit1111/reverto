@@ -181,6 +181,53 @@ Effect: every running bot gets SIGTERM. Open positions on the exchange
 are **not** auto-closed — the operator reconciles manually if needed.
 Recommended when a drawdown alert fires or a suspected runaway DCA.
 
+## Wipe deals (complete data reset)
+
+Use case: parity-test afronden, staging reset, debug na een corrupte
+state. Gooit **ALLE** deal / order / annotation history weg — NIET
+idempotent. Altijd eerst een backup van `logs/reverto.db`.
+
+Voorbereiding:
+
+- Stop ALLE draaiende bots (`make stop-all` of via het portal).
+- Check geen alive PID-files meer: `ls logs/<user_id>/pids/`.
+
+Executie:
+
+```bash
+make wipe-deals
+```
+
+Wat het doet:
+
+1. Acquireert exclusieve `fcntl.flock` op `logs/.wipe.lock` —
+   concurrent wipe-aanroepen worden geblokkeerd (`RuntimeError:
+   Another wipe operation is already in progress`).
+2. Scant `logs/<user_id>/pids/*.pid` + `os.kill(pid, 0)`; als één
+   proces alive is, aborts met een overzicht van wat nog draait.
+3. `DELETE FROM orders` → `DELETE FROM deals` (orders eerst i.v.m.
+   FK op deals) → `VACUUM`.
+4. Reset elke `logs/<user_id>/<slug>.state.json`: `balance_btc`
+   terug naar `initial_balance_btc`, `open_deals=[]`,
+   `closed_deals=[]`, `*_count=0`. Overige velden blijven staan.
+
+Backups:
+
+- Het script maakt GEEN DB-backup automatisch. Draai vooraf
+  `cp logs/reverto.db logs/reverto.db.pre_wipe.$(date +%s)` als je
+  rollback-optie wilt.
+- Per-state.json wordt een `*.state.json.pre_wipe_backup` copie
+  geschreven vóór de reset (overschreven bij herhaalde wipes).
+
+Na de wipe: bots kunnen opnieuw gestart worden. Ze pakken de
+resetted state.json op (open=0, closed=0).
+
+Als `RuntimeError: already in progress` oneindig aanhoudt zonder dat
+er daadwerkelijk een wipe draait: `fuser logs/.wipe.lock` om te
+checken, daarna eventueel `rm logs/.wipe.lock` (lock-file is safe om
+te verwijderen als geen enkel proces hem openhoudt — flock is
+kernel-advisory, stale files schaden niks).
+
 ## State file recovery
 
 When a state file is corrupt (malformed JSON, partial write):
@@ -220,6 +267,67 @@ drawdown_guard:
   metric: equity              # equity | balance
   action: pause               # pause (skip new entries) | stop
 ```
+
+## Bot copy / export / import
+
+### Duplicate bot
+
+Portal → **Bots** → ⋮ menu op een bot-card → **Duplicate**. Prompt
+vraagt om een nieuw slug (alleen `[A-Za-z0-9_-]+`). Server-side
+kopie — géén deal-history, géén state, géén credentials
+meegekopieerd. De duplicate start met lege state en moet zelf
+gestart worden via het portal.
+
+### Export bot config
+
+Portal → **Bots** → ⋮ → **Export**. Browser downloadt
+`<slug>.yaml` met een metadata-header (Reverto git SHA, export
+timestamp, origineel slug). Alleen strategy — geen credentials,
+geen state.
+
+### Import bot config
+
+Portal → **Bots** pagina → **Import Bot** knop naast **New Bot**.
+Upload een `.yaml` of `.yml` bestand. Prompt vraagt om een target
+slug (default: filename zonder extensie). Validatie via
+`config.models.BotConfig` — malformed YAML of schema-conflict
+geeft een toast met de exacte foutboodschap.
+
+Naam-conflict (target slug bestaat al): response 409, prompt
+verschijnt opnieuw voor een andere slug. De import schrijft pas
+naar disk ná een geslaagde Pydantic-validatie, dus een half-
+gevalideerd config komt nooit op disk terecht.
+
+Gebruikscases: strategy-experimenten zonder risico op de
+parity-test, configs delen tussen omgevingen, template-workflows
+("copy 'RSI 5m' om een 'RSI 15m' variant te maken").
+
+## Log level override
+
+Bot-subprocesses loggen standaard op INFO. Voor retrospective
+DEBUG-info (bv. "waarom triggerde deze deal niet?"):
+
+```bash
+REVERTO_LOG_LEVEL=DEBUG make restart
+```
+
+Dat (her)start ALLE bots met DEBUG-level. Per-tick indicator
+evaluaties, timeframe snapshots, en interne state-transities komen
+dan in `logs/<user_id>/<slug>.log` terecht. Log-files groeien
+~20× sneller (~30 MB/dag/bot vs. ~1.5 MB op INFO).
+
+Terugschakelen:
+
+```bash
+make restart
+```
+
+(zonder de env-var) gebruikt weer de default.
+
+Portal-UI heeft per bot-log tab ook een filter-dropdown (ALL /
+WARNING + ERROR). Dat is **client-side visibility** — het
+beïnvloedt niet wat de engine naar disk schrijft, alleen wat de
+browser toont.
 
 ## Credential rotation
 
