@@ -28,6 +28,7 @@ from core.database import init_db as _init_db
 from core.ids import DEAL_ID_RE
 from core.user import User, get_default_user
 from notifications.telegram import TelegramNotifier
+from paper.paper_engine import NOTIFY_DRAIN_TIMEOUT_S
 
 import bcrypt
 import ccxt
@@ -47,6 +48,13 @@ logger = logging.getLogger(__name__)
 
 # Maximum file size for state.json — voorkomt OOM bij corrupte/oversize files
 _MAX_STATE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+# Extra slack op top van de engine's notify-drain budget voor
+# process-startup/teardown overhead tussen engine.stop() returning en
+# de PID die van de procestabel verdwijnt. Portal-stop wait-deadline
+# = NOTIFY_DRAIN_TIMEOUT_S + _STOP_SAFETY_MARGIN_S, zodat elke
+# verhoging van de drain-budget automatisch doorwerkt in de portal.
+_STOP_SAFETY_MARGIN_S = 3.0
 
 
 class BotStateModel(BaseModel):
@@ -881,13 +889,19 @@ async def stop_bot(user_id: int, slug: str) -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-    # Wait up to 10s for graceful exit (poll PID file + liveness).
-    # 10s instead of 5s because PaperEngine.stop() joins the notify
-    # worker with a 15s budget so notify_shutdown + notify_stop have
-    # time to actually flush to Telegram (single HTTP POST per message,
-    # 10s httpx timeout each). 5s wasn't enough — the bot got SIGKILL'd
-    # mid-send and the stop notification never landed.
-    deadline = time.time() + 10.0
+    # Wait for graceful exit (poll PID file + liveness). The deadline
+    # is derived from the engine's notify-drain budget so the two are
+    # always consistent: if NOTIFY_DRAIN_TIMEOUT_S grows, the portal's
+    # patience grows with it. Portal-wait must be STRICTLY greater than
+    # the drain budget, else we SIGKILL while the engine is still
+    # waiting for its notify-worker to flush (single HTTP POST per
+    # Telegram message, 10s httpx timeout each). A previous fix
+    # bumped the portal-wait from 5s to 10s but forgot the rekensom —
+    # 10 < 15 still meant 100% SIGKILL. _STOP_SAFETY_MARGIN_S adds
+    # slack for process-teardown overhead between engine.stop()
+    # returning and the PID actually leaving the procestable.
+    stop_timeout = NOTIFY_DRAIN_TIMEOUT_S + _STOP_SAFETY_MARGIN_S
+    deadline = time.time() + stop_timeout
     while time.time() < deadline:
         if not _pid_alive(pid) or not bot.pid_file.exists():
             break
@@ -896,7 +910,8 @@ async def stop_bot(user_id: int, slug: str) -> dict:
     if _pid_alive(pid):
         # Graceful shutdown timed out — escalate to SIGKILL.
         logger.warning(
-            f"Bot {slug}: PID {pid} still alive after 10s — escalating to SIGKILL"
+            f"Bot {slug}: PID {pid} still alive after "
+            f"{stop_timeout:.0f}s — escalating to SIGKILL"
         )
         try:
             os.kill(pid, signal.SIGKILL)

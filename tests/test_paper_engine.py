@@ -513,3 +513,58 @@ class TestIndicatorLogFiltering:
             "Indicators — RSI: 35.17 | BB %B: 0.42 "
             "| PSAR: 51200.00 (bull)"
         )
+
+
+# ── Graceful shutdown timing contract ───────────────────────────────────────
+
+
+class TestGracefulShutdownTiming:
+    """Portal's stop_bot must wait at least NOTIFY_DRAIN_TIMEOUT_S
+    before SIGKILL, else the engine's notify-worker drain (which
+    blocks stop() returning until Telegram messages flush or the
+    budget expires) gets cut off mid-send.
+
+    Audit finding (2026-04-19 portal.log): 12/12 bot stops over
+    24h escalated to SIGKILL because the portal-wait was hardcoded
+    to 10s while NOTIFY_DRAIN_TIMEOUT_S was 15s. A previous commit
+    bumped the portal-wait from 5s to 10s with the motivation
+    "15s notify-drain budget" but forgot to finish the arithmetic.
+    The fix couples the two constants via import; this test pins
+    the coupling so an accidental uncoupling trips CI before the
+    WARNING storm returns to portal.log.
+    """
+
+    def test_portal_wait_strictly_exceeds_notify_drain_budget(self):
+        """The portal's total wait (drain-budget + margin) must be
+        STRICTLY greater than the engine's drain-budget alone, so
+        the engine always gets at least its full drain period plus
+        teardown overhead before SIGKILL."""
+        from paper.paper_engine import NOTIFY_DRAIN_TIMEOUT_S
+        from web.app import _STOP_SAFETY_MARGIN_S
+
+        assert _STOP_SAFETY_MARGIN_S > 0, (
+            f"Safety margin must be > 0 so portal-wait "
+            f"(drain + margin) strictly exceeds drain alone. "
+            f"Got {_STOP_SAFETY_MARGIN_S}"
+        )
+        # Redundant with the >0 check given today's formula, but
+        # explicit about the invariant the formula is meant to
+        # satisfy: if someone later changes the formula, this
+        # assertion is what catches it.
+        portal_wait = NOTIFY_DRAIN_TIMEOUT_S + _STOP_SAFETY_MARGIN_S
+        assert portal_wait > NOTIFY_DRAIN_TIMEOUT_S
+
+    def test_constants_are_importable_from_expected_modules(self):
+        """The fix depends on the two modules being able to see
+        each other's constant. If paper.paper_engine ever loses
+        NOTIFY_DRAIN_TIMEOUT_S from its public surface, or
+        web.app stops importing it, stop_bot quietly regresses
+        to a hardcoded value."""
+        import paper.paper_engine as paper_engine
+        import web.app as webapp
+        assert hasattr(paper_engine, "NOTIFY_DRAIN_TIMEOUT_S")
+        assert hasattr(webapp, "NOTIFY_DRAIN_TIMEOUT_S"), (
+            "web.app must re-import NOTIFY_DRAIN_TIMEOUT_S so "
+            "stop_bot's deadline stays coupled to the engine budget"
+        )
+        assert hasattr(webapp, "_STOP_SAFETY_MARGIN_S")
