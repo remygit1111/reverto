@@ -3105,6 +3105,9 @@ function openBot(slug, fromPop = false) {
   overviewInterval = null;
   currentSlug = slug;
   _detailConfigCache = null;
+  // Clear any pending deal from a previous bot view — auto-select
+  // will kick in again in loadChartTab if the new bot has open deals.
+  _chartPendingDeal = null;
 
   // Detail is a sub-view of Bots — keep the Bots tab active and surface
   // the slug in the header subtext as "Multi-Bot Portal › SLUG".
@@ -3964,6 +3967,17 @@ async function loadChartTab(slug) {
   } catch (e) { _chartBotConfig = null; }
 
   const inner = (_chartBotConfig && _chartBotConfig.bot) || {};
+  // Auto-select the most recent open deal if no explicit pending
+  // deal was set (e.g. via a click on a deal row in the Deals tab).
+  // This makes "open bot → chart tab" show the active position
+  // with timeline markers by default, instead of a bare candle
+  // chart that requires an extra click through Deals to see.
+  if (!_chartPendingDeal) {
+    const autoDeal = _mostRecentOpenDealForSlug(slug);
+    if (autoDeal) {
+      _chartPendingDeal = autoDeal;
+    }
+  }
   // A pending deal (set by showDealOnChart before showDTab navigated here)
   // dictates the timeframe — otherwise use the bot's configured default.
   _chartTimeframe = _chartPendingDeal
@@ -4565,6 +4579,27 @@ async function showDealOnChart(deal) {
   } else {
     await fetchChartData();
   }
+}
+
+// Picks the most recent open deal from the current detail state.
+// Returns null if no open deals, no detail state yet, or state
+// is for a different slug than the one we're rendering.
+// Used by loadChartTab to auto-select a deal for the markers
+// when the user opens the chart tab without having clicked a
+// specific deal first.
+function _mostRecentOpenDealForSlug(slug) {
+  if (!_lastDetailState || !slug) return null;
+  if (_lastDetailState.slug && _lastDetailState.slug !== slug) {
+    return null;
+  }
+  const openDeals = _lastDetailState.open_deals || [];
+  if (openDeals.length === 0) return null;
+  const sorted = [...openDeals].sort((a, b) => {
+    const aTime = a.opened_at || a.id || '';
+    const bTime = b.opened_at || b.id || '';
+    return bTime.localeCompare(aTime);
+  });
+  return sorted[0];
 }
 
 function clearDealFromChart() {
