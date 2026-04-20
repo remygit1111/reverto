@@ -18,6 +18,7 @@ from pathlib import Path
 from config.config_loader import load_bot_config
 from config.models import Mode
 from core import paths
+from core.logging_setup import parse_log_level_env
 from exchanges.public_exchange import PublicExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import PaperEngine
@@ -30,8 +31,10 @@ _BOT_SLUG_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 # Logging setup — local time. stdout/stderr are typically redirected by
 # the portal to logs/{slug}.log via subprocess.Popen, so basicConfig on
 # the default stream lands in the right place without extra handlers.
+# Level comes from REVERTO_LOG_LEVEL (default INFO), so an operator
+# can opt into DEBUG-on-disk for a single restart without editing code.
 logging.basicConfig(
-    level=logging.INFO,
+    level=parse_log_level_env(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     force=True,
