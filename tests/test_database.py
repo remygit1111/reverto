@@ -561,3 +561,86 @@ def test_deals_user_isolation():
     rows_bob   = deal_store.get_deals(user_id=2, bot_slug="shared_slug")
     assert [r["id"] for r in rows_admin] == ["P-ADM"]
     assert [r["id"] for r in rows_bob]   == ["P-BOB"]
+
+
+# ── DB-path versioning (regression for the 3.13 CI flake) ───────────────────
+
+
+class TestDbPathVersioning:
+    """Regression: ``set_db_path`` must invalidate thread-local
+    connection caches across worker threads.
+
+    conftest.py's autouse ``_isolate_reverto_db`` fixture calls
+    ``set_db_path(tmp)`` + ``init_db()`` before every test and
+    ``close_db()`` on teardown. ``close_db()`` only closes the caller
+    thread's conn — TestClient's anyio worker-pool threads live
+    longer than a single test and keep a cached conn open against the
+    previous test's tmp-DB. Without version-based invalidation, the
+    worker's next request reads/writes to a stale SQLite file and
+    flakes surface as phantom 401/"user not found" responses.
+
+    The original symptom: Python 3.13 CI had
+    ``TestPerUserSessionEpoch.test_fresh_login_after_logout_works``
+    fail with 401 deterministically (3.12 + WSL2 got lucky on GC
+    timing for the old tmp dirs).
+    """
+
+    def test_set_db_path_bumps_version(self, tmp_path):
+        before = database._DB_PATH_VERSION
+        database.set_db_path(tmp_path / "a.db")
+        assert database._DB_PATH_VERSION > before
+
+    def test_get_db_reopens_after_path_change_in_other_thread(
+        self, tmp_path,
+    ):
+        """Worker thread opens a conn to path A. Main thread changes
+        path to B via ``set_db_path``. Worker's next ``get_db`` must
+        return a conn to B — pre-fix it stayed on A because
+        ``close_db`` only closed the main thread's handle.
+        """
+        import threading as _threading
+
+        database.set_db_path(tmp_path / "a.db")
+        database.init_db()
+
+        conns: list[int] = []
+        ready = _threading.Event()
+        go = _threading.Event()
+
+        def worker() -> None:
+            # First call on this thread: open + cache against path A.
+            conn1 = database.get_db()
+            conns.append(id(conn1))
+            ready.set()
+            # Wait until main thread bumps the path.
+            go.wait(timeout=2.0)
+            # Second call: version mismatch → drop stale + reopen.
+            conn2 = database.get_db()
+            conns.append(id(conn2))
+
+        t = _threading.Thread(target=worker)
+        t.start()
+        assert ready.wait(timeout=2.0), "worker thread stalled"
+
+        # Bump the path from the main thread.
+        database.set_db_path(tmp_path / "b.db")
+        database.init_db()
+        go.set()
+        t.join(timeout=2.0)
+
+        assert len(conns) == 2
+        assert conns[0] != conns[1], (
+            "worker reused stale connection after path change — "
+            "version-based invalidation not working"
+        )
+
+    def test_close_db_resets_version_for_caller_thread(self, tmp_path):
+        """After ``close_db`` the next ``get_db`` opens a fresh conn
+        even if the path didn't change — the cached version is reset
+        to -1 so the mismatch branch fires."""
+        database.set_db_path(tmp_path / "a.db")
+        database.init_db()
+        conn1 = database.get_db()
+        database.close_db()
+        conn2 = database.get_db()
+        assert id(conn1) != id(conn2)
