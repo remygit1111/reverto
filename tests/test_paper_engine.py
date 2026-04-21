@@ -71,7 +71,8 @@ def mock_notifier():
     for m in [
         "notify_startup", "notify_shutdown", "notify_entry",
         "notify_dca", "notify_take_profit", "notify_stop_loss",
-        "notify_error", "notify_stop", "notify_restart",
+        "notify_error", "notify_error_persistent",
+        "notify_stop", "notify_restart",
     ]:
         setattr(n, m, MagicMock())
     return n
@@ -793,3 +794,105 @@ class TestTickFailureStructuredLogging:
             "expected counter reset after recovery, got "
             f"{lines[1]}"
         )
+
+
+# ── Tick-level transient/persistent notification gate ───────────────────────
+
+
+class TestTickFailureNotificationGate:
+    """The Telegram-notification gate suppresses transient errors while
+    the retry window still has budget, and fires exactly one persistent
+    notification when the streak hits the threshold. Non-transient
+    errors skip the retry window and notify on first occurrence."""
+
+    def test_transient_single_failure_does_not_notify(self, engine):
+        """One 429 should never reach Telegram — the engine retries on
+        the next tick and the flake recovers silently."""
+        engine.exchange.get_ticker.side_effect = _FakeRateLimit("429")
+        engine._tick()
+
+        engine._notify_queue.join()
+        engine.notifier.notify_error_persistent.assert_not_called()
+
+    def test_transient_below_threshold_does_not_notify(self, engine):
+        """Four consecutive transient failures still below the 5/5
+        threshold — no persistent notification yet."""
+        engine.exchange.get_ticker.side_effect = _FakeRateLimit("429")
+        for _ in range(4):
+            engine._tick()
+
+        engine._notify_queue.join()
+        engine.notifier.notify_error_persistent.assert_not_called()
+
+    def test_transient_threshold_fires_persistent_notification(self, engine):
+        """The 5th consecutive transient failure crosses the threshold
+        and fires the persistent Telegram notification exactly once."""
+        engine.exchange.get_ticker.side_effect = _FakeRateLimit(
+            "bitget 429 Too Many Requests"
+        )
+        for _ in range(5):
+            engine._tick()
+
+        engine._notify_queue.join()
+        assert engine.notifier.notify_error_persistent.call_count == 1
+        bot_name, err = engine.notifier.notify_error_persistent.call_args[0]
+        assert bot_name == engine.config.name
+        assert err.is_transient is True
+        assert err.error_class == "RateLimitExceeded"
+        assert err.retry_attempt == 5
+
+    def test_persistent_latch_caps_one_notification_per_streak(self, engine):
+        """After the persistent-notify fires, further ticks in the same
+        streak must not repeat the message — otherwise a prolonged
+        outage would spam Telegram."""
+        engine.exchange.get_ticker.side_effect = _FakeRateLimit("429")
+        for _ in range(10):
+            engine._tick()
+
+        engine._notify_queue.join()
+        assert engine.notifier.notify_error_persistent.call_count == 1
+
+    def test_non_transient_notifies_on_first_occurrence(self, engine):
+        """Auth errors and bugs-in-our-code don't recover via retry —
+        notify immediately, don't wait for the streak to reach 5."""
+        engine.exchange.get_ticker.side_effect = _FakeAuthError(
+            "invalid API key"
+        )
+        engine._tick()
+
+        engine._notify_queue.join()
+        assert engine.notifier.notify_error_persistent.call_count == 1
+        _, err = engine.notifier.notify_error_persistent.call_args[0]
+        assert err.is_transient is False
+        assert err.error_class == "AuthenticationError"
+        assert err.retry_attempt == 1
+
+    def test_latch_resets_on_recovery_tick(self, engine):
+        """A recovery tick between two failure-streaks clears the
+        persistent-notify latch so the second streak can fire a fresh
+        notification."""
+        engine.exchange.get_ticker.side_effect = (
+            [_FakeRateLimit("429")] * 5            # first streak hits threshold
+            + [MagicMock(mark_price=50000.0, last=50000.0)]  # recovery
+            + [_FakeRateLimit("429")] * 5          # second streak hits threshold
+        )
+        for _ in range(11):
+            engine._tick()
+
+        engine._notify_queue.join()
+        assert engine.notifier.notify_error_persistent.call_count == 2, (
+            "expected one persistent-notify per streak, got "
+            f"{engine.notifier.notify_error_persistent.call_count}"
+        )
+
+    def test_transient_errors_do_not_call_legacy_notify_error(self, engine):
+        """The legacy free-form notify_error stays reserved for non-tick
+        paths (balance guard, reconciler). Tick-level failures go via
+        notify_error_persistent only so the old "❌ Error Bot: X" format
+        disappears from the tick path."""
+        engine.exchange.get_ticker.side_effect = _FakeRateLimit("429")
+        for _ in range(5):
+            engine._tick()
+
+        engine._notify_queue.join()
+        engine.notifier.notify_error.assert_not_called()

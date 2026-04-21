@@ -236,10 +236,13 @@ class PaperEngine:
         # intentionally never done — we want cumulative-per-run so
         # spam doesn't re-appear after a single transient recovery.
         self._tick_error_count: int = 0
-        # Consecutive-error streak surfaced in the structured log line
-        # (retry=N/M) so operators can tell a one-off flake from an
-        # ongoing outage. Resets on any successful tick.
+        # Consecutive-error streak — surfaced in the structured log line
+        # (retry=N/M) and gates the persistent Telegram notification.
+        # Resets on any successful tick so a bot that recovers does not
+        # carry the streak forward. _persistent_notify_sent is edge-
+        # triggered: one streak produces at most one persistent message.
         self._consecutive_tick_errors: int = 0
+        self._persistent_notify_sent: bool = False
 
         # Notification queue + worker — verhindert dat een trage Telegram
         # call de tick-loop blokkeert (TP/SL/DCA detectie kritisch op timing).
@@ -702,12 +705,14 @@ class PaperEngine:
             except Exception:
                 pass
 
-            # Successful tick completed — end any transient-error streak.
-            # Cumulative _tick_error_count is intentionally NOT reset
-            # here (it feeds the log-verbosity rate-limit which is a
-            # per-run protection, not a per-streak one).
+            # Successful tick completed — end any transient-error streak
+            # and clear the persistent-notify latch so a future streak
+            # can fire a fresh notification. Cumulative _tick_error_count
+            # is intentionally NOT reset here (it feeds log-verbosity
+            # rate-limiting which is a per-run protection, not per-streak).
             if self._consecutive_tick_errors > 0:
                 self._consecutive_tick_errors = 0
+                self._persistent_notify_sent = False
 
         except NotImplementedError:
             # LiveEngine's _place_market_order raises this when the
@@ -748,9 +753,28 @@ class PaperEngine:
             else:
                 logger.error("Tick failure %s", log_line)
 
-            self._notify(
-                self.notifier.notify_error, self.config.name, err.message,
+            # Notification gate. Transient errors stay silent while the
+            # streak is still within the retry window — a single 429 or
+            # momentary network blip recovers on the next tick and never
+            # needs to reach Telegram. Non-transient errors (auth, bugs
+            # in our own code) notify on the first occurrence because no
+            # further retry will help without operator action. The latch
+            # caps one streak at one persistent notification so a
+            # prolonged outage doesn't repeat-spam the channel.
+            should_notify = (
+                not self._persistent_notify_sent
+                and (
+                    not err.is_transient
+                    or self._consecutive_tick_errors >= TICK_ERROR_PERSISTENT_THRESHOLD
+                )
             )
+            if should_notify:
+                self._persistent_notify_sent = True
+                self._notify(
+                    self.notifier.notify_error_persistent,
+                    self.config.name,
+                    err,
+                )
         finally:
             if _tick_ctx is not None:
                 try:
