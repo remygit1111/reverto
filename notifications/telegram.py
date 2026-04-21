@@ -8,6 +8,8 @@ import logging
 import os
 from dotenv import load_dotenv
 
+from paper.errors import TickerError
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -257,3 +259,108 @@ class TelegramNotifier:
             f"Bot   : {bot_name}\n"
             f"Error : {error}"
         )
+
+    def notify_error_persistent(self, bot_name: str, err: TickerError):
+        """Rich error notification used when the paper/live engine has
+        classified a failure as persistent — either an exhausted
+        transient-retry streak or a non-transient error class that no
+        retry will help.
+
+        Severity-emoji follows the classification: non-transient failures
+        (auth errors, bugs in our own code) render as ⛔ "Bot stopped"
+        because they need operator intervention; exhausted-transient
+        failures render as ⚠️ "Bot degraded" because the engine is still
+        retrying but is structurally failing to make progress.
+
+        Distinct from ``notify_error`` which takes a free-form string —
+        that entry point stays for callers outside the engine tick path
+        (insufficient-balance refusals, reconciler timeouts, etc.)."""
+        if not self._is_enabled(EVENT_ERROR):
+            return
+        if err.is_transient:
+            severity, state_label = "⚠️", "degraded"
+        else:
+            severity, state_label = "⛔", "stopped"
+
+        reason = _resolve_error_reason(err)
+        context = _resolve_error_context(err)
+        action = _resolve_error_action(err)
+
+        self.send(
+            f"{severity} <b>Bot {state_label}</b>\n"
+            f"Bot     : {bot_name}\n"
+            f"Reason  : {reason}\n"
+            f"Context : {context}\n"
+            f"Action  : {action}"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Persistent-error message helpers
+# ──────────────────────────────────────────────────────────────────────────
+
+# Exchange status-page URLs surfaced in the Action line. Keys match the
+# lowercase exchange name from TickerError.exchange. Unknown exchanges
+# fall back to a generic "check your exchange" hint.
+_STATUS_PAGES: dict[str, str] = {
+    "bitget": "status.bitget.com",
+    "binance": "binance.statuspage.io",
+}
+
+
+def _resolve_error_reason(err: TickerError) -> str:
+    """Human-readable Reason line built from the error's classification.
+    Mapping is by error_class rather than status_code because status is
+    not always available (NetworkError has no http status)."""
+    ex = err.exchange.capitalize()
+    cls = err.error_class
+    if cls == "RateLimitExceeded":
+        return f"{ex} API returning 429 Too Many Requests"
+    if cls == "AuthenticationError":
+        return f"{ex} API authentication failure (401)"
+    if cls in ("NetworkError", "RequestTimeout", "DDoSProtection"):
+        return f"{ex} API network/timeout failure"
+    if cls in ("ExchangeNotAvailable", "OnMaintenance"):
+        return f"{ex} API unavailable / in maintenance"
+    # Unknown / generic — surface class name + truncated message so an
+    # unexpected failure still carries enough detail for a first-look
+    # triage without digging into portal.log.
+    head = err.message[:80].replace("\n", " ")
+    return f"{cls}: {head}" if head else cls
+
+
+def _resolve_error_context(err: TickerError) -> str:
+    """Technical details: which API endpoint failed on which symbol, and
+    how many retries were attempted before the persistent notification
+    fired. Matches the spec's example format verbatim."""
+    return (
+        f"{err.endpoint} {err.symbol} — "
+        f"{err.retry_attempt}/{err.max_retries} retries failed"
+    )
+
+
+def _resolve_error_action(err: TickerError) -> str:
+    """What the user should do. Persistent-transient failures point at
+    the exchange's status page; non-transient failures at the likely
+    local cause (API-key permissions, code bug) instead."""
+    ex = err.exchange.capitalize()
+    if err.error_class == "AuthenticationError":
+        return (
+            f"Check API-key validity + permissions on {ex}. "
+            "Restart bot via portal after correction."
+        )
+    if not err.is_transient:
+        return (
+            "Check portal logs for stack trace. "
+            "Restart bot via portal after fix."
+        )
+    status_url = _STATUS_PAGES.get(err.exchange.lower())
+    if status_url:
+        return (
+            f"Check {ex} status at {status_url}. "
+            "Restart bot via portal when resolved."
+        )
+    return (
+        f"Check {ex} API status + portal logs. "
+        "Restart bot via portal when resolved."
+    )
