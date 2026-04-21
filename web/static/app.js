@@ -1987,9 +1987,93 @@ function _showAdminSubpage(name) {
   }
 }
 
-// Placeholder implementations — the next refactor commits wire these
-// to the /api/changelog + /api/admin/changelog endpoints.
-async function loadChangelog() { /* Phase 3 */ }
+// ── Changelog — public listing ───────────────────────────────────────────
+// Renders /api/changelog inside the Changelog tab. description_html is
+// rendered and bleach-sanitised server-side (core.markdown_render) so
+// we drop it straight into innerHTML — adding a client-side sanitiser
+// would duplicate the trust boundary without strengthening it.
+
+const _CL_CATEGORY_LABELS = {
+  feature: 'Feature',
+  fix: 'Fix',
+  improvement: 'Improvement',
+  security: 'Security',
+};
+
+function _clFormatDate(ts) {
+  if (!ts) return '—';
+  // Backend emits "YYYY-MM-DD HH:MM:SS"; the user surface only shows
+  // the date half, matching "when was this feature added" rather than
+  // exact publish-click time.
+  return String(ts).split(' ')[0];
+}
+
+function _clCategoryBadge(category) {
+  const safe = String(category || '').replace(/[^a-z]/g, '');
+  const label = _CL_CATEGORY_LABELS[safe] || safe || '—';
+  const badge = document.createElement('span');
+  badge.className = `cl-badge cl-badge-${safe}`;
+  badge.textContent = label;
+  return badge;
+}
+
+function _clRenderEntry(entry) {
+  const article = document.createElement('article');
+  article.className = 'card cl-entry';
+
+  const header = document.createElement('div');
+  header.className = 'cl-entry-header';
+  const title = document.createElement('h2');
+  title.className = 'cl-entry-title';
+  title.textContent = entry.title || '';
+  const meta = document.createElement('div');
+  meta.className = 'cl-entry-meta';
+  meta.appendChild(_clCategoryBadge(entry.category));
+  const date = document.createElement('span');
+  date.className = 'cl-entry-date';
+  date.textContent = _clFormatDate(entry.published_at);
+  meta.appendChild(date);
+  header.appendChild(title);
+  header.appendChild(meta);
+
+  const body = document.createElement('div');
+  body.className = 'cl-entry-body';
+  // innerHTML is safe here: description_html is emitted by bleach on
+  // the server (tags/attrs allow-list enforced). See
+  // core/markdown_render.py.
+  body.innerHTML = entry.description_html || '';
+
+  article.appendChild(header);
+  article.appendChild(body);
+  return article;
+}
+
+async function loadChangelog() {
+  const statusEl = $('cl-status');
+  const listEl = $('cl-entries');
+  if (!statusEl || !listEl) return;
+  listEl.innerHTML = '';
+  statusEl.classList.remove('hidden');
+  statusEl.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/changelog');
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    const data = await r.json();
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    if (entries.length === 0) {
+      statusEl.textContent = 'No updates yet.';
+      return;
+    }
+    statusEl.classList.add('hidden');
+    const frag = document.createDocumentFragment();
+    entries.forEach((e) => frag.appendChild(_clRenderEntry(e)));
+    listEl.appendChild(frag);
+  } catch (e) {
+    statusEl.textContent = 'Failed to load changelog.';
+  }
+}
+
 async function loadAdminChangelog() { /* Phase 4 */ }
 
 // ── New bot single-page form ─────────────────────────────────────────────────
