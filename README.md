@@ -15,7 +15,7 @@ python3 -m venv .venv
 # Initialiseer de DB (stop na "Portal started" in logs)
 make start
 
-# Zet het admin-wachtwoord (zonder deze stap blijft login 401)
+# Zet het admin-wachtwoord (minimaal 12 tekens; zonder deze stap blijft login 401)
 REVERTO_ADMIN_PW="een_sterk_wachtwoord" make setup-admin
 
 # Start het portal voor gebruik
