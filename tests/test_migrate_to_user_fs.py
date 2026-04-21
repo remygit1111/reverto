@@ -27,10 +27,9 @@ def sandbox(tmp_path, monkeypatch):
     from core import credentials, paths as path_mod
     monkeypatch.setattr(path_mod, "BASE_DIR", tmp_path)
     monkeypatch.setattr(credentials, "_BASE_DIR", tmp_path)
-    monkeypatch.setattr(credentials, "_LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(
-        credentials, "_KEY_FILE", tmp_path / "logs" / ".credentials.key",
-    )
+    # Audit v26-06: pre-Phase-3a _LOG_DIR / _KEY_FILE monkeypatches
+    # gesandboxed de system-key voor .auth.json; die helpers zijn
+    # verwijderd, dus alleen _BASE_DIR sandboxing blijft over.
     return tmp_path
 
 

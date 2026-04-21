@@ -22,10 +22,9 @@ def routed_store(tmp_path, monkeypatch):
     file path so individual tests can read it directly."""
     monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
     monkeypatch.setattr(creds, "_BASE_DIR", tmp_path)
-    monkeypatch.setattr(creds, "_LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(
-        creds, "_KEY_FILE", tmp_path / "logs" / ".credentials.key",
-    )
+    # Audit v26-06: pre-Phase-3a _LOG_DIR / _KEY_FILE monkeypatches
+    # gesandboxed de system-key voor .auth.json; die helpers zijn
+    # verwijderd, dus alleen _BASE_DIR sandboxing blijft over.
     return paths.user_fernet_key_path(1)
 
 

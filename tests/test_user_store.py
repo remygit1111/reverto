@@ -147,6 +147,28 @@ class TestSessionEpoch:
     def test_get_returns_zero_for_unknown_user(self):
         assert user_store.get_session_epoch(999) == 0
 
+    def test_bump_returns_value_atomically(self):
+        """Audit v26-11: bump_session_epoch gebruikt sinds v26-11
+        een ``UPDATE ... RETURNING session_epoch`` statement, zodat
+        de post-update waarde in één SQL-call terugkomt. Pre-fix
+        was UPDATE gevolgd door aparte SELECT, met een race-window
+        waarin twee threads dezelfde SELECT-waarde zouden lezen.
+
+        Deze test dekt de functionele kant (retour = post-UPDATE
+        waarde); de concurrency-garantie zit in het RETURNING
+        statement zelf.
+        """
+        assert user_store.get_session_epoch(1) == 0
+        # Elke bump moet zijn eigen unieke waarde retourneren.
+        v1 = user_store.bump_session_epoch(1)
+        v2 = user_store.bump_session_epoch(1)
+        v3 = user_store.bump_session_epoch(1)
+        assert v1 == 1
+        assert v2 == 2
+        assert v3 == 3
+        # En de DB matcht met de laatste return.
+        assert user_store.get_session_epoch(1) == 3
+
     def test_bump_for_unknown_user_is_noop(self):
         """No row matches — UPDATE does nothing, return value is 0.
         Callers that use this for cleanup shouldn't crash."""

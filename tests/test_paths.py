@@ -178,15 +178,12 @@ class TestIntegrationWithCredentials:
     def test_save_keys_lands_under_sandbox(self, _sandboxed_base, monkeypatch):
         from core import credentials
 
-        # credentials.py caches its own _BASE_DIR/_LOG_DIR/_KEY_FILE at
-        # import time for the system-key fallback — patch them too so
-        # the .auth.json path stays out of the real logs/.
+        # credentials.py caches its own _BASE_DIR at import time;
+        # sandbox redirects it so keys/ + credentials/ land in tmp.
+        # Audit v26-06: the pre-Phase-3a system-key path (_LOG_DIR +
+        # _KEY_FILE) is gone, so no additional monkeypatches needed
+        # for that side.
         monkeypatch.setattr(credentials, "_BASE_DIR", _sandboxed_base)
-        monkeypatch.setattr(credentials, "_LOG_DIR", _sandboxed_base / "logs")
-        monkeypatch.setattr(
-            credentials, "_KEY_FILE",
-            _sandboxed_base / "logs" / ".credentials.key",
-        )
 
         credentials.save_keys("bitget", "ak", "sc", user_id=7)
         enc = paths.exchange_creds_path(7, "bitget")

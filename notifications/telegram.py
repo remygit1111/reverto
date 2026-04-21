@@ -76,8 +76,16 @@ class TelegramNotifier:
                 timeout=10
             )
             if response.status_code != 200:
+                # Audit v26-09: log only status_code + body-length,
+                # not response.text. If Telegram's error format ever
+                # echoes request-URL (which contains the bot token),
+                # response.text would leak that into portal.log. Body
+                # length is enough to distinguish "empty error" from
+                # "verbose error" for debugging; content itself is
+                # not needed at runtime.
                 logger.error(
-                    f"Telegram error {response.status_code}: {response.text}"
+                    "Telegram error %d (body %d bytes)",
+                    response.status_code, len(response.text or ""),
                 )
         except httpx.TimeoutException:
             # Do not log the URL (contains token) — log only the error type
