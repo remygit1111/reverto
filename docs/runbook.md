@@ -286,6 +286,80 @@ make stop-all    # stops portal + every bot via SIGTERM
 `make stop-all` waits up to 10s for each bot to flush Telegram
 notifications via its `notify_stop` / `notify_shutdown` queue drain.
 
+## Remote deployment from Reverto-Dev
+
+Reverto draait op twee machines: **Reverto-Server** (Mele, productie,
+IP `192.168.178.227`) en **Reverto-Dev** (development workstation,
+waar nieuwe features worden gebouwd). De deploy-flow:
+
+1. Code-werk gebeurt op Reverto-Dev.
+2. Feature wordt gemerged naar `main` via PR (CI draait op 3.12 +
+   3.13 matrix vóór merge).
+3. Reverto-Server trekt de nieuwe main binnen via SSH vanaf
+   Reverto-Dev:
+
+```bash
+ssh bot@192.168.178.227 'cd ~/reverto && make deploy'
+```
+
+`make deploy` doet **alleen** `git pull origin main` met
+informatieve echo-berichten. Het raakt bewust niet:
+
+- **Geen automatische portal-restart** — code-wijzigingen die de
+  portal-code zelf raken vereisen een handmatige `make restart` op
+  de server. Voor pure config-wijzigingen of doc-updates is geen
+  restart nodig.
+- **Geen automatische bot-restart** — welke bots (en in welke
+  volgorde) herstart worden is een operator-beslissing via de
+  portal-UI. Automatisering hiervan vereist een aparte design-
+  sessie over bot-state-preservation (open-deal-hydration volgorde,
+  drawdown-guard state, indicator-warmup) en valt buiten de scope
+  van een triviale deploy-wrapper.
+- **Geen schema-migratie opt-in** — als de nieuwe code een
+  destructive schema-migratie vereist (zie "Schema migrations"
+  hieronder) weigert `init_db()` te boot'en zonder expliciete
+  `REVERTO_DESTRUCTIVE_MIGRATE=1` env-var. `make deploy` zet die
+  flag **NOOIT** automatisch — destructive migrations horen
+  expliciet, niet via een routine-deploy.
+
+Na een succesvolle `git pull` toont het deploy-target de vervolg-
+stappen:
+
+```
+[deploy] git pull complete.
+[deploy] Next steps (manual):
+  - Restart het portal als code-wijzigingen dat vereisen:
+      make restart
+  - Herstart relevante bots via de portal-UI
+  - Bij schema-migration prompts: zie docs/runbook.md
+    sectie 'Schema migrations' voor de opt-in flow
+```
+
+Ssh-keys tussen Reverto-Dev en Reverto-Server moeten vooraf zijn
+uitgewisseld zodat de remote `make deploy` zonder
+password-prompt loopt. Bij elke rebuild van één van de hosts is dit
+een eerste-setup stap.
+
+### Bij een destructive schema migration
+
+Als `make deploy` gevolgd door `make restart` het `[FATAL]` bericht
+over destructive migration triggert, is de flow:
+
+1. Log SSH'd in op Reverto-Server (niet via `ssh '... && make
+   deploy'`, maar een interactieve sessie) — de operator moet de
+   melding zien en een handmatig oordeel vellen.
+2. Volg de procedure in "Schema migrations" hierboven: optionele
+   handmatige backup, dan `REVERTO_DESTRUCTIVE_MIGRATE=1 make
+   start`.
+3. Bij schema-migraties die users-tabel raken (bv. v3 → v4 Phase-3a):
+   ook `make setup-admin` opnieuw draaien met
+   `REVERTO_ADMIN_PW="..."`.
+
+Dit proces is bewust handmatig — een remote SSH-één-liner die
+destructive migrations zonder operator-bevestiging doorloopt, is
+precies het scenario dat de `REVERTO_DESTRUCTIVE_MIGRATE` guard
+(audit v26-10) voorkomt.
+
 ## Live bot dry-run via het portal (Phase 1)
 
 Onder Phase 1 zijn live-mode bots alleen toegestaan in dry-run: de
