@@ -16,6 +16,8 @@ import pytest
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 
 from ml.nightly_pipeline import (
+    _get_bot_symbol,
+    _get_bot_timeframe,
     load_deal_history,
     optimize_parameters,
     run_pipeline,
@@ -159,12 +161,81 @@ class TestTrainEntryFilter:
 
 # ── optimize_parameters ─────────────────────────────────────────────────────
 
+class TestUserScopedConfigPath:
+    """Audit v26-18: every YAML lookup must route through
+    ``core.paths.bot_yaml_path`` (``config/bots/<user_id>/<slug>.yaml``)
+    — the Phase-1 flat path is gone and any reader still hitting it
+    silently returned defaults on real installs."""
+
+    def test_get_bot_symbol_reads_user_scoped_yaml(
+        self, tmp_path, monkeypatch,
+    ):
+        """Write a YAML at the Phase-2 path and confirm the helper
+        returns the configured pair, not the BTC/USD fallback."""
+        import core.paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "BASE_DIR", tmp_path)
+        user_dir = tmp_path / "config" / "bots" / "7"
+        user_dir.mkdir(parents=True)
+        (user_dir / "alpha.yaml").write_text(
+            "bot:\n  name: alpha\n  pair: ETH/USDT\n  timeframe: 4h\n",
+        )
+
+        assert _get_bot_symbol(7, "alpha") == "ETH/USDT"
+        assert _get_bot_timeframe(7, "alpha") == "4h"
+
+    def test_get_bot_symbol_ignores_phase1_flat_path(
+        self, tmp_path, monkeypatch,
+    ):
+        """A stale Phase-1 layout (YAML directly under config/bots/)
+        must NOT be picked up — otherwise the fix would only move the
+        bug rather than closing it."""
+        import core.paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "BASE_DIR", tmp_path)
+        flat_dir = tmp_path / "config" / "bots"
+        flat_dir.mkdir(parents=True)
+        # Phase-1 flat file — should be ignored.
+        (flat_dir / "alpha.yaml").write_text(
+            "bot:\n  name: alpha\n  pair: STALE/COIN\n  timeframe: 12h\n",
+        )
+
+        # User-scoped lookup for user_id=7 finds nothing → falls back
+        # to the BTC/USD default. If the old flat-path code path ever
+        # came back, this would return STALE/COIN instead.
+        assert _get_bot_symbol(7, "alpha") == "BTC/USD"
+        assert _get_bot_timeframe(7, "alpha") == "1h"
+
+    def test_optimize_parameters_finds_user_scoped_config(
+        self, tmp_path, monkeypatch,
+    ):
+        """``optimize_parameters`` used to return config_missing on
+        every real install because it looked at the flat path. With a
+        YAML at the user-scoped path + optuna available, the skipped
+        reason must NOT be config_missing."""
+        import core.paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "BASE_DIR", tmp_path)
+        user_dir = tmp_path / "config" / "bots" / "1"
+        user_dir.mkdir(parents=True)
+        (user_dir / "beta.yaml").write_text(
+            "bot:\n  name: beta\n  pair: BTC/USD\n  timeframe: 1h\n",
+        )
+
+        result = optimize_parameters(1, "beta", pd.DataFrame())
+        # Optuna may or may not be installed in the test env — what
+        # matters is that we did NOT abort on config_missing.
+        assert result.get("reason") != "config_missing"
+
+
 class TestOptimizeParameters:
 
     def test_missing_config_returns_skipped(self):
         """A bot slug whose YAML does not exist must not crash the
         pipeline — we fail soft with a clear reason."""
-        result = optimize_parameters("definitely_nonexistent_bot", pd.DataFrame())
+        result = optimize_parameters(
+            1, "definitely_nonexistent_bot", pd.DataFrame(),
+        )
         # Either optuna is missing (skipped=optuna_missing) or config is
         # missing (skipped=config_missing). Both are valid fail-soft paths.
         assert result.get("skipped") is True
@@ -178,10 +249,14 @@ class TestRunPipeline:
     def test_no_deals_returns_early(self, temp_db):
         """Running the pipeline against an empty DB must produce a
         results dict with deals_loaded=0 and skipped=True."""
-        result = run_pipeline("empty_bot", str(temp_db))
+        result = run_pipeline(1, "empty_bot", str(temp_db))
         assert result.get("deals_loaded") == 0
         assert result.get("skipped") is True
         assert result.get("reason") == "no_deals"
+        # Audit v26-18: the user_id used to run the pipeline is
+        # echoed back in the results dict so the JSON summary names
+        # the tenant the run belonged to.
+        assert result.get("user_id") == 1
 
     def test_results_persisted(self, tmp_path, temp_db, monkeypatch):
         """The summary should land in ml/results_<bot>.json so operators
@@ -196,7 +271,7 @@ class TestRunPipeline:
             return results_file
 
         monkeypatch.setattr(nightly_pipeline, "_persist_results", fake_persist)
-        run_pipeline("empty_bot", str(temp_db))
+        run_pipeline(1, "empty_bot", str(temp_db))
         assert results_file.exists()
 
 
@@ -268,26 +343,22 @@ class TestFeatureStoreIntegration:
 
     @pytest.fixture
     def _bot_config(self, tmp_path, monkeypatch):
-        """Create a config/bots/<slug>.yaml that _get_bot_symbol can find.
-        Point the helper at tmp_path so the real repo config isn't
-        needed."""
-        cfg_dir = tmp_path / "config" / "bots"
-        cfg_dir.mkdir(parents=True)
-        (cfg_dir / "pt_feat_bot.yaml").write_text(
-            "bot:\n  name: pt_feat_bot\n  mode: paper\n  pair: BTC/USD\n"
-            "  timeframe: 1h\n",
-        )
-        # Helper reads `Path(__file__).parent.parent / "config" / "bots"`.
-        # Patch the Path lookup by redirecting __file__ indirectly —
-        # simplest is to patch the two helpers to return fixed values.
+        """Stub the YAML-reading helpers to return fixed values.
+
+        The real helpers now resolve through ``core.paths.bot_yaml_path``
+        (audit v26-18), but for the feature-store integration tests we
+        only care that the pipeline wiring calls them — the actual
+        config content is already fixed by this stub. Signatures match
+        the post-fix (user_id, bot_slug) arity.
+        """
         from ml import nightly_pipeline
         monkeypatch.setattr(
             nightly_pipeline, "_get_bot_symbol",
-            lambda _slug: "BTC/USD",
+            lambda _user_id, _slug: "BTC/USD",
         )
         monkeypatch.setattr(
             nightly_pipeline, "_get_bot_timeframe",
-            lambda _slug: "1h",
+            lambda _user_id, _slug: "1h",
         )
         yield
 
@@ -314,7 +385,7 @@ class TestFeatureStoreIntegration:
                 pnl_pct=(0.5 if i % 2 == 0 else -0.3),
             )
 
-        result = run_pipeline("pt_feat_bot", str(temp_db))
+        result = run_pipeline(1, "pt_feat_bot", str(temp_db))
         assert result["deals_loaded"] == 5
         # features_computed key MUST be present — it's the contract
         # that proves the candle loader was invoked.
@@ -348,6 +419,6 @@ class TestFeatureStoreIntegration:
         _seed_closed_deal(
             temp_db, "D-1", "pt_feat_bot", 1_750_000_000.0, 0.5,
         )
-        result = run_pipeline("pt_feat_bot", str(temp_db))
+        result = run_pipeline(1, "pt_feat_bot", str(temp_db))
         assert result["features_computed"] == 0
         assert "entry_filter" in result
