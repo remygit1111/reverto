@@ -45,6 +45,7 @@ from core.user import (  # re-exports for one-stop import
 
 __all__ = [
     "User",
+    "PASSWORD_MIN_LENGTH",
     "get_user_by_id",
     "get_user_by_username",
     "verify_password",
@@ -52,6 +53,13 @@ __all__ = [
     "bump_session_epoch",
     "get_session_epoch",
 ]
+
+# Audit v26-03: single source of truth for the minimum plaintext
+# password length. Imported by scripts/setup_admin.py (provisioning)
+# and web/routes/auth.py (change-password). 12 chars aligns with
+# current NIST/OWASP guidance and is strictly stronger than the two
+# pre-fix values (setup_admin: 10, change-password: 8).
+PASSWORD_MIN_LENGTH = 12
 
 # bcrypt rounds for setting new passwords. 12 matches the original
 # _bootstrap_auth_if_missing bootstrap; tests use 4 (via set_password

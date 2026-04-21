@@ -19,9 +19,10 @@ Exit codes:
     1  admin row missing / password too short / passwords don't match
        / set_password returned False
 
-Minimum password length is 10 characters. Shorter passwords are
-refused; operator can change to something stronger later via the
-portal's change-password endpoint.
+Minimum password length is centralised in ``core.user_store`` as
+``PASSWORD_MIN_LENGTH`` (audit v26-03). Shorter passwords are refused;
+operator can change to something stronger later via the portal's
+change-password endpoint.
 """
 
 from __future__ import annotations
@@ -36,11 +37,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.database import DatabaseMigrationError, init_db  # noqa: E402
 from core.user_store import (  # noqa: E402
+    PASSWORD_MIN_LENGTH,
     get_user_by_username,
     set_password,
 )
-
-_MIN_PW_LEN = 10
 
 
 def main() -> int:
@@ -80,9 +80,9 @@ def main() -> int:
             print("ERROR: passwords don't match.", file=sys.stderr)
             return 1
 
-    if len(password) < _MIN_PW_LEN:
+    if len(password) < PASSWORD_MIN_LENGTH:
         print(
-            f"ERROR: password must be at least {_MIN_PW_LEN} characters.",
+            f"ERROR: Password must be at least {PASSWORD_MIN_LENGTH} characters",
             file=sys.stderr,
         )
         return 1

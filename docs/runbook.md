@@ -63,8 +63,9 @@ REVERTO_ADMIN_PW="een_sterk_wachtwoord" make setup-admin
 
 Dit roept `scripts/setup_admin.py` aan die een bcrypt-hash (rounds=12)
 schrijft naar `users.password_hash` voor user_id=1. Minimum lengte
-is 10 tekens (`_MIN_PW_LEN` in het script); kortere wachtwoorden
-worden geweigerd.
+is 12 tekens (`PASSWORD_MIN_LENGTH` in `core/user_store.py`, gedeeld
+met `/api/auth/change-password`); kortere wachtwoorden worden
+geweigerd.
 
 Het script is idempotent — herhaald aanroepen met een andere
 env-var overschrijft de hash. Let op: setup-admin bumpt **niet**
