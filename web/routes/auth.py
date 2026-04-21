@@ -105,10 +105,20 @@ async def auth_logout(request: Request):
 @router.get("/auth/status")
 @limiter.limit("120/minute")
 async def auth_status(request: Request):
+    """Lightweight auth-probe used by the SPA on boot. Returns user_id
+    so the frontend can conditionally render admin-only UI (e.g. the
+    "Admin" nav link) without a second round-trip. No sensitive fields
+    — username and numeric id are already observable from the session
+    cookie's signed payload, so leaking them here is a no-op."""
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
     if payload:
-        return {"authenticated": True, "username": payload.get("u")}
-    return {"authenticated": False, "username": None}
+        uid = payload.get("uid")
+        return {
+            "authenticated": True,
+            "username": payload.get("u"),
+            "user_id": int(uid) if isinstance(uid, int) else None,
+        }
+    return {"authenticated": False, "username": None, "user_id": None}
 
 
 @router.post("/api/auth/change-password")

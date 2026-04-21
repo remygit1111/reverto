@@ -84,14 +84,36 @@ function clearApiKey() {
 }
 
 // ── Session auth ──────────────────────────────────────────────────────────────
+// Cached user id from /auth/status — lets nav-rendering decide whether to
+// reveal admin-only links without a second round-trip. `null` means
+// unauthenticated; the SPA route-guard short-circuits before any admin
+// element would ever be queried in that state.
+let _cachedUserId = null;
+
 async function checkAuthStatus() {
   try {
     const r = await fetch('/auth/status');
     if (r.status === 401) return false;
     const j = await r.json();
     if (j && j.username) _cachedUsername = j.username;
+    _cachedUserId = (j && typeof j.user_id === 'number') ? j.user_id : null;
     return Boolean(j.authenticated);
   } catch (e) { return false; }
+}
+
+// Reveal / hide every [data-admin-only] element based on the current
+// user. Admin == user_id 1 today; this mirrors web/routes/changelog.py
+// `_require_admin_user`. Phase-3b role-checks will flip both sides to
+// `user.role === 'admin'` in one pass.
+function applyAdminVisibility() {
+  const isAdmin = _cachedUserId === 1;
+  document.querySelectorAll('[data-admin-only]').forEach((el) => {
+    if (isAdmin) {
+      el.removeAttribute('hidden');
+    } else {
+      el.setAttribute('hidden', '');
+    }
+  });
 }
 
 function _handle401() {
@@ -6520,6 +6542,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // call from a stale tab on the same page could have left the
   // .is-login class on body).
   document.body.classList.remove('is-login');
+
+  // Admin-only nav items (e.g. the "Admin" tab) stay hidden in HTML
+  // via the `hidden` attribute and only reveal once the auth check
+  // confirms user_id=1. Running this before the SPA renders avoids
+  // a flash of the Admin tab on a regular user's reload.
+  applyAdminVisibility();
 
   refreshProfileInitial();
 

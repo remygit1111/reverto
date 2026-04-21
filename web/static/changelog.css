@@ -1,64 +1,41 @@
 /* web/static/changelog.css
-   Page-specific styles for /changelog and /admin/changelog. Sits on
-   top of style.css so colour tokens (--bg, --accent, --border, …)
-   come from the main portal theme and track dark/light mode
-   automatically. */
+   Changelog-specific styling. Everything else (header, nav, cards,
+   buttons, typography) comes from style.css so the /changelog and
+   /admin pages look like any other portal surface. If a rule could
+   live in style.css without feeling out of place, put it there — this
+   file is for genuinely changelog-unique visual language only. */
 
-.cl-main {
-  max-width: 900px;
+/* Server-rendered admin/changelog pages use a <main class="page cl-page">
+   wrapper. ``.page`` provides the standard 20px padding from style.css;
+   ``.cl-page`` only adds the max-width cap so long text stays readable. */
+.cl-page {
+  max-width: 960px;
   margin: 0 auto;
-  padding: 28px 20px 60px;
 }
 
-.cl-title {
-  font-family: var(--mono);
-  font-size: 22px;
-  letter-spacing: .04em;
-  margin-bottom: 18px;
-  color: var(--text);
+.cl-page-title {
+  font-size: 13px;
+  margin-bottom: 16px;
 }
 
-.cl-nav-link {
+.cl-breadcrumb {
+  margin-bottom: 12px;
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.cl-breadcrumb a {
   color: var(--muted);
   text-decoration: none;
-  padding: 6px 10px;
-  border-radius: 4px;
-  transition: color .15s, background .15s;
+  transition: color .15s;
 }
-.cl-nav-link:hover { color: var(--text); background: var(--surface2); }
-
-/* ── Empty state ───────────────────────────────────────────────────── */
-.cl-empty {
-  padding: 40px 20px;
-  text-align: center;
-  color: var(--muted);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.cl-empty-cell {
-  text-align: center;
-  color: var(--muted);
-  padding: 28px 12px;
-}
+.cl-breadcrumb a:hover { color: var(--text); }
 
 /* ── Public listing ─────────────────────────────────────────────────── */
 .cl-entries {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-}
-
-.cl-entry {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 20px;
+  gap: 14px;
 }
 
 .cl-entry-header {
@@ -66,12 +43,12 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
 }
 
 .cl-entry-title {
-  font-size: 18px;
+  font-size: 16px;
   color: var(--text);
   margin: 0;
 }
@@ -85,24 +62,18 @@
   color: var(--muted);
 }
 
-.cl-entry-date {
-  letter-spacing: .04em;
-}
+.cl-entry-date { letter-spacing: .04em; }
 
-.cl-entry-body {
-  color: var(--text);
-  line-height: 1.55;
-}
-
-.cl-entry-body p       { margin: 0 0 10px; }
+.cl-entry-body        { color: var(--text); line-height: 1.55; font-size: 13px; }
+.cl-entry-body p      { margin: 0 0 8px; }
 .cl-entry-body p:last-child { margin-bottom: 0; }
 .cl-entry-body h1,
 .cl-entry-body h2,
 .cl-entry-body h3,
-.cl-entry-body h4 { margin: 14px 0 8px; }
+.cl-entry-body h4     { margin: 12px 0 6px; font-size: 14px; }
 .cl-entry-body ul,
-.cl-entry-body ol      { margin: 0 0 10px 22px; }
-.cl-entry-body code    {
+.cl-entry-body ol     { margin: 0 0 8px 22px; }
+.cl-entry-body code   {
   font-family: var(--mono);
   background: var(--surface2);
   border: 1px solid var(--border);
@@ -110,7 +81,7 @@
   padding: 1px 5px;
   font-size: 12px;
 }
-.cl-entry-body pre     {
+.cl-entry-body pre    {
   font-family: var(--mono);
   background: var(--surface2);
   border: 1px solid var(--border);
@@ -118,17 +89,36 @@
   padding: 10px 12px;
   overflow-x: auto;
   font-size: 12px;
+  margin: 0 0 8px;
 }
 .cl-entry-body pre code { background: none; border: none; padding: 0; }
 .cl-entry-body blockquote {
   border-left: 3px solid var(--border);
   padding: 2px 0 2px 12px;
   color: var(--muted);
-  margin: 0 0 10px;
+  margin: 0 0 8px;
 }
-.cl-entry-body a       { color: var(--accent); }
+.cl-entry-body a      { color: var(--accent); }
 
-/* ── Category badges ────────────────────────────────────────────────── */
+.cl-empty {
+  padding: 30px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.cl-empty-cell {
+  text-align: center;
+  color: var(--muted);
+  padding: 28px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* ── Category badges (changelog-specific palette) ───────────────────── */
+/* Colour coding: feature=blue, fix=accent (green/turquoise),
+   improvement=neutral-grey, security=red. Matches the portal's
+   existing semantic palette (blue/amber/red as signal tones). */
 .cl-badge {
   font-family: var(--mono);
   font-size: 10px;
@@ -139,25 +129,24 @@
   border: 1px solid transparent;
   white-space: nowrap;
 }
-
 .cl-badge-feature {
-  color: #ffffff;
-  background: rgba(91, 141, 238, 0.18);
+  color: var(--blue);
+  background: rgba(91, 141, 238, 0.12);
   border-color: var(--blue);
 }
 .cl-badge-fix {
-  color: #ffffff;
-  background: rgba(0, 212, 170, 0.18);
+  color: var(--accent);
+  background: rgba(0, 212, 170, 0.12);
   border-color: var(--accent);
 }
 .cl-badge-improvement {
-  color: var(--text);
+  color: var(--muted);
   background: var(--surface2);
   border-color: var(--border);
 }
 .cl-badge-security {
-  color: #ffffff;
-  background: rgba(255, 77, 109, 0.18);
+  color: var(--red);
+  background: rgba(255, 77, 109, 0.12);
   border-color: var(--red);
 }
 
@@ -166,36 +155,32 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .cl-admin-table {
   width: 100%;
   border-collapse: collapse;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
 }
-
 .cl-admin-table th,
 .cl-admin-table td {
-  padding: 10px 12px;
+  padding: 10px 14px;
   text-align: left;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
   color: var(--text);
+  vertical-align: middle;
 }
-
 .cl-admin-table th {
   font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: .06em;
+  font-size: 10px;
+  letter-spacing: .12em;
   text-transform: uppercase;
   color: var(--muted);
   background: var(--surface2);
 }
-
 .cl-admin-table tbody tr:last-child td { border-bottom: none; }
 
 .cl-status {
@@ -214,65 +199,57 @@
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
 }
-
 .cl-inline-form { display: inline; margin: 0; padding: 0; }
 
-/* ── Buttons ────────────────────────────────────────────────────────── */
-.cl-btn {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  padding: 6px 12px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  background: var(--surface2);
-  color: var(--text);
-  cursor: pointer;
+/* ── Admin index card grid ──────────────────────────────────────────── */
+.cl-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.cl-admin-card {
+  display: block;
+  color: inherit;
   text-decoration: none;
-  display: inline-block;
-  transition: background .15s, border-color .15s;
+  transition: border-color .15s, background .15s;
 }
-.cl-btn:hover { background: var(--border); }
-
-.cl-btn-accent {
-  background: var(--accent);
-  color: #0a0a0a;
+.cl-admin-card:hover {
   border-color: var(--accent);
+  background: var(--surface2);
 }
-.cl-btn-accent:hover { filter: brightness(1.08); background: var(--accent); }
-
-.cl-btn-danger {
-  color: var(--red);
-  border-color: var(--red);
+.cl-admin-card-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 6px;
 }
-.cl-btn-danger:hover { background: rgba(255, 77, 109, 0.12); }
-
-.cl-btn-secondary { /* base style already subtle — alias for readability */ }
+.cl-admin-card-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
 
 /* ── Form ───────────────────────────────────────────────────────────── */
 .cl-form {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 20px;
   display: flex;
   flex-direction: column;
+  padding: 18px;
 }
-
 .cl-label {
   font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: .06em;
+  font-size: 10px;
+  letter-spacing: .12em;
   text-transform: uppercase;
   color: var(--muted);
   margin-bottom: 6px;
 }
-
 .cl-input {
   font-family: var(--sans);
-  font-size: 14px;
+  font-size: 13px;
   padding: 8px 10px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -282,14 +259,12 @@
   width: 100%;
 }
 .cl-input:focus { outline: none; border-color: var(--accent); }
-
 .cl-textarea {
   font-family: var(--mono);
   font-size: 13px;
   resize: vertical;
   min-height: 160px;
 }
-
 .cl-form-actions {
   display: flex;
   gap: 8px;
@@ -297,7 +272,6 @@
   margin-top: 4px;
   flex-wrap: wrap;
 }
-
 .cl-form-error {
   background: rgba(255, 77, 109, 0.12);
   border: 1px solid var(--red);

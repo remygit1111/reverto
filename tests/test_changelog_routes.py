@@ -305,3 +305,77 @@ class TestAdminCrud:
             follow_redirects=False,
         )
         assert r.status_code == 404
+
+    def test_admin_changelog_page_has_breadcrumb(self, admin_client):
+        """The fix-PR added a "Back to Admin" breadcrumb on every
+        admin/changelog view so an admin can escape back to the
+        extensible /admin index."""
+        r = admin_client.get("/admin/changelog")
+        assert r.status_code == 200
+        assert 'href="/admin"' in r.text
+        assert "Back to Admin" in r.text
+
+
+# ── Admin index ───────────────────────────────────────────────────────────
+
+class TestAdminIndex:
+    """/admin is the extensible landing page for admin actions. This
+    PR adds the first card ("Manage Changelog"); future admin
+    surfaces plug into the same grid."""
+
+    def test_admin_index_unauthenticated_redirects(self):
+        client = TestClient(webapp.app)
+        client.cookies.clear()
+        r = client.get("/admin", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/"
+
+    def test_admin_index_requires_admin(self, non_admin_client):
+        """Logged-in but non-admin user gets 403 (not 404) — the
+        endpoint exists, the caller just isn't allowed."""
+        r = non_admin_client.get("/admin")
+        assert r.status_code == 403
+
+    def test_admin_index_renders_for_admin(self, admin_client):
+        r = admin_client.get("/admin")
+        assert r.status_code == 200
+        # Manage Changelog card links to /admin/changelog.
+        assert 'href="/admin/changelog"' in r.text
+        assert "Manage Changelog" in r.text
+
+    def test_admin_index_shell_uses_portal_header(self, admin_client):
+        """Fix-PR goal: /admin and /changelog render under the same
+        header as the SPA. Assert the shell loads style.css and the
+        main-nav container with the Admin tab active."""
+        r = admin_client.get("/admin")
+        assert r.status_code == 200
+        assert "/static/style.css" in r.text
+        assert 'id="main-nav"' in r.text
+        # The "Admin" nav entry is marked active on this page.
+        assert 'class="tab active" href="/admin"' in r.text
+
+
+# ── Auth status carries user_id ───────────────────────────────────────────
+
+class TestAuthStatusUserId:
+    """SPA-side admin-visibility relies on /auth/status returning
+    user_id. Regression-pin the field so a future refactor can't
+    silently drop it and leave the Admin nav in a flash-of-unstyled
+    state."""
+
+    def test_authenticated_response_includes_user_id(self, admin_client):
+        r = admin_client.get("/auth/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["authenticated"] is True
+        assert body["user_id"] == 1
+        assert body["username"] == "admin"
+
+    def test_unauthenticated_response_has_null_user_id(self):
+        client = TestClient(webapp.app)
+        client.cookies.clear()
+        r = client.get("/auth/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["authenticated"] is False
+        assert body["user_id"] is None
