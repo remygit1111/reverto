@@ -241,21 +241,30 @@ class TestNoDoubleClose:
 
 
 class TestWickSimulation:
-    """Wick simulation: TP/SL fires when the FORMING candle's high/low
-    crosses the target, even if the live tick price hasn't reached it
-    yet. Fill price is capped at the line so realised PnL still matches
-    the configured percentage."""
+    """Wick simulation (post-per-deal-tracking fix): TP / SL / trailing
+    only fire on ticks observed AFTER the deal opened. Pre-existing
+    wicks in the same forming candle no longer trigger retroactively.
 
-    def _seed_wick(self, e, high, low):
-        e._wick_candle[e.config.timeframe] = (float(high), float(low), float(low))
+    Prior to the fix, these tests seeded the forming candle's cached
+    wick directly via ``e._wick_candle[tf] = (high, low, close)`` —
+    that path is now irrelevant because ``_check_tp`` / ``_check_sl``
+    read ``deal._wick_high_since_open`` / ``_wick_low_since_open``
+    instead of the candle. The updated tests drive the tracker with
+    an explicit ``_update_deal_wick_trackers(price)`` call which
+    represents "a tick at this price was observed during the deal's
+    lifetime".
+    """
 
     def test_tp_fires_on_wick_high_when_tick_below_target(self):
+        """A tick at the wick high was OBSERVED during the deal's
+        lifetime; a later sampled tick lands below the target. TP
+        must still fire because the tracker retained the peak."""
         e = _engine(tp_pct=3.0); d = _deal(80000.0); e.state.open_deal(d)
-        # Tick price still 1% above entry (below the 3% TP), but the
-        # candle wick has already pierced the 3% target.
-        tick = 80000.0 * 1.01
         wick_high = 80000.0 * 1.04
-        self._seed_wick(e, wick_high, tick - 50)
+        # Simulate: tick loop first observed the price spike to
+        # wick_high, then the subsequent sample landed at `tick`.
+        e._update_deal_wick_trackers(wick_high)
+        tick = 80000.0 * 1.01
         e._check_tp(d, tick)
         assert d.id not in e.state.open_deals
         closed = e.state.closed_deals[0]
@@ -264,45 +273,273 @@ class TestWickSimulation:
         target = 80000.0 * 1.03
         assert abs(closed.close_price - target) < 0.01
 
-    def test_sl_fires_on_wick_low_when_tick_above_stop(self):
+    def test_sl_fires_on_current_tick_below_stop(self):
+        """SL uses the LIVE TICK only in the post-fix model (no
+        tracker.low memory). Renamed from the old
+        ``_fires_on_wick_low_when_tick_above_stop`` — that scenario
+        is no longer reachable because the monitor loop evaluates
+        SL on every tick and closes at the first tick below the
+        line; a later tick above the line would never see a deal
+        that's still open."""
         e = _engine(sl_type="fixed", sl_pct=5.0); d = _deal(80000.0); e.state.open_deal(d)
-        tick = 80000.0 * 0.97
-        wick_low = 80000.0 * 0.94
-        self._seed_wick(e, tick + 50, wick_low)
-        e._check_sl(d, tick)
+        sl_line = 80000.0 * 0.95
+        # Tick drops below SL line — SL fires at this tick.
+        e._check_sl(d, sl_line - 50)
         assert d.id not in e.state.open_deals
         closed = e.state.closed_deals[0]
         assert closed.close_reason == "sl"
-        sl_line = 80000.0 * 0.95
-        assert abs(closed.close_price - sl_line) < 0.01
 
     def test_wick_disabled_falls_back_to_tick_only(self):
+        """``use_wick_simulation=False`` forces TP evaluation to use the
+        current tick only, ignoring any tracker value the monitor loop
+        might have folded in from a prior tick."""
         e = _engine(tp_pct=3.0); d = _deal(80000.0); e.state.open_deal(d)
-        # Force the engine to ignore the wick cache.
         e.config.use_wick_simulation = False
-        # Cache says target is reached, tick says no.
-        self._seed_wick(e, 80000.0 * 1.05, 80000.0 * 1.04)
+        # Tracker says target is reached (a prior tick spike), current
+        # tick below. With wick-sim disabled, the tracker must be
+        # ignored — only the live tick counts.
+        e._update_deal_wick_trackers(80000.0 * 1.05)
         e._check_tp(d, 80000.0 * 1.01)
-        # Wick was ignored — no close.
         assert d.id in e.state.open_deals
 
     def test_tp_normal_tick_path_unchanged(self):
         e = _engine(tp_pct=3.0); d = _deal(80000.0); e.state.open_deal(d)
-        # No wick cache; tick crosses target the usual way.
+        # No tracker updates; tick itself crosses target.
         e._check_tp(d, 80000.0 * 1.03)
         assert d.id not in e.state.open_deals
 
     def test_trailing_peak_updates_via_wick_high(self):
         e = _engine(sl_type="trailing", sl_pct=5.0)
         d = _deal(80000.0); e.state.open_deal(d)
-        # Wick high above the current tick — peak should track the wick.
         wick_high = 82000.0
+        # Prior tick during lifetime observed the wick_high.
+        e._update_deal_wick_trackers(wick_high)
         tick = 81000.0
-        self._seed_wick(e, wick_high, tick - 100)
         e._check_sl(d, tick)
         assert d._peak_price == pytest.approx(wick_high)
-        # Deal still open — wick low is well above the new SL line.
+        # Deal still open — tracker low is above the new SL line.
         assert d.id in e.state.open_deals
+
+
+class TestPerDealWickTracking:
+    """Regression coverage for the rapid-fire-TP bug.
+
+    Pre-fix: a deal opened mid-candle inherited the candle's full
+    forming wick — including ticks that happened BEFORE the deal
+    was opened. Post-fix: each deal's wick trackers start at
+    ``avg_entry_price`` and only rise (fall) on ticks observed
+    during that deal's own lifetime.
+    """
+
+    def test_wick_tracker_seeded_from_entry_price_on_open(self):
+        """Fresh deal construction seeds both trackers to
+        ``avg_entry_price`` via ``PaperDeal.__post_init__``. A later
+        tick at that price is a no-op; only a higher (lower) tick
+        mutates the tracker."""
+        d = _deal(80000.0)
+        assert d._wick_high_since_open == pytest.approx(80000.0)
+        assert d._wick_low_since_open == pytest.approx(80000.0)
+
+    def test_wick_tracker_updates_on_tick(self):
+        e = _engine(tp_pct=3.0); d = _deal(100.0); e.state.open_deal(d)
+        e._update_deal_wick_trackers(105.0)
+        assert d._wick_high_since_open == pytest.approx(105.0)
+        # Low tracker doesn't move on an upward tick.
+        assert d._wick_low_since_open == pytest.approx(100.0)
+
+    def test_wick_tracker_updates_low_on_downward_tick(self):
+        e = _engine(tp_pct=3.0); d = _deal(100.0); e.state.open_deal(d)
+        e._update_deal_wick_trackers(95.0)
+        assert d._wick_low_since_open == pytest.approx(95.0)
+        assert d._wick_high_since_open == pytest.approx(100.0)
+
+    def test_wick_tracker_ignores_pre_existing_candle_wick(self):
+        """THE CORE REGRESSION TEST for the rapid-fire TP bug.
+
+        Scenario observed on the RSI real-test bot: the 15m candle
+        already had a wick-high ABOVE the TP target before the new
+        deal was opened. Pre-fix, the next tick would read the
+        forming candle's high via ``_wick_high_low`` and fire TP
+        immediately — hundreds of deals cycled through open → TP
+        in minutes, all on the same pre-existing wick. Post-fix,
+        the deal's tracker starts at entry and only rises on new
+        ticks, so the pre-existing wick does nothing.
+        """
+        e = _engine(tp_pct=3.0); d = _deal(100.0); e.state.open_deal(d)
+        # Populate the old ``_wick_candle`` cache to simulate the
+        # forming candle with a pre-existing high above TP. The cache
+        # is now unused by ``_check_tp`` — this seed exists purely to
+        # prove that the old code path has no effect on behaviour.
+        tf = e.config.timeframe
+        e._wick_candle[tf] = (110.0, 99.0, 102.0)  # high, low, close
+        # No ticks observed since deal-open → tracker stays at 100.
+        # The next tick is at 102 — still below TP target of 103.
+        e._check_tp(d, 102.0)
+        assert d.id in e.state.open_deals, (
+            "TP must NOT fire on a pre-existing candle wick — the tracker "
+            "only captures ticks observed since the deal was opened."
+        )
+
+    def test_tp_hit_on_tick_after_deal_open(self):
+        """Direct tick-hit path — the tracker is updated to the tick
+        value, which is also at target. TP fires cleanly."""
+        e = _engine(tp_pct=3.0); d = _deal(100.0); e.state.open_deal(d)
+        e._update_deal_wick_trackers(103.0)
+        e._check_tp(d, 103.0)
+        assert d.id not in e.state.open_deals
+        assert e.state.closed_deals[0].close_reason == "tp"
+
+    def test_tp_hit_on_wick_after_deal_open(self):
+        """Wick-hit path — a prior tick landed above target, the
+        next sampled tick is below but tracker retained the peak.
+        TP fires with fill capped at target."""
+        e = _engine(tp_pct=3.0); d = _deal(100.0); e.state.open_deal(d)
+        e._update_deal_wick_trackers(105.0)  # spike observed
+        e._check_tp(d, 102.0)                # next sample below
+        assert d.id not in e.state.open_deals
+        closed = e.state.closed_deals[0]
+        assert closed.close_reason == "tp"
+        # Fill capped at target, not at the tracked spike.
+        assert closed.close_price == pytest.approx(103.0)
+
+    def test_sl_ignores_pre_fix_tracker_low_memory(self):
+        """Post-fix SL decision is tick-only (see ``_check_sl`` comment
+        for the anachronism argument). A tracker.low value captured
+        from a prior dip must NOT retroactively trigger SL if the
+        current tick has recovered — the monitor loop would have
+        already closed the deal at the dip tick if the dip actually
+        crossed the line."""
+        e = _engine(sl_type="fixed", sl_pct=5.0)
+        d = _deal(100.0); e.state.open_deal(d)
+        # Synthetically push tracker.low below SL line without firing
+        # SL (as would happen if the monitor loop somehow skipped a
+        # tick — which shouldn't happen in practice, but we pin the
+        # behaviour anyway).
+        d._wick_low_since_open = 94.0
+        # Current tick has recovered above SL line.
+        e._check_sl(d, 96.0)
+        assert d.id in e.state.open_deals, (
+            "SL must not fire on a historical tracker.low — decision "
+            "is based on the current tick only."
+        )
+
+    def test_trailing_stop_uses_since_open_high(self):
+        """Trailing peak must only rise on ticks observed during the
+        deal's lifetime — not on the forming candle's full wick."""
+        e = _engine(sl_type="trailing", sl_pct=5.0)
+        d = _deal(100.0); e.state.open_deal(d)
+
+        # Seed the OLD forming-candle cache to a peak we want the
+        # trailing logic to IGNORE. Pre-fix this would have jumped
+        # the peak to 120.
+        tf = e.config.timeframe
+        e._wick_candle[tf] = (120.0, 95.0, 102.0)
+
+        # Tick during lifetime observes 110 — that's the real peak.
+        e._update_deal_wick_trackers(110.0)
+        e._check_sl(d, 108.0)
+        assert d._peak_price == pytest.approx(110.0), (
+            "Trailing peak must rise from the since-open tracker "
+            "(110) — NOT from the forming-candle cache (120)."
+        )
+
+    def test_rapid_fire_scenario_no_double_close(self):
+        """End-to-end regression: a pre-existing wick + a fresh deal
+        opened on the same candle must produce ZERO spurious closes.
+        This is the scenario that burned 26 deals in 30 minutes on
+        the RSI real-test bot."""
+        e = _engine(tp_pct=1.0); d = _deal(100.0); e.state.open_deal(d)
+
+        # Candle cache suggests a 15% wick from earlier in the
+        # candle. Pre-fix, the next tick anywhere near entry would
+        # fire TP immediately because the cached wick > target.
+        tf = e.config.timeframe
+        e._wick_candle[tf] = (115.0, 99.0, 100.5)
+
+        # Simulate a handful of ticks near the entry price.
+        for sample in [100.2, 100.5, 100.1, 100.3]:
+            e._update_deal_wick_trackers(sample)
+            e._check_tp(d, sample)
+            e._check_sl(d, sample)
+
+        assert d.id in e.state.open_deals, (
+            "Post-fix: no spurious TP or SL on pre-existing wicks. "
+            "The deal must still be open after 4 near-entry ticks."
+        )
+
+
+class TestStateLoadBackwardsCompat:
+    """Pre-fix state.json files do not carry ``_wick_high_since_open``
+    / ``_wick_low_since_open``. The loader must synthesise a sane
+    default from ``avg_entry_price`` so an in-flight deal carried
+    over a portal restart doesn't immediately trip TP/SL on the
+    next tick."""
+
+    def test_dict_to_deal_without_new_fields_uses_avg_entry(self):
+        from paper.state_io import dict_to_deal
+        state = {
+            "id": "T-0001",
+            "bot_name": "tb",
+            "symbol": "BTC/USD",
+            "side": "long",
+            "leverage": 1,
+            "orders": [
+                {
+                    "order_number": 1,
+                    "price": 80000.0,
+                    "size": 0.001,
+                    "timestamp": None,
+                    "order_type": "base",
+                },
+            ],
+            "is_open": True,
+            # No _wick_high_since_open / _wick_low_since_open keys —
+            # as would be the case for any state.json written by the
+            # pre-fix engine.
+        }
+        d = dict_to_deal(state)
+        assert d._wick_high_since_open == pytest.approx(80000.0)
+        assert d._wick_low_since_open == pytest.approx(80000.0)
+
+    def test_dict_to_deal_respects_persisted_trackers(self):
+        """When the state file DOES carry the trackers (post-fix
+        engine wrote them), the loader must round-trip them
+        unchanged so a tracker that already saw ticks isn't reset
+        on restart."""
+        from paper.state_io import dict_to_deal
+        state = {
+            "id": "T-0001",
+            "bot_name": "tb",
+            "symbol": "BTC/USD",
+            "side": "long",
+            "leverage": 1,
+            "orders": [
+                {
+                    "order_number": 1,
+                    "price": 80000.0,
+                    "size": 0.001,
+                    "timestamp": None,
+                    "order_type": "base",
+                },
+            ],
+            "is_open": True,
+            "_wick_high_since_open": 81500.0,
+            "_wick_low_since_open": 79200.0,
+        }
+        d = dict_to_deal(state)
+        assert d._wick_high_since_open == pytest.approx(81500.0)
+        assert d._wick_low_since_open == pytest.approx(79200.0)
+
+    def test_deal_to_dict_persists_trackers(self):
+        from paper.state_io import deal_to_dict
+        d = _deal(80000.0)
+        # Mutate tracker to a distinct value so the roundtrip check
+        # can't pass by coincidence.
+        d._wick_high_since_open = 82345.0
+        d._wick_low_since_open = 78123.0
+        out = deal_to_dict(d)
+        assert out["_wick_high_since_open"] == pytest.approx(82345.0)
+        assert out["_wick_low_since_open"] == pytest.approx(78123.0)
 
 
 class TestManualTriggerLiquidationGuard:
