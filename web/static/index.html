@@ -7,7 +7,8 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=76">
+<link rel="stylesheet" href="/static/style.css?v=77">
+<link rel="stylesheet" href="/static/changelog.css?v=3">
 </head>
 <body>
 
@@ -417,8 +418,8 @@
   <button class="tab" id="nav-deals-btn">Active Deals</button>
   <button class="tab" id="nav-bots-btn">Bots</button>
   <button class="tab" id="nav-backtests-btn">Backtest History</button>
-  <a class="tab" href="/changelog">Changelog</a>
-  <a class="tab" href="/admin" data-admin-only hidden>Admin</a>
+  <button class="tab" id="nav-changelog-btn">Changelog</button>
+  <button class="tab" id="nav-admin-btn" data-admin-only hidden>Admin</button>
 </nav>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
@@ -540,6 +541,94 @@
           <tr class="empty-row"><td colspan="9">No open deals</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Changelog                                                           -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="view-changelog" class="page">
+  <div class="cl-page">
+    <div class="section-title">What's new</div>
+    <div id="cl-status" class="cl-empty">Loading…</div>
+    <div id="cl-entries" class="cl-entries"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Admin                                                               -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="view-admin" class="page">
+  <div class="cl-page">
+    <div id="admin-index">
+      <div class="section-title">Admin</div>
+      <div class="cl-admin-grid">
+        <a class="card cl-admin-card" id="admin-card-changelog" href="#admin/changelog-manage">
+          <div class="cl-admin-card-title">Manage Changelog</div>
+          <div class="cl-admin-card-desc">
+            Create, edit, publish and delete changelog entries.
+          </div>
+        </a>
+      </div>
+    </div>
+    <div id="admin-changelog-manage" class="admin-subpage hidden">
+      <div class="cl-breadcrumb">
+        <a href="#admin" id="admin-back-link">← Back to Admin</a>
+      </div>
+      <div class="cl-admin-header">
+        <div class="section-title">Changelog — admin</div>
+        <button class="hbtn hbtn-theme btn-accent" id="admin-cl-new-btn" type="button">
+          + New entry
+        </button>
+      </div>
+      <div class="card card-no-pad">
+        <table class="cl-admin-table">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Category</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="admin-cl-tbody">
+            <tr><td colspan="5" class="cl-empty-cell">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- MODAL: Changelog entry editor (new + edit)                                -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="cl-edit-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title" id="cl-modal-title">Changelog entry</div>
+
+    <label class="profile-label" for="cl-modal-title-input">Title</label>
+    <input id="cl-modal-title-input" class="modal-input" type="text" maxlength="200">
+
+    <label class="profile-label" for="cl-modal-category">Category</label>
+    <select id="cl-modal-category" class="modal-input">
+      <option value="feature">Feature</option>
+      <option value="fix">Fix</option>
+      <option value="improvement">Improvement</option>
+      <option value="security">Security</option>
+    </select>
+
+    <label class="profile-label" for="cl-modal-description">Description (markdown)</label>
+    <textarea id="cl-modal-description" class="modal-input cl-textarea" rows="10" maxlength="20000"></textarea>
+
+    <div id="cl-modal-error" class="login-error hidden"></div>
+
+    <div class="modal-actions">
+      <button type="button" class="hbtn hbtn-theme" id="cl-modal-cancel">Cancel</button>
+      <button type="button" class="hbtn hbtn-theme" id="cl-modal-save-draft">Save as draft</button>
+      <button type="button" class="hbtn hbtn-theme btn-accent" id="cl-modal-save-publish">Save &amp; publish</button>
     </div>
   </div>
 </div>
@@ -1280,6 +1369,6 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=184"></script>
+<script src="/static/app.js?v=185"></script>
 </body>
 </html>
