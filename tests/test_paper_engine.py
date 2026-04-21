@@ -687,3 +687,109 @@ class TestDealCreationContract:
         assert engine.state.get_open_deals_snapshot() == {}, (
             "refused DB create must not leave an in-memory phantom deal"
         )
+
+
+# ── Tick-level structured error logging ─────────────────────────────────────
+
+
+class _FakeRateLimit(Exception):
+    """Stand-in for ccxt.RateLimitExceeded — class name matches the ccxt
+    MRO entry that paper.errors treats as transient, so classify_exception
+    resolves it to status=429 / is_transient=True."""
+
+
+_FakeRateLimit.__name__ = "RateLimitExceeded"
+
+
+class _FakeAuthError(Exception):
+    pass
+
+
+_FakeAuthError.__name__ = "AuthenticationError"
+
+
+class TestTickFailureStructuredLogging:
+    """A raising exchange must produce a single-line structured log with
+    bot/exchange/endpoint/symbol/status/class/retry/transient/message
+    fields. Operators grep portal.log for these keys when a bot goes
+    quiet."""
+
+    def test_transient_failure_logs_structured_fields(self, engine, caplog):
+        engine.exchange.get_ticker.side_effect = _FakeRateLimit(
+            "bitget 429 Too Many Requests"
+        )
+        with caplog.at_level("ERROR", logger="paper.paper_engine"):
+            engine._tick()
+
+        matches = [r for r in caplog.records if "Tick failure" in r.message]
+        assert len(matches) == 1, f"expected 1 tick-failure log, got {matches}"
+        line = matches[0].getMessage()
+        assert "bot=testbot" in line
+        assert "exchange=bitget" in line
+        assert "endpoint=tick" in line
+        assert "symbol=BTC/USD" in line
+        assert "status=429" in line
+        assert "class=RateLimitExceeded" in line
+        assert "retry=1/5" in line
+        assert "transient=yes" in line
+
+    def test_persistent_failure_renders_transient_no(self, engine, caplog):
+        """An AuthenticationError must classify as non-transient. The
+        structured log must show transient=no so operators can split
+        auth/config bugs from rate-limit noise with a single grep."""
+        engine.exchange.get_ticker.side_effect = _FakeAuthError(
+            "invalid API key"
+        )
+        with caplog.at_level("ERROR", logger="paper.paper_engine"):
+            engine._tick()
+
+        matches = [r for r in caplog.records if "Tick failure" in r.message]
+        assert len(matches) == 1
+        line = matches[0].getMessage()
+        assert "class=AuthenticationError" in line
+        assert "status=401" in line
+        assert "transient=no" in line
+
+    def test_consecutive_errors_increment_retry_counter(self, engine, caplog):
+        """The retry=N/5 field tracks the current streak. Two ticks that
+        both fail must render retry=1/5 then retry=2/5 — operators use
+        this to distinguish a single flake from a sustained outage."""
+        engine.exchange.get_ticker.side_effect = _FakeRateLimit("429")
+        with caplog.at_level("ERROR", logger="paper.paper_engine"):
+            engine._tick()
+            engine._tick()
+
+        lines = [
+            r.getMessage() for r in caplog.records
+            if "Tick failure" in r.message
+        ]
+        assert len(lines) == 2
+        assert "retry=1/5" in lines[0]
+        assert "retry=2/5" in lines[1]
+
+    def test_consecutive_counter_resets_on_successful_tick(
+        self, engine, caplog,
+    ):
+        """After a recovery tick the retry counter restarts at 1 on the
+        next failure — without this, a long-running bot would accumulate
+        a misleading retry=N even for unrelated flakes."""
+        engine.exchange.get_ticker.side_effect = [
+            _FakeRateLimit("429"),  # fail
+            MagicMock(mark_price=50000.0, last=50000.0),  # recover
+            _FakeRateLimit("429"),  # fail again — fresh streak
+        ]
+        with caplog.at_level("ERROR", logger="paper.paper_engine"):
+            engine._tick()
+            engine._tick()
+            engine._tick()
+
+        lines = [
+            r.getMessage() for r in caplog.records
+            if "Tick failure" in r.message
+        ]
+        assert len(lines) == 2
+        assert "retry=1/5" in lines[0]
+        assert "retry=1/5" in lines[1], (
+            "expected counter reset after recovery, got "
+            f"{lines[1]}"
+        )
