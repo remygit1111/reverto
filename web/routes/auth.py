@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core import user_store
+from core.user_store import PASSWORD_MIN_LENGTH
 from web import app as _webapp
 from web.app import (
     _audit,
@@ -117,10 +118,10 @@ async def auth_change_password(
     request: Request,
     session: dict = Depends(_require_session),
 ):
-    if len(body.new_password) < 8:
+    if len(body.new_password) < PASSWORD_MIN_LENGTH:
         raise HTTPException(
             status_code=400,
-            detail="New password must be at least 8 characters",
+            detail=f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
         )
     username = session.get("u", "")
     user = user_store.verify_password(username, body.current_password)
