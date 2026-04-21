@@ -14,6 +14,7 @@ from config.models import BotConfig
 from core.schedule_guard import ScheduleGuard
 from exchanges.base_exchange import BaseExchange
 from notifications.telegram import TelegramNotifier
+from paper.errors import classify_exception, format_log_line
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from paper.state_io import StateIO, deal_to_dict, dict_to_deal
 from strategies.indicator_engine import IndicatorEngine
@@ -74,6 +75,14 @@ CLOSED_DEALS_UI_CAP = 50
 # spam the logs. First N errors log full stack; after that only the
 # truncated exception string.
 TICK_ERROR_TRACEBACK_LIMIT = 5
+
+# Consecutive tick-failure count at which a transient error is reclassified
+# as a persistent failure — triggers the one-shot degraded Telegram
+# notification. Distinct from TICK_ERROR_TRACEBACK_LIMIT (which is a
+# cumulative log-verbosity cap): the persistent threshold tracks the
+# current streak and resets on any successful tick, so a short flake
+# does not burn it while a sustained outage does.
+TICK_ERROR_PERSISTENT_THRESHOLD = 5
 
 # Ensure the SQLite schema exists before any engine instance writes to it.
 # Paper bots run as subprocesses launched by the portal, so they can't rely
@@ -227,6 +236,10 @@ class PaperEngine:
         # intentionally never done — we want cumulative-per-run so
         # spam doesn't re-appear after a single transient recovery.
         self._tick_error_count: int = 0
+        # Consecutive-error streak surfaced in the structured log line
+        # (retry=N/M) so operators can tell a one-off flake from an
+        # ongoing outage. Resets on any successful tick.
+        self._consecutive_tick_errors: int = 0
 
         # Notification queue + worker — verhindert dat een trage Telegram
         # call de tick-loop blokkeert (TP/SL/DCA detectie kritisch op timing).
@@ -689,6 +702,13 @@ class PaperEngine:
             except Exception:
                 pass
 
+            # Successful tick completed — end any transient-error streak.
+            # Cumulative _tick_error_count is intentionally NOT reset
+            # here (it feeds the log-verbosity rate-limit which is a
+            # per-run protection, not a per-streak one).
+            if self._consecutive_tick_errors > 0:
+                self._consecutive_tick_errors = 0
+
         except NotImplementedError:
             # LiveEngine's _place_market_order raises this when the
             # operator flipped dry_run off before Phase 3. The whole
@@ -696,12 +716,8 @@ class PaperEngine:
             # it into the tick-loop retry.
             raise
         except Exception as e:
-            # Truncate exception strings before logging / notifying:
-            # ccxt errors can contain rate-limit payload or partial
-            # credential fragments, and str(e) without bound would send
-            # them verbatim to Telegram.
-            msg = str(e)[:200]
             self._tick_error_count += 1
+            self._consecutive_tick_errors += 1
             try:
                 from web import metrics as _m
                 # Pass the exception itself — classify_error maps it to
@@ -710,19 +726,31 @@ class PaperEngine:
                 _m.record_tick_error(self._bot_slug or "unknown", e)
             except Exception:
                 pass
+
+            # Classify once so every downstream consumer (log line,
+            # Telegram notification, future metrics tag) reads the same
+            # transient-vs-persistent verdict.
+            err = classify_exception(
+                e,
+                exchange=self.config.exchange.value,
+                endpoint="tick",
+                symbol=self.config.pair,
+                retry_attempt=self._consecutive_tick_errors,
+                max_retries=TICK_ERROR_PERSISTENT_THRESHOLD,
+            )
+            log_line = format_log_line(err, bot=self._bot_slug or "unknown")
+
             # First N errors: log the full traceback for debugging.
-            # After that fall back to the short message so a broken
+            # After that fall back to the structured line so a broken
             # exchange endpoint can't flood the log.
             if self._tick_error_count <= TICK_ERROR_TRACEBACK_LIMIT:
-                logger.exception(
-                    "Tick error (%d/%d): %s",
-                    self._tick_error_count, TICK_ERROR_TRACEBACK_LIMIT, msg,
-                )
+                logger.exception("Tick failure %s", log_line)
             else:
-                logger.error(
-                    "Tick error #%d: %s", self._tick_error_count, msg,
-                )
-            self._notify(self.notifier.notify_error, self.config.name, msg)
+                logger.error("Tick failure %s", log_line)
+
+            self._notify(
+                self.notifier.notify_error, self.config.name, err.message,
+            )
         finally:
             if _tick_ctx is not None:
                 try:
