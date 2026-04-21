@@ -32,6 +32,11 @@ Volledige setup-gids (env-vars, schema-migraties, restore-flow):
 [docs/runbook.md](docs/runbook.md) "First-time setup" +
 "Schema migrations".
 
+**Remote deploy** vanaf Reverto-Dev naar Reverto-Server:
+`ssh bot@<server> 'cd ~/reverto && make deploy'`. Zie
+[docs/runbook.md](docs/runbook.md) "Remote deployment from
+Reverto-Dev" voor de volledige flow.
+
 ## Layout
 
 ```

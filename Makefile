@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin deploy
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -54,6 +54,36 @@ restart: stop
 
 status:
 	@bash status.sh
+
+# ── Remote deployment (Reverto-Server) ───────────────────────────────────────
+# Workflow: dev op Reverto-Dev merged PR naar main, deploy vanaf Dev via:
+#   ssh bot@192.168.178.227 'cd ~/reverto && make deploy'
+#
+# Target doet ALLEEN git pull — geen automatische bot-restarts. De operator
+# moet zelf via de portal-UI beslissen welke bots te herstarten (of via
+# `make restart` voor het portal zelf). Bot-restart-automation vereist een
+# aparte design-sessie over bot-state-preservation en het valt buiten de
+# scope van deploy-triviality.
+#
+# Bij een destructive schema migration (zie docs/runbook.md "Schema
+# migrations") weigert init_db() te boot'en zonder de expliciete
+# REVERTO_DESTRUCTIVE_MIGRATE=1 opt-in; die flag wordt NOOIT in deze
+# target gezet — destructive migrations horen expliciet, niet via een
+# routine-deploy.
+deploy:
+	@echo ""
+	@echo "  [deploy] Reverto-Server pulling latest main…"
+	@echo ""
+	@git pull origin main
+	@echo ""
+	@echo "  [deploy] git pull complete."
+	@echo "  [deploy] Next steps (manual):"
+	@echo "    - Restart het portal als code-wijzigingen dat vereisen:"
+	@echo "        make restart"
+	@echo "    - Herstart relevante bots via de portal-UI"
+	@echo "    - Bij schema-migration prompts: zie docs/runbook.md"
+	@echo "      sectie 'Schema migrations' voor de opt-in flow"
+	@echo ""
 
 # ── Logs volgen ───────────────────────────────────────────────────────────────
 log:
