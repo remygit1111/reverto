@@ -2074,7 +2074,247 @@ async function loadChangelog() {
   }
 }
 
-async function loadAdminChangelog() { /* Phase 4 */ }
+// ── Admin — changelog CRUD ───────────────────────────────────────────────
+// Lists every entry (drafts + published) in a table and wires the
+// modal editor for create/edit plus inline publish/unpublish/delete
+// actions. Every write goes via the /api/admin/changelog/* surface;
+// the server handles validation + audit logging.
+
+// Tracks which entry the modal is currently editing. null = create
+// mode, integer = edit mode. Reset on modal close.
+let _clEditingId = null;
+
+async function loadAdminChangelog() {
+  const tbody = $('admin-cl-tbody');
+  if (!tbody) return;
+  tbody.innerHTML =
+    '<tr><td colspan="5" class="cl-empty-cell">Loading…</td></tr>';
+  try {
+    const r = await fetch('/api/admin/changelog');
+    if (r.status === 401) { _handle401(); return; }
+    if (r.status === 403) {
+      tbody.innerHTML =
+        '<tr><td colspan="5" class="cl-empty-cell">' +
+        'Admin access required.' +
+        '</td></tr>';
+      return;
+    }
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    const data = await r.json();
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    if (entries.length === 0) {
+      tbody.innerHTML =
+        '<tr><td colspan="5" class="cl-empty-cell">' +
+        'No entries yet. Click “+ New entry” to add the first one.' +
+        '</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    entries.forEach((e) => tbody.appendChild(_clRenderAdminRow(e)));
+  } catch (e) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="cl-empty-cell">' +
+      'Failed to load entries.' +
+      '</td></tr>';
+  }
+}
+
+function _clRenderAdminRow(entry) {
+  const tr = document.createElement('tr');
+
+  const tdTitle = document.createElement('td');
+  tdTitle.textContent = entry.title || '';
+  tr.appendChild(tdTitle);
+
+  const tdCat = document.createElement('td');
+  tdCat.appendChild(_clCategoryBadge(entry.category));
+  tr.appendChild(tdCat);
+
+  const tdStatus = document.createElement('td');
+  const status = document.createElement('span');
+  status.className = 'cl-status ' +
+    (entry.is_published ? 'cl-status-published' : 'cl-status-draft');
+  status.textContent = entry.is_published ? 'Published' : 'Draft';
+  tdStatus.appendChild(status);
+  tr.appendChild(tdStatus);
+
+  const tdCreated = document.createElement('td');
+  tdCreated.textContent = _clFormatDate(entry.created_at);
+  tr.appendChild(tdCreated);
+
+  const tdActions = document.createElement('td');
+  tdActions.className = 'cl-actions';
+
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.className = 'hbtn hbtn-theme';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', () => openClEditModal(entry));
+  tdActions.appendChild(editBtn);
+
+  const pubBtn = document.createElement('button');
+  pubBtn.type = 'button';
+  if (entry.is_published) {
+    pubBtn.className = 'hbtn hbtn-theme';
+    pubBtn.textContent = 'Unpublish';
+    pubBtn.addEventListener('click', () => _clPublishAction(entry.id, false));
+  } else {
+    pubBtn.className = 'hbtn hbtn-theme btn-accent';
+    pubBtn.textContent = 'Publish';
+    pubBtn.addEventListener('click', () => _clPublishAction(entry.id, true));
+  }
+  tdActions.appendChild(pubBtn);
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.className = 'hbtn hbtn-theme btn-danger';
+  delBtn.textContent = 'Delete';
+  delBtn.addEventListener('click', () => _clDeleteAction(entry.id));
+  tdActions.appendChild(delBtn);
+
+  tr.appendChild(tdActions);
+  return tr;
+}
+
+function openClEditModal(entry) {
+  const modal = $('cl-edit-modal');
+  if (!modal) return;
+  _clEditingId = entry ? entry.id : null;
+  $('cl-modal-title').textContent =
+    entry ? `Edit entry #${entry.id}` : 'New changelog entry';
+  $('cl-modal-title-input').value = entry ? (entry.title || '') : '';
+  $('cl-modal-category').value = entry ? (entry.category || 'feature') : 'feature';
+  // The API ships raw markdown in ``description`` on admin-shape
+  // entries so the edit form can round-trip it unmodified.
+  $('cl-modal-description').value = entry ? (entry.description || '') : '';
+  const err = $('cl-modal-error');
+  err.classList.add('hidden');
+  err.textContent = '';
+  modal.classList.add('show');
+  setTimeout(() => $('cl-modal-title-input').focus(), 30);
+}
+
+function closeClEditModal() {
+  const modal = $('cl-edit-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  _clEditingId = null;
+}
+
+function _clShowModalError(msg) {
+  const err = $('cl-modal-error');
+  if (!err) return;
+  err.textContent = msg;
+  err.classList.remove('hidden');
+}
+
+function _clCollectModalPayload() {
+  return {
+    title: ($('cl-modal-title-input').value || '').trim(),
+    description: ($('cl-modal-description').value || '').trim(),
+    category: $('cl-modal-category').value,
+  };
+}
+
+function _clValidateModalPayload(p) {
+  if (!p.title) return 'Title is required.';
+  if (!p.description) return 'Description is required.';
+  if (!['feature', 'fix', 'improvement', 'security'].includes(p.category)) {
+    return 'Invalid category.';
+  }
+  return null;
+}
+
+async function _clSaveModal(publish) {
+  const payload = _clCollectModalPayload();
+  const err = _clValidateModalPayload(payload);
+  if (err) { _clShowModalError(err); return; }
+
+  try {
+    let savedId;
+    if (_clEditingId === null) {
+      // Create
+      const r = await fetch('/api/admin/changelog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        _clShowModalError(await _clErrorMessage(r));
+        return;
+      }
+      const body = await r.json();
+      savedId = body.id;
+    } else {
+      // Update
+      const r = await fetch(`/api/admin/changelog/${_clEditingId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        _clShowModalError(await _clErrorMessage(r));
+        return;
+      }
+      savedId = _clEditingId;
+    }
+
+    if (publish) {
+      const pr = await fetch(
+        `/api/admin/changelog/${savedId}/publish`,
+        { method: 'POST' },
+      );
+      if (!pr.ok) {
+        _clShowModalError(await _clErrorMessage(pr));
+        return;
+      }
+    }
+
+    closeClEditModal();
+    loadAdminChangelog();
+  } catch (e) {
+    _clShowModalError('Network error — please try again.');
+  }
+}
+
+async function _clErrorMessage(response) {
+  try {
+    const j = await response.json();
+    if (j && j.detail) return String(j.detail);
+  } catch (e) { /* fall through */ }
+  return `Request failed (status ${response.status}).`;
+}
+
+async function _clPublishAction(entryId, publish) {
+  const path = publish
+    ? `/api/admin/changelog/${entryId}/publish`
+    : `/api/admin/changelog/${entryId}/unpublish`;
+  try {
+    const r = await fetch(path, { method: 'POST' });
+    if (!r.ok) {
+      // Non-fatal: reload to reflect current server state anyway.
+      console.warn('publish action failed:', r.status);
+    }
+  } catch (e) {
+    console.warn('publish action errored:', e);
+  }
+  loadAdminChangelog();
+}
+
+async function _clDeleteAction(entryId) {
+  if (!window.confirm('Delete this entry? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`/api/admin/changelog/${entryId}`, {
+      method: 'DELETE',
+    });
+    if (!r.ok && r.status !== 204) {
+      console.warn('delete failed:', r.status);
+    }
+  } catch (e) {
+    console.warn('delete errored:', e);
+  }
+  loadAdminChangelog();
+}
 
 // ── New bot single-page form ─────────────────────────────────────────────────
 // Short inline help shown under the indicator type dropdown so a new
@@ -6356,6 +6596,14 @@ function setupEventListeners() {
     e.preventDefault();
     goAdmin();
   });
+  const clNewBtn = $('admin-cl-new-btn');
+  if (clNewBtn) clNewBtn.addEventListener('click', () => openClEditModal(null));
+  const clCancel = $('cl-modal-cancel');
+  if (clCancel) clCancel.addEventListener('click', closeClEditModal);
+  const clDraft = $('cl-modal-save-draft');
+  if (clDraft) clDraft.addEventListener('click', () => _clSaveModal(false));
+  const clPublish = $('cl-modal-save-publish');
+  if (clPublish) clPublish.addEventListener('click', () => _clSaveModal(true));
 
   // The dedicated detail-back button is gone; users leave the detail
   // view via the main Bots tab or the browser back button (popstate).
