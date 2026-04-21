@@ -4,6 +4,14 @@ Operational procedures for running Reverto in paper or (Phase-3+) live
 mode. Follow these instead of hunting through source when something
 needs attention.
 
+## Machines
+
+Reverto draait op twee machines: **Reverto-Server** voor productie
+(Mele Quieter 4C mini-PC, fanless, low-power) en **Reverto-Dev** voor
+development (workstation waar features worden gebouwd). Operationele
+commands in dit runbook draaien op Reverto-Server tenzij expliciet
+anders vermeld; remote-deploy flow vanaf Reverto-Dev staat onderaan.
+
 ## First-time setup
 
 Bij een fresh install — of na een destructieve schema-migratie (zie
@@ -288,9 +296,9 @@ notifications via its `notify_stop` / `notify_shutdown` queue drain.
 
 ## Remote deployment from Reverto-Dev
 
-Reverto draait op twee machines: **Reverto-Server** (Mele, productie,
-IP `192.168.178.227`) en **Reverto-Dev** (development workstation,
-waar nieuwe features worden gebouwd). De deploy-flow:
+Reverto draait op twee machines: **Reverto-Server** (Mele Quieter 4C,
+productie, IP `192.168.178.227`) en **Reverto-Dev** (development
+workstation, waar nieuwe features worden gebouwd). De deploy-flow:
 
 1. Code-werk gebeurt op Reverto-Dev.
 2. Feature wordt gemerged naar `main` via PR (CI draait op 3.12 +
