@@ -164,12 +164,53 @@ else:
 
 # SameSite policy. "strict" is the production default — it stops every
 # cross-site request from carrying the session cookie, which is the
-# strongest CSRF mitigation short of custom headers. The test fixture
-# flips this to "lax" temporarily because httpx/TestClient in CI
-# respects strict SameSite more aggressively than the local WSL2 build
-# and drops the cookie on follow-up requests that lack an Origin header
-# (TestClient doesn't synthesise one). Production clients always have
-# a real Origin/Referer so the same strict policy behaves as intended.
+# strongest CSRF mitigation short of custom headers. Production clients
+# always have a real Origin/Referer so the strict policy behaves as
+# intended.
+#
+# Audit v26-22 (known limitation — ACCEPTED, 2026-04-21): the test
+# fixture in tests/test_web_routes.py::auth_client flips this to "lax"
+# for the duration of each test because httpx/TestClient in CI on
+# Python 3.13 + Ubuntu runners dropped the cookie on follow-up requests
+# that had no Origin header (DIAG-6 output on commit 88ce0e3). Our
+# test-suite therefore validates the "lax" cookie-posture, not the
+# production "strict" posture.
+#
+# Exploratory fix attempted on branch fix/audit-v26-22-testclient-
+# samesite: build a SameSiteStrictTestClient wrapper that auto-injects
+# ``Origin: http://testserver`` on every request, rolling back the
+# ``_COOKIE_SAMESITE = "lax"`` override. Gate 1 (exploratory research)
+# landed NO-GO for two concrete reasons:
+#
+#   1. httpx 0.28.1 does NOT actively enforce SameSite — it delegates
+#      cookie storage to Python's stdlib http.cookiejar, which predates
+#      the SameSite spec and has no enforcement branch. Confirmed via
+#      source read (httpx/_models.py line 11 + 1079-1095) and the
+#      upstream discussion at github.com/encode/httpx/discussions/2168
+#      ("Cookie and CookieJar are used under the hood; SameSite is
+#      stored as a nonstandard attribute, not enforced").
+#
+#   2. Locally (Python 3.12.3 + WSL2) the exact failing test-flow —
+#      login → logout → cookies.clear() → re-login → gated GET —
+#      delivers the cookie correctly with SameSite=strict regardless
+#      of an Origin header. Standalone repro in /tmp/test_samesite_
+#      fullflow.py showed all three variants (no header, matching
+#      Origin, cross-site Origin) deliver the cookie.
+#
+# Consequence: the CI-specific 3.13-Ubuntu behaviour that triggered the
+# original fix in commit 5a4d97b could not be reproduced in a Python
+# 3.13 environment from this workstation (no 3.13 binary available),
+# and the Origin-injection hypothesis has no mechanism in httpx 0.28.1
+# to grip onto. Pushing an unvalidated wrapper for CI to judge violates
+# the "tests pass at every commit" rule.
+#
+# Known limitation: auth-tests validate the "lax" cookie-posture only.
+# Manual QA in staging / production validates the real "strict"
+# behaviour. Revisit this decision when either:
+#   - TOTP implementation (Phase B) re-opens the auth-stack for broader
+#     rework, or
+#   - httpx publishes a TestClient SameSite-aware release, or
+#   - we gain Python 3.13 reproducibility on this workstation.
 _COOKIE_SAMESITE: str = "strict"
 
 # ── Phase-3a: auth state lives in the users table ─────────────────────────
