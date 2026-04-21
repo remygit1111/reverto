@@ -1,0 +1,309 @@
+/* web/static/changelog.css
+   Page-specific styles for /changelog and /admin/changelog. Sits on
+   top of style.css so colour tokens (--bg, --accent, --border, …)
+   come from the main portal theme and track dark/light mode
+   automatically. */
+
+.cl-main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 28px 20px 60px;
+}
+
+.cl-title {
+  font-family: var(--mono);
+  font-size: 22px;
+  letter-spacing: .04em;
+  margin-bottom: 18px;
+  color: var(--text);
+}
+
+.cl-nav-link {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  transition: color .15s, background .15s;
+}
+.cl-nav-link:hover { color: var(--text); background: var(--surface2); }
+
+/* ── Empty state ───────────────────────────────────────────────────── */
+.cl-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.cl-empty-cell {
+  text-align: center;
+  color: var(--muted);
+  padding: 28px 12px;
+}
+
+/* ── Public listing ─────────────────────────────────────────────────── */
+.cl-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cl-entry {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 20px;
+}
+
+.cl-entry-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.cl-entry-title {
+  font-size: 18px;
+  color: var(--text);
+  margin: 0;
+}
+
+.cl-entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.cl-entry-date {
+  letter-spacing: .04em;
+}
+
+.cl-entry-body {
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.cl-entry-body p       { margin: 0 0 10px; }
+.cl-entry-body p:last-child { margin-bottom: 0; }
+.cl-entry-body h1,
+.cl-entry-body h2,
+.cl-entry-body h3,
+.cl-entry-body h4 { margin: 14px 0 8px; }
+.cl-entry-body ul,
+.cl-entry-body ol      { margin: 0 0 10px 22px; }
+.cl-entry-body code    {
+  font-family: var(--mono);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+.cl-entry-body pre     {
+  font-family: var(--mono);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.cl-entry-body pre code { background: none; border: none; padding: 0; }
+.cl-entry-body blockquote {
+  border-left: 3px solid var(--border);
+  padding: 2px 0 2px 12px;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.cl-entry-body a       { color: var(--accent); }
+
+/* ── Category badges ────────────────────────────────────────────────── */
+.cl-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.cl-badge-feature {
+  color: #ffffff;
+  background: rgba(91, 141, 238, 0.18);
+  border-color: var(--blue);
+}
+.cl-badge-fix {
+  color: #ffffff;
+  background: rgba(0, 212, 170, 0.18);
+  border-color: var(--accent);
+}
+.cl-badge-improvement {
+  color: var(--text);
+  background: var(--surface2);
+  border-color: var(--border);
+}
+.cl-badge-security {
+  color: #ffffff;
+  background: rgba(255, 77, 109, 0.18);
+  border-color: var(--red);
+}
+
+/* ── Admin listing ──────────────────────────────────────────────────── */
+.cl-admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.cl-admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cl-admin-table th,
+.cl-admin-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.cl-admin-table th {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--surface2);
+}
+
+.cl-admin-table tbody tr:last-child td { border-bottom: none; }
+
+.cl-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+.cl-status-draft     { color: var(--muted); }
+.cl-status-published { color: var(--accent); border-color: var(--accent); }
+
+.cl-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cl-inline-form { display: inline; margin: 0; padding: 0; }
+
+/* ── Buttons ────────────────────────────────────────────────────────── */
+.cl-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+  transition: background .15s, border-color .15s;
+}
+.cl-btn:hover { background: var(--border); }
+
+.cl-btn-accent {
+  background: var(--accent);
+  color: #0a0a0a;
+  border-color: var(--accent);
+}
+.cl-btn-accent:hover { filter: brightness(1.08); background: var(--accent); }
+
+.cl-btn-danger {
+  color: var(--red);
+  border-color: var(--red);
+}
+.cl-btn-danger:hover { background: rgba(255, 77, 109, 0.12); }
+
+.cl-btn-secondary { /* base style already subtle — alias for readability */ }
+
+/* ── Form ───────────────────────────────────────────────────────────── */
+.cl-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.cl-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.cl-input {
+  font-family: var(--sans);
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 4px;
+  margin-bottom: 14px;
+  width: 100%;
+}
+.cl-input:focus { outline: none; border-color: var(--accent); }
+
+.cl-textarea {
+  font-family: var(--mono);
+  font-size: 13px;
+  resize: vertical;
+  min-height: 160px;
+}
+
+.cl-form-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.cl-form-error {
+  background: rgba(255, 77, 109, 0.12);
+  border: 1px solid var(--red);
+  color: var(--red);
+  padding: 10px 12px;
+  border-radius: 4px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
