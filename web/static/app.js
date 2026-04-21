@@ -1939,6 +1939,59 @@ function goNewBot() {
   fetchWizardChartData();
 }
 
+// ── Changelog + Admin SPA tabs ───────────────────────────────────────────────
+// Both pages used to be server-rendered escape-hatches (full page-load
+// out of the SPA); the SPA-integration refactor turns them into
+// first-class tabs that route entirely via showPage() + the JSON API
+// endpoints in web/routes/changelog.py.
+
+function goChangelog(fromPop = false) {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-changelog-btn');
+  showPage('changelog');
+  // The overview poller is pointless while the user is reading
+  // release notes; pause it so the network stays quiet.
+  clearInterval(overviewInterval);
+  overviewInterval = null;
+  if (!fromPop) _pushHistory('changelog', '#changelog');
+  loadChangelog();
+}
+
+function goAdmin(fromPop = false, subRoute = null) {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-admin-btn');
+  showPage('admin');
+  clearInterval(overviewInterval);
+  overviewInterval = null;
+  if (!fromPop) {
+    const hash = subRoute ? `#admin/${subRoute}` : '#admin';
+    _pushHistory('admin', hash, { sub: subRoute });
+  }
+  _showAdminSubpage(subRoute);
+  if (subRoute === 'changelog-manage') loadAdminChangelog();
+}
+
+function _showAdminSubpage(name) {
+  // Default view: the admin-cards index. Sub-pages replace the index
+  // in place so back/forward navigation feels the same as switching
+  // top-level tabs.
+  const index = $('admin-index');
+  const sub = $('admin-changelog-manage');
+  if (!index || !sub) return;
+  if (name === 'changelog-manage') {
+    index.classList.add('hidden');
+    sub.classList.remove('hidden');
+  } else {
+    index.classList.remove('hidden');
+    sub.classList.add('hidden');
+  }
+}
+
+// Placeholder implementations — the next refactor commits wire these
+// to the /api/changelog + /api/admin/changelog endpoints.
+async function loadChangelog() { /* Phase 3 */ }
+async function loadAdminChangelog() { /* Phase 4 */ }
+
 // ── New bot single-page form ─────────────────────────────────────────────────
 // Short inline help shown under the indicator type dropdown so a new
 // operator knows what each filter does without leaving the wizard.
@@ -3307,10 +3360,17 @@ function _routeFromHash() {
       return;
     }
   }
+  if (h.startsWith('admin/')) {
+    const sub = h.slice('admin/'.length);
+    goAdmin(true, sub || null);
+    return;
+  }
   switch (h) {
     case 'bots':      goBots(true); break;
     case 'deals':     goDeals(true); break;
     case 'backtests': goBacktests(true); break;
+    case 'changelog': goChangelog(true); break;
+    case 'admin':     goAdmin(true); break;
     case 'overview':  goOverview(true); break;
     default:          goOverview(true); break;
   }
@@ -6198,6 +6258,20 @@ function setupEventListeners() {
   $('nav-overview-btn').addEventListener('click', () => goOverview());
   $('nav-bots-btn').addEventListener('click', () => goBots());
   $('nav-deals-btn').addEventListener('click', () => goDeals());
+  const navClBtn = $('nav-changelog-btn');
+  if (navClBtn) navClBtn.addEventListener('click', () => goChangelog());
+  const navAdminBtn = $('nav-admin-btn');
+  if (navAdminBtn) navAdminBtn.addEventListener('click', () => goAdmin());
+  const adminCard = $('admin-card-changelog');
+  if (adminCard) adminCard.addEventListener('click', (e) => {
+    e.preventDefault();
+    goAdmin(false, 'changelog-manage');
+  });
+  const adminBack = $('admin-back-link');
+  if (adminBack) adminBack.addEventListener('click', (e) => {
+    e.preventDefault();
+    goAdmin();
+  });
 
   // The dedicated detail-back button is gone; users leave the detail
   // view via the main Bots tab or the browser back button (popstate).
@@ -6574,6 +6648,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'bots':     goBots(true); break;
       case 'deals':    goDeals(true); break;
       case 'backtests': goBacktests(true); break;
+      case 'changelog': goChangelog(true); break;
+      case 'admin':    goAdmin(true, s.sub || null); break;
       case 'overview':
       default:         goOverview(true); break;
     }
