@@ -62,6 +62,12 @@ def deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
         "_tp_override":    deal._tp_override,
         "_sl_override":    deal._sl_override,
         "_dca_enabled":    deal._dca_enabled,
+        # Since-open wick trackers — see paper_state.PaperDeal docstring.
+        # Persisted so a portal restart doesn't reset the tracker to
+        # the entry price and hand the deal a full window in which a
+        # pre-existing wick could retroactively trigger TP/SL.
+        "_wick_high_since_open": deal._wick_high_since_open,
+        "_wick_low_since_open":  deal._wick_low_since_open,
         "entry_trigger":   deal.entry_trigger,
         "exit_trigger":    deal.exit_trigger,
         # Full order list — required to reconstruct the deal on restart.
@@ -125,6 +131,19 @@ def dict_to_deal(d: dict) -> PaperDeal:
     deal._tp_override = d.get("_tp_override")
     deal._sl_override = d.get("_sl_override")
     deal._dca_enabled = d.get("_dca_enabled", True)
+    # Since-open wick trackers — backwards-compat with pre-fix state
+    # files that didn't have these fields: fall back to avg_entry_price
+    # (the same sentinel ``__post_init__`` uses for fresh deals). The
+    # tracker will then reflect "no ticks observed since reload" which
+    # is the only honest value we can synthesise from the persisted
+    # state alone.
+    fallback = deal.avg_entry_price if deal.orders else 0.0
+    deal._wick_high_since_open = float(
+        d.get("_wick_high_since_open", fallback)
+    )
+    deal._wick_low_since_open = float(
+        d.get("_wick_low_since_open", fallback)
+    )
     et = d.get("entry_trigger")
     deal.entry_trigger = et if isinstance(et, dict) else None
     xt = d.get("exit_trigger")

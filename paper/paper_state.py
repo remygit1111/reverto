@@ -55,6 +55,43 @@ class PaperDeal:
     _sl_override: Optional[dict] = field(default=None, repr=False)
     _dca_enabled: bool = field(default=True, repr=False)
 
+    # Highest / lowest TICK-PRICE observed since this deal was opened.
+    # Used by wick-simulation in paper trading so TP / SL / trailing-stop
+    # checks only fire on wicks that happened AFTER the deal opened —
+    # pre-existing wicks in the same forming candle do not retroactively
+    # count.
+    #
+    # Rationale: the old code compared TP/SL targets against the
+    # FORMING candle's full wick-high/low (via ``_wick_high_low``). In
+    # live paper trading the tick loop polls faster than candles close,
+    # so a deal opening mid-candle inherited the candle's pre-existing
+    # wick as if it had lived through it — the "rapid-fire TP cycle"
+    # bug observed on the RSI real-test bot (2026-04-xx).
+    #
+    # Only relevant for PAPER trading. Backtest still processes one
+    # candle per step with the candle's full wick — there, per-deal
+    # tracking adds no value because deals and candles advance in
+    # lockstep.
+    #
+    # Initialisation: ``__post_init__`` sets both to ``avg_entry_price``
+    # on freshly-constructed deals (so the trackers carry the entry
+    # price as the "no ticks observed yet" baseline). ``dict_to_deal``
+    # in paper.state_io restores any persisted value, falling back to
+    # ``avg_entry_price`` for deals loaded from a pre-fix state file.
+    _wick_high_since_open: float = field(default=0.0, repr=False)
+    _wick_low_since_open: float = field(default=0.0, repr=False)
+
+    def __post_init__(self):
+        # Sentinel-default → seed from entry price. We check for 0.0
+        # (not None) because dataclass + frozen=False + init=True
+        # semantics only give us the float default; treating 0.0 as
+        # "not yet set" is safe because a real deal never opens at 0.0
+        # (avg_entry_price would be meaningless there).
+        if self._wick_high_since_open == 0.0 and self.orders:
+            self._wick_high_since_open = self.avg_entry_price
+        if self._wick_low_since_open == 0.0 and self.orders:
+            self._wick_low_since_open = self.avg_entry_price
+
     @property
     def total_size(self) -> float:
         """Total position size across all orders."""
