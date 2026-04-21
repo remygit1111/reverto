@@ -1,0 +1,7 @@
+# Default: Unix line endings voor text-files in de repo
+* text=auto eol=lf
+
+# Explicit voor het belangrijkste
+*.sh text eol=lf
+*.py text eol=lf
+Makefile text eol=lf
