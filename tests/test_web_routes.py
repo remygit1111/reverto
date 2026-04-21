@@ -253,7 +253,13 @@ class TestAuth:
         client.cookies.clear()
         r = client.get("/auth/status")
         assert r.status_code == 200
-        assert r.json() == {"authenticated": False, "username": None}
+        # user_id is part of the response shape since the changelog
+        # PR — the SPA uses it to gate admin-only nav items.
+        assert r.json() == {
+            "authenticated": False,
+            "username": None,
+            "user_id": None,
+        }
 
     def test_login_bad_credentials_returns_401(self, auth_client):
         r = auth_client.post(

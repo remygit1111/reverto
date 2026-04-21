@@ -272,6 +272,13 @@ nav {
   border-bottom: 2px solid transparent;
   white-space: nowrap;
   transition: color .15s;
+  /* Anchor-tag tabs (e.g. Changelog, Admin — which force a real
+     page-load outside the SPA) pick up the browser's default
+     underline + blue colour without these resets. The button-tag
+     tabs don't need them but inherit the rules harmlessly. */
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 
 .tab:hover  { color: var(--text); }
