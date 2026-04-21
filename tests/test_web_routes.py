@@ -288,20 +288,24 @@ class TestAuth:
         assert "bots" in r.json()
 
     def test_change_password_rejects_short(self, auth_client):
+        """Audit v26-03: minimum length is PASSWORD_MIN_LENGTH (12).
+        The 11-char value would have passed the pre-fix <8 check; it
+        must now be rejected by the centralised policy."""
         token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post(
             "/api/auth/change-password",
-            json={"current_password": _KNOWN_PW, "new_password": "short"},
+            json={"current_password": _KNOWN_PW, "new_password": "elevenchars"},
         )
         assert r.status_code == 400
+        assert "12 characters" in r.json().get("detail", "")
 
     def test_change_password_rejects_wrong_current(self, auth_client):
         token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         r = auth_client.post(
             "/api/auth/change-password",
-            json={"current_password": "not-it", "new_password": "longenough1"},
+            json={"current_password": "not-it", "new_password": "longenough12"},
         )
         assert r.status_code == 401
 

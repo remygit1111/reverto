@@ -67,11 +67,11 @@ class TestSetupAdminEnvVarHandling:
         assert exit_code == 0
         assert calls["getpass"] == 2
 
-    def test_env_var_short_password_refused(self, monkeypatch):
-        """A too-short env-var password still hits the length check
-        (no interactive prompt, direct rejection). Covers the
-        non-empty-but-short branch."""
-        monkeypatch.setenv("REVERTO_ADMIN_PW", "short")
+    def test_env_var_short_password_refused(self, monkeypatch, capsys):
+        """Audit v26-03: length check uses the centralised
+        PASSWORD_MIN_LENGTH (12). An 11-char password would have
+        passed the pre-fix ≥10 check; it must now be rejected."""
+        monkeypatch.setenv("REVERTO_ADMIN_PW", "elevenchars")
 
         # getpass must NOT be called — env-var is non-empty.
         def _fail_getpass(prompt=""):
@@ -81,6 +81,8 @@ class TestSetupAdminEnvVarHandling:
 
         exit_code = setup_admin.main()
         assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "at least 12 characters" in err
 
     def test_env_var_happy_path(self, monkeypatch):
         """Non-empty env-var with sufficient length → success without
@@ -109,3 +111,33 @@ class TestSetupAdminEnvVarHandling:
 
         exit_code = setup_admin.main()
         assert exit_code == 1
+
+
+class TestPasswordPolicyCentralised:
+    """Audit v26-03: password-length policy lives in
+    ``core.user_store.PASSWORD_MIN_LENGTH``. Both setup_admin and the
+    change-password route must reference that exact constant — not a
+    local copy that can drift."""
+
+    def test_setup_admin_imports_shared_constant(self):
+        """setup_admin must read the same constant exposed by
+        core.user_store; a local fallback would re-introduce the v26-03
+        drift."""
+        from core import user_store
+
+        assert setup_admin.PASSWORD_MIN_LENGTH is user_store.PASSWORD_MIN_LENGTH
+
+    def test_change_password_route_imports_shared_constant(self):
+        """The change-password route must reference the same constant;
+        a hardcoded literal would re-open the v26-03 drift."""
+        from core import user_store
+        from web.routes import auth as auth_route
+
+        assert auth_route.PASSWORD_MIN_LENGTH is user_store.PASSWORD_MIN_LENGTH
+
+    def test_policy_value_is_twelve(self):
+        """Pin the current value so an accidental downgrade below the
+        audit-mandated floor (12) trips this test."""
+        from core import user_store
+
+        assert user_store.PASSWORD_MIN_LENGTH == 12
