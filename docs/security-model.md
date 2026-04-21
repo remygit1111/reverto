@@ -22,7 +22,7 @@ migration-roadmap (Part 4) per laag stuurbaar blijft.
 ### 1.1 Waarom dit document bestaat
 
 Reverto draait nu als single-tenant bot-platform op één operator-host
-(Mele, WSL2 + local Python). Phase-3a (gemerged 2026-04-20) heeft de
+(Reverto-Server, WSL2 + local Python). Phase-3a (gemerged 2026-04-20) heeft de
 auth-laag op DB-basis gezet en de `_request_user` bridge opgeleverd, wat
 de foundation legt voor multi-user. Het concrete doel is om binnen
 12-24 maanden een multi-tenant SaaS te draaien waar andere users hun
@@ -115,8 +115,8 @@ Expliciet niet in scope van dit document:
 ## Part 2 · Threat Model
 
 Zeven scenarios. Per scenario: welke aanvaller, welke capabilities,
-wat de huidige state (single-tenant Mele) biedt, wat de target state
-(multi-tenant SaaS) moet bieden. Elke rij in de vergelijkings-tabel
+wat de huidige state (single-tenant Reverto-Server) biedt, wat de
+target state (multi-tenant SaaS) moet bieden. Elke rij in de vergelijkings-tabel
 benoemt één capability — de aanvals-capability wordt uitgesplitst
 zodat gaps per laag zichtbaar blijven.
 
@@ -126,7 +126,7 @@ Attacker heeft root/admin op de Reverto-host. Kan bestanden lezen,
 processen starten, netwerk-verkeer onderscheppen, de DB muteren. Het
 klassieke post-breach scenario.
 
-| Capability | Current state (single-tenant Mele) | Target state (multi-tenant SaaS) |
+| Capability | Current state (single-tenant Reverto-Server) | Target state (multi-tenant SaaS) |
 |------------|------------------------------------|----------------------------------|
 | Lees alle user passwords | bcrypt-gehasht, niet plaintext. `password_hash` is in DB — hashes leaken, passwords niet tenzij zwak. | Ongewijzigd: bcrypt rounds=12. Reverse vereist offline cracking. |
 | Lees alle exchange API-keys | **Ja** — `credentials/<uid>/*.enc` + `keys/<uid>.key` staan beide op dezelfde host. Fernet-decrypt is triviaal met beide files. | **Nee** — API-secrets leven in de signing-service, niet in de main app. Main app ziet alleen de public `api_key` voor display/routing. |
@@ -248,7 +248,7 @@ separatie juist de signing-service als trust-boundary centraal
 plaatst — een compromise hier is een systemic failure, geen
 geïsoleerd incident.
 
-| Capability | Current state (single-tenant Mele) | Target state (multi-tenant SaaS) |
+| Capability | Current state (single-tenant Reverto-Server) | Target state (multi-tenant SaaS) |
 |------------|------------------------------------|----------------------------------|
 | Lees alle user API-keys in plaintext | **N/A** — signing-service bestaat nog niet; credentials leven in main-app. Scenario 2.1 dekt die current-state. | **Ja** — volledige exfiltratie van credentials mogelijk; alle per-user `.enc` files zijn decryptbaar met MK. |
 | Bypass Lagen 2/3 (volume-caps) | **N/A** | **Ja** — de cap-counters en rolling-max-berekeningen leven in de signing-service DB. Enforcement wordt door de aanvaller gemaskeerd of uitgeschakeld. |
@@ -490,7 +490,7 @@ scenario waar defense-in-depth sowieso niet tegen beschermt.
 
 Master Key rotation:
 
-- Tijdens single-tenant Mele draait het systeem op de genesis-MK;
+- Tijdens single-tenant Reverto-Server draait het systeem op de genesis-MK;
   rotation-flow is pas productie-relevant vanaf Phase C.
 - Rotation-proces: nieuwe MK wordt gegenereerd, alle DEK's worden
   one-by-one gedecrypt met de oude MK en ge-re-encrypt met de
@@ -1352,7 +1352,7 @@ gestaakt project niet in een half-werkende state eindigt.
 - PostgreSQL migratie vanaf SQLite. Alembic-based migrations.
 - Docker Compose setup met drie services: `reverto-web`,
   `reverto-signer`, `reverto-db`. Gedeelde network + isolated
-  data-volumes per service. Nog op Mele — geen cloud-migratie in
+  data-volumes per service. Nog op Reverto-Server — geen cloud-migratie in
   deze fase.
 - `reverto-signer` scaffolding: FastAPI app, eigen Postgres schema,
   mTLS-ready. Begint als dumb-proxy (forwardt calls naar
@@ -1410,7 +1410,7 @@ gestaakt project niet in een half-werkende state eindigt.
 ### Phase G — SaaS-launch readiness
 
 **Deliverables:**
-- Migratie van Mele → Hetzner / Linode / comparable VPS. DNS,
+- Migratie van Reverto-Server → Hetzner / Linode / comparable VPS. DNS,
   TLS-cert-management (Let's Encrypt auto-renew), backup-strategy
   naar object-storage.
 - Incident-response plan (apart document). Concrete runbooks voor:
