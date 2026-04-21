@@ -283,10 +283,33 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
 
 
 def _require_session(request: Request) -> dict:
-    """FastAPI dependency — reject if the caller has no valid session cookie."""
+    """FastAPI dependency — reject if the caller has no valid session
+    cookie OR if the backing user has been deactivated.
+
+    Audit v26-01 MEDIUM: pre-fix this helper only checked the
+    itsdangerous signature + TTL + session_epoch on the cookie. A
+    user flipped to ``active = 0`` still had a cookie that passed
+    those checks — the only way to lock them out was to wait for
+    TTL expiry or bump their session_epoch. ``_request_user`` (the
+    dependency used by almost every other route) already does the
+    active-check, so this was a parity gap: one endpoint
+    (``/api/auth/change-password`` at time of fix) would happily
+    serve a deactivated account.
+
+    Post-fix: same 401 + "User not found" response shape as
+    ``_request_user`` on the inactive-user path, so clients see
+    identical UI behaviour regardless of which helper a given
+    endpoint happens to use.
+    """
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
     if not payload:
         raise HTTPException(status_code=401, detail="Authentication required")
+    uid = payload.get("uid")
+    if not isinstance(uid, int) or uid <= 0:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    user = user_store.get_user_by_id(uid)
+    if user is None or not user.active:
+        raise HTTPException(status_code=401, detail="User not found")
     return payload
 
 
