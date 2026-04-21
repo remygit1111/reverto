@@ -62,3 +62,25 @@ uitleg moeten krijgen van de `auto_stopped` state zodra dit landt.
 
 Prioriteit: LOW (UX-koek, geen safety-issue — de bot doet in degraded
 staat niks kwaadaardigs, alleen ongewenste API-load).
+
+### B-03 — ML pipeline `_persist_results` niet user-scoped
+
+Context: tijdens de v26-18 fix gespot dat 
+`ml/nightly_pipeline._persist_results(bot_slug, results)` schrijft 
+naar `ml/results_<slug>.json` zonder user_id in de filename. Bij 
+multi-tenant met overlappende bot-slugs over users zou dat file-
+collisions geven — de ene user overschrijft de ML-results van 
+de andere.
+
+Huidige staat: `ml/nightly_pipeline.py:_persist_results` gebruikt 
+alleen `bot_slug` in het pad. Phase-3b rollout zal dit raken.
+
+Richting: filename-pattern aanpassen naar `ml/results_<user_id>_
+<slug>.json` of `ml/<user_id>/results_<slug>.json` (consistent 
+met Phase-2 user-scoped layout in `core/paths.py`).
+
+Cross-reference: v26-18 fixte de config-path laag van dezelfde 
+file; _persist_results is de output-laag die hetzelfde patroon 
+nodig heeft.
+
+Prioriteit: MEDIUM (niet urgent voor solo-user; Phase-3b blocker).
