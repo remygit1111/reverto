@@ -151,6 +151,26 @@ class TestPostBotsSmoke:
         assert "bots" in r.json()
 
 
+class TestGetBotSlug:
+    """Audit v26-17: GET /api/bots/{slug} returnt 404 bij onbekende
+    slug (pre-fix: 200 met ``{"error": ...}`` body, inconsistent met
+    andere /api/bots/{slug}/... endpoints die al 404 raisen)."""
+
+    def test_get_unknown_bot_slug_returns_404(self, monkeypatch):
+        async def _fake_get(user_id, slug):
+            return None
+
+        monkeypatch.setattr(webapp.registry, "get", _fake_get)
+
+        r = CLIENT.get("/api/bots/no_such_bot", headers=AUTH)
+        assert r.status_code == 404
+        body = r.json()
+        # FastAPI's standard error-envelope is {"detail": "..."}.
+        assert "detail" in body
+        assert "Unknown bot" in body["detail"]
+        assert "no_such_bot" in body["detail"]
+
+
 class TestInvalidPayload:
     def test_missing_required_fields_is_400(self):
         bad = {"bot": {"name": "x", "mode": "paper", "exchange": "bitget"}}
