@@ -234,6 +234,23 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     "ON backtest_runs(user_id, bot_slug)",
     "CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at "
     "ON backtest_runs(created_at DESC)",
+    # v5 additive: changelog entries surfaced on /changelog, managed
+    # via /admin/changelog. Unowned table (no user_id FK) — an entry
+    # is a property of the product, not of a tenant.
+    """
+    CREATE TABLE IF NOT EXISTS changelog_entries (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        title             TEXT NOT NULL,
+        description       TEXT NOT NULL,
+        category          TEXT NOT NULL,
+        is_published      INTEGER NOT NULL DEFAULT 0,
+        created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        published_at      TEXT,
+        source_commit_sha TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_changelog_entries_published "
+    "ON changelog_entries(is_published, published_at DESC)",
 )
 
 
@@ -308,8 +325,20 @@ def get_db() -> sqlite3.Connection:
 #     table FK-references users, we drop the whole tree to recreate it
 #     on a clean slate. Operator SLA: backup first, provision admin
 #     password after (see scripts/setup_admin.py).
-#   * == 4 → no-op.
-SCHEMA_VERSION = 4
+#   * < 5  → ADDITIVE: introduces the ``changelog_entries`` table. No
+#     existing rows are touched; ``_SCHEMA_STATEMENTS`` runs every
+#     ``init_db()`` with ``CREATE TABLE IF NOT EXISTS`` semantics so
+#     the new table is created lazily on the next boot. The destructive
+#     guard explicitly does NOT trigger on this path.
+#   * == 5 → no-op.
+SCHEMA_VERSION = 5
+
+# Version at which the last destructive drop-and-recreate landed. Any
+# upgrade that crosses this boundary (stored ``user_version`` below it,
+# running code at or above it) requires operator opt-in via
+# ``REVERTO_DESTRUCTIVE_MIGRATE=1``. Version jumps fully above this line
+# (e.g. v4 → v5) are additive and run silently.
+_LAST_DESTRUCTIVE_VERSION = 4
 
 
 def _has_existing_owned_data(conn: sqlite3.Connection) -> bool:
@@ -388,16 +417,28 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0] or 0
     if current == SCHEMA_VERSION:
         return
-    if current < SCHEMA_VERSION:
+    if current > SCHEMA_VERSION:
+        # Future-you downgraded the code; we don't know the new tables.
+        # Refuse to touch the DB rather than lose data silently.
+        raise RuntimeError(
+            f"DB schema is at version {current}, code expects {SCHEMA_VERSION}. "
+            f"Roll forward the code or restore a matching DB snapshot.",
+        )
+
+    # Path 1: destructive — only when the stored version predates the
+    # last destructive schema change. Every migration ≤ v4 used the
+    # drop-and-recreate pattern; additive-only versions (v5+) never
+    # take this branch.
+    if current < _LAST_DESTRUCTIVE_VERSION:
         destructive = _has_existing_owned_data(conn)
         if destructive:
             if os.getenv(_DESTRUCTIVE_OPT_IN_ENV) != "1":
                 raise DatabaseMigrationError(
                     f"Destructive schema migration required "
-                    f"(v{current} → v{SCHEMA_VERSION}). This will DROP "
-                    f"owned tables (deals, orders, annotations, "
-                    f"backtest_runs, and user password/role/"
-                    f"session_epoch data).\n"
+                    f"(v{current} → v{_LAST_DESTRUCTIVE_VERSION}). This "
+                    f"will DROP owned tables (deals, orders, "
+                    f"annotations, backtest_runs, and user password/"
+                    f"role/session_epoch data).\n"
                     f"To proceed, restart with "
                     f"{_DESTRUCTIVE_OPT_IN_ENV}=1 set. A pre-migration "
                     f"backup will be created automatically at "
@@ -409,7 +450,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             logger.warning(
                 "Destructive migration v%d → v%d authorized via %s=1. "
                 "Pre-migration backup created: %s",
-                current, SCHEMA_VERSION,
+                current, _LAST_DESTRUCTIVE_VERSION,
                 _DESTRUCTIVE_OPT_IN_ENV, backup_path,
             )
         else:
@@ -425,17 +466,24 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             "password/role/session_epoch data is wiped. After the "
             "migration, run scripts/setup_admin.py to provision the "
             "admin password (login is blocked until you do).",
-            current, SCHEMA_VERSION,
+            current, _LAST_DESTRUCTIVE_VERSION,
         )
         for table in _OWNED_TABLES:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
-    else:
-        # Future-you downgraded the code; we don't know the new tables.
-        # Refuse to touch the DB rather than lose data silently.
-        raise RuntimeError(
-            f"DB schema is at version {current}, code expects {SCHEMA_VERSION}. "
-            f"Roll forward the code or restore a matching DB snapshot.",
+
+    # Path 2: additive — every version jump that does not cross the
+    # last destructive boundary. ``_SCHEMA_STATEMENTS`` runs in
+    # ``init_db()`` below with ``CREATE TABLE IF NOT EXISTS`` /
+    # ``CREATE INDEX IF NOT EXISTS``, so new tables and indexes land
+    # idempotently without touching existing rows. Bumping
+    # ``user_version`` is all that's needed here — no drops, no
+    # backup, no operator opt-in.
+    elif current < SCHEMA_VERSION:
+        logger.info(
+            "Additive schema migration v%d → v%d (no data touched).",
+            current, SCHEMA_VERSION,
         )
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

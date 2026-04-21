@@ -1877,6 +1877,7 @@ from web.routes import admin as _admin_routes  # noqa: E402
 from web.routes import auth as _auth_routes  # noqa: E402
 from web.routes import backtest as _backtest_routes  # noqa: E402
 from web.routes import bots as _bots_routes  # noqa: E402
+from web.routes import changelog as _changelog_routes  # noqa: E402
 from web.routes import chart as _chart_routes  # noqa: E402
 from web.routes import deals as _deals_routes  # noqa: E402
 from web.routes import drawdown as _drawdown_routes  # noqa: E402
@@ -1886,6 +1887,7 @@ app.include_router(_admin_routes.router)
 app.include_router(_auth_routes.router)
 app.include_router(_backtest_routes.router)
 app.include_router(_bots_routes.router)
+app.include_router(_changelog_routes.router)
 app.include_router(_chart_routes.router)
 app.include_router(_deals_routes.router)
 app.include_router(_drawdown_routes.router)
