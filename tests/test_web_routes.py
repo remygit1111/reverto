@@ -432,6 +432,62 @@ class TestPerUserSessionEpoch:
         assert auth_client.get("/api/bots").status_code == 200
 
 
+class TestInactiveUserRejected:
+    """Audit v26-01: ``_require_session`` must reject a user whose
+    row has been flipped to ``active = 0`` even when their cookie
+    still passes signature + TTL + session_epoch checks.
+    ``_request_user`` already enforced this; the two helpers now
+    share the same gate.
+
+    Covers both auth-dependency paths:
+      * ``_require_session`` → ``/api/auth/change-password``
+      * ``_request_user``    → ``/api/bots``
+    """
+
+    def _deactivate_admin(self):
+        """Flip users.active to 0 for the seeded admin row. Using raw
+        SQL rather than a dedicated helper — there isn't one, and
+        spawning an admin-freezer helper just for this test would be
+        over-abstraction for a one-column UPDATE."""
+        from core.database import get_db
+        conn = get_db()
+        with conn:
+            conn.execute("UPDATE users SET active = 0 WHERE id = 1")
+
+    def test_require_session_rejects_inactive_user(self, auth_client):
+        """Pre-fix: cookie signature + epoch both passed, the endpoint
+        served the deactivated user. Post-fix: 401 before the handler
+        body runs. The 'User not found' detail matches what
+        ``_request_user`` already returns for the same state, so the
+        SPA's generic 401 handler fires regardless of which
+        dependency the endpoint uses."""
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        self._deactivate_admin()
+
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={
+                "current_password": _KNOWN_PW,
+                "new_password": "newpassword-42-long",
+            },
+        )
+        assert r.status_code == 401
+        assert r.json()["detail"] == "User not found"
+
+    def test_request_user_rejects_inactive_user(self, auth_client):
+        """Parity coverage for ``_request_user``. If a future refactor
+        drops the active-check from this helper, the audit v26-01
+        parity bug would come back — pin it with an assertion."""
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        self._deactivate_admin()
+
+        r = auth_client.get("/api/bots")
+        assert r.status_code == 401
+        assert r.json()["detail"] == "User not found"
+
+
 class TestDbAnnotationsRoutes:
     """Regression coverage for the /api/db/annotations routes — a past
     report of a 404 on GET turned out to be a 401 from the auth
