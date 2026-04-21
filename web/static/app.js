@@ -1939,6 +1939,383 @@ function goNewBot() {
   fetchWizardChartData();
 }
 
+// ── Changelog + Admin SPA tabs ───────────────────────────────────────────────
+// Both pages used to be server-rendered escape-hatches (full page-load
+// out of the SPA); the SPA-integration refactor turns them into
+// first-class tabs that route entirely via showPage() + the JSON API
+// endpoints in web/routes/changelog.py.
+
+function goChangelog(fromPop = false) {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-changelog-btn');
+  showPage('changelog');
+  // The overview poller is pointless while the user is reading
+  // release notes; pause it so the network stays quiet.
+  clearInterval(overviewInterval);
+  overviewInterval = null;
+  if (!fromPop) _pushHistory('changelog', '#changelog');
+  loadChangelog();
+}
+
+function goAdmin(fromPop = false, subRoute = null) {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-admin-btn');
+  showPage('admin');
+  clearInterval(overviewInterval);
+  overviewInterval = null;
+  if (!fromPop) {
+    const hash = subRoute ? `#admin/${subRoute}` : '#admin';
+    _pushHistory('admin', hash, { sub: subRoute });
+  }
+  _showAdminSubpage(subRoute);
+  if (subRoute === 'changelog-manage') loadAdminChangelog();
+}
+
+function _showAdminSubpage(name) {
+  // Default view: the admin-cards index. Sub-pages replace the index
+  // in place so back/forward navigation feels the same as switching
+  // top-level tabs.
+  const index = $('admin-index');
+  const sub = $('admin-changelog-manage');
+  if (!index || !sub) return;
+  if (name === 'changelog-manage') {
+    index.classList.add('hidden');
+    sub.classList.remove('hidden');
+  } else {
+    index.classList.remove('hidden');
+    sub.classList.add('hidden');
+  }
+}
+
+// ── Changelog — public listing ───────────────────────────────────────────
+// Renders /api/changelog inside the Changelog tab. description_html is
+// rendered and bleach-sanitised server-side (core.markdown_render) so
+// we drop it straight into innerHTML — adding a client-side sanitiser
+// would duplicate the trust boundary without strengthening it.
+
+const _CL_CATEGORY_LABELS = {
+  feature: 'Feature',
+  fix: 'Fix',
+  improvement: 'Improvement',
+  security: 'Security',
+};
+
+function _clFormatDate(ts) {
+  if (!ts) return '—';
+  // Backend emits "YYYY-MM-DD HH:MM:SS"; the user surface only shows
+  // the date half, matching "when was this feature added" rather than
+  // exact publish-click time.
+  return String(ts).split(' ')[0];
+}
+
+function _clCategoryBadge(category) {
+  const safe = String(category || '').replace(/[^a-z]/g, '');
+  const label = _CL_CATEGORY_LABELS[safe] || safe || '—';
+  const badge = document.createElement('span');
+  badge.className = `cl-badge cl-badge-${safe}`;
+  badge.textContent = label;
+  return badge;
+}
+
+function _clRenderEntry(entry) {
+  const article = document.createElement('article');
+  article.className = 'card cl-entry';
+
+  const header = document.createElement('div');
+  header.className = 'cl-entry-header';
+  const title = document.createElement('h2');
+  title.className = 'cl-entry-title';
+  title.textContent = entry.title || '';
+  const meta = document.createElement('div');
+  meta.className = 'cl-entry-meta';
+  meta.appendChild(_clCategoryBadge(entry.category));
+  const date = document.createElement('span');
+  date.className = 'cl-entry-date';
+  date.textContent = _clFormatDate(entry.published_at);
+  meta.appendChild(date);
+  header.appendChild(title);
+  header.appendChild(meta);
+
+  const body = document.createElement('div');
+  body.className = 'cl-entry-body';
+  // innerHTML is safe here: description_html is emitted by bleach on
+  // the server (tags/attrs allow-list enforced). See
+  // core/markdown_render.py.
+  body.innerHTML = entry.description_html || '';
+
+  article.appendChild(header);
+  article.appendChild(body);
+  return article;
+}
+
+async function loadChangelog() {
+  const statusEl = $('cl-status');
+  const listEl = $('cl-entries');
+  if (!statusEl || !listEl) return;
+  listEl.innerHTML = '';
+  statusEl.classList.remove('hidden');
+  statusEl.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/changelog');
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    const data = await r.json();
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    if (entries.length === 0) {
+      statusEl.textContent = 'No updates yet.';
+      return;
+    }
+    statusEl.classList.add('hidden');
+    const frag = document.createDocumentFragment();
+    entries.forEach((e) => frag.appendChild(_clRenderEntry(e)));
+    listEl.appendChild(frag);
+  } catch (e) {
+    statusEl.textContent = 'Failed to load changelog.';
+  }
+}
+
+// ── Admin — changelog CRUD ───────────────────────────────────────────────
+// Lists every entry (drafts + published) in a table and wires the
+// modal editor for create/edit plus inline publish/unpublish/delete
+// actions. Every write goes via the /api/admin/changelog/* surface;
+// the server handles validation + audit logging.
+
+// Tracks which entry the modal is currently editing. null = create
+// mode, integer = edit mode. Reset on modal close.
+let _clEditingId = null;
+
+async function loadAdminChangelog() {
+  const tbody = $('admin-cl-tbody');
+  if (!tbody) return;
+  tbody.innerHTML =
+    '<tr><td colspan="5" class="cl-empty-cell">Loading…</td></tr>';
+  try {
+    const r = await fetch('/api/admin/changelog');
+    if (r.status === 401) { _handle401(); return; }
+    if (r.status === 403) {
+      tbody.innerHTML =
+        '<tr><td colspan="5" class="cl-empty-cell">' +
+        'Admin access required.' +
+        '</td></tr>';
+      return;
+    }
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    const data = await r.json();
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    if (entries.length === 0) {
+      tbody.innerHTML =
+        '<tr><td colspan="5" class="cl-empty-cell">' +
+        'No entries yet. Click “+ New entry” to add the first one.' +
+        '</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    entries.forEach((e) => tbody.appendChild(_clRenderAdminRow(e)));
+  } catch (e) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="cl-empty-cell">' +
+      'Failed to load entries.' +
+      '</td></tr>';
+  }
+}
+
+function _clRenderAdminRow(entry) {
+  const tr = document.createElement('tr');
+
+  const tdTitle = document.createElement('td');
+  tdTitle.textContent = entry.title || '';
+  tr.appendChild(tdTitle);
+
+  const tdCat = document.createElement('td');
+  tdCat.appendChild(_clCategoryBadge(entry.category));
+  tr.appendChild(tdCat);
+
+  const tdStatus = document.createElement('td');
+  const status = document.createElement('span');
+  status.className = 'cl-status ' +
+    (entry.is_published ? 'cl-status-published' : 'cl-status-draft');
+  status.textContent = entry.is_published ? 'Published' : 'Draft';
+  tdStatus.appendChild(status);
+  tr.appendChild(tdStatus);
+
+  const tdCreated = document.createElement('td');
+  tdCreated.textContent = _clFormatDate(entry.created_at);
+  tr.appendChild(tdCreated);
+
+  const tdActions = document.createElement('td');
+  tdActions.className = 'cl-actions';
+
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.className = 'hbtn hbtn-theme';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', () => openClEditModal(entry));
+  tdActions.appendChild(editBtn);
+
+  const pubBtn = document.createElement('button');
+  pubBtn.type = 'button';
+  if (entry.is_published) {
+    pubBtn.className = 'hbtn hbtn-theme';
+    pubBtn.textContent = 'Unpublish';
+    pubBtn.addEventListener('click', () => _clPublishAction(entry.id, false));
+  } else {
+    pubBtn.className = 'hbtn hbtn-theme btn-accent';
+    pubBtn.textContent = 'Publish';
+    pubBtn.addEventListener('click', () => _clPublishAction(entry.id, true));
+  }
+  tdActions.appendChild(pubBtn);
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.className = 'hbtn hbtn-theme btn-danger';
+  delBtn.textContent = 'Delete';
+  delBtn.addEventListener('click', () => _clDeleteAction(entry.id));
+  tdActions.appendChild(delBtn);
+
+  tr.appendChild(tdActions);
+  return tr;
+}
+
+function openClEditModal(entry) {
+  const modal = $('cl-edit-modal');
+  if (!modal) return;
+  _clEditingId = entry ? entry.id : null;
+  $('cl-modal-title').textContent =
+    entry ? `Edit entry #${entry.id}` : 'New changelog entry';
+  $('cl-modal-title-input').value = entry ? (entry.title || '') : '';
+  $('cl-modal-category').value = entry ? (entry.category || 'feature') : 'feature';
+  // The API ships raw markdown in ``description`` on admin-shape
+  // entries so the edit form can round-trip it unmodified.
+  $('cl-modal-description').value = entry ? (entry.description || '') : '';
+  const err = $('cl-modal-error');
+  err.classList.add('hidden');
+  err.textContent = '';
+  modal.classList.add('show');
+  setTimeout(() => $('cl-modal-title-input').focus(), 30);
+}
+
+function closeClEditModal() {
+  const modal = $('cl-edit-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  _clEditingId = null;
+}
+
+function _clShowModalError(msg) {
+  const err = $('cl-modal-error');
+  if (!err) return;
+  err.textContent = msg;
+  err.classList.remove('hidden');
+}
+
+function _clCollectModalPayload() {
+  return {
+    title: ($('cl-modal-title-input').value || '').trim(),
+    description: ($('cl-modal-description').value || '').trim(),
+    category: $('cl-modal-category').value,
+  };
+}
+
+function _clValidateModalPayload(p) {
+  if (!p.title) return 'Title is required.';
+  if (!p.description) return 'Description is required.';
+  if (!['feature', 'fix', 'improvement', 'security'].includes(p.category)) {
+    return 'Invalid category.';
+  }
+  return null;
+}
+
+async function _clSaveModal(publish) {
+  const payload = _clCollectModalPayload();
+  const err = _clValidateModalPayload(payload);
+  if (err) { _clShowModalError(err); return; }
+
+  try {
+    let savedId;
+    if (_clEditingId === null) {
+      // Create
+      const r = await fetch('/api/admin/changelog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        _clShowModalError(await _clErrorMessage(r));
+        return;
+      }
+      const body = await r.json();
+      savedId = body.id;
+    } else {
+      // Update
+      const r = await fetch(`/api/admin/changelog/${_clEditingId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        _clShowModalError(await _clErrorMessage(r));
+        return;
+      }
+      savedId = _clEditingId;
+    }
+
+    if (publish) {
+      const pr = await fetch(
+        `/api/admin/changelog/${savedId}/publish`,
+        { method: 'POST' },
+      );
+      if (!pr.ok) {
+        _clShowModalError(await _clErrorMessage(pr));
+        return;
+      }
+    }
+
+    closeClEditModal();
+    loadAdminChangelog();
+  } catch (e) {
+    _clShowModalError('Network error — please try again.');
+  }
+}
+
+async function _clErrorMessage(response) {
+  try {
+    const j = await response.json();
+    if (j && j.detail) return String(j.detail);
+  } catch (e) { /* fall through */ }
+  return `Request failed (status ${response.status}).`;
+}
+
+async function _clPublishAction(entryId, publish) {
+  const path = publish
+    ? `/api/admin/changelog/${entryId}/publish`
+    : `/api/admin/changelog/${entryId}/unpublish`;
+  try {
+    const r = await fetch(path, { method: 'POST' });
+    if (!r.ok) {
+      // Non-fatal: reload to reflect current server state anyway.
+      console.warn('publish action failed:', r.status);
+    }
+  } catch (e) {
+    console.warn('publish action errored:', e);
+  }
+  loadAdminChangelog();
+}
+
+async function _clDeleteAction(entryId) {
+  if (!window.confirm('Delete this entry? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`/api/admin/changelog/${entryId}`, {
+      method: 'DELETE',
+    });
+    if (!r.ok && r.status !== 204) {
+      console.warn('delete failed:', r.status);
+    }
+  } catch (e) {
+    console.warn('delete errored:', e);
+  }
+  loadAdminChangelog();
+}
+
 // ── New bot single-page form ─────────────────────────────────────────────────
 // Short inline help shown under the indicator type dropdown so a new
 // operator knows what each filter does without leaving the wizard.
@@ -3307,10 +3684,17 @@ function _routeFromHash() {
       return;
     }
   }
+  if (h.startsWith('admin/')) {
+    const sub = h.slice('admin/'.length);
+    goAdmin(true, sub || null);
+    return;
+  }
   switch (h) {
     case 'bots':      goBots(true); break;
     case 'deals':     goDeals(true); break;
     case 'backtests': goBacktests(true); break;
+    case 'changelog': goChangelog(true); break;
+    case 'admin':     goAdmin(true); break;
     case 'overview':  goOverview(true); break;
     default:          goOverview(true); break;
   }
@@ -6198,6 +6582,28 @@ function setupEventListeners() {
   $('nav-overview-btn').addEventListener('click', () => goOverview());
   $('nav-bots-btn').addEventListener('click', () => goBots());
   $('nav-deals-btn').addEventListener('click', () => goDeals());
+  const navClBtn = $('nav-changelog-btn');
+  if (navClBtn) navClBtn.addEventListener('click', () => goChangelog());
+  const navAdminBtn = $('nav-admin-btn');
+  if (navAdminBtn) navAdminBtn.addEventListener('click', () => goAdmin());
+  const adminCard = $('admin-card-changelog');
+  if (adminCard) adminCard.addEventListener('click', (e) => {
+    e.preventDefault();
+    goAdmin(false, 'changelog-manage');
+  });
+  const adminBack = $('admin-back-link');
+  if (adminBack) adminBack.addEventListener('click', (e) => {
+    e.preventDefault();
+    goAdmin();
+  });
+  const clNewBtn = $('admin-cl-new-btn');
+  if (clNewBtn) clNewBtn.addEventListener('click', () => openClEditModal(null));
+  const clCancel = $('cl-modal-cancel');
+  if (clCancel) clCancel.addEventListener('click', closeClEditModal);
+  const clDraft = $('cl-modal-save-draft');
+  if (clDraft) clDraft.addEventListener('click', () => _clSaveModal(false));
+  const clPublish = $('cl-modal-save-publish');
+  if (clPublish) clPublish.addEventListener('click', () => _clSaveModal(true));
 
   // The dedicated detail-back button is gone; users leave the detail
   // view via the main Bots tab or the browser back button (popstate).
@@ -6574,6 +6980,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'bots':     goBots(true); break;
       case 'deals':    goDeals(true); break;
       case 'backtests': goBacktests(true); break;
+      case 'changelog': goChangelog(true); break;
+      case 'admin':    goAdmin(true, s.sub || null); break;
       case 'overview':
       default:         goOverview(true); break;
     }
