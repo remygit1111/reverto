@@ -1288,6 +1288,36 @@ class PaperEngine:
     # Deal monitoring — uses snapshot for safe iteration
     # ------------------------------------------------------------------
 
+    def _update_deal_wick_trackers(self, tick_price: float) -> None:
+        """Fold the current tick-price into every open deal's since-open
+        wick trackers.
+
+        Must run ONCE per tick, BEFORE ``_check_tp`` / ``_check_sl``
+        fire, so the wick-based comparisons in those checks see the
+        correct "wick high observed since THIS deal opened" value.
+
+        Rationale: the bug we're fixing is that ``_check_tp`` used to
+        read the FORMING candle's full high/low via ``_wick_high_low``.
+        That value includes ticks the exchange printed BEFORE the deal
+        was opened, which the deal had no visibility into — and
+        therefore must not retroactively trigger. Tracking per-deal
+        high/low since deal-open-time fixes that asymmetry: each deal
+        only reacts to ticks that occurred during its own lifetime.
+
+        This tracker is tick-only by construction. If a future tick
+        observes a value higher than ``_wick_high_since_open`` (lower
+        than ``_wick_low_since_open``) we raise (lower) it; otherwise
+        no mutation. Deals that were just opened in this same tick
+        already had their trackers seeded to ``avg_entry_price`` via
+        ``PaperDeal.__post_init__`` or ``dict_to_deal``.
+        """
+        open_deals = self.state.get_open_deals_snapshot()
+        for deal in open_deals.values():
+            if tick_price > deal._wick_high_since_open:
+                deal._wick_high_since_open = tick_price
+            if tick_price < deal._wick_low_since_open:
+                deal._wick_low_since_open = tick_price
+
     def _monitor_open_deals(self, price: float):
         """Monitor all open deals for DCA, TP and SL conditions.
 
@@ -1300,6 +1330,13 @@ class PaperEngine:
         fires, giving both the operator and the drawdown guard a chance
         to see the deteriorating position.
         """
+        # Per-deal wick tracking: roll the tick into every open deal's
+        # since-open high/low BEFORE evaluating TP/SL. Ordering matters
+        # — checks that fire in this loop must see the tracker updated
+        # with the current tick. See ``_update_deal_wick_trackers`` for
+        # the rapid-fire-TP regression this closes.
+        self._update_deal_wick_trackers(price)
+
         snapshot = self.state.get_open_deals_snapshot()
         dca_count_this_tick = 0
         for deal_id, deal in snapshot.items():
@@ -1343,8 +1380,21 @@ class PaperEngine:
         avg          = deal.avg_entry_price
         target_price = avg * (1 + tp_pct / 100)
 
-        wick_high, _ = self._wick_high_low(price)
-        wick_hit = wick_high >= target_price
+        # Per-deal wick-high: max TICK-PRICE observed since THIS deal
+        # opened, folded with the current tick. Pre-fix this read the
+        # forming candle's full wick via ``_wick_high_low(price)`` —
+        # which included ticks from BEFORE the deal was opened and
+        # caused spurious TP fires on pre-existing wicks. The tracker
+        # is seeded to ``avg_entry_price`` at deal-open and updated by
+        # ``_update_deal_wick_trackers`` on every tick; ``max(..., price)``
+        # guarantees the comparison always includes the current tick
+        # regardless of whether the caller drove the tracker first
+        # (monitor loop: yes; unit-test harness: usually no).
+        wick_high = max(deal._wick_high_since_open, price)
+        wick_hit = (
+            getattr(self.config, "use_wick_simulation", True)
+            and wick_high >= target_price
+        )
         tick_hit = price >= target_price
 
         if wick_hit or tick_hit:
@@ -1469,16 +1519,39 @@ class PaperEngine:
             sl_type = self.config.stop_loss.type
             sl_pct = self.config.stop_loss.pct
 
-        wick_high, wick_low = self._wick_high_low(price)
+        # Per-deal high since deal-open, folded with the current tick.
+        # Used for trailing-peak updates ONLY — a wick-high observed
+        # earlier in the deal's lifetime is legitimate memory for a
+        # rising trailing peak.
+        #
+        # For the SL hit-check we use the LIVE TICK only, deliberately
+        # NOT the ``_wick_low_since_open`` tracker. Reason: the tracker
+        # captures the lowest tick since deal-open, which for a
+        # trailing SL with a rising peak includes observations from
+        # BEFORE the SL line rose. Comparing an old low against the
+        # current (higher) SL line is anachronistic and triggers
+        # spurious closes on any deal that trails up from entry.
+        # Fixed-SL loses nothing from this either: the line is below
+        # entry, so the current tick is always the meaningful signal
+        # (a prior tick below the line would have already triggered
+        # SL at that prior tick via the monitor loop). The tracker.low
+        # field is retained for observability + symmetry, not for the
+        # hit decision.
+        wick_sim_on = getattr(self.config, "use_wick_simulation", True)
+        wick_high = max(deal._wick_high_since_open, price) if wick_sim_on else price
 
         if sl_type == "trailing":
             # Initialize peak on first tick after deal opens.
             if deal._peak_price == 0.0:
                 deal._peak_price = price
+            # Trailing peak only rises from wicks observed during the
+            # deal's lifetime — pre-fix it was allowed to jump to the
+            # forming candle's full wick-high, which could be a wick
+            # from before the deal opened.
             new_peak = max(deal._peak_price, wick_high)
             if wick_high > price and new_peak > deal._peak_price:
                 logger.debug(
-                    "Trailing peak updated via wick: $%.2f (tick: $%.2f)",
+                    "Trailing peak updated via since-open wick: $%.2f (tick: $%.2f)",
                     wick_high, price,
                 )
             deal._peak_price = new_peak
@@ -1486,7 +1559,13 @@ class PaperEngine:
         else:
             sl_price = deal.avg_entry_price * (1 - sl_pct / 100)
 
-        wick_hit = wick_low <= sl_price
+        # SL hit-check: tick-only, no tracker.low memory (see comment
+        # above on why tracker.low is anachronistic for trailing SL).
+        # ``wick_hit`` is synthesised False for logging-shape
+        # compatibility with the rest of the function — there is no
+        # between-poll wick fill in the new model.
+        wick_hit = False
+        wick_low = price
         tick_hit = price <= sl_price
 
         if wick_hit or tick_hit:
