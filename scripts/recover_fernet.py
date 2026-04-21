@@ -33,7 +33,14 @@ from pathlib import Path
 # Make the Reverto package importable from the scripts dir.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.credentials import _KEY_FILE  # noqa: E402
+# Default legacy system-key path. Post-Phase-3a (audit v26-06) the
+# system Fernet key at logs/.credentials.key is no longer read by
+# runtime code (the .auth.json blob it encrypted has been replaced
+# by users.password_hash in the DB). This script stays as a recovery
+# tool for operators who still have `.bak.*` files on disk from the
+# pre-3a era, and can also be pointed at a per-user key path via
+# --keyfile for Phase-2 key-rotation rollbacks.
+_LEGACY_KEY_FILE = Path(__file__).parent.parent / "logs" / ".credentials.key"
 
 
 def list_backups(keyfile: Path) -> int:
@@ -73,8 +80,12 @@ def main() -> int:
         description="Fernet rotation recovery tool",
     )
     parser.add_argument(
-        "--keyfile", type=Path, default=_KEY_FILE,
-        help=f"Path to the key file (default: {_KEY_FILE})",
+        "--keyfile", type=Path, default=_LEGACY_KEY_FILE,
+        help=(
+            f"Path to the key file (default: {_LEGACY_KEY_FILE} — "
+            f"legacy system key; pass a per-user path via "
+            f"keys/<uid>.key for Phase-2 rotations)."
+        ),
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
