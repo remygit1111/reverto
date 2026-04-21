@@ -1519,14 +1519,15 @@ def _validate_bot_payload(payload: dict) -> BotConfig:
 # ── WebSocket log streaming ───────────────────────────────────────────────────
 
 class LogBroadcaster:
-    # TODO(phase-3): broadcast() moet per-user filteren zodra multi-
-    # tenant WS-delivery werkelijkheid wordt. Nu werkt het omdat er
-    # maar één user is (id=1) en ws_logs zelf al user-scoped de
-    # registry consulteert — een user kan dus alleen subscriben op
-    # slugs die 'ie bezit, en de tail_logs producer broadcast alleen
-    # naar clients die op een specifieke slug subscriben. Zodra
-    # Phase-3 echte multi-user auth activeert moet connect() ook de
-    # user_id opslaan en broadcast() filteren. Zie docs/phase-3.md §3.
+    # TODO(phase-3b, audit v26-16): broadcast() moet per-user filteren.
+    # connect() moet user_id opslaan naast de slug, zodat broadcast()
+    # alleen pusht naar clients waarvan user_id matcht met de owner
+    # van de slug. Huidig model werkt voor single-admin omdat ws_logs
+    # al user-scoped de registry consulteert bij subscribe (een user
+    # kan niet subscriben op andermans slug), maar de broadcast-laag
+    # zelf kent geen user-scope. Zie docs/phase-3.md §3 en audit
+    # v26-report finding v26-16 voor de cross-tenant data-leak
+    # risk-analyse.
     def __init__(self):
         self._clients: dict[str, set[WebSocket]] = {}
         # asyncio.Lock — essentieel zodra uvicorn meerdere workers krijgt
@@ -1624,15 +1625,14 @@ class StateBroadcaster:
     Mirrors LogBroadcaster, but shares one flat client set (state
     updates are bot-agnostic — every client wants every update).
     """
-    # TODO(phase-3): broadcast() moet per-user filteren zodra multi-
-    # tenant WS-delivery werkelijkheid wordt. Nu werkt het omdat er
-    # maar één user is (id=1) en ws_state hydrateert z'n initial
-    # snapshot al user-scoped uit registry.all(user_id=...). De
-    # periodieke broadcasts uit watch_state_files zijn echter NOG
-    # niet user-gefilterd — zodra Phase-3 echte multi-user auth
-    # activeert moet connect() de user_id opslaan en broadcast()
-    # snapshots filteren op de eigenaar van elke bot. Zie
-    # docs/phase-3.md §3.
+    # TODO(phase-3b, audit v26-16): broadcast() moet per-user filteren.
+    # ws_state hydrateert z'n initial snapshot al user-scoped via
+    # registry.all(user_id=...), maar de periodieke broadcasts uit
+    # watch_state_files krijgt élke client het payload van élke bot.
+    # Bij multi-user is dat een cross-tenant leak — connect() moet de
+    # user_id van de ws-handshake opslaan en broadcast() moet per
+    # frame checken of de bot-owner matcht. Zie docs/phase-3.md §3
+    # en audit v26-report finding v26-16.
 
     def __init__(self):
         self._clients: set[WebSocket] = set()
@@ -1684,8 +1684,8 @@ async def watch_state_files():
             # Per-user filtering happens at broadcaster-delivery time
             # (WS clients are already user-scoped via their session
             # cookie), so this scan SHOULD cross users. Not a bug —
-            # intentional. See also the TODO on StateBroadcaster for
-            # the Phase-3 delivery-side fix.
+            # intentional. See the Phase-3b delivery-side TODO on
+            # StateBroadcaster (audit v26-16) for the matching fix.
             bots = await registry.all()
             for bot in bots:
                 try:
@@ -1783,8 +1783,8 @@ async def tail_logs():
         # Per-user filtering happens at broadcaster-delivery time
         # (WS clients are user-scoped via their session cookie on
         # connect, see ws_logs), so this scan SHOULD cross users.
-        # Not a bug — intentional. See also the TODO on
-        # LogBroadcaster for the Phase-3 delivery-side fix.
+        # Not a bug — intentional. See the Phase-3b delivery-side
+        # TODO on LogBroadcaster (audit v26-16) for the matching fix.
         log_files: list[tuple[str, Path]] = [
             (bot.slug, bot.log_file) for bot in await registry.all()
         ]
