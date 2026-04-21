@@ -15,7 +15,14 @@ step is logged and skipped rather than aborting the whole pipeline.
 Usage
 -----
     python ml/nightly_pipeline.py --bot indi_group_test
+    python ml/nightly_pipeline.py --bot btc_bot --user-id 1
     python ml/nightly_pipeline.py --bot btc_bot --db /path/to/reverto.db
+
+Audit v26-18: bot YAML reads used to hit the Phase-1 flat path
+(``config/bots/<slug>.yaml``) which stopped existing once Phase 2
+moved everything into per-user subdirs. All yaml-reading functions
+now accept ``user_id`` and resolve through ``core.paths.bot_yaml_path``
+— the single source of truth for the multi-tenant layout.
 """
 
 from __future__ import annotations
@@ -30,6 +37,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from core.paths import bot_yaml_path
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +172,9 @@ def train_entry_filter(
 
 # ── Step 3: parameter optimisation ──────────────────────────────────────────
 
-def optimize_parameters(bot_slug: str, deals_df: pd.DataFrame) -> dict:
+def optimize_parameters(
+    user_id: int, bot_slug: str, deals_df: pd.DataFrame,
+) -> dict:
     """Bayesian parameter search placeholder.
 
     Stubbed against the real backtest engine until the operator wires
@@ -172,6 +183,11 @@ def optimize_parameters(bot_slug: str, deals_df: pd.DataFrame) -> dict:
     real results. When the real backtest hook lands, replace the
     ``return 0.0`` with a call to ``BacktestEngine(...).run()`` and
     return the Sortino ratio.
+
+    Audit v26-18: ``user_id`` scopes the YAML lookup through the
+    Phase-2 ``config/bots/<user_id>/<slug>.yaml`` layout; pre-fix the
+    function searched the flat Phase-1 path and always returned
+    ``config_missing``.
     """
     try:
         import optuna
@@ -180,12 +196,15 @@ def optimize_parameters(bot_slug: str, deals_df: pd.DataFrame) -> dict:
         logger.warning("optuna not installed — skipping parameter optimization")
         return {"skipped": True, "reason": "optuna_missing"}
 
-    config_path = Path(__file__).parent.parent / "config" / "bots" / f"{bot_slug}.yaml"
+    config_path = bot_yaml_path(user_id, bot_slug)
     if not config_path.exists():
         logger.warning("Bot config not found: %s", config_path)
         return {"skipped": True, "reason": "config_missing"}
 
-    logger.info("Starting parameter optimisation for %s", bot_slug)
+    logger.info(
+        "Starting parameter optimisation for user_id=%d slug=%s",
+        user_id, bot_slug,
+    )
 
     def objective(trial: "optuna.Trial") -> float:
         trial.suggest_float("tp_pct", 0.5, 6.0)
@@ -212,15 +231,17 @@ def optimize_parameters(bot_slug: str, deals_df: pd.DataFrame) -> dict:
 # ── Feature-store builder ───────────────────────────────────────────────────
 
 
-def _get_bot_symbol(bot_slug: str) -> str:
+def _get_bot_symbol(user_id: int, bot_slug: str) -> str:
     """Read the pair from a bot's YAML config. Falls back to BTC/USD
     when the file is missing or malformed — the ML pipeline should
-    still try to produce SOMETHING rather than abort on a config typo."""
+    still try to produce SOMETHING rather than abort on a config typo.
+
+    Audit v26-18: routes through ``core.paths.bot_yaml_path`` so the
+    lookup stays in sync with the Phase-2 user-scoped layout.
+    """
     import yaml
 
-    config_path = (
-        Path(__file__).parent.parent / "config" / "bots" / f"{bot_slug}.yaml"
-    )
+    config_path = bot_yaml_path(user_id, bot_slug)
     if not config_path.exists():
         logger.warning("Bot config not found for %s — defaulting to BTC/USD", bot_slug)
         return "BTC/USD"
@@ -234,14 +255,12 @@ def _get_bot_symbol(bot_slug: str) -> str:
     return str(pair)
 
 
-def _get_bot_timeframe(bot_slug: str) -> str:
+def _get_bot_timeframe(user_id: int, bot_slug: str) -> str:
     """Same lookup pattern as _get_bot_symbol, for the candle
     resolution. Defaults to 1h when unset — the bot's own default."""
     import yaml
 
-    config_path = (
-        Path(__file__).parent.parent / "config" / "bots" / f"{bot_slug}.yaml"
-    )
+    config_path = bot_yaml_path(user_id, bot_slug)
     if not config_path.exists():
         return "1h"
     try:
@@ -253,7 +272,7 @@ def _get_bot_timeframe(bot_slug: str) -> str:
 
 
 def _build_feature_store(
-    deals_df: pd.DataFrame, bot_slug: str,
+    deals_df: pd.DataFrame, user_id: int, bot_slug: str,
 ) -> list[dict]:
     """Iterate deals and build a list of feature dicts aligned with
     ``deals_df`` order. Per-deal failures are logged + skipped so one
@@ -268,8 +287,8 @@ def _build_feature_store(
     from ml.candle_loader import load_candles_for_deal
     from ml.features import compute_features
 
-    symbol = _get_bot_symbol(bot_slug)
-    timeframe = _get_bot_timeframe(bot_slug)
+    symbol = _get_bot_symbol(user_id, bot_slug)
+    timeframe = _get_bot_timeframe(user_id, bot_slug)
     logger.info("Feature build: symbol=%s timeframe=%s", symbol, timeframe)
 
     feature_store: list[dict] = []
@@ -307,20 +326,29 @@ def _build_feature_store(
 
 # ── Pipeline runner ─────────────────────────────────────────────────────────
 
-def run_pipeline(bot_slug: str, db_path: str) -> dict:
+def run_pipeline(user_id: int, bot_slug: str, db_path: str) -> dict:
     """Run the three-step nightly pipeline and return a summary dict.
 
     Every step reports its own success/skip reason; a step failing
     (e.g. optuna missing) never aborts later steps. The final summary
     is persisted to ``ml/results_{bot_slug}.json`` so an operator
     diffing last-night vs tonight can spot parameter drift at a glance.
+
+    Audit v26-18: ``user_id`` flows through to every helper that
+    reads bot YAML — ``_build_feature_store``, ``_get_bot_symbol``,
+    ``_get_bot_timeframe``, ``optimize_parameters``. The CLI defaults
+    it to 1 so single-tenant (Phase-1-style) invocations keep working.
     """
-    logger.info("=== Nightly ML Pipeline: %s ===", bot_slug)
+    logger.info("=== Nightly ML Pipeline: user_id=%d slug=%s ===", user_id, bot_slug)
     logger.info("Started at %s", datetime.now().isoformat())
 
-    results: dict = {"started_at": datetime.now().isoformat(), "bot_slug": bot_slug}
+    results: dict = {
+        "started_at": datetime.now().isoformat(),
+        "user_id": user_id,
+        "bot_slug": bot_slug,
+    }
 
-    deals_df = load_deal_history(db_path, bot_slug)
+    deals_df = load_deal_history(db_path, bot_slug, user_id=user_id)
     results["deals_loaded"] = int(len(deals_df))
 
     if len(deals_df) == 0:
@@ -335,7 +363,7 @@ def run_pipeline(bot_slug: str, db_path: str) -> dict:
     # repeated runs don't hammer Bitget). Individual failures skip the
     # deal rather than aborting the batch — a couple of missing
     # candles shouldn't kill tonight's training.
-    feature_store = _build_feature_store(deals_df, bot_slug)
+    feature_store = _build_feature_store(deals_df, user_id, bot_slug)
     results["features_computed"] = len(feature_store)
     results["features_skipped"] = int(len(deals_df)) - len(feature_store)
     logger.info(
@@ -344,7 +372,7 @@ def run_pipeline(bot_slug: str, db_path: str) -> dict:
     )
 
     results["entry_filter"] = train_entry_filter(deals_df, feature_store)
-    results["optimization"] = optimize_parameters(bot_slug, deals_df)
+    results["optimization"] = optimize_parameters(user_id, bot_slug, deals_df)
 
     results["finished_at"] = datetime.now().isoformat()
     _persist_results(bot_slug, results)
@@ -375,6 +403,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Reverto Nightly ML Pipeline")
     parser.add_argument("--bot", required=True, help="Bot slug (e.g. indi_group_test)")
     parser.add_argument(
+        "--user-id",
+        type=int,
+        default=1,
+        help=(
+            "Owning user_id for the bot (Phase-2 user-scoped config "
+            "layout). Default 1 matches the seeded admin user so "
+            "existing single-tenant invocations keep working."
+        ),
+    )
+    parser.add_argument(
         "--db",
         default="logs/reverto.db",
         help="Path to SQLite database (default: logs/reverto.db)",
@@ -399,4 +437,4 @@ if __name__ == "__main__":
         print(f"Error: database not found: {db_path}", file=sys.stderr)
         sys.exit(1)
 
-    run_pipeline(args.bot, str(db_path))
+    run_pipeline(args.user_id, args.bot, str(db_path))
