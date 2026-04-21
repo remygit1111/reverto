@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core import user_store
+from core.password_breach import is_password_pwned
 from core.user_store import PASSWORD_MIN_LENGTH
 from web import app as _webapp
 from web.app import (
@@ -132,6 +133,19 @@ async def auth_change_password(
         raise HTTPException(
             status_code=400,
             detail=f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
+        )
+    # HIBP Pwned-Passwords check (k-anonymity API — see
+    # core/password_breach.py for the protocol + fail-open rationale).
+    # Runs AFTER the cheap length-check but BEFORE the bcrypt
+    # current-password verify, so a new password that fails the length
+    # gate skips the network round-trip entirely.
+    if await is_password_pwned(body.new_password):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This password has been found in data breaches "
+                "and is unsafe to use. Please choose a different password."
+            ),
         )
     username = session.get("u", "")
     user = user_store.verify_password(username, body.current_password)

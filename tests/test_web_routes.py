@@ -212,6 +212,29 @@ def _admin_cookie() -> str:
     return webapp._create_session_cookie(admin)
 
 
+@pytest.fixture(autouse=True)
+def _disable_hibp_by_default(monkeypatch):
+    """Patch ``web.routes.auth.is_password_pwned`` to an async no-op
+    that returns False for every test in this module.
+
+    Rationale: ``/api/auth/change-password`` now calls HIBP after the
+    length-check. Without this patch, every auth-client test that
+    exercises the success path — or any failure path past the length
+    check — would fire a real network request at
+    ``api.pwnedpasswords.com``. That would make the suite slow, add
+    flakiness under CI network hiccups, and violate the "tests run
+    offline" contract the rest of the suite already follows. Tests
+    that specifically want to exercise the pwned-path override this
+    fixture with their own monkeypatch.
+    """
+    async def _always_clean(_plaintext):
+        return False
+
+    monkeypatch.setattr(
+        "web.routes.auth.is_password_pwned", _always_clean,
+    )
+
+
 @pytest.fixture
 def auth_client():
     """TestClient met admin-user die een password heeft gezet via
@@ -314,6 +337,94 @@ class TestAuth:
             json={"current_password": "not-it", "new_password": "longenough12"},
         )
         assert r.status_code == 401
+
+    def test_change_password_rejects_pwned_password(
+        self, auth_client, monkeypatch,
+    ):
+        """A password that HIBP flags as pwned must be refused with
+        400 + the human-readable breach message — even if the current-
+        password field would otherwise verify correctly."""
+        async def _pwned(_plaintext):
+            return True
+        monkeypatch.setattr(
+            "web.routes.auth.is_password_pwned", _pwned,
+        )
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={
+                "current_password": _KNOWN_PW,
+                "new_password": "correcthorsebatterystaple",
+            },
+        )
+        assert r.status_code == 400
+        assert "data breaches" in r.json().get("detail", "")
+
+    def test_change_password_accepts_clean_password(
+        self, auth_client, monkeypatch,
+    ):
+        """HIBP returns False → password change succeeds end-to-end,
+        and the new password actually lands in the DB (verify_password
+        accepts it post-change)."""
+        async def _clean(_plaintext):
+            return False
+        monkeypatch.setattr(
+            "web.routes.auth.is_password_pwned", _clean,
+        )
+
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        new_password = "fresh-clean-password-value-42"
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={
+                "current_password": _KNOWN_PW,
+                "new_password": new_password,
+            },
+        )
+        assert r.status_code == 200
+
+        # Confirm the DB now accepts the new password (the store
+        # layer, not just the route's response, actually changed).
+        from core import user_store
+        assert user_store.verify_password("admin", new_password) is not None
+
+    def test_change_password_length_checked_before_hibp(
+        self, auth_client, monkeypatch,
+    ):
+        """If the length check rejects the new password first, HIBP
+        must not be called at all. Keeps the cheap sync check ahead
+        of the expensive network hop — both as a latency property and
+        so an 11-char attempt doesn't needlessly hit a public API."""
+        calls: list[str] = []
+
+        async def _tracking(plaintext):
+            # We don't care about the plaintext value itself — just
+            # record that the function was invoked. We explicitly do
+            # NOT store the plaintext anywhere.
+            calls.append("called")
+            return False
+
+        monkeypatch.setattr(
+            "web.routes.auth.is_password_pwned", _tracking,
+        )
+
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={
+                "current_password": _KNOWN_PW,
+                "new_password": "shortpw",  # 7 chars — below 12
+            },
+        )
+        assert r.status_code == 400
+        assert "12 characters" in r.json().get("detail", "")
+        assert calls == [], (
+            "HIBP check must not fire when the length gate already rejected "
+            "the password"
+        )
 
     def test_logout_rate_limited(self, auth_client):
         """Audit v26-04: /auth/logout had no @limiter.limit decorator,
