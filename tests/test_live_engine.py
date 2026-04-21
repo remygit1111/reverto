@@ -59,7 +59,8 @@ def mock_notifier():
     for m in [
         "notify_startup", "notify_shutdown", "notify_entry",
         "notify_dca", "notify_take_profit", "notify_stop_loss",
-        "notify_error", "notify_stop", "notify_restart",
+        "notify_error", "notify_error_persistent",
+        "notify_stop", "notify_restart",
     ]:
         setattr(n, m, MagicMock())
     return n
