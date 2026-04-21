@@ -19,15 +19,11 @@ from core import credentials, paths
 @pytest.fixture
 def tmp_store(tmp_path, monkeypatch):
     """Redirect the whole Phase-2 tree (keys/ + credentials/) into
-    tmp_path. The system key at logs/.credentials.key is also
-    redirected so save_encrypted/load_encrypted don't clobber the
-    real file either."""
+    tmp_path. Audit v26-06: de system-key helpers
+    (save_encrypted/load_encrypted) zijn verwijderd post-Phase-3a,
+    dus de oude _LOG_DIR/_KEY_FILE sandboxing is niet langer nodig."""
     monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
     monkeypatch.setattr(credentials, "_BASE_DIR", tmp_path)
-    monkeypatch.setattr(credentials, "_LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(
-        credentials, "_KEY_FILE", tmp_path / "logs" / ".credentials.key",
-    )
     return tmp_path
 
 
@@ -199,22 +195,8 @@ class TestPerUserIsolation:
         assert credentials.get_keys("bitget", user_id=2) is None
 
 
-# ── save_encrypted / load_encrypted (system key, .auth.json) ───────────────
-
-
-class TestSystemEncryption:
-    """The portal auth blob keeps using the system key at
-    logs/.credentials.key — per-user scoping doesn't apply."""
-
-    def test_roundtrip(self, tmp_store):
-        auth_path = tmp_store / "logs" / ".auth.json"
-        credentials.save_encrypted(auth_path, {"hello": "world"})
-        assert credentials.load_encrypted(auth_path) == {"hello": "world"}
-
-    def test_missing_file_returns_none(self, tmp_store):
-        assert credentials.load_encrypted(tmp_store / "nope.enc") is None
-
-    def test_ciphertext_not_plaintext(self, tmp_store):
-        auth_path = tmp_store / "logs" / ".auth.json"
-        credentials.save_encrypted(auth_path, {"password": "hunter2"})
-        assert b"hunter2" not in auth_path.read_bytes()
+# Audit v26-06: TestSystemEncryption (save_encrypted / load_encrypted
+# roundtrip) is verwijderd omdat de helpers in core.credentials zelf
+# zijn gedelete post-Phase-3a. Admin-auth leeft nu in
+# users.password_hash (bcrypt), niet in een Fernet-encrypted
+# .auth.json blob.

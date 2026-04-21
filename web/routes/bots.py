@@ -172,9 +172,13 @@ async def get_bots(
 async def get_bot(
     slug: str, request: Request, user: User = Depends(_request_user),
 ):
+    # Audit v26-17: pre-fix returnde dit endpoint ``{"error": ...}``
+    # met HTTP 200 bij een onbekende slug — HTTP-semantics eist 404
+    # voor "resource niet gevonden." Andere slug-endpoints (config,
+    # drawdown, delete) raisen al HTTPException(404), dus alignen.
     bot = await registry.get(user.id, slug)
     if not bot:
-        return {"error": f"Unknown bot: {slug}"}
+        raise HTTPException(status_code=404, detail=f"Unknown bot: {slug}")
     return bot.read_state()
 
 

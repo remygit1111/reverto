@@ -1,21 +1,18 @@
 # core/credentials.py
 # Encrypted opslag van exchange API keys.
 #
-# Phase 2 of the multi-tenant migration splits credentials storage
-# into two independent paths:
+# Sinds Phase-3a bevat deze module één path: **per-user exchange
+# credentials**. De pre-Phase-3a system-level Fernet helpers
+# (save_encrypted / load_encrypted / _system_fernet) zijn
+# verwijderd in audit v26-06 — ze bedienden alleen logs/.auth.json,
+# en admin-auth leeft nu in ``users.password_hash`` (bcrypt) in de
+# DB. Zie commit d69fcd2 (v26-06) voor de delete.
 #
-#   1. Per-user exchange credentials
-#      - Fernet key at  keys/<user_id>.key        (chmod 0600)
-#      - Payload at     credentials/<user_id>/<exchange>.enc (chmod 0600)
-#      - save_keys / get_keys / has_keys / list_exchanges_with_keys /
-#        delete_keys / rotate_fernet_key all operate on this tree.
-#
-#   2. Portal-level encrypted files (the .auth.json blob used by the
-#      session-auth machinery in web/app.py)
-#      - Keeps using a single "system" key at logs/.credentials.key
-#      - save_encrypted / load_encrypted / _system_fernet are the entry
-#        points. These don't need per-user scoping because .auth.json
-#        is operator-level state (portal login), not tenant data.
+# Per-user exchange credentials:
+#   - Fernet key at  keys/<user_id>.key                  (chmod 0600)
+#   - Payload at     credentials/<user_id>/<exchange>.enc (chmod 0600)
+#   - save_keys / get_keys / has_keys / list_exchanges_with_keys /
+#     delete_keys / rotate_fernet_key all operate on this tree.
 #
 # Threat model:
 #   - Code injection / RCE → key files + ciphertext unusable without the
@@ -60,38 +57,6 @@ from core.paths import (
 logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path(__file__).parent.parent
-
-# ── System-level key (for .auth.json) ──────────────────────────────────────
-# Kept at the legacy location so rotating to Phase 2 doesn't re-encrypt
-# the portal login blob. The session machinery calls save_encrypted /
-# load_encrypted against this key via _system_fernet.
-
-_LOG_DIR = _BASE_DIR / "logs"
-_KEY_FILE = _LOG_DIR / ".credentials.key"
-
-
-def _load_or_create_system_key() -> bytes:
-    """System-level Fernet key for .auth.json. Lazily generated at
-    first use with mode 0600. Not used for exchange credentials —
-    those are per-user via _user_fernet."""
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    if _KEY_FILE.exists():
-        return _KEY_FILE.read_bytes()
-    key = Fernet.generate_key()
-    _KEY_FILE.write_bytes(key)
-    ensure_secret_file_mode(_KEY_FILE)
-    logger.warning(
-        "Nieuw system Fernet key gegenereerd in %s — verlies dit "
-        "bestand niet, anders is de opgeslagen portal-auth blob "
-        "onbruikbaar.",
-        _KEY_FILE,
-    )
-    return key
-
-
-def _system_fernet() -> Fernet:
-    return Fernet(_load_or_create_system_key())
-
 
 # ── Per-user Fernet key ────────────────────────────────────────────────────
 
@@ -221,38 +186,6 @@ def delete_keys(exchange: str, user_id: int) -> bool:
         "Credentials verwijderd voor user %d / %s", user_id, exchange,
     )
     return True
-
-
-# ── System-level encrypted files (e.g. .auth.json) ─────────────────────────
-
-
-def save_encrypted(path: Path, data: dict) -> None:
-    """Versleutel `data` met de SYSTEM Fernet key en schrijf atomically
-    naar `path`. Gebruikt door web/app.py voor ``.auth.json`` — dat is
-    portal-login state, niet tenant data, dus per-user scope is hier
-    niet nodig."""
-    f = _system_fernet()
-    blob = f.encrypt(json.dumps(data).encode("utf-8"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(blob)
-    tmp.replace(path)
-    ensure_secret_file_mode(path)
-
-
-def load_encrypted(path: Path) -> Optional[dict]:
-    """Decrypt een met `save_encrypted` geschreven bestand. Returnt
-    None als file ontbreekt of niet decrypteerbaar is onder de
-    system key."""
-    if not path.exists():
-        return None
-    try:
-        blob = path.read_bytes()
-        raw = _system_fernet().decrypt(blob)
-        return json.loads(raw.decode("utf-8"))
-    except (InvalidToken, ValueError, OSError, json.JSONDecodeError) as e:
-        logger.error("Kan encrypted file %s niet lezen: %s", path, e)
-        return None
 
 
 # ── Rotation (per-user key + .enc re-encrypt) ──────────────────────────────

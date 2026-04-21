@@ -41,6 +41,17 @@ niet om de implementatie op voorhand uit te werken.
 
 ## 2. Vastgestelde beslissingen
 
+> **Historical note (v26-24).** Deze sectie bevat pre-Phase-3a
+> beslissingen. Phase-3a heeft de auth-stack geïmplementeerd:
+> `users.password_hash` (bcrypt) in plaats van `.auth.json`,
+> session_epoch per-user in plaats van global, `_request_user`
+> leest uit cookie `uid`. De beslissingen hieronder beschrijven
+> wat toen besloten werd; voor de huidige auth-stack zie
+> `docs/architecture.md` sectie "Multi-tenant foundation" +
+> "Admin provisioning (post-Phase-3a)", en
+> `docs/security-model.md` Part 3.3 voor de multi-layered
+> authentication spec.
+
 **Emergency-stop is admin-cross-user by design.** `web/routes/admin.py`
 laat de admin rol alle bots in het systeem stoppen (ook die van
 andere users), met een UI-confirmatie die expliciet zegt hoeveel
@@ -84,6 +95,15 @@ migratie gewoon kunnen blijven inloggen. Deze keuze is consistent
 met `credentials/<uid>/` en `keys/<uid>.key` uit Fase 2.
 
 ## 3. Open vragen
+
+> **Historical note (v26-24).** De vragen hieronder zijn
+> pre-Phase-3a gesteld. Veel zijn inmiddels beantwoord door de
+> Phase-3a implementatie of door follow-up audits: de
+> `_scan_user_dirs` fail-closed keuze is gemaakt (commit
+> `1ee4737`), de CI session-epoch test is gedebugged en
+> groen (SameSite-fix in `5a4d97b`). Voor de actuele security-
+> keuzes zie `docs/security-model.md`; voor open Phase-3b/c/d
+> items de preface van dit document.
 
 **Auth-model.** Geen open vraag meer — zie §7. Signed session
 cookies (itsdangerous, niet JWT) + Fernet-encrypted credential
@@ -154,6 +174,17 @@ we buiten solo-deploy treden.
 
 ## 4. Call-sites die Phase-3 attentie vragen
 
+> **Historical note (v26-24).** Line-numbers in de tabel
+> hieronder wijzen naar de pre-Phase-3a web/app.py en zijn niet
+> meer up-to-date. De meeste call-sites zijn inmiddels in
+> Phase-3a geadresseerd (zie commits `16485f4` `_request_user`
+> cookie-resolution, `9da608e` + `c74b393` WS user-scope). Voor
+> de resterende Phase-3b werk (per-user broadcaster filtering)
+> zie audit v26-report finding v26-16 en de TODO's in
+> `web/app.py` rond de LogBroadcaster / StateBroadcaster
+> klassen.
+
+
 | Locatie                                         | Huidige scope     | Phase-3 scope                     | Notes                                           |
 |-------------------------------------------------|-------------------|-----------------------------------|-------------------------------------------------|
 | `web/app.py:310` `_request_user` stub           | hardcoded admin   | lookup user_id via cookie-payload | kern-bridge; alle andere Phase-3 werk hangt hier op |
@@ -166,6 +197,15 @@ we buiten solo-deploy treden.
 | `web/app.py` `_scan_user_dirs` DB-fail pad      | fail-open + WARN  | overweeg fail-closed / cache      | commit 8f0448a documenteert het trade-off       |
 
 ## 5. Afhankelijkheden / volgorde
+
+> **Historical note (v26-24).** De ordering hieronder beschrijft
+> de route die Phase-3a gevolgd heeft: schema-v4 (destructief),
+> credential-migratie, `_request_user` bridge. Alle drie
+> gerealiseerd (commits `e3d9199`, `58ddf5c`, `16485f4`).
+> Ordering voor Phase-3b is afzonderlijk en staat nog niet
+> gedocumenteerd; hoort in een nieuw phase-3b-roadmap document
+> wanneer die fase start.
+
 
 De schema-v4 bump met `role`-kolom komt eerst — `ALTER TABLE
 users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'` +
@@ -202,6 +242,30 @@ het werk is gedaan.
   §4 hierboven en vallen onder de Phase-3 scope.
 
 ## 7. Bestaande auth-infrastructuur
+
+> **Historical note (v26-24).** Deze sectie beschrijft de
+> pre-Phase-3a auth-architectuur (logs/.auth.json +
+> `_bootstrap_auth_if_missing` + globale session_epoch).
+> **Geen van de hieronder beschreven bestanden, helpers of
+> code-locaties is nog up-to-date.** Phase-3a heeft:
+>
+> - `.auth.json` verwijderd (archived naar
+>   `.auth.json.pre_phase3.<ts>` op eerste init_db),
+> - `_bootstrap_auth_if_missing` vervangen door
+>   `scripts/setup_admin.py`,
+> - `_load_auth / _save_auth / _bump_session_epoch /
+>   _current_session_epoch` verwijderd uit `web/app.py`,
+> - password-hash + role + session_epoch naar kolommen in
+>   `users` verhuisd (bcrypt rounds=12 via
+>   `core.user_store.set_password`),
+> - session_epoch van globaal naar per-user gezet.
+>
+> Voor de huidige auth-stack: `docs/architecture.md`
+> "Admin provisioning (post-Phase-3a)" +
+> `docs/security-model.md` Part 3.3. De tekst hieronder blijft
+> bewaard als implementatie-anker voor audit-trail doeleinden;
+> lees niet als spec.
+
 
 Inventaris van wat er al staat. Deze stack is productie-rijp voor
 single-admin (Phase-1); Phase-3 breidt 'm uit zonder het

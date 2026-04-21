@@ -67,13 +67,22 @@ def client():
     return TestClient(webapp.app)
 
 
+def _admin_cookie() -> str:
+    """Test helper: session cookie for the seeded admin user.
+    Audit v26-05 tightened ``_create_session_cookie`` to accept only
+    ``User`` instances; this helper centralises the admin lookup."""
+    from core import user_store
+    admin = user_store.get_user_by_username("admin")
+    assert admin is not None, "admin seed missing — check init_db"
+    return webapp._create_session_cookie(admin)
+
+
 @pytest.fixture
 def session(client):
     """Logged-in session cookie — /api/price is behind the auth
     middleware so without this the TestClient gets 401 before we
     even reach the ticker fallback."""
-    token = webapp._create_session_cookie("admin")
-    client.cookies.set("reverto_session", token)
+    client.cookies.set("reverto_session", _admin_cookie())
     return client
 
 
@@ -161,9 +170,7 @@ class TestPriceFallbackWhenUser2Requests:
             2: [_FakeBot("u2_bot", user_id=2, current_price=99_999.99)],
         })
 
-        client.cookies.set(
-            "reverto_session", webapp._create_session_cookie("admin"),
-        )
+        client.cookies.set("reverto_session", _admin_cookie())
         # Pretend the resolved session is user 2 without needing the
         # DB to carry that row — the /api/price handler only reads
         # user.id off the injected User.

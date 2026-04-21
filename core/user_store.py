@@ -133,22 +133,26 @@ def bump_session_epoch(user_id: int) -> int:
     new value. Used on logout and password change to invalidate
     every outstanding cookie for THIS user.
 
-    If the user_id doesn't exist the UPDATE is a no-op and we return
-    0 — the caller is expected to have authenticated first.
+    Audit v26-11: uses SQLite's ``RETURNING`` clause so UPDATE +
+    return value happen in a single statement. Pre-fix was
+    UPDATE-then-SELECT, which left a window where two concurrent
+    bumps could each read the same post-update value. SQLite 3.35+
+    ships RETURNING; Python 3.10's bundled sqlite3 covers it.
+
+    If the user_id doesn't exist the UPDATE is a no-op and we
+    return 0 — the caller is expected to have authenticated first.
     """
     conn = get_db()
     with conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE users SET session_epoch = session_epoch + 1 "
-            "WHERE id = ?",
+            "WHERE id = ? RETURNING session_epoch",
             (user_id,),
         )
-    row = conn.execute(
-        "SELECT session_epoch FROM users WHERE id = ?", (user_id,),
-    ).fetchone()
+        row = cur.fetchone()
     if row is None:
         return 0
-    return int(row["session_epoch"])
+    return int(row[0])
 
 
 def get_session_epoch(user_id: int) -> int:

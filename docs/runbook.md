@@ -598,6 +598,53 @@ Bij een blocking failure:
 4. `.venv/bin/pip install -r requirements.txt` + `make test`.
 5. Commit met audit-ID in het bericht.
 
+## Dependency upgrades
+
+### ccxt upgrade procedure
+
+ccxt is de primary exchange-library. Audit v26-13 flagt dat we
+geen documented upgrade-cadence hadden; deze sectie vult dat gat.
+Procedure bij een upgrade:
+
+1. Check de [ccxt CHANGELOG](https://github.com/ccxt/ccxt/blob/master/CHANGELOG.md)
+   op breaking changes sinds de huidige pin in `requirements.txt`.
+2. Bij een minor version bump (bijv. 4.5.x → 4.6.x): review
+   breaking changes specifiek voor de supported exchanges
+   (Bitget, Kraken). ccxt publiceert patches per exchange-rij;
+   alleen de relevante rijen lezen.
+3. Bij een major version bump (bijv. 4.x → 5.x): draai de full
+   test-suite én een manuele smoke-test op paper-trading voor
+   minimaal 1 week voordat je de upgrade naar main merged. Major
+   bumps van ccxt breken vaker dan de ccxt-team admits.
+4. Update de pin in `requirements.txt`.
+5. Documenteer de upgrade reasoning in de commit-message; verwijs
+   naar de specifieke ccxt-CHANGELOG entry die de motivator was.
+
+### requirements cadence
+
+- **Core** (`requirements.txt`): review elke 3 maanden op CVE's
+  via `pip-audit --strict`. Bij een blocking CVE: fix meteen
+  volgens de pip-audit strategie hierboven.
+- **ML** (`requirements-ml.txt`): alleen upgraden wanneer
+  training-resultaten aantoonbaar verbeteren door een nieuwere
+  versie, of een CVE-fix vereist is. ML-deps drijven af van core
+  als je ze onafhankelijk upgrade — zie constraint-pinning
+  hieronder.
+
+### requirements-ml.txt constraint pinning
+
+Sinds audit v26-26 staat bovenaan `requirements-ml.txt` een
+`-c requirements.txt` regel. Die zorgt dat shared transitive
+dependencies (numpy, pandas, scipy, etc.) in de ML-context
+dezelfde versies krijgen als in core. Zonder deze constraint kan
+een ML-install een nieuwere numpy oplossen, wat runtime-
+incompatibilities veroorzaakt zodra het ML-subsystem in hetzelfde
+proces als de paper-engine draait.
+
+Als je bewust een hogere versie in ML wilt dan in core: upgrade
+eerst core (inclusief compatibility-check), commit, pas dan ML.
+Niet andersom.
+
 ## Backup procedure
 
 Nightly cron (recommended):
