@@ -243,3 +243,78 @@
   resize: vertical;
   min-height: 180px;
 }
+
+/* ── Admin Bot Overview — per-user grouping ────────────────────────── */
+/* The admin Bot Overview stacks per-user sections, each with a
+   header and a compact grid of bot cards. Visually echoes the main
+   Bots page but lighter — no kebab menu, no deal rows, only the
+   lifecycle buttons Admin cares about in Fase 1. */
+.admin-user-group {
+  margin-top: 16px;
+}
+.admin-user-header {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 8px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-user-header-meta {
+  color: var(--muted);
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 8px;
+}
+.admin-bot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.admin-bot-card {
+  padding: 12px;
+}
+.admin-bot-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.admin-bot-card-name {
+  font-weight: 600;
+}
+.admin-bot-card-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.admin-bot-card-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.admin-bot-stat-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.admin-bot-stat-value {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.admin-bot-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.admin-bot-empty {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+  padding: 8px 0;
+}
