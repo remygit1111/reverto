@@ -29,6 +29,11 @@ EVENT_LIQ_WARN       = "liquidation_warn"
 EVENT_SCHEDULE_OPEN  = "schedule_open"
 EVENT_SCHEDULE_CLOSE = "schedule_close"
 EVENT_ERROR          = "error"
+# Portal-triggered manual close / cancel (bot stopped, operator
+# clicked close in the UI). Distinct from TP/SL so recipients can
+# trace operator-initiated events separately from engine-driven ones.
+EVENT_MANUAL_CLOSE   = "manual_close"
+EVENT_MANUAL_CANCEL  = "manual_cancel"
 
 
 class TelegramNotifier:
@@ -215,6 +220,46 @@ class TelegramNotifier:
             f"Symbol : {symbol}\n"
             f"Price  : ${price:,.2f}\n"
             f"PnL    : {pnl_btc:+.6f} BTC ({pnl_pct:+.2f}%)"
+        )
+
+    # ------------------------------------------------------------------
+    # Portal-triggered manual close / cancel
+    # ------------------------------------------------------------------
+    #
+    # Sent when the operator clicks the UI close button while the bot
+    # is stopped — the portal runs DealCloseHandler directly instead
+    # of writing a sentinel for the tick loop. Kept distinct from
+    # notify_take_profit / notify_stop_loss so the Telegram recipient
+    # can tell operator-initiated events apart from engine-driven
+    # ones. Wrench / prohibit emoji match that "operator intervention"
+    # framing — TP/SL's green/red targets stay reserved for automatic
+    # closes that hit a price target.
+
+    def notify_manual_close(self, bot_name: str, symbol: str, price: float,
+                            pnl_btc: float, pnl_pct: float):
+        if not self._is_enabled(EVENT_MANUAL_CLOSE):
+            return
+        self.send(
+            f"🔧 <b>Manual close</b>\n"
+            f"Bot       : {bot_name}\n"
+            f"Symbol    : {symbol}\n"
+            f"Price     : ${price:,.2f}\n"
+            f"PnL       : {pnl_btc:+.6f} BTC ({pnl_pct:+.2f}%)\n"
+            f"Triggered : portal (bot was stopped)"
+        )
+
+    def notify_manual_cancel(self, bot_name: str, symbol: str):
+        """Cancel doesn't realise PnL — the exchange position (if
+        any) stays open and the operator manages it manually. No
+        price field because the cancel is state-only bookkeeping,
+        not a trade."""
+        if not self._is_enabled(EVENT_MANUAL_CANCEL):
+            return
+        self.send(
+            f"🚫 <b>Manual cancel</b>\n"
+            f"Bot       : {bot_name}\n"
+            f"Symbol    : {symbol}\n"
+            f"Triggered : portal (bot was stopped)"
         )
 
     # ------------------------------------------------------------------
