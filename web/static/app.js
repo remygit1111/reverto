@@ -2585,13 +2585,16 @@ function _renderWorkspaceFromLayout(panels) {
   try {
     _workspaceGrid.removeAll(false);
     panels.forEach((p) => {
-      const el = _createPanelElement(p.id, p.type || 'empty', p.config || {});
-      _workspaceGrid.addWidget(el, {
-        x: Number(p.x) || 0,
-        y: Number(p.y) || 0,
-        w: Math.max(1, Number(p.w) || 4),
-        h: Math.max(1, Number(p.h) || 3),
-      });
+      const el = _createPanelElement(
+        p.id, p.type || 'empty', p.config || {},
+        {
+          x: Number(p.x) || 0,
+          y: Number(p.y) || 0,
+          w: Math.max(1, Number(p.w) || 4),
+          h: Math.max(1, Number(p.h) || 3),
+        },
+      );
+      _attachPanelToGrid(el);
     });
   } finally {
     _workspaceSuppressSave = false;
@@ -2599,16 +2602,33 @@ function _renderWorkspaceFromLayout(panels) {
   _showWorkspaceEmptyState(panels.length === 0);
 }
 
+function _attachPanelToGrid(el) {
+  // GridStack v11 removed the HTMLElement overload of addWidget:
+  // panels must already live inside the grid container, then
+  // ``makeWidget`` promotes the element and reads its gs-*
+  // attributes for positioning and sizing. Placing the element
+  // before the call avoids a second reflow that the old addWidget
+  // path hid behind its own DOM manipulation.
+  _workspaceGrid.el.appendChild(el);
+  _workspaceGrid.makeWidget(el);
+}
+
 function _showWorkspaceEmptyState(show) {
   const empty = $('workspace-empty-state');
   if (empty) empty.classList.toggle('hidden', !show);
 }
 
-function _createPanelElement(panelId, panelType, config) {
-  // GridStack's addWidget accepts an HTMLElement so we build the
-  // whole grid-stack-item up-front — the dataset fields survive
-  // the round-trip through save/load and let the renderer emit
-  // the same panel type next session.
+function _createPanelElement(panelId, panelType, config, gridAttrs) {
+  // GridStack v11 ``makeWidget`` reads size + position from gs-*
+  // attributes on the element instead of the old addWidget
+  // options bag. ``gridAttrs`` is a plain object:
+  //   { x, y, w, h, autoPosition }
+  // Every key is optional — an add-panel call passes
+  // {w, h, autoPosition: true} and lets GridStack find the slot;
+  // a restore call passes the full {x, y, w, h} from storage.
+  // ``dataset.panel*`` fields survive the round-trip through
+  // save/load and let the renderer re-emit the same panel type
+  // next session.
   const wrap = document.createElement('div');
   wrap.className = 'grid-stack-item';
   wrap.dataset.panelId = panelId;
@@ -2618,6 +2638,13 @@ function _createPanelElement(panelId, panelType, config) {
   } catch (_) {
     wrap.dataset.panelConfig = '{}';
   }
+
+  const attrs = gridAttrs || {};
+  if (typeof attrs.x === 'number') wrap.setAttribute('gs-x', String(attrs.x));
+  if (typeof attrs.y === 'number') wrap.setAttribute('gs-y', String(attrs.y));
+  if (typeof attrs.w === 'number') wrap.setAttribute('gs-w', String(attrs.w));
+  if (typeof attrs.h === 'number') wrap.setAttribute('gs-h', String(attrs.h));
+  if (attrs.autoPosition) wrap.setAttribute('gs-auto-position', 'true');
 
   const content = document.createElement('div');
   content.className = 'grid-stack-item-content';
@@ -2773,10 +2800,11 @@ async function _saveWorkspaceLayout(isRetry = false) {
 function _handleWorkspaceAddPanel() {
   if (!_workspaceGrid) return;
   const panelId = _workspaceNewPanelId();
-  const el = _createPanelElement(panelId, 'empty', {});
-  _workspaceGrid.addWidget(el, {
-    w: 4, h: 3, autoPosition: true,
-  });
+  const el = _createPanelElement(
+    panelId, 'empty', {},
+    { w: 4, h: 3, autoPosition: true },
+  );
+  _attachPanelToGrid(el);
   _showWorkspaceEmptyState(false);
   // 'added' event fires → _queueWorkspaceSave → persists.
 }
