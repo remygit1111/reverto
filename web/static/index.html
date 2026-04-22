@@ -41,10 +41,6 @@
       <span class="profile-menu-icon">⚙</span><span>Settings</span>
     </button>
     <div class="profile-menu-divider"></div>
-    <button type="button" class="profile-menu-item profile-menu-danger" id="profile-menu-emergency-stop" role="menuitem" aria-label="Emergency stop all running bots">
-      <span class="profile-menu-icon">🛑</span><span>Emergency stop</span>
-    </button>
-    <div class="profile-menu-divider"></div>
     <button type="button" class="profile-menu-item profile-menu-danger" id="profile-menu-logout" role="menuitem">
       <span class="profile-menu-icon">🚪</span><span>Logout</span>
     </button>
@@ -570,7 +566,27 @@
             Create, edit, publish and delete changelog entries.
           </div>
         </a>
+        <a class="card cl-admin-card" id="admin-card-bots" href="#admin/bots">
+          <div class="cl-admin-card-title">Bot Overview</div>
+          <div class="cl-admin-card-desc">
+            Cross-user view of every bot. Start / stop / restart and
+            emergency-stop from one page.
+          </div>
+        </a>
       </div>
+    </div>
+    <div id="admin-bots-overview" class="admin-subpage hidden">
+      <div class="cl-breadcrumb">
+        <a href="#admin" class="admin-back-link">← Back to Admin</a>
+      </div>
+      <div class="cl-admin-header">
+        <div class="section-title">Bot Overview — admin</div>
+        <button class="hbtn hbtn-theme btn-danger" id="admin-emergency-stop-btn" type="button">
+          🛑 Emergency stop all bots
+        </button>
+      </div>
+      <div id="admin-bots-status" class="cl-empty">Loading…</div>
+      <div id="admin-bots-users"></div>
     </div>
     <div id="admin-changelog-manage" class="admin-subpage hidden">
       <div class="cl-breadcrumb">
@@ -598,6 +614,25 @@
           </tbody>
         </table>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- MODAL: Emergency-stop confirmation (admin Bot Overview)                   -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="emergency-stop-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title">🛑 Emergency stop</div>
+    <div class="modal-body-text">
+      This will <strong>SIGTERM every running bot across all users</strong>.
+      Open positions on the exchange are <strong>not closed</strong> automatically.
+      <br><br>
+      Are you sure?
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="hbtn hbtn-theme" id="emergency-stop-cancel">Cancel</button>
+      <button type="button" class="hbtn hbtn-theme btn-danger" id="emergency-stop-confirm">Yes, stop all bots</button>
     </div>
   </div>
 </div>
