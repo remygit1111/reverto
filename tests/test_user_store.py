@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -173,3 +174,103 @@ class TestSessionEpoch:
         """No row matches — UPDATE does nothing, return value is 0.
         Callers that use this for cleanup shouldn't crash."""
         assert user_store.bump_session_epoch(999) == 0
+
+
+# ── Failed-login tracking (v6 schema) ───────────────────────────────────
+
+class TestFailedLoginTracking:
+    """increment_failed_login / reset_failed_login / get_failed_login_state
+    back the per-account rate-limit + exponential backoff + anomaly
+    logging in /auth/login. Tests pin the sliding-window + atomic-
+    RETURNING behaviour.
+    """
+
+    def test_increment_failed_login_increments(self):
+        """Fresh user → first failure produces count=1."""
+        assert user_store.increment_failed_login(1) == 1
+
+    def test_increment_failed_login_persists(self):
+        """Two increments in the same window → counter reaches 2,
+        both at the DB layer and via the public getter."""
+        user_store.increment_failed_login(1)
+        user_store.increment_failed_login(1)
+        count, last_at = user_store.get_failed_login_state(1)
+        assert count == 2
+        assert last_at is not None
+
+    def test_increment_records_timestamp(self):
+        """``last_failed_login_at`` is populated on every increment
+        so the sliding window has a reference point."""
+        before = datetime.now(UTC)
+        user_store.increment_failed_login(1)
+        after = datetime.now(UTC)
+
+        _, last_at = user_store.get_failed_login_state(1)
+        assert last_at is not None
+        # Window [before, after] is the valid wall-time band.
+        assert before.timestamp() - 1 <= last_at.timestamp() <= after.timestamp() + 1
+
+    def test_reset_failed_login_clears(self):
+        """Increment a few times, reset, confirm counter is 0 and
+        timestamp is NULL. Matches the "successful login clears the
+        counter" contract the /auth/login handler relies on."""
+        for _ in range(5):
+            user_store.increment_failed_login(1)
+        assert user_store.reset_failed_login(1) is True
+        count, last_at = user_store.get_failed_login_state(1)
+        assert count == 0
+        assert last_at is None
+
+    def test_reset_failed_login_unknown_user(self):
+        """UPDATE affects 0 rows → function returns False."""
+        assert user_store.reset_failed_login(999) is False
+
+    def test_get_failed_login_state_fresh_user(self):
+        """Seeded admin with no failures → (0, None)."""
+        count, last_at = user_store.get_failed_login_state(1)
+        assert count == 0
+        assert last_at is None
+
+    def test_get_failed_login_state_unknown_user(self):
+        """Unknown user_id — don't crash, return (0, None) like a
+        fresh user. Matches ``get_session_epoch``'s defensive
+        fallback."""
+        count, last_at = user_store.get_failed_login_state(999)
+        assert count == 0
+        assert last_at is None
+
+    def test_increment_unknown_user_returns_zero(self):
+        """No row → nothing to UPDATE → return 0. Matches
+        ``bump_session_epoch``'s contract."""
+        assert user_store.increment_failed_login(999) == 0
+
+    def test_sliding_window_resets_stale_counter(self):
+        """A prior failure older than ``FAILED_LOGIN_WINDOW_S`` must
+        not count — the next increment starts fresh at 1.
+        Simulates "yesterday's typo shouldn't gate today's login"."""
+        # Seed an old failure directly via SQL so the test doesn't
+        # depend on wall-clock advancing.
+        stale_ts = (datetime.now(UTC) - timedelta(
+            seconds=user_store.FAILED_LOGIN_WINDOW_S + 60,
+        )).isoformat()
+        conn = get_db()
+        with conn:
+            conn.execute(
+                "UPDATE users SET failed_login_count = 7, "
+                "last_failed_login_at = ? WHERE id = 1",
+                (stale_ts,),
+            )
+        # Next increment sees the stale timestamp → fresh streak.
+        assert user_store.increment_failed_login(1) == 1
+
+    def test_sliding_window_continues_recent_streak(self):
+        """Failures within the window accumulate normally."""
+        recent_ts = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
+        conn = get_db()
+        with conn:
+            conn.execute(
+                "UPDATE users SET failed_login_count = 4, "
+                "last_failed_login_at = ? WHERE id = 1",
+                (recent_ts,),
+            )
+        assert user_store.increment_failed_login(1) == 5
