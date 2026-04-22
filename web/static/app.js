@@ -1978,6 +1978,22 @@ function _showAdminSubpage(name) {
 // hit the admin endpoints under /api/admin/bots/{uid}/{slug}/{action}
 // so the backend double-logs the action into both audit.log AND the
 // target bot's own log.
+//
+// Fase 2 adds checkboxes + status-filter + a bulk-action bar that
+// posts selected bots to /api/admin/bots/bulk/{stop,restart}. The
+// backend enforces a 20-target cap; the UI mirrors that ceiling and
+// surfaces a hint when the operator exceeds it.
+
+const ADMIN_BULK_MAX = 20;
+// Selected (user_id, slug) pairs keyed as "uid/slug" so Set handles
+// uniqueness natively. Survives filter changes so a temporarily-
+// hidden bot stays selected until the operator deselects or acts.
+const _adminBulkSelection = new Set();
+// Most recent /api/admin/bots payload — kept so filter/selection
+// changes can re-render without refetching.
+let _adminBotsCache = null;
+// Active status filter — "all" | "running" | "stopped".
+let _adminBotsFilter = 'all';
 
 async function loadAdminBotsOverview() {
   const status = $('admin-bots-status');
@@ -1992,30 +2008,80 @@ async function loadAdminBotsOverview() {
     const r = await fetch('/api/admin/bots');
     if (r.status === 403) {
       if (status) status.textContent = 'Admin access required.';
+      _adminBotsCache = null;
+      _updateBulkBar();
       return;
     }
     if (!r.ok) {
       if (status) {
         status.textContent = 'Could not load bots (' + r.status + ').';
       }
+      _adminBotsCache = null;
+      _updateBulkBar();
       return;
     }
     const j = await r.json();
-    const users = (j && j.users) || [];
-    if (users.length === 0) {
-      if (status) status.textContent = 'No bots configured across any user.';
-      return;
-    }
-    if (status) status.classList.add('hidden');
-    users.forEach((u) => container.appendChild(_renderAdminUserGroup(u)));
+    _adminBotsCache = j;
+    _renderAdminBotsFromCache();
   } catch (e) {
     if (status) status.textContent = 'Network error loading bots.';
+    _adminBotsCache = null;
+    _updateBulkBar();
   }
+}
+
+function _renderAdminBotsFromCache() {
+  const status = $('admin-bots-status');
+  const container = $('admin-bots-users');
+  if (!container) return;
+  container.innerHTML = '';
+  const users = (_adminBotsCache && _adminBotsCache.users) || [];
+  if (users.length === 0) {
+    if (status) {
+      status.textContent = 'No bots configured across any user.';
+      status.classList.remove('hidden');
+    }
+    _updateBulkBar();
+    return;
+  }
+  // Apply the status filter per user-group, then drop groups with
+  // no surviving bots so empty headers don't litter the page.
+  let rendered = 0;
+  users.forEach((u) => {
+    const filtered = _applyAdminFilter(u.bots || []);
+    if (filtered.length === 0) return;
+    container.appendChild(
+      _renderAdminUserGroup({ ...u, bots: filtered }),
+    );
+    rendered += 1;
+  });
+  if (rendered === 0) {
+    if (status) {
+      status.textContent = 'No bots match the current filter.';
+      status.classList.remove('hidden');
+    }
+  } else if (status) {
+    status.classList.add('hidden');
+  }
+  _updateBulkBar();
+}
+
+function _applyAdminFilter(bots) {
+  if (_adminBotsFilter === 'running') return bots.filter((b) => b.running);
+  if (_adminBotsFilter === 'stopped') return bots.filter((b) => !b.running);
+  return bots;
+}
+
+function _adminSelectionKey(userId, slug) {
+  return Number(userId) + '/' + String(slug);
 }
 
 function _renderAdminUserGroup(userEntry) {
   const group = document.createElement('section');
   group.className = 'admin-user-group';
+
+  const headerRow = document.createElement('div');
+  headerRow.className = 'admin-user-header-row';
 
   const header = document.createElement('div');
   header.className = 'admin-user-header';
@@ -2024,11 +2090,35 @@ function _renderAdminUserGroup(userEntry) {
   meta.className = 'admin-user-header-meta';
   meta.textContent = '(user_id=' + Number(userEntry.user_id) + ')';
   header.appendChild(meta);
-  group.appendChild(header);
+  headerRow.appendChild(header);
+
+  const bots = Array.isArray(userEntry.bots) ? userEntry.bots : [];
+  // One button flips both ways: select-all if any are unselected,
+  // deselect-all once every visible bot in the group is selected.
+  // Only considers bots that survived the current filter.
+  if (bots.length > 0) {
+    const allSelected = bots.every((b) => _adminBulkSelection.has(
+      _adminSelectionKey(userEntry.user_id, b.slug),
+    ));
+    const selectAllBtn = document.createElement('button');
+    selectAllBtn.type = 'button';
+    selectAllBtn.className = 'hbtn hbtn-theme admin-user-select-all';
+    selectAllBtn.textContent = allSelected ? 'Deselect all' : 'Select all';
+    selectAllBtn.addEventListener('click', () => {
+      const shouldSelect = !allSelected;
+      bots.forEach((b) => {
+        const key = _adminSelectionKey(userEntry.user_id, b.slug);
+        if (shouldSelect) _adminBulkSelection.add(key);
+        else _adminBulkSelection.delete(key);
+      });
+      _renderAdminBotsFromCache();
+    });
+    headerRow.appendChild(selectAllBtn);
+  }
+  group.appendChild(headerRow);
 
   const grid = document.createElement('div');
   grid.className = 'admin-bot-grid';
-  const bots = Array.isArray(userEntry.bots) ? userEntry.bots : [];
   if (bots.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'admin-bot-empty';
@@ -2046,6 +2136,30 @@ function _renderAdminUserGroup(userEntry) {
 function _renderAdminBotCard(userId, bot) {
   const card = document.createElement('div');
   card.className = 'card admin-bot-card';
+  const selectionKey = _adminSelectionKey(userId, bot.slug);
+  const isSelected = _adminBulkSelection.has(selectionKey);
+  if (isSelected) card.classList.add('is-selected');
+
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'admin-bot-checkbox';
+  checkbox.checked = isSelected;
+  checkbox.setAttribute(
+    'aria-label',
+    'Select bot ' + (bot.name || bot.slug) + ' for bulk action',
+  );
+  checkbox.addEventListener('change', () => {
+    if (checkbox.checked) {
+      _adminBulkSelection.add(selectionKey);
+      card.classList.add('is-selected');
+    } else {
+      _adminBulkSelection.delete(selectionKey);
+      card.classList.remove('is-selected');
+    }
+    _updateBulkBar();
+    _refreshSelectAllButtons();
+  });
+  card.appendChild(checkbox);
 
   const head = document.createElement('div');
   head.className = 'admin-bot-card-head';
@@ -2199,6 +2313,152 @@ async function _confirmEmergencyStop() {
     loadAdminBotsOverview();
   } catch (e) {
     alert('Emergency stop request failed: ' + (e && e.message || e));
+  }
+}
+
+// ── Admin Bot Overview — Fase 2 bulk-bar + modals ────────────────────────
+
+function _updateBulkBar() {
+  // Runs after every render / selection change so the count +
+  // disabled states + over-cap hint stay in sync.
+  const count = _adminBulkSelection.size;
+  const countEl = $('admin-bots-bulk-count');
+  const stopBtn = $('admin-bulk-stop-btn');
+  const restartBtn = $('admin-bulk-restart-btn');
+  const hint = $('admin-bots-bulk-hint');
+  if (countEl) countEl.textContent = `${count} selected`;
+  const overCap = count > ADMIN_BULK_MAX;
+  const canAct = count > 0 && !overCap;
+  if (stopBtn) {
+    stopBtn.disabled = !canAct;
+    stopBtn.title = overCap
+      ? `Bulk operations are limited to ${ADMIN_BULK_MAX} bots at a time.`
+      : '';
+  }
+  if (restartBtn) {
+    restartBtn.disabled = !canAct;
+    restartBtn.title = stopBtn ? stopBtn.title : '';
+  }
+  if (hint) {
+    if (overCap) hint.removeAttribute('hidden');
+    else hint.setAttribute('hidden', '');
+  }
+}
+
+function _refreshSelectAllButtons() {
+  // The "Select all" label flips between "Select all" and
+  // "Deselect all" based on whether every visible bot in the group
+  // is currently selected. A full re-render of the groups is the
+  // simplest way to keep labels + card classes + checkbox state
+  // all coherent, and the grids are small enough that DOM churn is
+  // not a concern.
+  _renderAdminBotsFromCache();
+}
+
+function _selectedTargetsInOrder() {
+  // Flatten selected (uid, slug) pairs, preserving the order in
+  // which they appear in the current cache so the confirmation
+  // modal and the request payload stay grouped by user.
+  const targets = [];
+  if (!_adminBotsCache) return targets;
+  for (const u of _adminBotsCache.users || []) {
+    for (const b of u.bots || []) {
+      const key = _adminSelectionKey(u.user_id, b.slug);
+      if (_adminBulkSelection.has(key)) {
+        targets.push({
+          user_id: Number(u.user_id),
+          slug: String(b.slug),
+          username: u.username,
+        });
+      }
+    }
+  }
+  return targets;
+}
+
+function _openBulkModal(kind) {
+  // kind ∈ {"stop", "restart"}
+  const targets = _selectedTargetsInOrder();
+  if (targets.length === 0) return;
+  if (targets.length > ADMIN_BULK_MAX) {
+    alert(
+      `Bulk operations are limited to ${ADMIN_BULK_MAX} bots at a time. `
+      + `Deselect ${targets.length - ADMIN_BULK_MAX} to continue.`,
+    );
+    return;
+  }
+  const modal = $('bulk-' + kind + '-modal');
+  const list = $('bulk-' + kind + '-list');
+  const countEl = $('bulk-' + kind + '-count');
+  const countBtn = $('bulk-' + kind + '-count-btn');
+  const moreEl = $('bulk-' + kind + '-more');
+  if (!modal || !list || !countEl || !countBtn) return;
+
+  list.innerHTML = '';
+  const SHOW = 10;
+  targets.slice(0, SHOW).forEach((t) => {
+    const li = document.createElement('li');
+    li.textContent = (t.username || ('user_' + t.user_id)) + '/' + t.slug;
+    list.appendChild(li);
+  });
+  if (moreEl) {
+    if (targets.length > SHOW) {
+      moreEl.textContent = `…and ${targets.length - SHOW} more`;
+      moreEl.removeAttribute('hidden');
+    } else {
+      moreEl.setAttribute('hidden', '');
+    }
+  }
+  countEl.textContent = String(targets.length);
+  countBtn.textContent = String(targets.length);
+  modal.classList.add('show');
+}
+
+function _closeBulkModal(kind) {
+  const modal = $('bulk-' + kind + '-modal');
+  if (modal) modal.classList.remove('show');
+}
+
+async function _confirmBulkAction(kind) {
+  // kind ∈ {"stop", "restart"}
+  _closeBulkModal(kind);
+  const targets = _selectedTargetsInOrder();
+  if (targets.length === 0) return;
+  const payload = {
+    bots: targets.map((t) => ({ user_id: t.user_id, slug: t.slug })),
+  };
+  try {
+    const r = await fetch('/api/admin/bots/bulk/' + kind, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const detail = (data && (data.detail || data.error)) || r.statusText;
+      alert(`Bulk ${kind} request failed: ${detail}`);
+      return;
+    }
+    const succeeded = Number(data.total_succeeded) || 0;
+    const failed = Number(data.total_failed) || 0;
+    const verb = kind === 'stop' ? 'Stopped' : 'Restarted';
+    if (failed === 0) {
+      alert(`${verb} ${succeeded} bot${succeeded === 1 ? '' : 's'} successfully.`);
+    } else {
+      const firstFail = (data.failed && data.failed[0]) || {};
+      alert(
+        `${verb} ${succeeded} bot${succeeded === 1 ? '' : 's'}; `
+        + `${failed} failed — first error: `
+        + `${firstFail.slug || '?'}: ${firstFail.error || 'unknown'}`,
+      );
+    }
+    // Clear selection on any successful request (even partial) —
+    // the operator will re-select whatever still needs attention
+    // after the refetch shows fresh running-state.
+    _adminBulkSelection.clear();
+    loadAdminBotsOverview();
+  } catch (e) {
+    alert(`Bulk ${kind} request failed: ${(e && e.message) || e}`);
   }
 }
 
@@ -6834,6 +7094,43 @@ function setupEventListeners() {
   const emergencyConfirm = $('emergency-stop-confirm');
   if (emergencyConfirm) {
     emergencyConfirm.addEventListener('click', _confirmEmergencyStop);
+  }
+  // Status filter on the admin bot-overview. Changing the radio
+  // re-filters the cached payload (no network round-trip) so the
+  // selection stays intact across filter flips.
+  document.querySelectorAll('input[name="admin-bots-filter"]').forEach((el) => {
+    el.addEventListener('change', (e) => {
+      const val = e.target && e.target.value;
+      if (val === 'all' || val === 'running' || val === 'stopped') {
+        _adminBotsFilter = val;
+        _renderAdminBotsFromCache();
+      }
+    });
+  });
+  // Bulk action buttons + their confirmation modals.
+  const bulkStopBtn = $('admin-bulk-stop-btn');
+  if (bulkStopBtn) {
+    bulkStopBtn.addEventListener('click', () => _openBulkModal('stop'));
+  }
+  const bulkRestartBtn = $('admin-bulk-restart-btn');
+  if (bulkRestartBtn) {
+    bulkRestartBtn.addEventListener('click', () => _openBulkModal('restart'));
+  }
+  const bulkStopCancel = $('bulk-stop-cancel');
+  if (bulkStopCancel) {
+    bulkStopCancel.addEventListener('click', () => _closeBulkModal('stop'));
+  }
+  const bulkStopConfirm = $('bulk-stop-confirm');
+  if (bulkStopConfirm) {
+    bulkStopConfirm.addEventListener('click', () => _confirmBulkAction('stop'));
+  }
+  const bulkRestartCancel = $('bulk-restart-cancel');
+  if (bulkRestartCancel) {
+    bulkRestartCancel.addEventListener('click', () => _closeBulkModal('restart'));
+  }
+  const bulkRestartConfirm = $('bulk-restart-confirm');
+  if (bulkRestartConfirm) {
+    bulkRestartConfirm.addEventListener('click', () => _confirmBulkAction('restart'));
   }
   const clNewBtn = $('admin-cl-new-btn');
   if (clNewBtn) clNewBtn.addEventListener('click', () => openClEditModal(null));

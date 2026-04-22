@@ -585,6 +585,35 @@
           🛑 Emergency stop all bots
         </button>
       </div>
+      <div class="admin-bots-controls">
+        <div class="admin-bots-filter" role="radiogroup" aria-label="Filter bots by status">
+          <span class="admin-bots-filter-label">Filter:</span>
+          <label class="admin-bots-filter-opt">
+            <input type="radio" name="admin-bots-filter" value="all" checked>
+            <span>All</span>
+          </label>
+          <label class="admin-bots-filter-opt">
+            <input type="radio" name="admin-bots-filter" value="running">
+            <span>Running</span>
+          </label>
+          <label class="admin-bots-filter-opt">
+            <input type="radio" name="admin-bots-filter" value="stopped">
+            <span>Stopped</span>
+          </label>
+        </div>
+        <div class="admin-bots-bulk-bar" role="toolbar" aria-label="Bulk actions">
+          <span class="admin-bots-bulk-count" id="admin-bots-bulk-count">0 selected</span>
+          <button type="button" class="hbtn hbtn-theme btn-danger" id="admin-bulk-stop-btn" disabled>
+            ■ Stop selected
+          </button>
+          <button type="button" class="hbtn hbtn-theme" id="admin-bulk-restart-btn" disabled>
+            ↺ Restart selected
+          </button>
+          <span class="admin-bots-bulk-hint" id="admin-bots-bulk-hint" hidden>
+            Bulk operations are limited to 20 bots at a time. Deselect some.
+          </span>
+        </div>
+      </div>
       <div id="admin-bots-status" class="cl-empty">Loading…</div>
       <div id="admin-bots-users"></div>
     </div>
@@ -633,6 +662,42 @@
     <div class="modal-actions">
       <button type="button" class="hbtn hbtn-theme" id="emergency-stop-cancel">Cancel</button>
       <button type="button" class="hbtn hbtn-theme btn-danger" id="emergency-stop-confirm">Yes, stop all bots</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- MODAL: Bulk stop confirmation (admin Bot Overview)                        -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="bulk-stop-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title">■ Bulk stop</div>
+    <div class="modal-body-text">
+      <div>You are about to stop <strong id="bulk-stop-count">0</strong> bots:</div>
+      <ul class="admin-bulk-list" id="bulk-stop-list"></ul>
+      <div class="admin-bulk-more" id="bulk-stop-more" hidden></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="hbtn hbtn-theme" id="bulk-stop-cancel">Cancel</button>
+      <button type="button" class="hbtn hbtn-theme btn-danger" id="bulk-stop-confirm">Yes, stop <span id="bulk-stop-count-btn">0</span> bots</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- MODAL: Bulk restart confirmation (admin Bot Overview)                     -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="bulk-restart-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title">↺ Bulk restart</div>
+    <div class="modal-body-text">
+      <div>You are about to restart <strong id="bulk-restart-count">0</strong> bots:</div>
+      <ul class="admin-bulk-list" id="bulk-restart-list"></ul>
+      <div class="admin-bulk-more" id="bulk-restart-more" hidden></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="hbtn hbtn-theme" id="bulk-restart-cancel">Cancel</button>
+      <button type="button" class="hbtn hbtn-theme btn-accent" id="bulk-restart-confirm">Yes, restart <span id="bulk-restart-count-btn">0</span> bots</button>
     </div>
   </div>
 </div>
