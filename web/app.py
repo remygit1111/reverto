@@ -1944,7 +1944,30 @@ app.include_router(_exchanges_routes.router)
 
 
 def run_portal(host="0.0.0.0", port=8080):
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    """Start the uvicorn server with explicit Config + Server
+    instantiation.
+
+    Why not uvicorn.run()? The convenience wrapper has caused
+    SIGTERM-handling to silently fail in our setup — signals never
+    triggered lifespan shutdown, forcing stop.sh to fall back on
+    SIGKILL every make restart. The explicit Server instance pattern
+    installs signal handlers deterministically and respects
+    timeout_graceful_shutdown so lifespan's task-cancellation (2s
+    budget) can complete before uvicorn exits.
+    """
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="warning",
+        # Must be >= lifespan's internal 2s cancellation timeout so
+        # task-shutdown has room; 5s matches stop.sh's grace period
+        # ceiling, so uvicorn will never linger longer than the shell
+        # wrapper allows.
+        timeout_graceful_shutdown=5,
+    )
+    server = uvicorn.Server(config)
+    server.run()
 
 if __name__ == "__main__":
     run_portal()
