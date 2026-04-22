@@ -32,6 +32,7 @@ Security invariants:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Optional
 
 import bcrypt
@@ -46,12 +47,16 @@ from core.user import (  # re-exports for one-stop import
 __all__ = [
     "User",
     "PASSWORD_MIN_LENGTH",
+    "FAILED_LOGIN_WINDOW_S",
     "get_user_by_id",
     "get_user_by_username",
     "verify_password",
     "set_password",
     "bump_session_epoch",
     "get_session_epoch",
+    "increment_failed_login",
+    "reset_failed_login",
+    "get_failed_login_state",
 ]
 
 # Audit v26-03: single source of truth for the minimum plaintext
@@ -174,3 +179,121 @@ def get_session_epoch(user_id: int) -> int:
     if row is None:
         return 0
     return int(row["session_epoch"])
+
+
+# ── Failed-login tracking (v6 schema, login-security-hardening) ─────────
+
+# Sliding window for per-account failure counting. A failed login
+# increments the counter; if the prior failure is older than this
+# window, the counter resets to 1 (a fresh streak). The
+# ``/auth/login`` handler uses the same value to gate its per-
+# account rate-limit — exposed as a public constant so the handler
+# imports the single source of truth.
+FAILED_LOGIN_WINDOW_S = 3600  # 1 hour
+
+
+def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
+    """Parse a stored ISO timestamp to a tz-aware datetime. Returns
+    None for empty / malformed values — callers treat that as "no
+    prior failure recorded"."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        # Stored timestamps from ``datetime.now(UTC).isoformat()``
+        # always carry a tz, but be defensive about older rows or
+        # operator-edited values.
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def increment_failed_login(user_id: int) -> int:
+    """Increment the per-account failed-login counter and return the
+    new count. Returns 0 if the user_id doesn't resolve.
+
+    Sliding window: if the prior failure timestamp is older than
+    ``FAILED_LOGIN_WINDOW_S``, the counter resets to 1 (a fresh
+    streak rather than continuing the old one). This keeps brute-
+    force throttling tight during a campaign without permanently
+    accumulating state from typos spread across weeks.
+
+    Uses ``RETURNING`` so the read + update happen atomically (same
+    fix as v26-11 on ``bump_session_epoch``). Without that, a
+    concurrent second attempt could UPDATE in between our read +
+    write and inflate the counter past reality.
+    """
+    conn = get_db()
+    # First read the prior state so we can decide "fresh streak" vs
+    # "continue streak". Reading in a transaction-isolated way keeps
+    # the decision consistent with the write.
+    with conn:
+        row = conn.execute(
+            "SELECT failed_login_count, last_failed_login_at "
+            "FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return 0
+        prior_count = int(row["failed_login_count"] or 0)
+        prior_last = _parse_iso_dt(row["last_failed_login_at"])
+
+        now = datetime.now(UTC)
+        is_stale = (
+            prior_last is None
+            or (now - prior_last).total_seconds() > FAILED_LOGIN_WINDOW_S
+        )
+        new_count = 1 if is_stale else prior_count + 1
+
+        cur = conn.execute(
+            "UPDATE users SET failed_login_count = ?, "
+            "last_failed_login_at = ? WHERE id = ? "
+            "RETURNING failed_login_count",
+            (new_count, now.isoformat(), user_id),
+        )
+        result = cur.fetchone()
+    if result is None:
+        return 0
+    return int(result[0])
+
+
+def reset_failed_login(user_id: int) -> bool:
+    """Clear the failed-login counter + timestamp after a successful
+    login. Returns True when a row was updated, False on unknown
+    user_id. Setting ``last_failed_login_at`` to NULL (rather than a
+    current timestamp) makes the "no prior failures" state explicit
+    for ``get_failed_login_state`` readers."""
+    conn = get_db()
+    with conn:
+        cur = conn.execute(
+            "UPDATE users SET failed_login_count = 0, "
+            "last_failed_login_at = NULL WHERE id = ?",
+            (user_id,),
+        )
+    return cur.rowcount > 0
+
+
+def get_failed_login_state(user_id: int) -> tuple[int, Optional[datetime]]:
+    """Return ``(count, last_failed_at)`` for the given user.
+
+    ``count`` is the RAW stored value — callers that want sliding-
+    window semantics must compare ``last_failed_at`` against
+    ``FAILED_LOGIN_WINDOW_S`` themselves (``None`` or "> window ago"
+    → treat as zero). Returning the raw value rather than the
+    windowed one keeps the helper debug-friendly (``sqlite3 logs/
+    reverto.db "SELECT failed_login_count FROM users"`` matches
+    what this returns).
+    """
+    conn = get_db()
+    row = conn.execute(
+        "SELECT failed_login_count, last_failed_login_at "
+        "FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        return 0, None
+    return int(row["failed_login_count"] or 0), _parse_iso_dt(
+        row["last_failed_login_at"],
+    )

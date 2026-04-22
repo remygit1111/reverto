@@ -15,14 +15,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from slowapi.util import get_remote_address
 
 from core import user_store
 from core.password_breach import is_password_pwned
-from core.user_store import PASSWORD_MIN_LENGTH
+from core.user_store import FAILED_LOGIN_WINDOW_S, PASSWORD_MIN_LENGTH
 from web import app as _webapp
 from web.app import (
     _audit,
@@ -39,6 +42,101 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
 
 
+# ── Login-security-hardening constants ──────────────────────────────────
+# Exponential backoff schedule: delay = min(0.1 * 2^count, 30.0) seconds.
+# A typo (count=0) pays 0.1s — same as the pre-hardening damping sleep,
+# so legitimate users see no regression. A campaign of 5 wrong tries
+# pays 3.2s on the 6th, 10 wrong tries pays 30s thereafter, rate-limit
+# then blocks everything for the rest of the hour.
+_BACKOFF_BASE_S = 0.1
+_BACKOFF_CAP_S = 30.0
+
+# Per-account rate limit: once the failure counter reaches this, further
+# attempts within the 1-hour sliding window are refused with 429 before
+# password verification. Deliberately NOT a hard account lockout per
+# NIST SP 800-63B — sliding window + backoff gives equivalent brute-
+# force resistance without the DoS vector against legitimate users.
+_PER_ACCOUNT_FAIL_LIMIT = 10
+
+# Anomaly-log trigger: every N failures write a ``suspicious_login_pattern``
+# line to audit.log so an operator scanning the log spots brute-force
+# campaigns without needing to query the DB.
+_ANOMALY_LOG_EVERY_N = 5
+
+# In-memory fallback for failed logins against UNKNOWN usernames. Bot
+# traffic spraying random usernames shouldn't write DB rows (each
+# unknown attempt would otherwise require a sentinel row or a
+# dedicated side-table). Keyed by source IP; resets on portal restart.
+# Cap enforced to prevent counter-inflation DoS where an attacker
+# cycles source IPs to pollute the dict unboundedly.
+_UNKNOWN_USER_IP_CAP = 10_000
+# Maps ``client_ip -> (count, last_failure_unix_ts)``.
+_unknown_user_fails: dict[str, tuple[int, float]] = {}
+
+
+def _unknown_user_fail_get(ip: str) -> int:
+    """Return the current sliding-window failure count for an IP whose
+    attempts target usernames that don't exist. Stale entries (>1h
+    since last hit) count as zero, matching the per-account sliding
+    window."""
+    entry = _unknown_user_fails.get(ip)
+    if entry is None:
+        return 0
+    count, last_ts = entry
+    if time.time() - last_ts > FAILED_LOGIN_WINDOW_S:
+        return 0
+    return count
+
+
+def _unknown_user_fail_bump(ip: str) -> int:
+    """Increment the per-IP failure counter for unknown-username
+    traffic. Sliding window + IP-cap trimming are both applied here
+    so the handler has a single "fail is recorded" hook."""
+    now = time.time()
+    entry = _unknown_user_fails.get(ip)
+    if entry is None:
+        new_count = 1
+    else:
+        count, last_ts = entry
+        if now - last_ts > FAILED_LOGIN_WINDOW_S:
+            new_count = 1
+        else:
+            new_count = count + 1
+    # Cap the dict size by evicting the oldest entry when over budget.
+    # O(n) scan is fine — the cap is small relative to an actual
+    # attack's cardinality, and eviction fires rarely in practice.
+    if len(_unknown_user_fails) >= _UNKNOWN_USER_IP_CAP:
+        oldest_ip = min(
+            _unknown_user_fails,
+            key=lambda k: _unknown_user_fails[k][1],
+        )
+        _unknown_user_fails.pop(oldest_ip, None)
+    _unknown_user_fails[ip] = (new_count, now)
+    return new_count
+
+
+def _effective_count_from_state(
+    count: int, last_at: datetime | None,
+) -> int:
+    """Apply the 1-hour sliding window to a raw (count, last_at) pair
+    returned by ``user_store.get_failed_login_state``. The raw counter
+    can carry stale failures from weeks ago; this helper returns the
+    value that matters for backoff + rate-limit decisions right now."""
+    if last_at is None:
+        return 0
+    if (datetime.now(UTC) - last_at).total_seconds() > FAILED_LOGIN_WINDOW_S:
+        return 0
+    return count
+
+
+def _compute_backoff_s(pre_count: int) -> float:
+    """Deterministic backoff delay for a given pre-attempt failure
+    count. ``min(...)`` on the exponent guards against float overflow
+    on pathological counts; ``min(..., CAP)`` bounds the wall time."""
+    safe_exp = min(pre_count, 20)
+    return min(_BACKOFF_BASE_S * (2 ** safe_exp), _BACKOFF_CAP_S)
+
+
 class LoginBody(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=512)
@@ -52,14 +150,79 @@ class ChangePasswordBody(BaseModel):
 @router.post("/auth/login")
 @limiter.limit("5/minute")
 async def auth_login(body: LoginBody, request: Request):
+    """Username + password login with exponential backoff + per-account
+    rate-limit + anomaly logging.
+
+    Flow:
+      1. Look up the user by username to pick the right counter
+         (DB-backed per-user row, or per-IP in-memory fallback for
+         unknown usernames so random-username bot traffic doesn't
+         inflate the users table).
+      2. Apply the 1h sliding window to the prior failure count.
+      3. If at or over the per-account limit → 429 before verify.
+      4. Verify password.
+      5. On failure: increment the appropriate counter, fire an
+         anomaly audit line every N failures, pay the backoff delay
+         (identical timing for unknown-vs-known usernames to deny
+         enumeration), and raise 401.
+      6. On success: reset the per-account counter and return the
+         signed session cookie.
+    """
+    user_record = user_store.get_user_by_username(body.username)
+    client_ip = get_remote_address(request)
+
+    # Load pre-attempt failure state for backoff + rate-limit.
+    if user_record is not None:
+        raw_count, last_at = user_store.get_failed_login_state(
+            user_record.id,
+        )
+        pre_count = _effective_count_from_state(raw_count, last_at)
+    else:
+        pre_count = _unknown_user_fail_get(client_ip)
+
+    # Per-account rate limit. Returns 429 BEFORE password verification
+    # so an attacker can't amortise CPU by piling bcrypt calls against
+    # a locked account.
+    if pre_count >= _PER_ACCOUNT_FAIL_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Too many failed login attempts. "
+                "Please wait and try again later."
+            ),
+        )
+
     user = user_store.verify_password(body.username, body.password)
     if user is None:
-        # Damp brute force without blocking the event loop. Identical
-        # timing + generic error across every failure mode (missing
-        # user, inactive user, NULL hash, wrong password) so an
-        # attacker can't enumerate usernames via response differences.
-        await asyncio.sleep(0.1)
+        # Record the failure against whichever counter tracks this
+        # username shape (real user row → DB; unknown → in-memory IP
+        # fallback). Both paths return the new cumulative count used
+        # for the anomaly-log trigger.
+        if user_record is not None:
+            new_count = user_store.increment_failed_login(user_record.id)
+        else:
+            new_count = _unknown_user_fail_bump(client_ip)
+
+        if new_count > 0 and new_count % _ANOMALY_LOG_EVERY_N == 0:
+            _audit(
+                "suspicious_login_pattern",
+                body.username,
+                f"count={new_count}",
+            )
+
+        # Backoff uses the PRE-attempt count so the first failure
+        # still pays 0.1s (same damping as the pre-hardening code)
+        # and subsequent failures escalate. Applying identical timing
+        # regardless of user_record presence keeps the enumeration
+        # defence intact.
+        await asyncio.sleep(_compute_backoff_s(pre_count))
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Success — clear per-account counter so the sliding window
+    # starts fresh on any future failures. Unknown-IP fallback is
+    # left alone; a successful login doesn't imply the attacker's IP
+    # has reformed.
+    user_store.reset_failed_login(user.id)
 
     token = _create_session_cookie(user)
     resp = JSONResponse({"ok": True})
