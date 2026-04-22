@@ -14,6 +14,7 @@ from config.models import BotConfig
 from core.schedule_guard import ScheduleGuard
 from exchanges.base_exchange import BaseExchange
 from notifications.telegram import TelegramNotifier
+from paper.close_handler import DealCloseHandler
 from paper.errors import classify_exception, format_log_line
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from paper.state_io import StateIO, deal_to_dict, dict_to_deal
@@ -1030,6 +1031,23 @@ class PaperEngine:
             return False
         return True
 
+    def _make_close_handler(self) -> DealCloseHandler:
+        """Build a ``DealCloseHandler`` bound to this engine's state +
+        persistence + notifier. Portal-side offline closes construct
+        their own handler the same way (see web/routes/deals.py);
+        keeping the wiring here in a dedicated method documents the
+        shape that both call-paths must populate."""
+        return DealCloseHandler(
+            user_id=self.user_id,
+            bot_slug=self._bot_slug,
+            bot_name=self.config.name,
+            state=self.state,
+            state_io=self._state_io,
+            taker_fee=self.config.dca.taker_fee,
+            notifier=self.notifier,
+            notify_enqueue=self._notify,
+        )
+
     def _check_deal_sentinels(self, price: float):
         """Consume deal_edit / deal_cancel / deal_close sentinel files.
 
@@ -1089,47 +1107,24 @@ class PaperEngine:
                     deal._dca_enabled = bool(settings["dca_enabled"])
                 logger.info("Deal %s settings updated via portal", deal_id)
 
-            elif action == "cancel":
-                # Cancel removes the deal from tracking without realising
-                # PnL — the exchange position stays open and the operator
-                # is responsible for managing it manually. state.close_deal
-                # computes and applies PnL internally (updating balance),
-                # but we record 0.0 in the DB ledger because the gain/loss
-                # has not been crystallised through an actual exit trade.
-                exit_trigger = {"type": "cancelled"}
-                deal.exit_trigger = exit_trigger
-                self.state.close_deal(deal_id, price, "cancelled")
-                self._db_close_deal(
-                    deal_id, price, "cancelled", 0.0, 0.0,
-                    exit_trigger=exit_trigger,
-                )
-                logger.info("Deal %s cancelled via portal", deal_id)
-                self._notify(
-                    self.notifier.notify_stop_loss,
-                    self.config.name, deal.symbol, price, 0.0, 0.0,
-                )
-
-            elif action == "close":
-                pnl_btc, pnl_pct = deal.calculate_pnl(price)
-                exit_size = deal.total_size
-                exit_trigger = {"type": "manual"}
-                deal.exit_trigger = exit_trigger
-                self.state.close_deal(deal_id, price, "manual")
-                fee = self._calc_fee(exit_size)
-                self._deduct_balance(fee, f"manual_close:{deal_id}")
-                self._fees_paid_btc += fee
-                self._db_close_deal(
-                    deal_id, price, "manual", pnl_btc, pnl_pct,
-                    exit_trigger=exit_trigger,
-                )
-                logger.info(
-                    "Deal %s manually closed at $%.2f PnL: %+.6f BTC (fee %.8f)",
-                    deal_id, price, pnl_btc, fee,
-                )
-                self._notify(
-                    self.notifier.notify_take_profit,
-                    self.config.name, deal.symbol, price, pnl_btc, pnl_pct,
-                )
+            elif action in ("cancel", "close"):
+                # Delegate to the shared handler. Running-bot tick-loop
+                # path goes through the SAME code as the portal's
+                # offline DELETE /api/bots/{slug}/deals/{id} endpoint
+                # (see web/routes/deals.py + paper/close_handler.py).
+                # That invariant is what stopped the drift between
+                # "close from UI while running" vs "close from UI
+                # while stopped" that used to leave deals open forever.
+                handler = self._make_close_handler()
+                result = handler.close_deal(deal_id, price, action=action)
+                if not result.get("ok"):
+                    logger.error(
+                        "Sentinel %s failed: %s", sentinel, result.get("error"),
+                    )
+                else:
+                    fee = float(result.get("fee_btc") or 0.0)
+                    if fee:
+                        self._fees_paid_btc += fee
             else:
                 logger.warning("Unknown deal sentinel action: %s", action)
 
