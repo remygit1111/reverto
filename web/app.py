@@ -1233,20 +1233,46 @@ except Exception as _e:  # pragma: no cover - defensive
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan handler — replaces the deprecated
-    @app.on_event("startup") hook. `tail_logs` and `watch_state_files`
-    are forward references (defined lower in the module) but Python
-    resolves names at call-time, so this body is only evaluated once
-    uvicorn invokes the handler after module import completes.
+    """FastAPI lifespan handler.
 
-    The shutdown half is intentionally empty: the portal owns no
-    long-lived async state that needs graceful teardown; subprocess
-    bots are managed via the existing stop_bot() path.
+    Startup: spawn background tasks that tail bot logs and watch
+    state.json mtimes. References are stored so shutdown can cancel
+    them cleanly.
+
+    Shutdown: cancel background tasks and wait for them to return.
+    Without this, uvicorn's graceful-shutdown path hangs waiting for
+    asyncio.sleep() calls inside the tasks' while-True loops — which
+    is what caused the SIGKILL fallback in stop.sh to fire on every
+    make restart.
     """
     logger.info("=== Portal started ===")
-    asyncio.create_task(tail_logs())
-    asyncio.create_task(watch_state_files())
-    yield
+
+    background_tasks: list[asyncio.Task] = [
+        asyncio.create_task(tail_logs(), name="tail_logs"),
+        asyncio.create_task(watch_state_files(), name="watch_state_files"),
+    ]
+
+    try:
+        yield
+    finally:
+        logger.info("=== Portal shutting down ===")
+        for task in background_tasks:
+            task.cancel()
+        # Wait with timeout so a wedged task cannot block shutdown
+        # indefinitely. 2s is well under stop.sh's 5s grace period so
+        # we still leave headroom for uvicorn's own cleanup.
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*background_tasks, return_exceptions=True),
+                timeout=2.0,
+            )
+            logger.info("Background tasks cancelled cleanly")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Background task cancellation timed out after 2s — "
+                "uvicorn will force-close remaining tasks"
+            )
+        logger.info("=== Portal stopped ===")
 
 
 app = FastAPI(
