@@ -529,8 +529,15 @@ def test_migrate_v5_to_v6_adds_failed_login_columns(tmp_path):
     database.init_db()
 
     conn = database.get_db()
-    # user_version bumped to 6.
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    # user_version is bumped all the way to the current schema
+    # version — additive migrations roll forward through every
+    # v<N target in one pass, so a v5 DB lands at SCHEMA_VERSION
+    # (6 at original-fix-time, 7 after the dashboard_layouts
+    # additive bump, and so on).
+    assert (
+        conn.execute("PRAGMA user_version").fetchone()[0]
+        == database.SCHEMA_VERSION
+    )
 
     # Both new columns present.
     cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
