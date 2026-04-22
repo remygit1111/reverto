@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
-from paper.paper_state import PaperDeal, PaperOrder
+from paper.paper_state import PaperDeal, PaperOrder, PaperState
 
 logger = logging.getLogger(__name__)
 
@@ -268,3 +268,71 @@ class StateIO:
                 "Failed to clear state for %s: %s",
                 self.slug or "unknown", str(e)[:200],
             )
+
+
+# ── Standalone state loader (used by portal's offline close path) ───────
+
+def load_paper_state_from_file(
+    state_file: Path, slug: Optional[str] = None,
+) -> tuple[PaperState, StateIO]:
+    """Rehydrate a ``PaperState`` from a state.json file without
+    invoking the full ``PaperEngine`` constructor.
+
+    Used by the portal's ``DELETE /api/bots/{slug}/deals/{deal_id}``
+    offline branch: when a paper bot isn't running, the portal needs
+    a PaperState instance + a StateIO to hand to ``DealCloseHandler``.
+    Engine-construction would pull in ccxt clients, schedule guards,
+    indicator engines — none of which we need just to close a deal.
+
+    The restore logic mirrors the balance + closed_deals + open_deals
+    subset of ``PaperEngine._load_state``. Fields the close path
+    doesn't touch (drawdown_guard, fees_paid_btc, paused_by_drawdown,
+    etc.) stay on disk via the handler's read-merge-write — they're
+    not materialised into the returned ``PaperState`` because the
+    handler doesn't read them, but the next engine start will
+    rehydrate them directly from the preserved fields.
+
+    Returns
+    -------
+    (state, state_io)
+        Both ready to pass into ``DealCloseHandler``. If the file
+        doesn't exist, returns an empty ``PaperState`` + bound
+        ``StateIO`` — the caller will find no matching deal and
+        surface a 404-equivalent error.
+    """
+    state_io = StateIO(state_file, slug=slug)
+    state = PaperState()
+    raw = state_io.load()
+    if not raw:
+        return state, state_io
+
+    # Balance + initial_balance: floats that survive a restart as-is.
+    try:
+        state.balance_btc = float(raw.get("balance_btc", 0.0))
+    except (TypeError, ValueError):
+        pass
+    try:
+        state.initial_balance_btc = float(raw.get(
+            "initial_balance_btc", state.initial_balance_btc,
+        ))
+    except (TypeError, ValueError):
+        pass
+
+    # Closed + open deal history.
+    for entry in raw.get("closed_deals", []):
+        try:
+            state.closed_deals.append(dict_to_deal(entry))
+        except Exception as e:
+            logger.warning(
+                "load_paper_state_from_file: skipping unparseable closed deal: %s", e,
+            )
+    for entry in raw.get("open_deals", []):
+        try:
+            deal = dict_to_deal(entry)
+            state.open_deals[deal.id] = deal
+        except Exception as e:
+            logger.warning(
+                "load_paper_state_from_file: skipping unparseable open deal: %s", e,
+            )
+
+    return state, state_io
