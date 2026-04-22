@@ -1609,37 +1609,54 @@ def _validate_bot_payload(payload: dict) -> BotConfig:
 # ── WebSocket log streaming ───────────────────────────────────────────────────
 
 class LogBroadcaster:
-    # TODO(phase-3b, audit v26-16): broadcast() moet per-user filteren.
-    # connect() moet user_id opslaan naast de slug, zodat broadcast()
-    # alleen pusht naar clients waarvan user_id matcht met de owner
-    # van de slug. Huidig model werkt voor single-admin omdat ws_logs
-    # al user-scoped de registry consulteert bij subscribe (een user
-    # kan niet subscriben op andermans slug), maar de broadcast-laag
-    # zelf kent geen user-scope. Zie docs/phase-3.md §3 en audit
-    # v26-report finding v26-16 voor de cross-tenant data-leak
-    # risk-analyse.
+    """Fan bot-log lines to every subscribed WS client.
+
+    Audit v26-16: delivery is filtered by ``owner_user_id`` so a
+    broadcast for bot A of user 1 never reaches a WS client that
+    connected as user 2. Subscribe-side already enforces ownership
+    via ``registry.get(user_id, slug)``, but the broadcast layer
+    itself carries the check too — defence in depth for any future
+    code path that bypasses subscribe (e.g. infra-triggered
+    broadcasts on the "portal" slug, which are fanned to every
+    admin via ``get_admin_user_ids()``).
+    """
+
     def __init__(self):
         self._clients: dict[str, set[WebSocket]] = {}
+        # Per-socket user_id so broadcast() can filter without going
+        # back to the DB on every frame.
+        self._user_map: dict[WebSocket, int] = {}
         # asyncio.Lock — essentieel zodra uvicorn meerdere workers krijgt
         # of meer dan één coroutine concurrent connect/disconnect/broadcast
         # uitvoert. Onder de huidige single-worker setup is het pad veilig
         # door de event loop, maar de lock maakt het future-proof.
         self._lock = asyncio.Lock()
 
-    async def connect(self, ws: WebSocket, slug: str):
+    async def connect(self, ws: WebSocket, slug: str, user_id: int):
         await ws.accept()
         async with self._lock:
             self._clients.setdefault(slug, set()).add(ws)
+            self._user_map[ws] = int(user_id)
 
     async def disconnect(self, ws: WebSocket, slug: str):
         async with self._lock:
             if slug in self._clients:
                 self._clients[slug].discard(ws)
+            self._user_map.pop(ws, None)
 
-    async def broadcast(self, slug: str, line: str):
+    async def broadcast(self, slug: str, line: str, owner_user_id: int):
+        """Send ``line`` to clients on ``slug`` whose user_id matches
+        ``owner_user_id``. A socket on the same slug owned by a
+        different user is silently skipped — the check is O(clients
+        on slug), not O(all clients), so cost scales with the group
+        size that actually cares about this slug.
+        """
         async with self._lock:
-            targets = list(self._clients.get(slug, set()))
-        dead = set()
+            targets = [
+                ws for ws in self._clients.get(slug, set())
+                if self._user_map.get(ws) == owner_user_id
+            ]
+        dead: set[WebSocket] = set()
         for ws in targets:
             try:
                 await ws.send_text(line)
@@ -1649,6 +1666,8 @@ class LogBroadcaster:
             async with self._lock:
                 if slug in self._clients:
                     self._clients[slug] -= dead
+                for ws in dead:
+                    self._user_map.pop(ws, None)
 
 
 broadcaster = LogBroadcaster()
@@ -1667,10 +1686,17 @@ async def ws_logs(websocket: WebSocket, slug: str):
         await websocket.close(code=4401)
         return
 
-    # Special slug "portal" streams the portal's own log
+    # Special slug "portal" streams the portal's own log. portal.log
+    # can surface cross-user admin actions (failed logins, admin route
+    # hits, audit events) — audit v26-16 requires admin role to
+    # subscribe. Non-admins get close 4403 before accept().
     if slug == "portal":
+        user = user_store.get_user_by_id(user_id)
+        if user is None or user.role != "admin":
+            await websocket.close(code=4403)
+            return
         portal_log = LOG_DIR / "portal.log"
-        await broadcaster.connect(websocket, "portal")
+        await broadcaster.connect(websocket, "portal", user_id)
         try:
             if portal_log.exists():
                 lines = portal_log.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -1694,7 +1720,7 @@ async def ws_logs(websocket: WebSocket, slug: str):
         await websocket.close(code=4004)
         return
 
-    await broadcaster.connect(websocket, slug)
+    await broadcaster.connect(websocket, slug, user_id)
     try:
         if bot and bot.log_file.exists():
             lines = bot.log_file.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -1710,36 +1736,45 @@ async def ws_logs(websocket: WebSocket, slug: str):
 
 
 class StateBroadcaster:
-    """Push bot-state updates to every connected /ws/state client.
+    """Push bot-state updates to connected /ws/state clients.
 
-    Mirrors LogBroadcaster, but shares one flat client set (state
-    updates are bot-agnostic — every client wants every update).
+    Audit v26-16: delivery is filtered by ``target_user_id`` so a
+    bot-state frame for user 1 never lands on a client that connected
+    as user 2. The initial-snapshot path in ``ws_state`` is already
+    user-scoped via ``registry.all(user_id=...)``; this lock closes
+    the loop for the periodic push from ``watch_state_files``.
+    Summary frames are per-user (one payload per owner in the
+    watcher), so each client only sees aggregates over their own
+    bots.
     """
-    # TODO(phase-3b, audit v26-16): broadcast() moet per-user filteren.
-    # ws_state hydrateert z'n initial snapshot al user-scoped via
-    # registry.all(user_id=...), maar de periodieke broadcasts uit
-    # watch_state_files krijgt élke client het payload van élke bot.
-    # Bij multi-user is dat een cross-tenant leak — connect() moet de
-    # user_id van de ws-handshake opslaan en broadcast() moet per
-    # frame checken of de bot-owner matcht. Zie docs/phase-3.md §3
-    # en audit v26-report finding v26-16.
 
     def __init__(self):
         self._clients: set[WebSocket] = set()
+        self._user_map: dict[WebSocket, int] = {}
         self._lock = asyncio.Lock()
 
-    async def connect(self, ws: WebSocket) -> None:
+    async def connect(self, ws: WebSocket, user_id: int) -> None:
         await ws.accept()
         async with self._lock:
             self._clients.add(ws)
+            self._user_map[ws] = int(user_id)
 
     async def disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
             self._clients.discard(ws)
+            self._user_map.pop(ws, None)
 
-    async def broadcast(self, payload: str) -> None:
+    async def broadcast(self, payload: str, target_user_id: int) -> None:
+        """Send ``payload`` to clients whose user_id matches
+        ``target_user_id``. The caller decides whose view this frame
+        represents — typically ``bot.user_id`` for bot-state frames
+        and the subscriber's own id for per-user summary frames.
+        """
         async with self._lock:
-            targets = list(self._clients)
+            targets = [
+                ws for ws in self._clients
+                if self._user_map.get(ws) == target_user_id
+            ]
         stale: list[WebSocket] = []
         for ws in targets:
             try:
@@ -1750,6 +1785,7 @@ class StateBroadcaster:
             async with self._lock:
                 for ws in stale:
                     self._clients.discard(ws)
+                    self._user_map.pop(ws, None)
 
 
 state_broadcaster = StateBroadcaster()
@@ -1767,15 +1803,17 @@ async def watch_state_files():
     so the SPA's overview cards stay in sync with bot life-cycle events
     (a bot starting/stopping doesn't touch state.json, but the PID
     liveness flag flips).
+
+    Delivery is per-owner (audit v26-16): bot-state frames go to
+    clients whose user_id matches ``bot.user_id``, and summary frames
+    are computed per-user so each client sees aggregates over their
+    own bots only.
     """
     while True:
         try:
             # Infrastructure task: scan ALL bots across ALL users.
             # Per-user filtering happens at broadcaster-delivery time
-            # (WS clients are already user-scoped via their session
-            # cookie), so this scan SHOULD cross users. Not a bug —
-            # intentional. See the Phase-3b delivery-side TODO on
-            # StateBroadcaster (audit v26-16) for the matching fix.
+            # via target_user_id — this cross-user scan is correct.
             bots = await registry.all()
             for bot in bots:
                 try:
@@ -1792,7 +1830,9 @@ async def watch_state_files():
                         "slug": bot.slug,
                         "data": state,
                     })
-                    await state_broadcaster.broadcast(payload)
+                    await state_broadcaster.broadcast(
+                        payload, target_user_id=bot.user_id,
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.debug("watch_state_files: bot %s failed: %s", bot.slug, e)
                     continue
@@ -1800,13 +1840,21 @@ async def watch_state_files():
             # Always broadcast summary — cheap and keeps the overview
             # cards honest even when no state.json file changed (PID
             # liveness flips as bots start/stop without touching JSON).
+            # Compute one summary per owner so each user's cards
+            # reflect only their own bots.
             try:
-                snapshot = [b.read_state() for b in bots]
-                summary_payload = json.dumps({
-                    "type": "summary",
-                    "data": _compute_summary(snapshot),
-                })
-                await state_broadcaster.broadcast(summary_payload)
+                bots_by_user: dict[int, list] = {}
+                for b in bots:
+                    bots_by_user.setdefault(b.user_id, []).append(b)
+                for uid, user_bots in bots_by_user.items():
+                    snapshot = [b.read_state() for b in user_bots]
+                    summary_payload = json.dumps({
+                        "type": "summary",
+                        "data": _compute_summary(snapshot),
+                    })
+                    await state_broadcaster.broadcast(
+                        summary_payload, target_user_id=uid,
+                    )
             except Exception as e:  # noqa: BLE001
                 logger.debug("watch_state_files: summary failed: %s", e)
         except Exception as e:  # noqa: BLE001
@@ -1826,7 +1874,7 @@ async def ws_state(websocket: WebSocket):
     if user_id is None:
         await websocket.close(code=4401)
         return
-    await state_broadcaster.connect(websocket)
+    await state_broadcaster.connect(websocket, user_id)
     try:
         # Initial snapshot so the SPA can render without waiting for a
         # file-change event.
@@ -1870,17 +1918,20 @@ async def tail_logs():
     last: dict[str, int] = {}
     while True:
         # Infrastructure task: tail ALL bot logs across ALL users.
-        # Per-user filtering happens at broadcaster-delivery time
-        # (WS clients are user-scoped via their session cookie on
-        # connect, see ws_logs), so this scan SHOULD cross users.
-        # Not a bug — intentional. See the Phase-3b delivery-side
-        # TODO on LogBroadcaster (audit v26-16) for the matching fix.
-        log_files: list[tuple[str, Path]] = [
-            (bot.slug, bot.log_file) for bot in await registry.all()
+        # Per-user delivery happens inside LogBroadcaster.broadcast
+        # via owner_user_id — this scan is cross-user by design so a
+        # single tail cursor per file handles every tenant.
+        all_bots = await registry.all()
+        # (slug, log_file, owner_user_id) — owner_user_id is None for
+        # the "portal" pseudo-slug so we can fan it to every admin
+        # after the size-probe below without re-reading the users
+        # table when no new lines have appeared.
+        targets: list[tuple[str, Path, Optional[int]]] = [
+            (bot.slug, bot.log_file, bot.user_id) for bot in all_bots
         ]
-        log_files.append(("portal", LOG_DIR / "portal.log"))
+        targets.append(("portal", LOG_DIR / "portal.log", None))
 
-        for slug, log_file in log_files:
+        for slug, log_file, owner_user_id in targets:
             try:
                 if not log_file.exists():
                     continue
@@ -1891,9 +1942,27 @@ async def tail_logs():
                         f.seek(prev)
                         new = f.read()
                     last[slug] = size
-                    for line in new.splitlines():
-                        if line.strip():
-                            await broadcaster.broadcast(slug, line)
+                    new_lines = [
+                        line for line in new.splitlines() if line.strip()
+                    ]
+                    if not new_lines:
+                        continue
+                    if slug == "portal":
+                        # System-wide log — fan to every admin client.
+                        # Lookup lives inside the "lines appeared"
+                        # branch so a quiet portal.log doesn't hammer
+                        # the users table every second.
+                        admin_ids = user_store.get_admin_user_ids()
+                        for line in new_lines:
+                            for admin_id in admin_ids:
+                                await broadcaster.broadcast(
+                                    slug, line, owner_user_id=admin_id,
+                                )
+                    else:
+                        for line in new_lines:
+                            await broadcaster.broadcast(
+                                slug, line, owner_user_id=owner_user_id,
+                            )
                 elif size < prev:
                     last[slug] = size
             except Exception:

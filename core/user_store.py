@@ -40,6 +40,7 @@ import bcrypt
 from core.database import get_db
 from core.user import (  # re-exports for one-stop import
     User,
+    get_admin_user_ids,
     get_user_by_id,
     get_user_by_username,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "FAILED_LOGIN_WINDOW_S",
     "get_user_by_id",
     "get_user_by_username",
+    "get_admin_user_ids",
     "verify_password",
     "set_password",
     "bump_session_epoch",
