@@ -5,20 +5,36 @@
 
 cd "$(dirname "$0")"
 
-# IMPORTANT: voor live/productie gebruik MOET REVERTO_API_KEY gezet zijn,
-# anders genereert de portal bij elke restart een nieuwe ephemerale key
-# en kan geen enkele client (browser/script) bij de control endpoints.
-# Voorbeeld:
-#   export REVERTO_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+# Load .env if present — env-vars for REVERTO_API_KEY /
+# REVERTO_SECRET_KEY / REVERTO_INSECURE_COOKIES / exchange
+# credentials live here. `make(1)` spawns /bin/sh which does not
+# read .bashrc, so .env is the single source of truth for portal
+# environment across dev and production.
 #
-# REVERTO_SECRET_KEY tekent de sessie-cookies. Zonder deze worden alle
-# bestaande sessies ongeldig bij elke restart.
-#   export REVERTO_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
-#
-# Voor localhost development (http://, geen TLS) moet de Secure-cookie
-# vlag uit, anders dropt de browser de sessie-cookie stilletjes:
-#   export REVERTO_INSECURE_COOKIES=1
-# Voor productie achter een TLS reverse proxy: NIET zetten.
+# `set -a` auto-exports every variable assigned while the flag is
+# active, so the values reach the Python subprocess below instead
+# of only living in this shell. Flipped off after the source to
+# avoid accidentally exporting anything subsequent shell code
+# happens to assign.
+if [ -f .env ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . ./.env
+    set +a
+fi
+
+# REVERTO_API_KEY: without it, the portal generates a fresh
+# ephemeral key on every restart → every existing client (browser
+# session, script) loses access until the new key is redistributed.
+# REVERTO_SECRET_KEY: signs session cookies — without it, every
+# restart invalidates every open session.
+# REVERTO_INSECURE_COOKIES=1: drops the Secure-flag on session
+# cookies so localhost development over plain HTTP works. DO NOT
+# set in production behind a TLS reverse proxy.
+# Generate the key values with:
+#   python3 -c 'import secrets; print(secrets.token_hex(32))'
+# Drop them + exchange credentials into .env (see .env.example
+# for the template).
 
 PORTAL_PID_FILE="logs/pids/portal.pid"
 mkdir -p logs/pids
