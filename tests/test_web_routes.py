@@ -8,6 +8,7 @@
 
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 
 os.environ["REVERTO_API_KEY"] = "testkey-for-pytest"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from fastapi.testclient import TestClient
 
+from core.database import get_db
 from web.app import app
 
 CLIENT = TestClient(app)
@@ -541,6 +543,365 @@ class TestPerUserSessionEpoch:
         )
         assert r.status_code == 200
         assert auth_client.get("/api/bots").status_code == 200
+
+
+class TestLoginSecurityHardening:
+    """Exponential backoff + per-account rate-limit + anomaly logging
+    + in-memory fallback for unknown-username IP traffic. Counterpart
+    to the unit tests in tests/test_user_store.py — these assert the
+    wiring into /auth/login behaves end-to-end."""
+
+    def _reset_slowapi(self):
+        """Clear slowapi's 5/min bucket so a single test can drive
+        more than 5 login attempts against /auth/login without
+        hitting the IP-level rate limit (which would obscure the
+        per-account limit we actually want to test)."""
+        try:
+            webapp.limiter.reset()
+        except Exception:
+            pass
+
+    def _reset_unknown_ip_fails(self):
+        """Clear the per-IP in-memory fallback so tests are order-
+        independent. The dict is module-level state that survives
+        across tests in the same process; a leftover counter from a
+        prior test would skew the anomaly-log threshold in this one."""
+        import web.routes.auth as _auth_mod
+        _auth_mod._unknown_user_fails.clear()
+
+    # ── Counter reset on success ─────────────────────────────────
+
+    def test_login_success_resets_counter(self, auth_client):
+        """Fail N times then succeed — post-success counter is 0.
+        Exercised via direct user_store check rather than the
+        endpoint's response, because the endpoint doesn't surface
+        counter state."""
+        from core import user_store
+        admin = user_store.get_user_by_username("admin")
+
+        for _ in range(3):
+            self._reset_slowapi()
+            r = auth_client.post(
+                "/auth/login",
+                json={"username": "admin", "password": "wrong"},
+            )
+            assert r.status_code == 401
+
+        # Counter now at 3.
+        count, _ = user_store.get_failed_login_state(admin.id)
+        assert count == 3
+
+        self._reset_slowapi()
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": _KNOWN_PW},
+        )
+        assert r.status_code == 200
+
+        count, last = user_store.get_failed_login_state(admin.id)
+        assert count == 0
+        assert last is None
+
+    # ── Exponential backoff ──────────────────────────────────────
+
+    def test_login_exponential_backoff_increases(
+        self, auth_client, monkeypatch,
+    ):
+        """Monkey-patch ``asyncio.sleep`` in the auth module to capture
+        the backoff value per attempt. Timing-sensitive tests are
+        flaky under CI load; capturing the argument we pass to sleep
+        is both faster AND a stricter assertion (exact value vs
+        approximate wall-time)."""
+        import web.routes.auth as _auth_mod
+
+        recorded: list[float] = []
+
+        async def _fake_sleep(duration):
+            recorded.append(float(duration))
+
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+
+        for _ in range(5):
+            self._reset_slowapi()
+            r = auth_client.post(
+                "/auth/login",
+                json={"username": "admin", "password": "wrong"},
+            )
+            assert r.status_code == 401
+
+        assert len(recorded) == 5
+        # Backoff sequence: 0.1, 0.2, 0.4, 0.8, 1.6 (pre_count 0..4).
+        assert recorded[0] == pytest.approx(0.1, rel=0.01)
+        assert recorded[1] == pytest.approx(0.2, rel=0.01)
+        assert recorded[4] == pytest.approx(1.6, rel=0.01)
+        # Monotonic increase — stronger invariant than exact values.
+        for prev, curr in zip(recorded, recorded[1:]):
+            assert curr > prev
+
+    def test_login_backoff_caps_at_30s(self, auth_client, monkeypatch):
+        """Past count=8 the backoff would exceed the 30s cap. The
+        handler must clamp to 30.0s so one user can't be DoS'd
+        waiting minutes per attempt after ten failures."""
+        import web.routes.auth as _auth_mod
+        from core import user_store
+
+        async def _fake_sleep(duration):
+            pass
+
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+
+        # Seed 9 prior failures directly; next attempt sees pre_count=9.
+        admin = user_store.get_user_by_username("admin")
+        now_iso = datetime.now(UTC).isoformat()
+        conn = get_db()
+        with conn:
+            conn.execute(
+                "UPDATE users SET failed_login_count = 9, "
+                "last_failed_login_at = ? WHERE id = ?",
+                (now_iso, admin.id),
+            )
+
+        # Inspect the computed backoff directly — cleaner than
+        # capturing from the route.
+        assert _auth_mod._compute_backoff_s(9) == pytest.approx(30.0)
+        assert _auth_mod._compute_backoff_s(20) == pytest.approx(30.0)
+        assert _auth_mod._compute_backoff_s(100) == pytest.approx(30.0)
+
+    # ── Per-account rate limit → 429 ─────────────────────────────
+
+    def test_login_rate_limits_at_ten_failures(
+        self, auth_client, monkeypatch,
+    ):
+        """10 failures within the 1h window → 11th attempt returns
+        429 (from our per-account logic) even if slowapi's per-IP
+        bucket is fresh. The 429 fires BEFORE bcrypt verification,
+        so a locked account costs the attacker nothing extra."""
+        import web.routes.auth as _auth_mod
+
+        async def _fake_sleep(duration):
+            pass
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+
+        for i in range(10):
+            self._reset_slowapi()
+            r = auth_client.post(
+                "/auth/login",
+                json={"username": "admin", "password": "wrong"},
+            )
+            assert r.status_code == 401, f"attempt {i + 1} should 401, got {r.status_code}"
+
+        # 11th attempt — the per-account limit fires.
+        self._reset_slowapi()
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "wrong"},
+        )
+        assert r.status_code == 429
+        assert "failed login attempts" in r.json()["detail"].lower()
+
+    def test_login_rate_limit_blocks_correct_password_too(
+        self, auth_client, monkeypatch,
+    ):
+        """After rate-limit kicks in, even the RIGHT password gets
+        429. This is the whole point — the check runs before verify
+        so an attacker can't tell "locked vs rejected" apart."""
+        import web.routes.auth as _auth_mod
+        from core import user_store
+
+        async def _fake_sleep(duration):
+            pass
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+
+        # Seed 10 prior failures in a fresh streak.
+        admin = user_store.get_user_by_username("admin")
+        now_iso = datetime.now(UTC).isoformat()
+        conn = get_db()
+        with conn:
+            conn.execute(
+                "UPDATE users SET failed_login_count = 10, "
+                "last_failed_login_at = ? WHERE id = ?",
+                (now_iso, admin.id),
+            )
+
+        self._reset_slowapi()
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": _KNOWN_PW},
+        )
+        assert r.status_code == 429
+
+    # ── 1-hour window reset ──────────────────────────────────────
+
+    def test_login_counter_resets_after_one_hour(
+        self, auth_client, monkeypatch,
+    ):
+        """A stale last-failure timestamp (older than the 1h window)
+        must not gate a fresh attempt. The 11th attempt that follows
+        a 2h-old streak of 10 starts counting from 1 again."""
+        import web.routes.auth as _auth_mod
+        from core import user_store
+
+        async def _fake_sleep(duration):
+            pass
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+
+        # Seed 10 stale failures (> 1h ago).
+        admin = user_store.get_user_by_username("admin")
+        stale_ts = (datetime.now(UTC) - timedelta(
+            seconds=user_store.FAILED_LOGIN_WINDOW_S + 60,
+        )).isoformat()
+        conn = get_db()
+        with conn:
+            conn.execute(
+                "UPDATE users SET failed_login_count = 10, "
+                "last_failed_login_at = ? WHERE id = ?",
+                (stale_ts, admin.id),
+            )
+
+        # Despite raw count=10, the stale timestamp → effective 0
+        # → no 429, attempt goes through to 401.
+        self._reset_slowapi()
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "wrong"},
+        )
+        assert r.status_code == 401
+        # And the counter reset-and-incremented to 1 (fresh streak).
+        count, _ = user_store.get_failed_login_state(admin.id)
+        assert count == 1
+
+    # ── Anomaly logging ──────────────────────────────────────────
+
+    def test_suspicious_login_pattern_logged(
+        self, auth_client, monkeypatch, tmp_path,
+    ):
+        """Every 5th failure writes ``suspicious_login_pattern`` to
+        audit.log. Captured via a caplog hook on the audit logger."""
+        import logging as _logging
+        import web.routes.auth as _auth_mod
+
+        async def _fake_sleep(duration):
+            pass
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+
+        # Attach a list-capturing handler to the audit logger rather
+        # than reading the rotating file — the file's path is
+        # fixed across tests and mixing reads with other test runs
+        # is fragile.
+        audit_logger = _logging.getLogger("reverto.audit")
+        captured: list[str] = []
+
+        class _ListHandler(_logging.Handler):
+            def emit(self, record):
+                captured.append(record.getMessage())
+
+        handler = _ListHandler(level=_logging.INFO)
+        audit_logger.addHandler(handler)
+        try:
+            for _ in range(5):
+                self._reset_slowapi()
+                auth_client.post(
+                    "/auth/login",
+                    json={"username": "admin", "password": "wrong"},
+                )
+        finally:
+            audit_logger.removeHandler(handler)
+
+        # Should see at least one suspicious_login_pattern line.
+        matches = [
+            line for line in captured
+            if "suspicious_login_pattern" in line and "count=5" in line
+        ]
+        assert len(matches) == 1, (
+            f"expected exactly one suspicious_login_pattern|...|count=5 "
+            f"audit entry, got: {captured}"
+        )
+        # Username is preserved in the slug field for forensics.
+        assert "admin" in matches[0]
+
+    # ── Unknown user — in-memory IP fallback ─────────────────────
+
+    def test_nonexistent_user_does_not_crash(
+        self, auth_client, monkeypatch,
+    ):
+        """Login against a username that doesn't exist must not
+        raise + must produce the same 401 shape as a wrong-password
+        attempt against a real user (enumeration defence)."""
+        import web.routes.auth as _auth_mod
+
+        async def _fake_sleep(duration):
+            pass
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+        self._reset_unknown_ip_fails()
+
+        self._reset_slowapi()
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "no-such-user", "password": "anything"},
+        )
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Invalid credentials"
+
+    def test_nonexistent_user_bumps_in_memory_counter_not_db(
+        self, auth_client, monkeypatch,
+    ):
+        """Random-username bot traffic must not cause DB writes
+        (would inflate the users table with sentinel rows or worse).
+        The in-memory per-IP counter records the attempt instead."""
+        import web.routes.auth as _auth_mod
+
+        async def _fake_sleep(duration):
+            pass
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+        self._reset_unknown_ip_fails()
+
+        conn = get_db()
+        users_before = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        self._reset_slowapi()
+        auth_client.post(
+            "/auth/login",
+            json={"username": "definitely-not-here", "password": "x"},
+        )
+
+        users_after = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+        assert users_after == users_before
+
+        # The in-memory counter ticked by one (TestClient uses a
+        # consistent loopback IP).
+        assert len(_auth_mod._unknown_user_fails) == 1
+
+    def test_nonexistent_user_rate_limit_via_ip_counter(
+        self, auth_client, monkeypatch,
+    ):
+        """Drive the in-memory counter to 10 → 11th attempt with an
+        unknown username from the same IP triggers 429 without a DB
+        write."""
+        import web.routes.auth as _auth_mod
+
+        async def _fake_sleep(duration):
+            pass
+        monkeypatch.setattr(_auth_mod.asyncio, "sleep", _fake_sleep)
+        self._reset_unknown_ip_fails()
+
+        for _ in range(10):
+            self._reset_slowapi()
+            r = auth_client.post(
+                "/auth/login",
+                json={"username": "bot-scan", "password": "x"},
+            )
+            assert r.status_code == 401
+
+        self._reset_slowapi()
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "bot-scan", "password": "x"},
+        )
+        assert r.status_code == 429
 
 
 class TestInactiveUserRejected:

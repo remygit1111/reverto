@@ -490,6 +490,102 @@ def test_migrate_refuses_future_schema(tmp_path):
         database.init_db()
 
 
+def test_migrate_v5_to_v6_adds_failed_login_columns(tmp_path):
+    """A stored v5 DB (pre-login-security-hardening) doesn't have
+    ``failed_login_count`` or ``last_failed_login_at`` on ``users``.
+    init_db() must ALTER TABLE ADD COLUMN idempotently without
+    touching existing row data.
+
+    Crosses ``_LAST_DESTRUCTIVE_VERSION = 4``, so the destructive
+    guard does NOT apply — this is a pure additive upgrade.
+    """
+    legacy_db = tmp_path / "v5.db"
+    import sqlite3
+    raw = sqlite3.connect(str(legacy_db))
+    # Minimal v5 users shape — matches what a real post-Phase-3a
+    # install looked like before the hardening landed.
+    raw.execute(
+        """
+        CREATE TABLE users (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            username       TEXT NOT NULL UNIQUE,
+            password_hash  TEXT,
+            role           TEXT NOT NULL DEFAULT 'user',
+            session_epoch  INTEGER NOT NULL DEFAULT 0,
+            active         INTEGER NOT NULL DEFAULT 1,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    raw.execute(
+        "INSERT INTO users (id, username, role, session_epoch, "
+        "active) VALUES (1, 'admin', 'admin', 7, 1)"
+    )
+    raw.execute("PRAGMA user_version = 5")
+    raw.commit()
+    raw.close()
+
+    database.set_db_path(legacy_db)
+    database.init_db()
+
+    conn = database.get_db()
+    # user_version bumped to 6.
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+
+    # Both new columns present.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    assert "failed_login_count" in cols
+    assert "last_failed_login_at" in cols
+
+    # Existing admin row survived AND got the new columns' defaults.
+    row = conn.execute(
+        "SELECT id, session_epoch, failed_login_count, "
+        "last_failed_login_at FROM users WHERE id = 1"
+    ).fetchone()
+    assert row["id"] == 1
+    # session_epoch preserved — not wiped by an accidental DROP.
+    assert row["session_epoch"] == 7
+    # Defaults applied to the pre-existing row.
+    assert row["failed_login_count"] == 0
+    assert row["last_failed_login_at"] is None
+
+
+def test_migrate_v5_to_v6_is_idempotent(tmp_path):
+    """Running init_db() twice on a v5 DB must not raise on the
+    second pass (ALTER TABLE would error on "duplicate column"
+    without the try/except)."""
+    legacy_db = tmp_path / "v5.db"
+    import sqlite3
+    raw = sqlite3.connect(str(legacy_db))
+    # Full v5 users shape — role/session_epoch/active columns all
+    # present so _SCHEMA_STATEMENTS' INSERT OR IGNORE admin-seed
+    # finds the expected columns.
+    raw.execute(
+        """
+        CREATE TABLE users (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            username       TEXT NOT NULL UNIQUE,
+            password_hash  TEXT,
+            role           TEXT NOT NULL DEFAULT 'user',
+            session_epoch  INTEGER NOT NULL DEFAULT 0,
+            active         INTEGER NOT NULL DEFAULT 1,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    raw.execute("PRAGMA user_version = 5")
+    raw.commit()
+    raw.close()
+
+    database.set_db_path(legacy_db)
+    database.init_db()
+    database.init_db()  # must not raise "duplicate column"
+
+    conn = database.get_db()
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    assert "failed_login_count" in cols
+
+
 # ── Audit v26-10: destructive migration guard ───────────────────────────────
 
 
