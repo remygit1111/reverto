@@ -8,7 +8,7 @@ Routes:
 
 Circular-import shape: this module is imported at the BOTTOM of
 ``web/app.py``. Module-level names we pull from ``web.app`` (limiter,
-_request_actor, registry, stop_bot, _audit) are all defined before
+_request_user, registry, stop_bot, _audit) are all defined before
 that bottom import, so the ``from web.app import ...`` lines below
 resolve against a fully-populated web.app module even though that
 module is technically mid-initialisation.
@@ -21,12 +21,13 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from core.user import User
 from web.app import (
     _audit,
-    _request_actor,
+    _request_user,
     limiter,
     registry,
     stop_bot,
@@ -102,19 +103,33 @@ async def metrics_endpoint(request: Request):
 @router.post("/api/emergency-stop")
 @limiter.limit("5/minute")
 async def api_emergency_stop(
-    request: Request, actor: str = Depends(_request_actor),
+    request: Request, user: User = Depends(_request_user),
 ):
     """Stop every running bot immediately (audit-logged + rate-limited).
+
+    Admin-only (audit v26-02). The action is intentionally cross-user
+    — a multi-tenant emergency must be able to halt every bot, not
+    just the caller's — so gating on ``role == 'admin'`` is the
+    right trust boundary. Non-admins get 403 with a WARNING log line
+    so failed attempts are visible without paging.
 
     Uses the ``stop_bot(user_id, slug)`` plumbing so SIGTERM + notify
     drain still happens per bot — we're not pulling the rug out from
     under any in-flight order logic, just sending everyone the same
-    graceful-stop signal. Phase-3 spec treats this as admin-cross-user
-    by design, so we iterate every bot in the registry regardless of
-    the caller's own user.
+    graceful-stop signal.
     """
-    _audit("emergency_stop", "-", actor)
-    logger.error("EMERGENCY STOP requested by %s", actor)
+    if user.role != "admin":
+        logger.warning(
+            "Emergency-stop attempt by non-admin user=%s (role=%s) — 403",
+            user.username, user.role,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Emergency stop requires admin role.",
+        )
+
+    _audit("emergency_stop", "-", user.username)
+    logger.error("EMERGENCY STOP requested by %s", user.username)
 
     stopped: list[str] = []
     failed: list[dict] = []
@@ -148,7 +163,7 @@ async def api_emergency_stop(
         "ok": True,
         "stopped_bots": stopped,
         "failed": failed,
-        "triggered_by": actor,
+        "triggered_by": user.username,
     }
 
 
