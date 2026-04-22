@@ -25,6 +25,28 @@ CLIENT = TestClient(webapp.app)
 AUTH = {"X-API-Key": "testkey-for-pytest"}
 
 
+@pytest.fixture(autouse=True)
+def _reset_slowapi_limits():
+    """Clear the process-wide slowapi limiter between tests.
+
+    /api/emergency-stop carries a 5/minute cap. With the cookie-auth
+    tests added for v26-02, this module now issues more than five
+    POSTs in a single pytest process — without this reset the last
+    tests in the run hit 429 instead of the behaviour they're
+    asserting on. The existing TestEmergencyStop suite happened to
+    stay under the cap by luck; codifying the reset keeps both old
+    and new tests independent of each other's ordering.
+    """
+    try:
+        webapp.limiter.reset()
+    except Exception:
+        # slowapi's in-memory storage exposes reset(); any other
+        # backend (redis in prod) would ignore this fixture, which
+        # is what we want — tests only ever run against in-memory.
+        pass
+    yield
+
+
 class _FakeBotInfo:
     """Minimal BotInfo stand-in for the emergency-stop tests. Mirrors
     the attributes ``api_emergency_stop`` reads: ``user_id``, ``slug``,
@@ -170,6 +192,126 @@ class TestEmergencyStop:
             for rec in caplog.records
             if "emergency_stop" in rec.message
         ), "logger.exception should attach exc_info for stacktrace visibility"
+
+
+class TestEmergencyStopRoleGate:
+    """Audit v26-02 role-gate on /api/emergency-stop.
+
+    Covers the cookie-auth path — existing TestEmergencyStop uses the
+    API-key header, which resolves to the admin stub (see
+    ``_request_user`` fallback for ``X-API-Key``) and therefore never
+    exercises the role-check code path. These tests seed a real
+    non-admin user in the DB, mint a session cookie for them, and
+    verify the 403 branch + audit-log behaviour.
+    """
+
+    _COOKIE_NAME = "reverto_session"
+
+    def _seed_user(self, username: str, role: str) -> int:
+        """Insert a users row directly and return its id.
+
+        We bypass the normal password-set flow because these tests
+        don't go through /api/auth/login — the session cookie is
+        minted in-process via webapp._create_session_cookie, which
+        only needs the row to exist (active=1) for
+        ``user_store.get_user_by_id`` to resolve it.
+        """
+        from core.database import get_db
+
+        conn = get_db()
+        conn.execute(
+            "INSERT OR REPLACE INTO users (username, active, role) "
+            "VALUES (?, 1, ?)",
+            (username, role),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id FROM users WHERE username = ?", (username,),
+        ).fetchone()
+        return int(row["id"])
+
+    def _cookie_for(self, username: str, role: str) -> str:
+        from core import user_store
+
+        self._seed_user(username, role)
+        user = user_store.get_user_by_username(username)
+        assert user is not None
+        assert user.role == role
+        return webapp._create_session_cookie(user)
+
+    def test_emergency_stop_admin_succeeds(self, monkeypatch):
+        """Admin session + empty registry → 200 with empty stopped
+        list. Confirms the role-check doesn't reject the happy path.
+        """
+        async def _fake_all():
+            return []
+
+        monkeypatch.setattr(webapp.registry, "all", _fake_all)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            self._COOKIE_NAME,
+            self._cookie_for("admin", "admin"),
+        )
+        r = client.post("/api/emergency-stop")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        assert body["triggered_by"] == "admin"
+
+    def test_emergency_stop_non_admin_returns_403(self, monkeypatch):
+        """Non-admin session → 403 with an 'admin role' message. The
+        role-check runs BEFORE the registry is touched, so we don't
+        need to stub registry.all here — if the gate were missing the
+        response would hit the un-stubbed all() and shape would
+        differ.
+        """
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            self._COOKIE_NAME,
+            self._cookie_for("pytest_user", "user"),
+        )
+        r = client.post("/api/emergency-stop")
+        assert r.status_code == 403, r.text
+        assert "admin role" in r.json()["detail"].lower()
+
+    def test_emergency_stop_logs_forbidden_attempt(self, caplog):
+        """A forbidden attempt must leave a WARNING line with the
+        username + role so operators can see failed attempts without
+        having to replay the traffic.
+        """
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            self._COOKIE_NAME,
+            self._cookie_for("pytest_user", "user"),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="web.routes.admin"):
+            r = client.post("/api/emergency-stop")
+
+        assert r.status_code == 403
+        relevant = [
+            rec for rec in caplog.records
+            if "non-admin" in rec.getMessage()
+        ]
+        assert relevant, (
+            "expected a non-admin emergency-stop warning, got "
+            f"{[rec.getMessage() for rec in caplog.records]}"
+        )
+        msg = relevant[0].getMessage()
+        assert "pytest_user" in msg
+        assert "role=user" in msg
+
+    def test_emergency_stop_no_session_returns_401(self):
+        """No session cookie → 401 from AuthMiddleware before the
+        route-level role-check runs. Guards against a regression where
+        the role-check might be reached on an unauthenticated request
+        (which would be a gate mis-ordering).
+        """
+        client = TestClient(webapp.app)
+        client.cookies.clear()
+        r = client.post("/api/emergency-stop")
+        assert r.status_code == 401
 
 
 class TestDrawdownReset:
