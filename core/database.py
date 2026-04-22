@@ -108,13 +108,20 @@ _DB_PATH_VERSION: int = 0
 _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS users (
-        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        username       TEXT NOT NULL UNIQUE,
-        password_hash  TEXT,
-        role           TEXT NOT NULL DEFAULT 'user',
-        session_epoch  INTEGER NOT NULL DEFAULT 0,
-        active         INTEGER NOT NULL DEFAULT 1,
-        created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        username               TEXT NOT NULL UNIQUE,
+        password_hash          TEXT,
+        role                   TEXT NOT NULL DEFAULT 'user',
+        session_epoch          INTEGER NOT NULL DEFAULT 0,
+        active                 INTEGER NOT NULL DEFAULT 1,
+        created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+        -- v6 (feat/login-security-hardening): per-account failed-
+        -- login tracking. Used by /auth/login for exponential
+        -- backoff + per-account rate-limiting + anomaly logging.
+        -- NOT NULL with DEFAULT 0 so fresh installs skip the
+        -- v5→v6 ALTER path and existing installs auto-backfill.
+        failed_login_count     INTEGER NOT NULL DEFAULT 0,
+        last_failed_login_at   TEXT
     )
     """,
     # Seed the single admin user. INSERT OR IGNORE keeps init_db
@@ -330,8 +337,15 @@ def get_db() -> sqlite3.Connection:
 #     ``init_db()`` with ``CREATE TABLE IF NOT EXISTS`` semantics so
 #     the new table is created lazily on the next boot. The destructive
 #     guard explicitly does NOT trigger on this path.
-#   * == 5 → no-op.
-SCHEMA_VERSION = 5
+#   * < 6  → ADDITIVE: adds ``failed_login_count`` +
+#     ``last_failed_login_at`` columns to ``users`` for login-
+#     security-hardening (exponential backoff + per-account rate-
+#     limit + anomaly logging). Uses ALTER TABLE ADD COLUMN — SQLite
+#     supports this directly for columns with constant DEFAULT
+#     values. Fresh installs never take this path because
+#     ``_SCHEMA_STATEMENTS`` above already declares the v6 shape.
+#   * == 6 → no-op.
+SCHEMA_VERSION = 6
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,
@@ -484,7 +498,62 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             current, SCHEMA_VERSION,
         )
 
+    # Per-column additive migrations. ``CREATE TABLE IF NOT EXISTS``
+    # won't rewrite an existing table when new columns appear in the
+    # statement, so column additions require explicit ALTER TABLE.
+    # SQLite's ADD COLUMN supports constant DEFAULT values (which is
+    # all we need here); the try/except handles idempotency when this
+    # runs on a DB that's already been migrated.
+    if current < SCHEMA_VERSION:
+        _apply_column_additions(conn)
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _apply_column_additions(conn: sqlite3.Connection) -> None:
+    """Idempotent ALTER TABLE ADD COLUMN migrations.
+
+    v5 → v6: ``users.failed_login_count`` + ``users.last_failed_login_at``
+    for login-security-hardening. Each column is added in its own
+    try/except so a mid-migration crash that added one column but not
+    the other still converges on the next boot.
+    """
+    _add_column_if_missing(
+        conn, "users",
+        "failed_login_count INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column_if_missing(
+        conn, "users",
+        "last_failed_login_at TEXT",
+    )
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column_def: str,
+) -> None:
+    """Run ``ALTER TABLE ... ADD COLUMN`` and swallow the two benign
+    OperationalError cases:
+
+      * ``duplicate column name ...`` — already-present column on a
+        re-run against an already-migrated DB. Idempotency.
+      * ``no such table: ...`` — fires on fresh installs where the
+        destructive path dropped the table and ``_SCHEMA_STATEMENTS``
+        hasn't re-created it yet. The about-to-run CREATE TABLE
+        declares the column in the fresh-install shape, so the ALTER
+        is redundant here. Swallowing the error keeps the single
+        migration path handling both fresh-install and upgrade
+        without a separate "table exists" pre-check.
+
+    Any other OperationalError (disk full, corruption, permissions)
+    re-raises so the bug surfaces loudly instead of silently
+    skipping."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+    except sqlite3.OperationalError as e:
+        msg = str(e).lower()
+        if "duplicate column" in msg or "no such table" in msg:
+            return
+        raise
 
 
 def _archive_legacy_auth_file() -> None:
