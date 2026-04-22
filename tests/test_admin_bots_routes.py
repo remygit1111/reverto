@@ -396,3 +396,327 @@ class TestAdminActionAudit:
         assert any("admin_bot_start" in m for m in captured), (
             f"expected admin_bot_start in audit log, got {captured}"
         )
+
+
+# ── Bulk endpoints (Fase 2) ────────────────────────────────────────────────
+
+
+class _BulkHelperStub:
+    """Per-test helper that drives ``stop_bot`` / ``restart_bot``
+    results. Accepts a ``fail_slugs`` set so the test can make a
+    subset of targets "fail" to validate partial-success shape.
+    """
+
+    def __init__(self, *, fail_slugs: set[str] | None = None):
+        self.fail_slugs = fail_slugs or set()
+        self.calls: list[tuple[str, int, str]] = []
+
+    def install(self, monkeypatch):
+        async def _stop(uid, slug):
+            self.calls.append(("stop", uid, slug))
+            if slug in self.fail_slugs:
+                return {"ok": False, "error": f"simulated stop fail for {slug}"}
+            return {"ok": True, "message": f"{slug} stopped"}
+
+        async def _restart(uid, slug):
+            self.calls.append(("restart", uid, slug))
+            if slug in self.fail_slugs:
+                return {"ok": False, "error": f"simulated restart fail for {slug}"}
+            return {"ok": True, "message": f"{slug} restarted"}
+
+        monkeypatch.setattr(_admin_bots_routes, "stop_bot", _stop)
+        monkeypatch.setattr(_admin_bots_routes, "restart_bot", _restart)
+
+
+def _bulk_body(targets: list[tuple[int, str]]) -> dict:
+    return {"bots": [{"user_id": uid, "slug": slug} for uid, slug in targets]}
+
+
+class TestBulkActions:
+    """POST /api/admin/bots/bulk/{stop,restart} — sequential bulk
+    lifecycle with partial-success accounting and a hard 20-bot
+    cap.
+    """
+
+    _STOP_URL = "/api/admin/bots/bulk/stop"
+    _RESTART_URL = "/api/admin/bots/bulk/restart"
+
+    def test_bulk_stop_admin_all_succeed(self, monkeypatch):
+        helper = _BulkHelperStub()
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_admin_bulk1", "admin"),
+        )
+        body = _bulk_body([(1, "alpha"), (1, "beta"), (2, "gamma")])
+        r = client.post(self._STOP_URL, json=body)
+        assert r.status_code == 200, r.text
+        payload = r.json()
+        assert payload["ok"] is True
+        assert payload["total_requested"] == 3
+        assert payload["total_succeeded"] == 3
+        assert payload["total_failed"] == 0
+        assert len(payload["processed"]) == 3
+        assert payload["failed"] == []
+        # Helper must have been invoked once per target in request order.
+        assert [c[0] for c in helper.calls] == ["stop"] * 3
+        assert [(c[1], c[2]) for c in helper.calls] == [
+            (1, "alpha"), (1, "beta"), (2, "gamma"),
+        ]
+
+    def test_bulk_stop_partial_failure(self, monkeypatch):
+        """One target returns ok=False — it lands in ``failed`` with
+        the error string; the other two stay in ``processed``.
+        """
+        helper = _BulkHelperStub(fail_slugs={"beta"})
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_admin_bulk2", "admin"),
+        )
+        body = _bulk_body([(1, "alpha"), (1, "beta"), (2, "gamma")])
+        r = client.post(self._STOP_URL, json=body)
+        assert r.status_code == 200, r.text
+        payload = r.json()
+        assert payload["total_requested"] == 3
+        assert payload["total_succeeded"] == 2
+        assert payload["total_failed"] == 1
+        assert {p["slug"] for p in payload["processed"]} == {"alpha", "gamma"}
+        assert len(payload["failed"]) == 1
+        assert payload["failed"][0]["slug"] == "beta"
+        assert "simulated stop fail" in payload["failed"][0]["error"]
+
+    def test_bulk_stop_helper_exception_captured(self, monkeypatch):
+        """If the lifecycle helper raises (not just returns ok=False)
+        the bulk loop must catch it, record the target as failed, and
+        still process the remaining targets.
+        """
+        calls: list[tuple[int, str]] = []
+
+        async def _stop(uid, slug):
+            calls.append((uid, slug))
+            if slug == "boom":
+                raise RuntimeError("simulated helper crash")
+            return {"ok": True}
+
+        monkeypatch.setattr(_admin_bots_routes, "stop_bot", _stop)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_admin_bulk_exc", "admin"),
+        )
+        body = _bulk_body([(1, "alpha"), (1, "boom"), (1, "gamma")])
+        r = client.post(self._STOP_URL, json=body)
+        assert r.status_code == 200, r.text
+        payload = r.json()
+        assert payload["total_succeeded"] == 2
+        assert payload["total_failed"] == 1
+        boom_failure = payload["failed"][0]
+        assert boom_failure["slug"] == "boom"
+        assert "simulated helper crash" in boom_failure["error"]
+        # All three targets reached the helper — loop did not abort early.
+        assert calls == [(1, "alpha"), (1, "boom"), (1, "gamma")]
+
+    def test_bulk_stop_non_admin_returns_403(self, monkeypatch):
+        helper = _BulkHelperStub()
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_user_bulk", "user"),
+        )
+        r = client.post(
+            self._STOP_URL, json=_bulk_body([(1, "alpha")]),
+        )
+        assert r.status_code == 403
+        # Reject before any helper invocation.
+        assert helper.calls == []
+
+    def test_bulk_stop_invalid_slug_returns_400(self, monkeypatch):
+        """Slug that passes Pydantic min/max-length but would break
+        the regex guard must be refused with 400 before any helper
+        runs. ``..slash`` is URL-safe (no %2F decoding needed) and
+        Pydantic won't object, so this exercises our own
+        _BOT_SLUG_RE guard in ``_validate_bulk_slugs``.
+        """
+        helper = _BulkHelperStub()
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_admin_badslug2", "admin"),
+        )
+        body = {"bots": [
+            {"user_id": 1, "slug": "ok_slug"},
+            {"user_id": 1, "slug": "../etc"},
+        ]}
+        r = client.post(self._STOP_URL, json=body)
+        assert r.status_code == 400
+        assert "invalid slug" in r.json()["detail"].lower()
+        assert helper.calls == [], (
+            "traversal slug must be rejected before any target is "
+            "processed, including the valid one earlier in the list"
+        )
+
+    def test_bulk_stop_max_20_enforced(self, monkeypatch):
+        """21 targets → 422 from Pydantic max_length validation."""
+        helper = _BulkHelperStub()
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_admin_cap", "admin"),
+        )
+        body = _bulk_body([(1, f"bot{i}") for i in range(21)])
+        r = client.post(self._STOP_URL, json=body)
+        assert r.status_code == 422, r.text
+        assert helper.calls == []
+
+    def test_bulk_stop_empty_list_returns_422(self, monkeypatch):
+        """Empty targets list → 422 (Pydantic min_length=1).
+
+        Doc-style: spec asked for 400, Pydantic's validator returns
+        422 Unprocessable Entity for schema failures — same "reject
+        before handler" semantics, documented here so the caller
+        knows which code to catch.
+        """
+        helper = _BulkHelperStub()
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_admin_empty", "admin"),
+        )
+        r = client.post(self._STOP_URL, json={"bots": []})
+        assert r.status_code == 422
+        assert helper.calls == []
+
+    def test_bulk_stop_audits_to_central_log(self, monkeypatch):
+        helper = _BulkHelperStub()
+        helper.install(monkeypatch)
+
+        captured: list[str] = []
+
+        class _CaptureHandler(logging.Handler):
+            def emit(self, record):
+                captured.append(record.getMessage())
+
+        audit_logger = logging.getLogger("reverto.audit")
+        handler = _CaptureHandler(level=logging.INFO)
+        audit_logger.addHandler(handler)
+        try:
+            client = TestClient(webapp.app)
+            client.cookies.set(
+                _COOKIE_NAME,
+                _cookie_for("pytest_admin_bulk_aud", "admin"),
+            )
+            r = client.post(
+                self._STOP_URL,
+                json=_bulk_body([(1, "alpha"), (1, "beta")]),
+            )
+            assert r.status_code == 200, r.text
+        finally:
+            audit_logger.removeHandler(handler)
+
+        assert any("admin_bulk_stop" in m for m in captured), (
+            f"expected admin_bulk_stop audit entry, got {captured}"
+        )
+        assert any("count=2" in m for m in captured), (
+            "audit entry should encode the target count"
+        )
+
+    def test_bulk_stop_logs_admin_line_per_success(
+        self, monkeypatch, tmp_path,
+    ):
+        """Each successful bulk-stop must append an ``[ADMIN]`` line
+        to the target bot's own log via ``_log_to_bot_log``.
+        Failures do NOT get a courtesy line — the failure is already
+        surfaced in the response payload and audit stream.
+        """
+        from core import paths
+
+        def _fake_logs_dir(uid: int):
+            d = tmp_path / "logs" / str(uid)
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+
+        monkeypatch.setattr(webapp.paths, "user_logs_dir", _fake_logs_dir)
+        monkeypatch.setattr(paths, "user_logs_dir", _fake_logs_dir)
+
+        helper = _BulkHelperStub(fail_slugs={"beta"})
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME,
+            _cookie_for("pytest_admin_bulk_botlog", "admin"),
+        )
+        r = client.post(
+            self._STOP_URL,
+            json=_bulk_body([(1, "alpha"), (1, "beta"), (1, "gamma")]),
+        )
+        assert r.status_code == 200, r.text
+
+        # alpha + gamma succeeded → each should have an [ADMIN] line.
+        for slug in ("alpha", "gamma"):
+            log_path = tmp_path / "logs" / "1" / f"{slug}.log"
+            assert log_path.exists(), f"expected bot log for {slug}"
+            contents = log_path.read_text(encoding="utf-8")
+            assert "[ADMIN]" in contents
+            assert "bulk" in contents.lower()
+            assert "pytest_admin_bulk_botlog" in contents
+
+        # beta failed → no [ADMIN] line written. The log may not
+        # exist at all (no writes happened) — both states are fine.
+        beta_log = tmp_path / "logs" / "1" / "beta.log"
+        if beta_log.exists():
+            assert "[ADMIN]" not in beta_log.read_text(encoding="utf-8")
+
+    def test_bulk_restart_admin_all_succeed(self, monkeypatch):
+        helper = _BulkHelperStub()
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_admin_bulkr1", "admin"),
+        )
+        body = _bulk_body([(1, "alpha"), (2, "beta")])
+        r = client.post(self._RESTART_URL, json=body)
+        assert r.status_code == 200, r.text
+        payload = r.json()
+        assert payload["total_succeeded"] == 2
+        assert payload["total_failed"] == 0
+        assert [c[0] for c in helper.calls] == ["restart", "restart"]
+
+    def test_bulk_restart_partial_failure(self, monkeypatch):
+        helper = _BulkHelperStub(fail_slugs={"alpha"})
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_admin_bulkr2", "admin"),
+        )
+        body = _bulk_body([(1, "alpha"), (1, "beta")])
+        r = client.post(self._RESTART_URL, json=body)
+        assert r.status_code == 200, r.text
+        payload = r.json()
+        assert payload["total_succeeded"] == 1
+        assert payload["total_failed"] == 1
+        assert payload["processed"][0]["slug"] == "beta"
+        assert payload["failed"][0]["slug"] == "alpha"
+
+    def test_bulk_restart_non_admin_returns_403(self, monkeypatch):
+        helper = _BulkHelperStub()
+        helper.install(monkeypatch)
+
+        client = TestClient(webapp.app)
+        client.cookies.set(
+            _COOKIE_NAME, _cookie_for("pytest_user_bulkr", "user"),
+        )
+        r = client.post(
+            self._RESTART_URL, json=_bulk_body([(1, "alpha")]),
+        )
+        assert r.status_code == 403
+        assert helper.calls == []
