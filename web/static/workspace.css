@@ -1,0 +1,123 @@
+/* Workspace — PR 2 skeleton styling.
+   Only covers the Workspace tab's panel grid + toolbar. GridStack's
+   own stylesheet (grid-stack + grid-stack-item classes) is loaded
+   from unpkg and handles the drag/resize mechanics; this file layers
+   the Reverto theme on top (panels, headers, empty-state, save-
+   indicator colouring).
+
+   Theme variables come from style.css :root (--bg, --surface,
+   --surface2, --border, --accent, --red, --text, --muted). No
+   new variables are introduced here. */
+
+.workspace-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  margin-bottom: 12px;
+}
+
+.workspace-save-indicator {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.workspace-save-indicator.saving { color: var(--accent); }
+.workspace-save-indicator.error  { color: var(--red); }
+
+.workspace-empty-state {
+  padding: 40px 20px;
+  margin-bottom: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  text-align: center;
+  background: var(--surface);
+}
+.workspace-empty-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.workspace-empty-hint {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Panel — fills the GridStack item-content box. The height: 100%
+   on .panel is load-bearing: GridStack sizes grid-stack-item-content
+   to the cell rectangle, and flex-column lets the body absorb the
+   remainder below the header. */
+.panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  user-select: none;
+}
+
+.panel-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.panel-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.panel-remove:hover { color: var(--red); }
+
+.panel-body {
+  flex: 1;
+  padding: 14px;
+  overflow: auto;
+}
+
+.panel-placeholder {
+  color: var(--muted);
+  text-align: center;
+  padding: 20px 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* GridStack resize handle colour tuning — unpkg CSS ships a
+   generic grey handle that disappears into the panel border
+   on the Reverto dark theme. Tint to the accent colour so
+   operators can actually see where to grab. */
+.grid-stack > .grid-stack-item > .ui-resizable-se {
+  color: var(--accent);
+  opacity: .6;
+}
+.grid-stack > .grid-stack-item > .ui-resizable-se:hover {
+  opacity: 1;
+}
