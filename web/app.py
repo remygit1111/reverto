@@ -1168,7 +1168,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' https://unpkg.com; "
-            "style-src 'self' 'unsafe-inline'; "
+            # unpkg also hosts the GridStack stylesheet that the
+            # Workspace view pulls in. Without this entry the
+            # panel grid loses its layout rules and panels render
+            # as plain vertically-stacked divs.
+            "style-src 'self' 'unsafe-inline' https://unpkg.com; "
             "img-src 'self' data:; "
             "connect-src 'self' ws: wss:; "
             "frame-ancestors 'none'"
