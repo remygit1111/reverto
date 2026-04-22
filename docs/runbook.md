@@ -29,19 +29,30 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**Stap 2: zet env-vars (eenmalig per host)**
+**Stap 2: zet env-vars via `.env` (eenmalig per host)**
 
 ```bash
-export REVERTO_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
-export REVERTO_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
-# Lokale dev over plain HTTP:
-export REVERTO_INSECURE_COOKIES=1
+cp .env.example .env
+# Genereer de security-keys:
+python3 -c 'import secrets; print("REVERTO_API_KEY=" + secrets.token_hex(32))' >> .env
+python3 -c 'import secrets; print("REVERTO_SECRET_KEY=" + secrets.token_hex(32))' >> .env
+# Open .env en vul in:
+# - REVERTO_API_KEY / REVERTO_SECRET_KEY: gegenereerd hierboven
+# - REVERTO_INSECURE_COOKIES=1 voor lokale dev over http://localhost;
+#   leeg laten in productie achter TLS reverse proxy
+# - Exchange credentials (BITGET_*, KRAKEN_*) voor live/paper bots
+# - Telegram tokens indien gewenst
 ```
 
-Paste desnoods in `~/.bashrc`. Zonder `REVERTO_API_KEY` /
-`REVERTO_SECRET_KEY` genereert Reverto ephemeral keys met een
-WARNING; dat is OK voor eerste kennismaking maar verliest alle
-sessies bij elke restart.
+`start.sh` sourcet `.env` voordat het portal-proces start.
+`make(1)` gebruikt `/bin/sh` en leest geen `.bashrc`, dus `.env` is
+de single source of truth — ook na `make restart` vanuit een
+nieuwe SSH-sessie. `.env` staat in `.gitignore` en verlaat de host
+nooit.
+
+Zonder `REVERTO_API_KEY` / `REVERTO_SECRET_KEY` genereert Reverto
+ephemeral keys met een WARNING; dat is OK voor eerste
+kennismaking maar verliest alle sessies bij elke restart.
 
 **Stap 3: initialize database**
 
@@ -266,11 +277,12 @@ Samenvatting voor wie al bekend is:
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# 2. Production-grade env vars (paste into ~/.bashrc)
-export REVERTO_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
-export REVERTO_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
-# For localhost dev only:
-export REVERTO_INSECURE_COOKIES=1
+# 2. Env vars via .env (start.sh sources this before launching)
+cp .env.example .env
+python3 -c 'import secrets; print("REVERTO_API_KEY=" + secrets.token_hex(32))' >> .env
+python3 -c 'import secrets; print("REVERTO_SECRET_KEY=" + secrets.token_hex(32))' >> .env
+# Edit .env to add REVERTO_INSECURE_COOKIES=1 for localhost dev,
+# plus exchange + Telegram credentials if needed.
 
 # 3. Init database + set admin password
 make start          # runs init_db(); stop after "Portal started"
@@ -639,11 +651,11 @@ Sample `/etc/logrotate.d/reverto`:
 |---------|-------|-----|
 | Portal 503 on `/readyz` | SQLite unreachable (disk full, locked) | `df -h logs/`, clear WAL (`sqlite3 logs/reverto.db 'PRAGMA wal_checkpoint(FULL)'`) |
 | Bot refuses to start, "Invalid bot slug" | `--config` path or `--bot` slug contains `..`, `/`, or spaces | Rename YAML to `[A-Za-z0-9_-]+.yaml` |
-| Live bot crashes with `BITGET_PASSPHRASE required` | Env var not exported | Add `export BITGET_PASSPHRASE=...` to `~/.bashrc` |
+| Live bot crashes with `BITGET_PASSPHRASE required` | Env var missing from `.env` (or portal was started before it was added) | Add `BITGET_PASSPHRASE=...` to `.env` and `make restart` |
 | LiveEngine preflight: "Worst-case DCA" / "Cumulative DCA" | Multiplier × max_orders produces an order beyond cap | Lower `multiplier`, `max_orders`, or set `dca.max_cumulative_size` explicitly |
 | Drawdown triggered unexpectedly | Peak anchored low after restart (pre-persistence YAML) | Verify `drawdown_guard.peak_value` in `state.json`; reset via API endpoint |
 | Deal opened on wrong side | Old YAML missing `direction`; engine used to default to `long` | Set `direction: long` or `direction: short` in YAML explicitly |
-| Every API call returns 401 | `REVERTO_API_KEY` env not set at portal start | Export and `make restart` (ephemeral key is discarded) |
+| Every API call returns 401 | `REVERTO_API_KEY` missing from `.env` at portal start | Add to `.env` and `make restart` (ephemeral key is discarded) |
 
 ## CI / pip-audit strategie
 
