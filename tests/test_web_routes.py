@@ -1470,24 +1470,22 @@ class TestOfflineDealClose:
         assert r.status_code == 503
         assert "current price" in r.json()["detail"].lower()
 
-    def test_stopped_live_bot_returns_501(
-        self, auth_client, _seed_user_row,
-    ):
-        """Live / dry-run bots need exchange-order cancellation before
-        they can flip to closed. That lives in a follow-up PR; this
-        PR refuses with 501 and a tracking hint so the operator
-        understands why."""
+    def _write_bot_with_mode(self, slug: str, mode: str):
+        """Write a YAML + state.json pair for a bot in the given
+        mode. Returns (yaml_path, state_file) so the caller can
+        clean up in a finally-block."""
         from core import paths as _paths_mod
 
-        webapp.registry._last_refresh = 0.0
-        slug = "offline_live_test"
         yaml_path = _paths_mod.bot_yaml_path(1, slug)
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
+        state_file = _paths_mod.bot_state_path(1, slug)
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+
         import yaml as _yaml
         yaml_path.write_text(_yaml.safe_dump({
             "bot": {
-                "name": "Live Test",
-                "mode": "live",
+                "name": f"{mode.upper()} Test",
+                "mode": mode,
                 "exchange": "bitget",
                 "pair": "BTC/USD",
                 "contract_type": "inverse_perpetual",
@@ -1505,6 +1503,50 @@ class TestOfflineDealClose:
             }
         }), encoding="utf-8")
 
+        import json as _json_mod
+        opened_at = datetime.now(UTC).isoformat()
+        state_file.write_text(_json_mod.dumps({
+            "bot_name": f"{mode.upper()} Test",
+            "balance_btc": 0.1,
+            "initial_balance_btc": 0.1,
+            "open_deals": [{
+                "id": self._DEAL_ID,
+                "bot_name": f"{mode.upper()} Test",
+                "symbol": "BTC/USD",
+                "side": "long",
+                "leverage": 1,
+                "is_open": True,
+                "orders": [{
+                    "order_number": 1,
+                    "price": 100.0,
+                    "size": 0.001,
+                    "timestamp": opened_at,
+                    "order_type": "base",
+                }],
+                "opened_at": opened_at,
+                "_peak_price": 0.0,
+                "_tp_override": None,
+                "_sl_override": None,
+                "_dca_enabled": True,
+            }],
+            "closed_deals": [],
+        }), encoding="utf-8")
+        return yaml_path, state_file
+
+    def test_stopped_live_bot_closes_offline(
+        self, auth_client, _seed_user_row, _stub_public_ticker,
+    ):
+        """PR A refused live-mode bots with 501. PR B accepts them:
+        LiveEngine is still Phase 1 dry-run only, so there are no
+        real exchange orders to cancel — the offline close is state-
+        only, identical to paper semantics."""
+        from core import paths as _paths_mod
+
+        webapp.registry._last_refresh = 0.0
+        slug = "offline_live_test"
+        yaml_path, state_file = self._write_bot_with_mode(slug, "live")
+        pid_file = _paths_mod.bot_pid_path(1, slug)
+
         try:
             token = self._cookie()
             auth_client.cookies.set("reverto_session", token)
@@ -1512,14 +1554,106 @@ class TestOfflineDealClose:
                 f"/api/bots/{slug}/deals/{self._DEAL_ID}",
                 params={"action": "close"},
             )
-            assert r.status_code == 501
-            assert "PR B" in r.json()["detail"]
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["method"] == "direct"
+            assert body["deal"]["close_reason"] == "manual"
         finally:
-            try:
-                yaml_path.unlink()
-            except FileNotFoundError:
-                pass
+            for p in (yaml_path, state_file, pid_file):
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
             webapp.registry._last_refresh = 0.0
+
+    def test_offline_close_fires_manual_close_telegram(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+        monkeypatch,
+    ):
+        """Portal-origin close → TelegramNotifier.notify_manual_close
+        is invoked with (bot_name, symbol, price, pnl_btc, pnl_pct).
+        The actual Telegram HTTP call is stubbed so the test doesn't
+        hit api.telegram.org."""
+        import notifications.telegram as _tg_mod
+
+        # Make TelegramNotifier instantiate cleanly in-test.
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+
+        # Capture manual_close calls without sending real messages.
+        captured: list[tuple] = []
+        original_method = _tg_mod.TelegramNotifier.notify_manual_close
+
+        def _capturing(self, bot_name, symbol, price, pnl_btc, pnl_pct):
+            captured.append((bot_name, symbol, price, pnl_btc, pnl_pct))
+        monkeypatch.setattr(
+            _tg_mod.TelegramNotifier, "notify_manual_close", _capturing,
+        )
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "close"},
+        )
+        assert r.status_code == 200, r.text
+
+        assert len(captured) == 1
+        bot_name, symbol, price, _pnl_btc, _pnl_pct = captured[0]
+        assert bot_name == "Offline Close Test"
+        assert symbol == "BTC/USD"
+        assert price == 110.0
+        # Prevent unused-var warning from a future refactor.
+        _ = original_method
+
+    def test_offline_cancel_fires_manual_cancel_telegram(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+        monkeypatch,
+    ):
+        """Portal-origin cancel → notify_manual_cancel. Price / PnL
+        are NOT passed because cancel is state-only."""
+        import notifications.telegram as _tg_mod
+
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+
+        captured: list[tuple] = []
+
+        def _capturing(self, bot_name, symbol):
+            captured.append((bot_name, symbol))
+        monkeypatch.setattr(
+            _tg_mod.TelegramNotifier, "notify_manual_cancel", _capturing,
+        )
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "cancel"},
+        )
+        assert r.status_code == 200
+        assert len(captured) == 1
+        assert captured[0] == ("Offline Close Test", "BTC/USD")
+
+    def test_offline_close_without_telegram_env_still_works(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+        monkeypatch,
+    ):
+        """An operator who hasn't set TELEGRAM_BOT_TOKEN must still
+        be able to close deals — the notifier-construction failure
+        falls through to None and the close proceeds silently.
+        This is the common case for fresh installs."""
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "close"},
+        )
+        assert r.status_code == 200
+        assert r.json()["method"] == "direct"
 
 
 # ── Annotation POST endpoint ─────────────────────────────────────────────────
