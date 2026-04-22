@@ -258,6 +258,25 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_changelog_entries_published "
     "ON changelog_entries(is_published, published_at DESC)",
+    # v7 additive: workspace dashboard layouts. One row per
+    # (user_id, name). ``layout_json`` is opaque to the backend —
+    # the frontend owns the panel schema; backend only validates
+    # parseability + a 16 KB size cap (enforced in
+    # core.dashboard_store.put_layout). Schema-ready for future
+    # multi-layout UI via the ``name`` column, but the current
+    # API surface only speaks to the default row.
+    """
+    CREATE TABLE IF NOT EXISTS dashboard_layouts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL DEFAULT 'default',
+        layout_json TEXT NOT NULL,
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (user_id, name)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_dashboard_layouts_user "
+    "ON dashboard_layouts(user_id)",
 )
 
 
@@ -344,8 +363,14 @@ def get_db() -> sqlite3.Connection:
 #     supports this directly for columns with constant DEFAULT
 #     values. Fresh installs never take this path because
 #     ``_SCHEMA_STATEMENTS`` above already declares the v6 shape.
-#   * == 6 → no-op.
-SCHEMA_VERSION = 6
+#   * < 7  → ADDITIVE: introduces ``dashboard_layouts`` for the
+#     workspace-dashboard feature. No existing rows touched;
+#     ``_SCHEMA_STATEMENTS`` runs with ``CREATE TABLE IF NOT EXISTS``
+#     so the new table lands lazily on the next boot. Destructive
+#     guard explicitly does NOT trigger — v5 was the last
+#     destructive boundary.
+#   * == 7 → no-op.
+SCHEMA_VERSION = 7
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,
