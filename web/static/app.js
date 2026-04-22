@@ -1902,6 +1902,19 @@ function goDeals(fromPop = false) {
   if (!fromPop) _pushHistory('deals', '#deals');
 }
 
+function goWorkspace(fromPop = false) {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-workspace-btn');
+  showPage('workspace');
+  // Workspace panels are static placeholders in PR 2 — no live
+  // data feed yet. Idle the overview poller so the Workspace tab
+  // keeps the network quiet while the operator rearranges panels.
+  clearInterval(overviewInterval);
+  overviewInterval = null;
+  if (!fromPop) _pushHistory('workspace', '#workspace');
+  initWorkspace();
+}
+
 function goBacktests(fromPop = false) {
   _resetHeaderForTopLevel();
   _setActiveTab('nav-backtests-btn');
@@ -2460,6 +2473,312 @@ async function _confirmBulkAction(kind) {
   } catch (e) {
     alert(`Bulk ${kind} request failed: ${(e && e.message) || e}`);
   }
+}
+
+// ── Workspace — PR 2 skeleton with GridStack ─────────────────────────────
+// Modular dashboard: the operator drops panels onto a 12-col grid,
+// drags them around by the header, and resizes them from the SE
+// handle. Layout persists via PR 1's /api/dashboard/layout endpoint
+// (auto-saved, 500ms debounce). PR 3 will introduce a "chart"
+// panel type; PR 4 "open_deals". For now only "empty" ships, so the
+// grid mechanics can be exercised without coupling to live data.
+
+const WORKSPACE_LAYOUT_VERSION = 1;
+const WORKSPACE_SAVE_DEBOUNCE_MS = 500;
+
+let _workspaceGrid = null;               // GridStack instance (single)
+let _workspaceInitInFlight = false;      // first-load re-entrancy guard
+let _workspaceSaveTimer = null;
+let _workspaceSuppressSave = false;      // true during initial render
+
+function _workspaceNewPanelId() {
+  // Prefer crypto.randomUUID when available; fall back to a
+  // Math.random-based 8-hex chunk so older browsers (or test
+  // harnesses without crypto.subtle) still get a stable-looking
+  // id. Collision probability is irrelevant at the layout scale
+  // we operate at (tens of panels per user).
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return 'panel-' + window.crypto.randomUUID();
+  }
+  return 'panel-' + Math.random().toString(16).slice(2, 10);
+}
+
+async function initWorkspace() {
+  // Idempotent: first call bootstraps the GridStack instance and
+  // loads the saved layout; later calls (tab-switch back to
+  // Workspace) do nothing because GridStack's internal state is
+  // already in-DOM and a redundant load would churn the grid.
+  if (_workspaceGrid || _workspaceInitInFlight) return;
+  if (typeof GridStack === 'undefined') {
+    console.error('Workspace: GridStack global not present — CDN load failed?');
+    return;
+  }
+  _workspaceInitInFlight = true;
+  try {
+    _workspaceGrid = GridStack.init({
+      column: 12,
+      cellHeight: 80,
+      margin: 10,
+      float: false,
+      animate: true,
+      // Header-only drag so future chart interactions (pan/zoom in
+      // PR 3) don't double-hit the grid and trigger panel drags
+      // when the operator meant to scroll a candle series.
+      draggable: { handle: '.panel-header' },
+      resizable: { handles: 'se' },
+      minRow: 4,
+      alwaysShowResizeHandle: 'mobile',
+    }, '#workspace-grid');
+
+    _workspaceGrid.on('change', _queueWorkspaceSave);
+    _workspaceGrid.on('added', _queueWorkspaceSave);
+    _workspaceGrid.on('removed', _queueWorkspaceSave);
+
+    await _loadWorkspaceLayout();
+  } finally {
+    _workspaceInitInFlight = false;
+  }
+}
+
+async function _loadWorkspaceLayout() {
+  const indicator = $('workspace-save-indicator');
+  try {
+    const r = await fetch('/api/dashboard/layout');
+    if (r.status === 401) {
+      // Session expired — send the operator back through login.
+      // Matches the silent-redirect pattern used elsewhere in app.js.
+      window.location.reload();
+      return;
+    }
+    if (!r.ok) throw new Error('load failed: ' + r.status);
+    const data = await r.json();
+    const layout = (data && data.layout) || null;
+    if (layout && layout.version === WORKSPACE_LAYOUT_VERSION
+        && Array.isArray(layout.panels)) {
+      _renderWorkspaceFromLayout(layout.panels);
+    } else {
+      // Empty state — no layout stored yet, or an unknown version.
+      // Future-proofing: an incompatible version surfaces as empty
+      // so the next save migrates the user to v1 implicitly.
+      _showWorkspaceEmptyState(true);
+    }
+    if (indicator) {
+      indicator.textContent = 'Saved';
+      indicator.classList.remove('saving', 'error');
+    }
+  } catch (e) {
+    console.warn('Workspace: layout load failed:', e);
+    _showWorkspaceEmptyState(true);
+    if (indicator) {
+      indicator.textContent = 'Load failed';
+      indicator.classList.remove('saving');
+      indicator.classList.add('error');
+    }
+  }
+}
+
+function _renderWorkspaceFromLayout(panels) {
+  if (!_workspaceGrid) return;
+  // Initial render — suppress save callbacks so we don't round-trip
+  // the exact same layout back to the server on page-load.
+  _workspaceSuppressSave = true;
+  try {
+    _workspaceGrid.removeAll(false);
+    panels.forEach((p) => {
+      const el = _createPanelElement(p.id, p.type || 'empty', p.config || {});
+      _workspaceGrid.addWidget(el, {
+        x: Number(p.x) || 0,
+        y: Number(p.y) || 0,
+        w: Math.max(1, Number(p.w) || 4),
+        h: Math.max(1, Number(p.h) || 3),
+      });
+    });
+  } finally {
+    _workspaceSuppressSave = false;
+  }
+  _showWorkspaceEmptyState(panels.length === 0);
+}
+
+function _showWorkspaceEmptyState(show) {
+  const empty = $('workspace-empty-state');
+  if (empty) empty.classList.toggle('hidden', !show);
+}
+
+function _createPanelElement(panelId, panelType, config) {
+  // GridStack's addWidget accepts an HTMLElement so we build the
+  // whole grid-stack-item up-front — the dataset fields survive
+  // the round-trip through save/load and let the renderer emit
+  // the same panel type next session.
+  const wrap = document.createElement('div');
+  wrap.className = 'grid-stack-item';
+  wrap.dataset.panelId = panelId;
+  wrap.dataset.panelType = panelType;
+  try {
+    wrap.dataset.panelConfig = JSON.stringify(config || {});
+  } catch (_) {
+    wrap.dataset.panelConfig = '{}';
+  }
+
+  const content = document.createElement('div');
+  content.className = 'grid-stack-item-content';
+
+  const panel = document.createElement('div');
+  panel.className = 'panel';
+
+  const header = document.createElement('div');
+  header.className = 'panel-header';
+  const title = document.createElement('span');
+  title.className = 'panel-title';
+  title.textContent = _panelTitleForType(panelType);
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'panel-remove';
+  removeBtn.setAttribute('aria-label', 'Remove panel');
+  removeBtn.textContent = '×';
+  removeBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!_workspaceGrid) return;
+    _workspaceGrid.removeWidget(wrap);
+    // removeWidget fires 'removed' → save queue → indicator flip.
+    if (_workspaceGrid.engine.nodes.length === 0) {
+      _showWorkspaceEmptyState(true);
+    }
+  });
+  header.appendChild(title);
+  header.appendChild(removeBtn);
+
+  const body = document.createElement('div');
+  body.className = 'panel-body';
+  const placeholder = document.createElement('p');
+  placeholder.className = 'panel-placeholder';
+  placeholder.textContent = _panelPlaceholderForType(panelType);
+  body.appendChild(placeholder);
+
+  panel.appendChild(header);
+  panel.appendChild(body);
+  content.appendChild(panel);
+  wrap.appendChild(content);
+  return wrap;
+}
+
+function _panelTitleForType(type) {
+  if (type === 'chart') return 'Chart';
+  if (type === 'open_deals') return 'Open deals';
+  return 'Empty panel';
+}
+
+function _panelPlaceholderForType(type) {
+  if (type === 'chart' || type === 'open_deals') {
+    // Defensive fallback: PR 3/4 will teach the renderer to
+    // materialise these panel types for real. If a layout saved
+    // by a future version of the frontend is loaded by today's
+    // build, we surface a placeholder instead of crashing.
+    return 'Panel type "' + type + '" not yet implemented on this build.';
+  }
+  return 'Placeholder — PR 3 brings chart, PR 4 brings open deals.';
+}
+
+function _queueWorkspaceSave() {
+  if (_workspaceSuppressSave) return;
+  // Hide the empty-state pane the moment any panel appears — the
+  // 'added' event fires before the operator's cursor even leaves
+  // the button, so the hint visibility tracks reality without a
+  // full re-render.
+  if (_workspaceGrid && _workspaceGrid.engine.nodes.length > 0) {
+    _showWorkspaceEmptyState(false);
+  }
+  const indicator = $('workspace-save-indicator');
+  if (indicator) {
+    indicator.textContent = 'Saving…';
+    indicator.classList.remove('error');
+    indicator.classList.add('saving');
+  }
+  clearTimeout(_workspaceSaveTimer);
+  _workspaceSaveTimer = setTimeout(_saveWorkspaceLayout, WORKSPACE_SAVE_DEBOUNCE_MS);
+}
+
+async function _saveWorkspaceLayout(isRetry = false) {
+  if (!_workspaceGrid) return;
+  const indicator = $('workspace-save-indicator');
+  const panels = _workspaceGrid.engine.nodes.map((node) => {
+    let config = {};
+    try {
+      config = JSON.parse(node.el.dataset.panelConfig || '{}');
+    } catch (_) {
+      config = {};
+    }
+    return {
+      id: node.el.dataset.panelId || _workspaceNewPanelId(),
+      type: node.el.dataset.panelType || 'empty',
+      x: Number(node.x) || 0,
+      y: Number(node.y) || 0,
+      w: Number(node.w) || 4,
+      h: Number(node.h) || 3,
+      config,
+    };
+  });
+  const payload = {
+    layout: { version: WORKSPACE_LAYOUT_VERSION, panels },
+  };
+  try {
+    const r = await fetch('/api/dashboard/layout', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (r.status === 400) {
+      const data = await r.json().catch(() => ({}));
+      const detail = (data && data.detail) || 'layout rejected';
+      if (/max size/i.test(detail)) {
+        alert(
+          'Workspace layout is too complex to save ('
+          + detail + '). Remove some panels and try again.',
+        );
+      }
+      if (indicator) {
+        indicator.textContent = 'Save failed';
+        indicator.classList.remove('saving');
+        indicator.classList.add('error');
+      }
+      return;
+    }
+    if (r.status === 401) {
+      window.location.reload();
+      return;
+    }
+    if (!r.ok) throw new Error('PUT failed: ' + r.status);
+    if (indicator) {
+      indicator.textContent = 'Saved';
+      indicator.classList.remove('saving', 'error');
+    }
+  } catch (e) {
+    console.warn('Workspace: layout save failed:', e);
+    if (!isRetry) {
+      // One retry after 2s covers the typical flaky-network case
+      // without hammering the server. If the second attempt also
+      // fails we flip the indicator red and stop — the operator
+      // can save again by touching any panel.
+      setTimeout(() => _saveWorkspaceLayout(true), 2000);
+      return;
+    }
+    if (indicator) {
+      indicator.textContent = 'Save failed';
+      indicator.classList.remove('saving');
+      indicator.classList.add('error');
+    }
+  }
+}
+
+function _handleWorkspaceAddPanel() {
+  if (!_workspaceGrid) return;
+  const panelId = _workspaceNewPanelId();
+  const el = _createPanelElement(panelId, 'empty', {});
+  _workspaceGrid.addWidget(el, {
+    w: 4, h: 3, autoPosition: true,
+  });
+  _showWorkspaceEmptyState(false);
+  // 'added' event fires → _queueWorkspaceSave → persists.
 }
 
 // ── Changelog — public listing ───────────────────────────────────────────
@@ -4167,6 +4486,7 @@ function _routeFromHash() {
   switch (h) {
     case 'bots':      goBots(true); break;
     case 'deals':     goDeals(true); break;
+    case 'workspace': goWorkspace(true); break;
     case 'backtests': goBacktests(true); break;
     case 'changelog': goChangelog(true); break;
     case 'admin':     goAdmin(true); break;
@@ -7055,6 +7375,10 @@ function setupEventListeners() {
   $('nav-overview-btn').addEventListener('click', () => goOverview());
   $('nav-bots-btn').addEventListener('click', () => goBots());
   $('nav-deals-btn').addEventListener('click', () => goDeals());
+  const navWsBtn = $('nav-workspace-btn');
+  if (navWsBtn) navWsBtn.addEventListener('click', () => goWorkspace());
+  const wsAdd = $('workspace-add-panel');
+  if (wsAdd) wsAdd.addEventListener('click', _handleWorkspaceAddPanel);
   const navClBtn = $('nav-changelog-btn');
   if (navClBtn) navClBtn.addEventListener('click', () => goChangelog());
   const navAdminBtn = $('nav-admin-btn');
@@ -7515,6 +7839,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         break;
       case 'bots':     goBots(true); break;
       case 'deals':    goDeals(true); break;
+      case 'workspace': goWorkspace(true); break;
       case 'backtests': goBacktests(true); break;
       case 'changelog': goChangelog(true); break;
       case 'admin':    goAdmin(true, s.sub || null); break;

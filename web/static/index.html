@@ -9,6 +9,8 @@
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/style.css?v=77">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
+<link rel="stylesheet" href="/static/workspace.css?v=1">
+<link rel="stylesheet" href="https://unpkg.com/gridstack@11.5.1/dist/gridstack.min.css">
 </head>
 <body>
 
@@ -412,6 +414,7 @@
 <nav id="main-nav">
   <button class="tab active" id="nav-overview-btn">Overview</button>
   <button class="tab" id="nav-deals-btn">Active Deals</button>
+  <button class="tab" id="nav-workspace-btn">Workspace</button>
   <button class="tab" id="nav-bots-btn">Bots</button>
   <button class="tab" id="nav-backtests-btn">Backtest History</button>
   <button class="tab" id="nav-changelog-btn">Changelog</button>
@@ -539,6 +542,30 @@
       </table>
     </div>
   </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Workspace                                                           -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- PR 2 of the Workspace feature. Skeleton with a GridStack-driven
+     panel grid. The only panel type shipped here is "empty"; PR 3
+     adds chart, PR 4 adds open-deals. Layout persists via the
+     /api/dashboard/layout endpoints delivered in PR 1. -->
+<div id="view-workspace" class="page">
+  <div class="workspace-toolbar">
+    <button id="workspace-add-panel" type="button" class="hbtn hbtn-theme btn-accent">
+      + Add panel
+    </button>
+    <span id="workspace-save-indicator" class="workspace-save-indicator">Saved</span>
+  </div>
+  <div id="workspace-empty-state" class="workspace-empty-state hidden">
+    <div class="workspace-empty-title">Empty workspace</div>
+    <div class="workspace-empty-hint">
+      Click <strong>+ Add panel</strong> to drop a panel onto the grid.
+      Drag the header to move a panel, and use the bottom-right corner to resize.
+    </div>
+  </div>
+  <div id="workspace-grid" class="grid-stack"></div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
@@ -1469,6 +1496,7 @@
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
-<script src="/static/app.js?v=187"></script>
+<script src="https://unpkg.com/gridstack@11.5.1/dist/gridstack-all.js"></script>
+<script src="/static/app.js?v=188"></script>
 </body>
 </html>
