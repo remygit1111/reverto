@@ -442,6 +442,30 @@ def _audit(action: str, slug: str = "-", key_hint: str = "-") -> None:
     _audit_logger.info("%s | %s | %s", action, slug, key_hint)
 
 
+def _log_to_bot_log(user_id: int, slug: str, line: str) -> None:
+    """Append a timestamped ``[ADMIN]`` line to a specific bot's log.
+
+    Admin cross-user lifecycle actions surface here so a bot's owner
+    sees what happened on their bot by tailing the normal log instead
+    of having to cross-reference audit.log. The central audit trail
+    still gets its entry via ``_audit()``; this helper is additive.
+
+    Swallows OSError (disk full, permission denied) with a warning
+    because an admin action must not fail just because writing the
+    courtesy line to the owner's log didn't work.
+    """
+    bot_log = paths.user_logs_dir(user_id) / f"{slug}.log"
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        with open(bot_log, "a", encoding="utf-8") as f:
+            f.write(f"{ts} [ADMIN] {line}\n")
+    except OSError as e:
+        logger.warning(
+            "Could not write admin-action line to %s/%s log: %s",
+            user_id, slug, e,
+        )
+
+
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
 # Re-exported from core.ids so the engine, the web routes, and the
 # route-level validators all agree on one canonical shape for
@@ -1992,6 +2016,7 @@ async def tail_logs():
 # still live in this file; a follow-up pass can migrate them using the
 # same pattern.
 from web.routes import admin as _admin_routes  # noqa: E402
+from web.routes import admin_bots as _admin_bots_routes  # noqa: E402
 from web.routes import auth as _auth_routes  # noqa: E402
 from web.routes import backtest as _backtest_routes  # noqa: E402
 from web.routes import bots as _bots_routes  # noqa: E402
@@ -2002,6 +2027,7 @@ from web.routes import drawdown as _drawdown_routes  # noqa: E402
 from web.routes import exchanges as _exchanges_routes  # noqa: E402
 
 app.include_router(_admin_routes.router)
+app.include_router(_admin_bots_routes.router)
 app.include_router(_auth_routes.router)
 app.include_router(_backtest_routes.router)
 app.include_router(_bots_routes.router)
