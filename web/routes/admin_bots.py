@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from core import user_store
 from core.user import User
@@ -216,3 +217,173 @@ async def admin_restart_bot(
         f"Bot restarted by admin user={user.username}",
     )
     return await restart_bot(target_user_id, slug)
+
+
+# ── Bulk lifecycle (Fase 2) ────────────────────────────────────────────────
+# Sequential bulk stop + restart. Intentionally NOT a job-queue:
+# scope is "20 bots or fewer" so a synchronous HTTP response stays
+# within a sensible budget (20 × ~5s stop = ~100s worst case). The
+# 20-cap is enforced in the Pydantic schema so callers never reach
+# the handler with oversized payloads.
+#
+# Bulk start is deliberately excluded — accidentally starting
+# another user's live-mode bot is a far bigger blast radius than
+# stopping a paper bot one too many times, so Fase 2 stays on the
+# "reverse-direction" side of the lifecycle.
+
+# Upper bound on slug length — keeps the payload small and pairs
+# with the _BOT_SLUG_RE regex on the per-bot endpoints (which
+# doesn't cap length but in practice every bot slug we ship is
+# well under 64 chars).
+_BULK_SLUG_MAX_LEN = 64
+_BULK_MAX_TARGETS = 20
+
+
+class BulkBotTarget(BaseModel):
+    """Single ``(user_id, slug)`` pair in a bulk request."""
+
+    user_id: int = Field(gt=0)
+    slug: str = Field(min_length=1, max_length=_BULK_SLUG_MAX_LEN)
+
+
+class BulkBotRequest(BaseModel):
+    """Request body for bulk lifecycle endpoints.
+
+    ``min_length=1`` makes an empty list a 400 instead of a no-op
+    200 so UIs can't silently submit nothing. ``max_length=20``
+    bounds the worst-case time the handler can keep a connection
+    open — 20 × ~5s shutdown ≈ 100s, still inside typical proxy
+    idle-timeouts without needing streaming.
+    """
+
+    bots: list[BulkBotTarget] = Field(
+        min_length=1, max_length=_BULK_MAX_TARGETS,
+    )
+
+
+def _validate_bulk_slugs(targets: list[BulkBotTarget]) -> None:
+    """Defence-in-depth: Pydantic already caps length, but the
+    per-bot endpoints also run the slug through ``_BOT_SLUG_RE``
+    before touching the filesystem. Doing the same here keeps the
+    bulk surface aligned so a traversal-shaped slug can't slip
+    through the bulk path while being blocked on the per-bot path.
+    """
+    for target in targets:
+        if not _BOT_SLUG_RE.match(target.slug):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid slug format: {target.slug!r}",
+            )
+
+
+async def _bulk_execute(
+    body: BulkBotRequest,
+    user: User,
+    *,
+    action_name: str,
+    audit_action: str,
+    bot_log_line: str,
+    helper,
+) -> dict:
+    """Shared loop-body for bulk stop + bulk restart.
+
+    ``helper`` is the async lifecycle primitive (``stop_bot`` or
+    ``restart_bot``). We iterate sequentially rather than in
+    parallel because the underlying helpers mutate shared state
+    (registry's in-progress map, pid files) and concurrent calls
+    on overlapping slugs would race — serial keeps the contract
+    identical to the per-bot endpoints while still delivering the
+    UI benefit of "one click, many bots".
+
+    Failures are collected and returned alongside successes —
+    partial success is a valid outcome. The caller (admin UI)
+    surfaces both counts so the operator can see which subset
+    still needs attention.
+    """
+    _validate_bulk_slugs(body.bots)
+    _audit(audit_action, f"count={len(body.bots)}", user.username)
+    logger.warning(
+        "[ADMIN BULK] %s requested bulk-%s of %d bots",
+        user.username, action_name, len(body.bots),
+    )
+
+    processed: list[dict] = []
+    failed: list[dict] = []
+
+    for target in body.bots:
+        try:
+            result = await helper(target.user_id, target.slug)
+        except Exception as e:
+            logger.exception(
+                "admin_bulk_%s: helper(user=%s, slug=%s) raised",
+                action_name, target.user_id, target.slug,
+            )
+            failed.append({
+                "user_id": target.user_id,
+                "slug": target.slug,
+                "error": str(e)[:200],
+            })
+            continue
+
+        if result.get("ok"):
+            processed.append({
+                "user_id": target.user_id,
+                "slug": target.slug,
+                "result": action_name,
+            })
+            _log_to_bot_log(
+                target.user_id, target.slug,
+                bot_log_line.format(username=user.username),
+            )
+        else:
+            failed.append({
+                "user_id": target.user_id,
+                "slug": target.slug,
+                "error": result.get("error", "unknown"),
+            })
+
+    return {
+        "ok": True,
+        "processed": processed,
+        "failed": failed,
+        "total_requested": len(body.bots),
+        "total_succeeded": len(processed),
+        "total_failed": len(failed),
+        "triggered_by": user.username,
+    }
+
+
+@router.post("/api/admin/bots/bulk/stop")
+@limiter.limit("10/minute")
+async def admin_bulk_stop(
+    request: Request,
+    body: BulkBotRequest,
+    user: User = Depends(_request_user),
+):
+    """Sequential bulk stop, capped at 20 bots per call."""
+    _require_admin(user)
+    return await _bulk_execute(
+        body, user,
+        action_name="stop",
+        audit_action="admin_bulk_stop",
+        bot_log_line="Bot stopped by admin (bulk) user={username}",
+        helper=stop_bot,
+    )
+
+
+@router.post("/api/admin/bots/bulk/restart")
+@limiter.limit("10/minute")
+async def admin_bulk_restart(
+    request: Request,
+    body: BulkBotRequest,
+    user: User = Depends(_request_user),
+):
+    """Sequential bulk restart, capped at 20 bots per call."""
+    _require_admin(user)
+    return await _bulk_execute(
+        body, user,
+        action_name="restart",
+        audit_action="admin_bulk_restart",
+        bot_log_line="Bot restarted by admin (bulk) user={username}",
+        helper=restart_bot,
+    )
