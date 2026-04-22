@@ -22,12 +22,18 @@ stop_pidfile() {
     if kill -0 "$pid" 2>/dev/null; then
         echo "🛑 Stopping $name (PID $pid)..."
         kill "$pid"
-        # Wacht tot het proces daadwerkelijk gestopt is (max 5 seconden)
-        for _ in $(seq 1 10); do
+        # Wacht tot het proces daadwerkelijk gestopt is (max 8 seconden).
+        # Portal graceful-shutdown kan tot ~5s duren: uvicorn's
+        # timeout_graceful_shutdown=5 wacht op pending requests en de
+        # lifespan-handler neemt nog 2s voor task-cancellation. 5s hier
+        # was te krap — gaf af en toe een onnodige SIGKILL op het
+        # net-niet-klaar proces. 8s geeft comfortabel budget zonder
+        # ops-flows merkbaar te vertragen.
+        for _ in $(seq 1 16); do
             sleep 0.5
             kill -0 "$pid" 2>/dev/null || break
         done
-        # Forceer stop als proces nog draait na 5 seconden
+        # Forceer stop als proces nog draait na 8 seconden
         if kill -0 "$pid" 2>/dev/null; then
             echo "⚠️  $name did not stop gracefully — sending SIGKILL"
             kill -9 "$pid" 2>/dev/null
