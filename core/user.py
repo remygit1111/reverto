@@ -130,3 +130,18 @@ def get_active_user_ids() -> set[int]:
         "SELECT id FROM users WHERE active = 1",
     ).fetchall()
     return {int(r["id"]) for r in rows}
+
+
+def get_admin_user_ids() -> list[int]:
+    """Return active admin user IDs.
+
+    Used by the WS log broadcaster to fan system-wide events (the
+    ``portal`` slug, which has no per-bot owner) out to privileged
+    clients only. Single-indexed scan on the tiny users table, so
+    cheap enough to call once per tail_logs iteration.
+    """
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id FROM users WHERE active = 1 AND role = 'admin'",
+    ).fetchall()
+    return [int(r["id"]) for r in rows]
