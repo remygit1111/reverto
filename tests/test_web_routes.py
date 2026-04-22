@@ -1656,6 +1656,274 @@ class TestOfflineDealClose:
         assert r.json()["method"] == "direct"
 
 
+class TestOfflineDealCloseLock:
+    """Advisory file-lock around the offline-close path — guards the
+    race that the portal's state mutation otherwise loses to a bot
+    subprocess reading state.json in its _load_state.
+
+    Uses the same _stopped_paper_bot / _stub_public_ticker fixtures
+    as TestOfflineDealClose but instantiated locally so the class
+    stays independent and easy to move if the file is split later.
+    """
+
+    _USER_ID = 1
+    _SLUG = "offlineclose_lock"
+    _DEAL_ID = "202604221800-0001"
+
+    @pytest.fixture
+    def _seed_user_row(self):
+        from core.database import get_db as _get_db
+        conn = _get_db()
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, username, role) "
+            "VALUES (1, 'admin', 'admin')"
+        )
+        conn.commit()
+
+    @pytest.fixture
+    def _stopped_paper_bot(self, _seed_user_row):
+        from core import paths as _paths_mod
+
+        webapp.registry._last_refresh = 0.0
+        yaml_path = _paths_mod.bot_yaml_path(self._USER_ID, self._SLUG)
+        state_file = _paths_mod.bot_state_path(self._USER_ID, self._SLUG)
+        pid_file = _paths_mod.bot_pid_path(self._USER_ID, self._SLUG)
+        log_file = _paths_mod.bot_log_path(self._USER_ID, self._SLUG)
+        lock_file = _paths_mod.bot_state_lock_path(self._USER_ID, self._SLUG)
+        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+
+        import yaml as _yaml
+        yaml_path.write_text(_yaml.safe_dump({
+            "bot": {
+                "name": "Offline Lock Test",
+                "mode": "paper",
+                "exchange": "bitget",
+                "pair": "BTC/USD",
+                "contract_type": "inverse_perpetual",
+                "leverage": {"enabled": False, "size": 1},
+                "dca": {
+                    "base_order_size": 0.001,
+                    "max_orders": 3,
+                    "order_spacing_pct": 2.5,
+                    "multiplier": 1.5,
+                    "taker_fee": 0.0006,
+                },
+                "entry": {"indicators": []},
+                "take_profit": {"target_pct": 3.0},
+                "stop_loss": {"type": "fixed", "pct": 5.0},
+            }
+        }), encoding="utf-8")
+
+        import json as _json_mod
+        opened_at = datetime.now(UTC).isoformat()
+        state_file.write_text(_json_mod.dumps({
+            "bot_name": "Offline Lock Test",
+            "balance_btc": 0.1,
+            "initial_balance_btc": 0.1,
+            "open_deals": [{
+                "id": self._DEAL_ID,
+                "bot_name": "Offline Lock Test",
+                "symbol": "BTC/USD",
+                "side": "long",
+                "leverage": 1,
+                "is_open": True,
+                "orders": [{
+                    "order_number": 1,
+                    "price": 100.0,
+                    "size": 0.001,
+                    "timestamp": opened_at,
+                    "order_type": "base",
+                }],
+                "opened_at": opened_at,
+                "_peak_price": 0.0,
+                "_tp_override": None,
+                "_sl_override": None,
+                "_dca_enabled": True,
+            }],
+            "closed_deals": [],
+        }), encoding="utf-8")
+
+        try:
+            yield
+        finally:
+            for p in (yaml_path, state_file, pid_file, log_file, lock_file):
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
+            webapp.registry._last_refresh = 0.0
+
+    @pytest.fixture
+    def _stub_public_ticker(self, monkeypatch):
+        from exchanges.base_exchange import Ticker
+        from exchanges.public_exchange import PublicExchange
+
+        def _fake_ticker(self, symbol):
+            return Ticker(
+                symbol=symbol, bid=109.9, ask=110.1, last=110.0,
+                mark_price=110.0, funding_rate=None, timestamp=0,
+            )
+
+        monkeypatch.setattr(PublicExchange, "get_ticker", _fake_ticker)
+
+    def _cookie(self):
+        return _admin_cookie()
+
+    def test_offline_close_acquires_lock(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+        monkeypatch,
+    ):
+        """The offline-close handler must enter exclusive_lock with
+        the bot-state lock path so a bot-startup on the same slug
+        serialises against it."""
+        from core import paths as _paths_mod
+        from web.routes import deals as _deals_module
+
+        expected_path = _paths_mod.bot_state_lock_path(
+            self._USER_ID, self._SLUG,
+        )
+        captured: list = []
+        real_lock = _deals_module.exclusive_lock
+
+        def _recording_lock(path, **kwargs):
+            captured.append(path)
+            return real_lock(path, **kwargs)
+
+        monkeypatch.setattr(_deals_module, "exclusive_lock", _recording_lock)
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "close"},
+        )
+
+        assert r.status_code == 200, r.text
+        assert captured, "exclusive_lock was not invoked"
+        assert captured[0] == expected_path
+
+    def test_offline_close_lock_timeout_returns_503(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+        monkeypatch,
+    ):
+        """A lock-timeout (another process holds the lock past the 3s
+        budget) must surface as 503 so the client knows to retry."""
+        from core.file_lock import LockTimeoutError as _RealErr
+        from web.routes import deals as _deals_module
+
+        def _boom(path, **kwargs):
+            raise _RealErr(f"simulated contention on {path}")
+
+        monkeypatch.setattr(_deals_module, "exclusive_lock", _boom)
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "close"},
+        )
+
+        assert r.status_code == 503, r.text
+        assert "state lock" in r.json()["detail"].lower()
+
+    def test_offline_close_bot_started_mid_lock_returns_409(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+        monkeypatch,
+    ):
+        """Registry's outer running-check sees False, but by the time
+        we hold the lock the bot has started. The re-check inside the
+        lock must flip and the route must return 409 Conflict so the
+        operator retries via the sentinel path."""
+        from web.app import BotInfo
+
+        # First call (route handler) reads False — takes the offline
+        # branch. Second call (inside the lock) reads True — conflict.
+        call_count = {"n": 0}
+        original_running = BotInfo.running.fget
+
+        def _fake_running(self_):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return False
+            return True
+
+        monkeypatch.setattr(BotInfo, "running", property(_fake_running))
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+        try:
+            r = auth_client.delete(
+                f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+                params={"action": "close"},
+            )
+        finally:
+            # Restore so follow-up tests see the real property.
+            monkeypatch.setattr(
+                BotInfo, "running", property(original_running),
+            )
+
+        assert r.status_code == 409, r.text
+        assert "started" in r.json()["detail"].lower()
+        assert call_count["n"] >= 2, (
+            "inner re-check did not run — lock may not be guarding "
+            "the conflict path"
+        )
+
+    def test_offline_close_releases_lock_on_handler_error(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+        monkeypatch,
+    ):
+        """If the close handler raises inside the lock, the lock must
+        be released so a follow-up request isn't stuck waiting on a
+        ghost holder."""
+        import time as _time
+
+        from core import paths as _paths_mod
+        from core.file_lock import exclusive_lock as _real_lock
+        from paper.close_handler import DealCloseHandler
+
+        original_close = DealCloseHandler.close_deal
+        calls = {"n": 0}
+
+        def _first_call_raises(self_, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated handler failure")
+            return original_close(self_, *args, **kwargs)
+
+        monkeypatch.setattr(
+            DealCloseHandler, "close_deal", _first_call_raises,
+        )
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+
+        # First request — handler blows up inside the lock. TestClient
+        # is configured with raise_server_exceptions=True (default),
+        # so the RuntimeError surfaces to the test rather than a 500
+        # response; in production the ASGI middleware turns it into
+        # 500 before it reaches the client.
+        with pytest.raises(RuntimeError, match="simulated handler failure"):
+            auth_client.delete(
+                f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+                params={"action": "close"},
+            )
+
+        # Now prove the lock was released: acquire it directly with a
+        # tight timeout. If the request above leaked the lock, we'd
+        # block past the timeout and raise LockTimeoutError here.
+        lock_path = _paths_mod.bot_state_lock_path(
+            self._USER_ID, self._SLUG,
+        )
+        t0 = _time.monotonic()
+        with _real_lock(lock_path, timeout=0.5, poll_interval=0.05):
+            pass
+        assert _time.monotonic() - t0 < 0.3, (
+            "lock was not released after handler exception"
+        )
+
+
 # ── Annotation POST endpoint ─────────────────────────────────────────────────
 
 class TestAnnotationPost:

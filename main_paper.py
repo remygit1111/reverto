@@ -18,6 +18,7 @@ from pathlib import Path
 from config.config_loader import load_bot_config
 from config.models import Mode
 from core import paths
+from core.file_lock import LockTimeoutError, exclusive_lock
 from core.logging_setup import parse_log_level_env
 from exchanges.public_exchange import PublicExchange
 from notifications.telegram import TelegramNotifier
@@ -135,17 +136,34 @@ def main() -> None:
     exchange = PublicExchange(config.exchange.value)
     notifier = TelegramNotifier(notify_on=config.telegram.notify_on)
 
-    engine = PaperEngine(
-        config=config,
-        exchange=exchange,
-        notifier=notifier,
-        initial_balance_btc=args.balance,
-        poll_interval=10,
-        state_file=str(state_file),
-        manual_trigger_file=str(manual_trigger_file),
-        slug=slug,
-        user_id=user_id,
-    )
+    # Engine construction runs _load_state internally. Hold an
+    # advisory cross-process lock on a sibling path so a portal-side
+    # offline-close cannot mutate state.json mid-load; the portal
+    # claims the same lock around its mutation. Released immediately
+    # after __init__ returns — in-memory state is now owned by this
+    # process and the portal's offline path will see running=True
+    # and route to the sentinel fallback.
+    lock_path = paths.bot_state_lock_path(user_id, slug)
+    try:
+        with exclusive_lock(lock_path, timeout=5.0):
+            engine = PaperEngine(
+                config=config,
+                exchange=exchange,
+                notifier=notifier,
+                initial_balance_btc=args.balance,
+                poll_interval=10,
+                state_file=str(state_file),
+                manual_trigger_file=str(manual_trigger_file),
+                slug=slug,
+                user_id=user_id,
+            )
+    except LockTimeoutError:
+        logger.error(
+            "Could not acquire state lock for %s within 5s — portal "
+            "may be mid-close. Aborting startup; try `make start` "
+            "again.", slug,
+        )
+        sys.exit(2)
 
     _install_signal_handlers(engine)
 
