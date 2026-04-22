@@ -1220,6 +1220,308 @@ class TestDealEndpoints:
         assert r.status_code == 400
 
 
+class TestOfflineDealClose:
+    """DELETE /api/bots/{slug}/deals/{deal_id} — offline close path.
+
+    Running bot → sentinel (exercised by TestDealEndpoints above).
+    Stopped paper bot → direct close via DealCloseHandler.
+    Stopped live bot → 501 with PR B tracking hint.
+
+    The tests build a real bot YAML + state.json so ``registry.get``
+    resolves, then stub ``PublicExchange.get_ticker`` so no actual
+    exchange traffic happens during the tests.
+    """
+
+    _USER_ID = 1
+    _SLUG = "offlineclose_test"
+    _DEAL_ID = "202604211955-0641"
+
+    @pytest.fixture
+    def _seed_user_row(self):
+        from core.database import get_db as _get_db
+        conn = _get_db()
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, username, role) "
+            "VALUES (1, 'admin', 'admin')"
+        )
+        conn.commit()
+
+    @pytest.fixture
+    def _stopped_paper_bot(self, _seed_user_row):
+        """Write a paper-bot YAML + state.json under the real
+        ``config/bots/1/`` + ``logs/1/`` directories so
+        ``webapp.registry.get`` resolves naturally. The registry's
+        ``BASE_DIR`` is module-level on web.app and awkward to
+        monkeypatch cleanly — using the real layout with a unique
+        slug + post-test cleanup matches the existing
+        ``_cleanup_yaml`` autouse pattern in this module.
+
+        Must run on a distinct slug to avoid collision with other
+        tests + real repo content. ``bot.running`` is False because
+        no pid file is written.
+        """
+        from core import paths as _paths_mod
+
+        # Invalidate the registry cache so the next get() does a
+        # fresh glob and finds our yaml.
+        webapp.registry._last_refresh = 0.0
+
+        yaml_path = _paths_mod.bot_yaml_path(self._USER_ID, self._SLUG)
+        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+        state_file = _paths_mod.bot_state_path(self._USER_ID, self._SLUG)
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file = _paths_mod.bot_pid_path(self._USER_ID, self._SLUG)
+        log_file = _paths_mod.bot_log_path(self._USER_ID, self._SLUG)
+
+        import yaml as _yaml
+        yaml_path.write_text(_yaml.safe_dump({
+            "bot": {
+                "name": "Offline Close Test",
+                "mode": "paper",
+                "exchange": "bitget",
+                "pair": "BTC/USD",
+                "contract_type": "inverse_perpetual",
+                "leverage": {"enabled": False, "size": 1},
+                "dca": {
+                    "base_order_size": 0.001,
+                    "max_orders": 3,
+                    "order_spacing_pct": 2.5,
+                    "multiplier": 1.5,
+                    "taker_fee": 0.0006,
+                },
+                "entry": {"indicators": []},
+                "take_profit": {"target_pct": 3.0},
+                "stop_loss": {"type": "fixed", "pct": 5.0},
+            }
+        }), encoding="utf-8")
+
+        import json as _json_mod
+        opened_at = datetime.now(UTC).isoformat()
+        state_file.write_text(_json_mod.dumps({
+            "bot_name": "Offline Close Test",
+            "balance_btc": 0.1,
+            "initial_balance_btc": 0.1,
+            "open_deals": [{
+                "id": self._DEAL_ID,
+                "bot_name": "Offline Close Test",
+                "symbol": "BTC/USD",
+                "side": "long",
+                "leverage": 1,
+                "is_open": True,
+                "orders": [{
+                    "order_number": 1,
+                    "price": 100.0,
+                    "size": 0.001,
+                    "timestamp": opened_at,
+                    "order_type": "base",
+                }],
+                "opened_at": opened_at,
+                "_peak_price": 0.0,
+                "_tp_override": None,
+                "_sl_override": None,
+                "_dca_enabled": True,
+            }],
+            "closed_deals": [],
+            "drawdown_guard": {"peak_value": 0.1, "triggered": False},
+        }), encoding="utf-8")
+
+        try:
+            yield
+        finally:
+            # Clean up every file this test wrote so the repo tree
+            # stays as we found it. pid_file + log_file shouldn't exist
+            # but we remove them defensively in case a parallel test
+            # wrote them.
+            for p in (yaml_path, state_file, pid_file, log_file):
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
+            webapp.registry._last_refresh = 0.0
+
+    @pytest.fixture
+    def _stub_public_ticker(self, monkeypatch):
+        """Stub ``PublicExchange.get_ticker`` so the test doesn't hit
+        the Bitget API. Returns a fixed ``last`` price."""
+        from exchanges.base_exchange import Ticker
+        from exchanges.public_exchange import PublicExchange
+
+        def _fake_ticker(self, symbol):
+            return Ticker(
+                symbol=symbol, bid=109.9, ask=110.1, last=110.0,
+                mark_price=110.0, funding_rate=None, timestamp=0,
+            )
+
+        monkeypatch.setattr(PublicExchange, "get_ticker", _fake_ticker)
+
+    def _cookie(self):
+        return _admin_cookie()
+
+    def test_stopped_paper_bot_closes_directly(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+    ):
+        """End-to-end: bot offline, DELETE the open deal, expect the
+        handler to run + return method=direct + the deal to be gone
+        from state.json."""
+        from core import paths as _paths_mod
+        import json as _json_mod
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "close"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        assert body["method"] == "direct"
+        assert body["deal_id"] == self._DEAL_ID
+        assert body["close_price"] == 110.0
+        assert body["deal"]["is_open"] is False
+        assert body["deal"]["close_reason"] == "manual"
+
+        # state.json: deal moved from open to closed.
+        state_file = _paths_mod.bot_state_path(self._USER_ID, self._SLUG)
+        payload = _json_mod.loads(state_file.read_text(encoding="utf-8"))
+        open_ids = {d["id"] for d in payload["open_deals"]}
+        closed_ids = {d["id"] for d in payload["closed_deals"]}
+        assert self._DEAL_ID not in open_ids
+        assert self._DEAL_ID in closed_ids
+
+    def test_stopped_paper_bot_no_sentinel_written(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+    ):
+        """Offline close must NOT write a sentinel file — that path
+        is strictly for running-bot routing."""
+        from core import paths as _paths_mod
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "close"},
+        )
+        assert r.status_code == 200
+
+        sentinel = (
+            _paths_mod.user_logs_dir(self._USER_ID)
+            / f"{self._SLUG}.deal_close_{self._DEAL_ID}"
+        )
+        assert not sentinel.exists()
+
+    def test_stopped_paper_bot_cancel_branch(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+    ):
+        from core import paths as _paths_mod
+        import json as _json_mod
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "cancel"},
+        )
+        assert r.status_code == 200
+        assert r.json()["action"] == "cancel"
+        # The deal in state.json carries close_reason=cancelled.
+        state_file = _paths_mod.bot_state_path(self._USER_ID, self._SLUG)
+        payload = _json_mod.loads(state_file.read_text(encoding="utf-8"))
+        closed = payload["closed_deals"][0]
+        assert closed["close_reason"] == "cancelled"
+
+    def test_stopped_paper_bot_unknown_deal_id_returns_404(
+        self, auth_client, _stopped_paper_bot, _stub_public_ticker,
+    ):
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+
+        # Well-formed deal_id, but not present in state.json.
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/202604211955-9999",
+            params={"action": "close"},
+        )
+        assert r.status_code == 404
+        assert "not found" in r.json()["detail"].lower()
+
+    def test_stopped_paper_bot_ticker_failure_returns_503(
+        self, auth_client, _stopped_paper_bot, monkeypatch,
+    ):
+        """Exchange ticker fetch failure → 503 so the client can
+        distinguish "our code is fine, upstream broke" from other
+        errors."""
+        from exchanges.public_exchange import PublicExchange
+
+        def _boom(self, symbol):
+            raise RuntimeError("simulated exchange outage")
+
+        monkeypatch.setattr(PublicExchange, "get_ticker", _boom)
+
+        token = self._cookie()
+        auth_client.cookies.set("reverto_session", token)
+
+        r = auth_client.delete(
+            f"/api/bots/{self._SLUG}/deals/{self._DEAL_ID}",
+            params={"action": "close"},
+        )
+        assert r.status_code == 503
+        assert "current price" in r.json()["detail"].lower()
+
+    def test_stopped_live_bot_returns_501(
+        self, auth_client, _seed_user_row,
+    ):
+        """Live / dry-run bots need exchange-order cancellation before
+        they can flip to closed. That lives in a follow-up PR; this
+        PR refuses with 501 and a tracking hint so the operator
+        understands why."""
+        from core import paths as _paths_mod
+
+        webapp.registry._last_refresh = 0.0
+        slug = "offline_live_test"
+        yaml_path = _paths_mod.bot_yaml_path(1, slug)
+        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+        import yaml as _yaml
+        yaml_path.write_text(_yaml.safe_dump({
+            "bot": {
+                "name": "Live Test",
+                "mode": "live",
+                "exchange": "bitget",
+                "pair": "BTC/USD",
+                "contract_type": "inverse_perpetual",
+                "leverage": {"enabled": False, "size": 1},
+                "dca": {
+                    "base_order_size": 0.001,
+                    "max_orders": 3,
+                    "order_spacing_pct": 2.5,
+                    "multiplier": 1.5,
+                    "taker_fee": 0.0006,
+                },
+                "entry": {"indicators": []},
+                "take_profit": {"target_pct": 3.0},
+                "stop_loss": {"type": "fixed", "pct": 5.0},
+            }
+        }), encoding="utf-8")
+
+        try:
+            token = self._cookie()
+            auth_client.cookies.set("reverto_session", token)
+            r = auth_client.delete(
+                f"/api/bots/{slug}/deals/{self._DEAL_ID}",
+                params={"action": "close"},
+            )
+            assert r.status_code == 501
+            assert "PR B" in r.json()["detail"]
+        finally:
+            try:
+                yaml_path.unlink()
+            except FileNotFoundError:
+                pass
+            webapp.registry._last_refresh = 0.0
+
+
 # ── Annotation POST endpoint ─────────────────────────────────────────────────
 
 class TestAnnotationPost:

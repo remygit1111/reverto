@@ -23,8 +23,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from config.config_loader import load_bot_config
+from config.models import Mode
 from core import deal_store, paths
 from core.user import User
+from paper.close_handler import DealCloseHandler
+from paper.state_io import load_paper_state_from_file
 from web.app import (
     _audit,
     _DEAL_ID_RE,
@@ -169,6 +173,131 @@ async def api_deal_edit(
     return {"ok": True, "deal_id": deal_id}
 
 
+async def _fetch_current_price_for_close(
+    pair: str, exchange_name: str,
+) -> float:
+    """Portal-side current-price fetch for offline close operations.
+
+    Uses ``PublicExchange`` (unauthenticated ticker endpoint) so no
+    per-user API key is required — matches the pattern
+    ``web/routes/chart.py`` already follows for the chart tab. Wrapped
+    in ``asyncio.to_thread`` because ccxt is a sync library; calling
+    it directly from the event loop would block.
+    """
+    from exchanges.public_exchange import PublicExchange
+
+    def _fetch() -> float:
+        client = PublicExchange(exchange_name.lower())
+        ticker = client.get_ticker(pair)
+        last = float(getattr(ticker, "last", 0.0) or 0.0)
+        if last <= 0:
+            raise ValueError(f"ticker.last is non-positive: {last!r}")
+        return last
+
+    return await asyncio.to_thread(_fetch)
+
+
+async def _close_paper_deal_offline(
+    user_id: int, slug: str, deal_id: str, action: str, actor: str,
+    bot_info,
+) -> dict:
+    """Offline-close path: bot process is stopped, portal closes the
+    deal directly via ``DealCloseHandler``. Paper-only. Live/dry-run
+    bots need exchange-order cancellation which lives in a follow-up
+    PR; those get 501 before reaching this helper.
+
+    Raises ``HTTPException`` on any recoverable failure so the
+    endpoint can surface clean HTTP status codes. The caller wraps
+    unexpected exceptions in a 500 upstream.
+    """
+    # Load bot YAML — single source of truth for mode + pair +
+    # exchange + taker_fee. State-file mode is lagging behind YAML
+    # for never-started bots (see BotInfo._resolve_yaml_mode docs).
+    try:
+        bot_config = await asyncio.to_thread(
+            load_bot_config, str(bot_info.config_file),
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Bot config not found")
+    except (ValueError, Exception) as e:
+        logger.warning(
+            "Offline close — invalid config for %s/%s: %s",
+            user_id, slug, e,
+        )
+        raise HTTPException(status_code=400, detail="Invalid bot config")
+
+    # Paper-only gate. Live/dry-run bots have open exchange orders
+    # that need cancellation via the ccxt client before flipping the
+    # deal to closed in our ledger — tracked for PR B.
+    if bot_config.mode != Mode.PAPER:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Offline close for live/dry-run bots is not yet "
+                "supported. Start the bot first to close deals. "
+                "(Tracking: PR B of close-handler refactor.)"
+            ),
+        )
+
+    # Fetch current market price via the public ticker endpoint.
+    exchange_name = (
+        bot_config.exchange.value
+        if hasattr(bot_config.exchange, "value")
+        else str(bot_config.exchange)
+    )
+    try:
+        current_price = await _fetch_current_price_for_close(
+            bot_config.pair, exchange_name,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Exchange returned invalid ticker: {e}",
+        )
+    except Exception as e:
+        logger.warning(
+            "Offline close — ticker fetch failed for %s/%s: %s",
+            user_id, slug, e,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Could not fetch current price from exchange",
+        )
+
+    # Load the paper state from disk + instantiate handler. The
+    # handler then mutates state + writes state.json atomically.
+    state, state_io = await asyncio.to_thread(
+        load_paper_state_from_file, bot_info.state_file, slug,
+    )
+    handler = DealCloseHandler(
+        user_id=user_id,
+        bot_slug=slug,
+        bot_name=bot_config.name,
+        state=state,
+        state_io=state_io,
+        taker_fee=bot_config.dca.taker_fee,
+        notifier=None,          # manual close via UI — no Telegram spam
+        notify_enqueue=None,
+    )
+    result = await asyncio.to_thread(
+        handler.close_deal, deal_id, current_price, action,
+    )
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=404,
+            detail=result.get("error") or "Could not close deal",
+        )
+    _audit(f"deal_{action}_offline", slug, actor)
+    return {
+        "ok": True,
+        "method": "direct",
+        "deal_id": deal_id,
+        "action": action,
+        "close_price": current_price,
+        "deal": result["deal"],
+    }
+
+
 @router.delete("/api/bots/{slug}/deals/{deal_id}")
 @limiter.limit("10/minute")
 async def api_deal_action(
@@ -178,13 +307,55 @@ async def api_deal_action(
     actor: str = Depends(_request_actor),
     user: User = Depends(_request_user),
 ):
+    """Close or cancel an open deal.
+
+    Running-bot path (default): write a sentinel file that the
+    engine's tick loop consumes on its next iteration. Pre-this-
+    refactor this was the ONLY path — if the bot was stopped the
+    sentinel sat forever and the UI close button appeared to do
+    nothing.
+
+    Stopped-bot path (new): paper-mode bots close directly via
+    ``DealCloseHandler`` — no sentinel, no wait. The portal fetches
+    the current price via the public ticker, rehydrates the paper
+    state from state.json, runs the handler, and persists the
+    result. Live / dry-run bots still return 501 with a "start the
+    bot first" hint (PR B).
+    """
     _validate_deal_id(deal_id)
     if action not in ("cancel", "close"):
-        raise HTTPException(status_code=400, detail="action must be cancel or close")
-    sentinel = paths.user_logs_dir(user.id) / f"{slug}.deal_{action}_{deal_id}"
-    sentinel.write_text("", encoding="utf-8")
-    _audit(f"deal_{action}", slug, actor)
-    return {"ok": True, "deal_id": deal_id, "action": action}
+        raise HTTPException(
+            status_code=400, detail="action must be cancel or close",
+        )
+
+    bot = await registry.get(user.id, slug)
+
+    # Sentinel path — running bot OR unknown slug. Unknown-slug writes
+    # match the pre-refactor behaviour (tests + tooling historically
+    # write sentinels before the bot exists or after it's been
+    # deleted); the file sits in logs/ until manually cleaned. Only
+    # taking the offline handler branch for a KNOWN, STOPPED bot
+    # keeps the refactor's new capability opt-in and the sentinel
+    # fallback undisturbed.
+    if bot is None or bot.running:
+        sentinel = (
+            paths.user_logs_dir(user.id) / f"{slug}.deal_{action}_{deal_id}"
+        )
+        sentinel.write_text("", encoding="utf-8")
+        _audit(f"deal_{action}", slug, actor)
+        return {
+            "ok": True,
+            "method": "sentinel",
+            "deal_id": deal_id,
+            "action": action,
+        }
+
+    # Offline path — known bot, not running. Paper-only; live/dry-run
+    # return 501 inside the helper (PR B handles exchange-order
+    # cancellation).
+    return await _close_paper_deal_offline(
+        user.id, slug, deal_id, action, actor, bot,
+    )
 
 
 # ── Chart annotations ───────────────────────────────────────────────────────
