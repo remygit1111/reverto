@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from config.config_loader import load_bot_config
 from core import deal_store, paths
+from core.file_lock import LockTimeoutError, exclusive_lock
 from core.user import User
 from notifications.telegram import TelegramNotifier
 from paper.close_handler import DealCloseHandler
@@ -295,38 +296,80 @@ async def _close_deal_offline(
             detail="Could not fetch current price from exchange",
         )
 
-    # Load the paper state from disk + instantiate handler. The
-    # handler then mutates state + writes state.json atomically.
-    # The notifier is portal-scoped: when Telegram is configured the
-    # operator gets a distinct "Manual close" / "Manual cancel" line
-    # (see DealCloseHandler._maybe_notify_manual_* + triggered_by
-    # dispatch). When Telegram env-vars aren't set the notifier is
-    # None and the close proceeds silently.
-    state, state_io = await asyncio.to_thread(
-        load_paper_state_from_file, bot_info.state_file, slug,
-    )
+    # Load-mutate-persist runs inside an advisory file-lock that a
+    # starting bot subprocess also claims during _load_state. Without
+    # the lock the portal can read state.json, mutate in-memory, and
+    # be mid-write while the bot's __init__ reads the pre-mutation
+    # file — the bot then boots with stale state and its tick loop
+    # may re-process a deal the portal just closed.
+    #
+    # Lock scope is tight: held only for the load + handler +
+    # state-write trio. The ticker fetch above runs outside the lock
+    # because it's a blocking network call and holding the lock
+    # across it would starve a starting bot.
+    lock_path = paths.bot_state_lock_path(user_id, slug)
     notifier = _build_portal_notifier(
         bot_config, user_id=user_id, slug=slug,
     )
-    handler = DealCloseHandler(
-        user_id=user_id,
-        bot_slug=slug,
-        bot_name=bot_config.name,
-        state=state,
-        state_io=state_io,
-        taker_fee=bot_config.dca.taker_fee,
-        notifier=notifier,
-        # Portal context is synchronous — no tick loop, so no non-
-        # blocking queue is needed. The notifier call runs inline on
-        # the asyncio.to_thread worker.
-        notify_enqueue=None,
-    )
-    result = await asyncio.to_thread(
-        lambda: handler.close_deal(
-            deal_id, current_price,
-            action=action, triggered_by="portal",
-        ),
-    )
+
+    def _locked_close() -> dict:
+        with exclusive_lock(lock_path, timeout=3.0):
+            # Re-check running state inside the lock. The outer
+            # running-check at the route handler may be stale by the
+            # time we got here (registry cache TTL + event-loop
+            # scheduling). BotInfo.running is a sync property that
+            # does a pid-file + kill(pid, 0) probe, so it's cheap
+            # and authoritative — safe to call inside the worker.
+            if bot_info.running:
+                return {
+                    "__conflict__": True,
+                    "status_code": 409,
+                    "error": (
+                        "Bot started during close attempt — "
+                        "retry via the sentinel path."
+                    ),
+                }
+            state, state_io = load_paper_state_from_file(
+                bot_info.state_file, slug,
+            )
+            handler = DealCloseHandler(
+                user_id=user_id,
+                bot_slug=slug,
+                bot_name=bot_config.name,
+                state=state,
+                state_io=state_io,
+                taker_fee=bot_config.dca.taker_fee,
+                notifier=notifier,
+                # Portal context is synchronous — no tick loop, so
+                # no non-blocking queue is needed. The notifier call
+                # runs inline on the asyncio.to_thread worker.
+                notify_enqueue=None,
+            )
+            return handler.close_deal(
+                deal_id, current_price,
+                action=action, triggered_by="portal",
+            )
+
+    try:
+        result = await asyncio.to_thread(_locked_close)
+    except LockTimeoutError as e:
+        logger.warning(
+            "Offline close — lock timeout for %s/%s: %s",
+            user_id, slug, e,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Could not acquire state lock — bot may be starting. "
+                "Retry."
+            ),
+        )
+
+    if result.get("__conflict__"):
+        raise HTTPException(
+            status_code=result["status_code"],
+            detail=result["error"],
+        )
     if not result.get("ok"):
         raise HTTPException(
             status_code=404,

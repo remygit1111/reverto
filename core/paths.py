@@ -113,6 +113,17 @@ def bot_state_path(user_id: int, slug: str) -> Path:
     return user_logs_dir(user_id) / f"{slug}.state.json"
 
 
+def bot_state_lock_path(user_id: int, slug: str) -> Path:
+    """``logs/<user_id>/<slug>.state.lock`` — sibling lock file for
+    cross-process coordination around state-file mutation.
+
+    Held briefly by the portal (during offline-close state mutation)
+    and by a starting bot (during _load_state) so the two processes
+    serialise instead of racing on ``state.json``.
+    """
+    return user_logs_dir(user_id) / f"{slug}.state.lock"
+
+
 def bot_pid_path(user_id: int, slug: str) -> Path:
     """``logs/<user_id>/pids/<slug>.pid`` — engine-process PID file."""
     return user_pid_dir(user_id) / f"{slug}.pid"
