@@ -230,3 +230,87 @@ class TestPersistentErrorRespectsNotifyOn:
         cap = _capture_send(n)
         n.notify_error_persistent("MyBot", _ticker_err())
         assert cap == {}, "error-disabled users must not receive persistent-notify"
+
+
+# ── Manual close / cancel (portal-triggered) ────────────────────────────
+
+class TestNotifyManualClose:
+    """notify_manual_close is the portal-origin counterpart to
+    notify_take_profit. The message format surfaces it as operator-
+    initiated so Telegram recipients can separate manual events from
+    automatic TP hits."""
+
+    def test_formats_with_operator_label(self, notifier):
+        cap = _capture_send(notifier)
+        notifier.notify_manual_close(
+            "RSI Paper Test", "BTC/USD", 80000.0, 0.000123, 0.45,
+        )
+        body = cap["body"]
+        assert "🔧" in body
+        assert "Manual close" in body
+        assert "RSI Paper Test" in body
+        assert "BTC/USD" in body
+        assert "$80,000.00" in body
+        # Signed PnL formatting stays consistent with notify_take_profit.
+        assert "+0.000123" in body or "+0.00012" in body
+        # Origin label is explicit in the body so a Telegram-scrolling
+        # operator can see "this came from the portal" at a glance.
+        assert "portal" in body.lower()
+
+    def test_negative_pnl_still_signed(self, notifier):
+        cap = _capture_send(notifier)
+        notifier.notify_manual_close(
+            "MyBot", "BTC/USD", 79500.0, -0.0005, -2.15,
+        )
+        body = cap["body"]
+        assert "-0.000500" in body
+        assert "-2.15" in body
+
+    def test_respects_notify_on_filter(self, monkeypatch):
+        """notify_on=['tp_hit'] (no 'manual_close') must suppress the
+        portal-origin notification — same filter model as every other
+        event on the notifier."""
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+        n = TelegramNotifier(notify_on=["tp_hit"])
+        cap = _capture_send(n)
+        n.notify_manual_close("MyBot", "BTC/USD", 80000.0, 0.0, 0.0)
+        assert cap == {}
+
+    def test_default_notify_on_passes_through(self, notifier):
+        """Default ``notify_on=None`` sends every event — the portal
+        close is no exception. Pins that a fresh install without a
+        telegram.notify_on config gets manual-close notifications
+        out of the box."""
+        cap = _capture_send(notifier)
+        notifier.notify_manual_close(
+            "MyBot", "BTC/USD", 80000.0, 0.0, 0.0,
+        )
+        assert "Manual close" in cap["body"]
+
+
+class TestNotifyManualCancel:
+
+    def test_formats_without_pnl(self, notifier):
+        """Cancel is state-only (no exit trade), so the message
+        deliberately omits PnL + price fields — matches the
+        notify_manual_cancel contract in close_handler."""
+        cap = _capture_send(notifier)
+        notifier.notify_manual_cancel("MyBot", "BTC/USD")
+        body = cap["body"]
+        assert "🚫" in body
+        assert "Manual cancel" in body
+        assert "MyBot" in body
+        assert "BTC/USD" in body
+        assert "portal" in body.lower()
+        # No PnL / price fields — those belong to close only.
+        assert "PnL" not in body
+        assert "Price" not in body
+
+    def test_respects_notify_on_filter(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+        n = TelegramNotifier(notify_on=["tp_hit"])
+        cap = _capture_send(n)
+        n.notify_manual_cancel("MyBot", "BTC/USD")
+        assert cap == {}

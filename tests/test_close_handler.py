@@ -383,6 +383,137 @@ class TestNotifier:
         assert enqueued[0][0] is notifier.notify_take_profit
 
 
+# ── triggered_by dispatch ───────────────────────────────────────────────
+
+class TestTriggeredByDispatch:
+    """The handler fires a different Telegram method depending on
+    where the close originated: the running-bot tick-loop path
+    (default ``triggered_by='engine'``) uses the legacy TP/SL
+    notifications so recipients see no change vs pre-refactor;
+    portal-initiated closes (``triggered_by='portal'``) use dedicated
+    ``notify_manual_close`` / ``notify_manual_cancel`` methods so the
+    operator-initiated events are traceable on Telegram."""
+
+    def test_close_engine_origin_fires_tp_notification(
+        self, deal_in_state, state_io, seed_user,
+    ):
+        state, deal_id = deal_in_state
+        notifier = MagicMock()
+        handler = _make_handler(state, state_io, notifier=notifier)
+
+        # Default argument is triggered_by='engine'.
+        handler.close_deal(deal_id, current_price=110.0)
+
+        notifier.notify_take_profit.assert_called_once()
+        notifier.notify_manual_close.assert_not_called()
+
+    def test_close_portal_origin_fires_manual_close(
+        self, deal_in_state, state_io, seed_user,
+    ):
+        state, deal_id = deal_in_state
+        notifier = MagicMock()
+        handler = _make_handler(state, state_io, notifier=notifier)
+
+        handler.close_deal(
+            deal_id, current_price=110.0, triggered_by="portal",
+        )
+
+        notifier.notify_manual_close.assert_called_once()
+        notifier.notify_take_profit.assert_not_called()
+        # Args match the TelegramNotifier.notify_manual_close signature:
+        # (bot_name, symbol, price, pnl_btc, pnl_pct).
+        args, _ = notifier.notify_manual_close.call_args
+        assert args[0] == "testbot"       # bot_name
+        assert args[1] == "BTC/USD"       # symbol
+        assert args[2] == 110.0           # price
+
+    def test_cancel_engine_origin_fires_sl_notification(
+        self, deal_in_state, state_io, seed_user,
+    ):
+        state, deal_id = deal_in_state
+        notifier = MagicMock()
+        handler = _make_handler(state, state_io, notifier=notifier)
+
+        handler.close_deal(
+            deal_id, current_price=110.0, action="cancel",
+        )
+
+        notifier.notify_stop_loss.assert_called_once()
+        notifier.notify_manual_cancel.assert_not_called()
+
+    def test_cancel_portal_origin_fires_manual_cancel(
+        self, deal_in_state, state_io, seed_user,
+    ):
+        state, deal_id = deal_in_state
+        notifier = MagicMock()
+        handler = _make_handler(state, state_io, notifier=notifier)
+
+        handler.close_deal(
+            deal_id, current_price=110.0,
+            action="cancel", triggered_by="portal",
+        )
+
+        notifier.notify_manual_cancel.assert_called_once()
+        notifier.notify_stop_loss.assert_not_called()
+
+    def test_portal_origin_without_notifier_still_closes(
+        self, deal_in_state, state_io, seed_user,
+    ):
+        """Portal path constructs the handler with ``notifier=None``
+        when Telegram env-vars aren't set. The close must succeed
+        regardless — Telegram is a side channel, not on the close
+        path's critical route."""
+        state, deal_id = deal_in_state
+        handler = _make_handler(state, state_io, notifier=None)
+
+        result = handler.close_deal(
+            deal_id, current_price=110.0, triggered_by="portal",
+        )
+        assert result["ok"] is True
+        assert deal_id not in state.open_deals
+
+    def test_invalid_triggered_by_returns_error(
+        self, deal_in_state, state_io, seed_user,
+    ):
+        """Typo'd origin values fail loud with an error dict rather
+        than silently falling through to one branch or the other."""
+        state, deal_id = deal_in_state
+        handler = _make_handler(state, state_io)
+
+        result = handler.close_deal(
+            deal_id, current_price=110.0, triggered_by="cron",
+        )
+        assert result["ok"] is False
+        assert "invalid triggered_by" in result["error"].lower()
+        # State untouched by the error path.
+        assert deal_id in state.open_deals
+
+    def test_portal_origin_without_manual_methods_falls_back(
+        self, deal_in_state, state_io, seed_user,
+    ):
+        """Older notifier implementations may not have
+        ``notify_manual_close`` yet (test fixtures, third-party
+        stubs). The close must skip the notification silently
+        instead of crashing with AttributeError — matches the
+        defensive ``getattr`` pattern in ``_maybe_notify_manual_*``.
+        """
+        # Spec-limited stub that lacks notify_manual_close /
+        # notify_manual_cancel entirely.
+        notifier = MagicMock(spec=["notify_take_profit", "notify_stop_loss"])
+        state, deal_id = deal_in_state
+        handler = _make_handler(state, state_io, notifier=notifier)
+
+        result = handler.close_deal(
+            deal_id, current_price=110.0, triggered_by="portal",
+        )
+        assert result["ok"] is True
+        # Neither the legacy nor the new notifier fired — portal
+        # origin falls through both branches when the method is
+        # missing, which is the intended safe default.
+        notifier.notify_take_profit.assert_not_called()
+        notifier.notify_stop_loss.assert_not_called()
+
+
 # ── State preservation across closes ────────────────────────────────────
 
 class TestStatePreservation:

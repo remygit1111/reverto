@@ -53,6 +53,18 @@ logger = logging.getLogger(__name__)
 # exchange position themselves).
 _VALID_ACTIONS: frozenset[str] = frozenset({"close", "cancel"})
 
+# Origin identifiers passed through ``close_deal(..., triggered_by=...)``
+# so the handler can dispatch a distinct notification per-path:
+#   * "engine" — running-bot tick-loop consumed a sentinel; fires the
+#     legacy TP/SL-style notification to keep Telegram output identical
+#     to pre-refactor behaviour.
+#   * "portal" — operator clicked close in the UI while the bot was
+#     stopped; fires notify_manual_close / notify_manual_cancel so
+#     recipients can trace operator-initiated events separately.
+_ORIGIN_ENGINE = "engine"
+_ORIGIN_PORTAL = "portal"
+_VALID_ORIGINS: frozenset[str] = frozenset({_ORIGIN_ENGINE, _ORIGIN_PORTAL})
+
 
 class DealCloseHandler:
     """Close or cancel a single paper-mode deal.
@@ -129,9 +141,22 @@ class DealCloseHandler:
     # ── Public API ──────────────────────────────────────────────────
 
     def close_deal(
-        self, deal_id: str, current_price: float, action: str = "close",
+        self,
+        deal_id: str,
+        current_price: float,
+        action: str = "close",
+        triggered_by: str = _ORIGIN_ENGINE,
     ) -> dict:
         """Close ("close") or cancel ("cancel") an open deal.
+
+        Parameters
+        ----------
+        triggered_by
+            ``"engine"`` (default) for the running-bot tick-loop path.
+            ``"portal"`` for portal-initiated offline closes. Drives
+            which Telegram notification is fired — the state + DB
+            mutations are identical across both. See the
+            ``_ORIGIN_*`` constants above for the full contract.
 
         Returns a dict:
           * success → ``{"ok": True, "action": ..., "deal": {...}, ...}``
@@ -145,6 +170,14 @@ class DealCloseHandler:
             return {
                 "ok": False,
                 "error": f"invalid action {action!r}; expected close or cancel",
+            }
+        if triggered_by not in _VALID_ORIGINS:
+            return {
+                "ok": False,
+                "error": (
+                    f"invalid triggered_by {triggered_by!r}; "
+                    f"expected engine or portal"
+                ),
             }
         deal = self.state.open_deals.get(deal_id)
         if deal is None:
@@ -166,19 +199,23 @@ class DealCloseHandler:
             }
 
         if action == "close":
-            return self._close(deal, current_price)
-        return self._cancel(deal, current_price)
+            return self._close(deal, current_price, triggered_by)
+        return self._cancel(deal, current_price, triggered_by)
 
     # ── Internal paths ──────────────────────────────────────────────
 
-    def _close(self, deal: PaperDeal, price: float) -> dict:
+    def _close(
+        self, deal: PaperDeal, price: float, triggered_by: str,
+    ) -> dict:
         """Manual-close branch — realise PnL at ``price``, deduct exit
-        fee, persist state + DB, fire optional TP-style notification.
+        fee, persist state + DB, fire the origin-appropriate
+        notification.
 
         Matches the pre-refactor ``_check_deal_sentinels`` "close"
-        branch 1:1 — any behavioural drift between running-bot and
-        stopped-bot paths would re-introduce the bug this handler
-        exists to close.
+        branch 1:1 for state + DB effects — any drift would re-
+        introduce the divergence this handler closes. The Telegram
+        notification is origin-specific: engine → TP-style green/red
+        (unchanged); portal → dedicated "Manual close" message.
         """
         pnl_btc, pnl_pct = deal.calculate_pnl(price)
         exit_size = deal.total_size
@@ -192,10 +229,16 @@ class DealCloseHandler:
             deal.id, price, "manual", pnl_btc, pnl_pct, exit_trigger,
         )
         logger.info(
-            "Deal %s manually closed at $%.2f PnL: %+.6f BTC (fee %.8f)",
-            deal.id, price, pnl_btc, fee,
+            "Deal %s manually closed at $%.2f PnL: %+.6f BTC (fee %.8f) "
+            "[origin=%s]",
+            deal.id, price, pnl_btc, fee, triggered_by,
         )
-        self._maybe_notify_tp(deal.symbol, price, pnl_btc, pnl_pct)
+        if triggered_by == _ORIGIN_PORTAL:
+            self._maybe_notify_manual_close(
+                deal.symbol, price, pnl_btc, pnl_pct,
+            )
+        else:
+            self._maybe_notify_tp(deal.symbol, price, pnl_btc, pnl_pct)
         self._persist_state()
 
         return {
@@ -209,7 +252,9 @@ class DealCloseHandler:
             "deal": deal_to_dict(deal, current_price=price),
         }
 
-    def _cancel(self, deal: PaperDeal, price: float) -> dict:
+    def _cancel(
+        self, deal: PaperDeal, price: float, triggered_by: str,
+    ) -> dict:
         """Cancel branch — drop the deal without realising PnL.
 
         ``state.close_deal`` computes + applies PnL internally (that's
@@ -217,7 +262,9 @@ class DealCloseHandler:
         because the gain/loss has not been crystallised through an
         actual exit trade. The exchange position stays open; operator
         is responsible for closing it manually (documented in UI +
-        runbook).
+        runbook). Telegram dispatch mirrors ``_close``: engine path
+        uses the legacy SL-style line; portal path uses a dedicated
+        "Manual cancel" message.
         """
         exit_trigger = {"type": "cancelled"}
         deal.exit_trigger = exit_trigger
@@ -225,10 +272,17 @@ class DealCloseHandler:
         self._db_close_deal(
             deal.id, price, "cancelled", 0.0, 0.0, exit_trigger,
         )
-        logger.info("Deal %s cancelled at $%.2f", deal.id, price)
-        # Use the SL-style notifier so the Telegram recipient knows a
-        # deal went away; matches the pre-refactor behaviour.
-        self._maybe_notify_sl(deal.symbol, price, 0.0, 0.0)
+        logger.info(
+            "Deal %s cancelled at $%.2f [origin=%s]",
+            deal.id, price, triggered_by,
+        )
+        if triggered_by == _ORIGIN_PORTAL:
+            self._maybe_notify_manual_cancel(deal.symbol)
+        else:
+            # Legacy running-bot path — kept identical to pre-refactor
+            # behaviour so engine-driven cancels look the same on
+            # Telegram as they always did.
+            self._maybe_notify_sl(deal.symbol, price, 0.0, 0.0)
         self._persist_state()
 
         return {
@@ -350,6 +404,31 @@ class DealCloseHandler:
             self.notifier.notify_stop_loss,
             self.bot_name, symbol, price, pnl_btc, pnl_pct,
         )
+
+    def _maybe_notify_manual_close(
+        self, symbol: str, price: float, pnl_btc: float, pnl_pct: float,
+    ) -> None:
+        """Portal-origin close notification — handler-new method on
+        TelegramNotifier. Tolerant of notifiers that haven't been
+        upgraded yet (AttributeError → skip) so a test fixture using
+        a stub doesn't need the full API surface."""
+        if self.notifier is None:
+            return
+        fn = getattr(self.notifier, "notify_manual_close", None)
+        if fn is None:
+            return
+        self._fire(fn, self.bot_name, symbol, price, pnl_btc, pnl_pct)
+
+    def _maybe_notify_manual_cancel(self, symbol: str) -> None:
+        """Portal-origin cancel notification. Same tolerant shape as
+        ``_maybe_notify_manual_close`` — a notifier without the
+        method quietly skips instead of erroring the close path."""
+        if self.notifier is None:
+            return
+        fn = getattr(self.notifier, "notify_manual_cancel", None)
+        if fn is None:
+            return
+        self._fire(fn, self.bot_name, symbol)
 
     def _fire(self, fn, *args, **kwargs) -> None:
         """Route a notifier call through the optional queue hook so
