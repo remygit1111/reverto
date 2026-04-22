@@ -456,7 +456,12 @@ def _log_to_bot_log(user_id: int, slug: str, line: str) -> None:
     """
     bot_log = paths.user_logs_dir(user_id) / f"{slug}.log"
     try:
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        # Local time (no tz arg) so ADMIN lines interleave cleanly with
+        # the surrounding log output, which comes from the subprocess's
+        # logging.basicConfig asctime — that formatter renders local
+        # time too. UTC here would mean a 1-2h offset from the
+        # adjacent engine log lines and make correlation painful.
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(bot_log, "a", encoding="utf-8") as f:
             f.write(f"{ts} [ADMIN] {line}\n")
     except OSError as e:
