@@ -26,13 +26,12 @@ race at the state level only — ``PaperState.close_deal`` pops atomic
 under the lock, so the second call sees an empty ``open_deals`` and
 returns a benign "deal not found" error.
 
-Race with a starting bot: the portal's offline path reads + mutates
-state.json without holding any cross-process lock. If a bot starts
-mid-close, the bot's own ``_load_state`` may miss this mutation. This
-is accepted as a Phase-3b item — the portal only takes the offline
-path when ``BotInfo.running == False`` (PID file stale), which is
-already a narrow window; a proper SQLite advisory lock would close
-it properly.
+Race with a starting bot: serialised via an advisory file-lock
+(``core.file_lock.exclusive_lock``) on a sibling path to state.json.
+Portal claims the lock before mutation, bot claims it before
+``_load_state``. The lock window is brief — both sides release as
+soon as their state operation completes. See
+``tests/test_file_lock.py`` for details.
 """
 
 from __future__ import annotations
