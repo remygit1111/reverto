@@ -224,24 +224,9 @@ async function handleResetDrawdown(slug) {
   }
 }
 
-async function handleEmergencyStop() {
-  toggleProfileMenu(false);
-  const ok = window.confirm(
-    'Are you sure? This will STOP ALL running bots. ' +
-    'Open positions on the exchange are NOT closed automatically.'
-  );
-  if (!ok) return;
-  try {
-    const res = await fetch('/api/emergency-stop', { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    const stopped = (data.stopped_bots || []).join(', ') || 'none';
-    const failed = (data.failed || []).length;
-    alert(`Emergency stop complete. Stopped: ${stopped}. Failed: ${failed}.`);
-    location.reload();
-  } catch (e) {
-    alert('Emergency stop request failed: ' + (e && e.message || e));
-  }
-}
+// Emergency-stop was previously a profile-menu item here; it now
+// lives on the Admin → Bot Overview page as a prominent red button
+// with a confirmation modal. See _confirmEmergencyStop below.
 
 // ── Profile / Settings / dropdown menu ───────────────────────────────────────
 // _cachedUsername is populated from /auth/status so the profile initial
@@ -1969,6 +1954,7 @@ function goAdmin(fromPop = false, subRoute = null) {
   }
   _showAdminSubpage(subRoute);
   if (subRoute === 'changelog-manage') loadAdminChangelog();
+  if (subRoute === 'bots') loadAdminBotsOverview();
 }
 
 function _showAdminSubpage(name) {
@@ -1976,14 +1962,243 @@ function _showAdminSubpage(name) {
   // in place so back/forward navigation feels the same as switching
   // top-level tabs.
   const index = $('admin-index');
-  const sub = $('admin-changelog-manage');
-  if (!index || !sub) return;
-  if (name === 'changelog-manage') {
-    index.classList.add('hidden');
-    sub.classList.remove('hidden');
+  const subCl = $('admin-changelog-manage');
+  const subBots = $('admin-bots-overview');
+  if (!index) return;
+  const subs = [subCl, subBots].filter(Boolean);
+  const showIndex = !(name === 'changelog-manage' || name === 'bots');
+  index.classList.toggle('hidden', !showIndex);
+  subs.forEach((el) => el.classList.add('hidden'));
+  if (name === 'changelog-manage' && subCl) subCl.classList.remove('hidden');
+  if (name === 'bots' && subBots) subBots.classList.remove('hidden');
+}
+
+// ── Admin — Bot Overview (cross-user) ────────────────────────────────────
+// Loads /api/admin/bots and renders per-user groups. Lifecycle buttons
+// hit the admin endpoints under /api/admin/bots/{uid}/{slug}/{action}
+// so the backend double-logs the action into both audit.log AND the
+// target bot's own log.
+
+async function loadAdminBotsOverview() {
+  const status = $('admin-bots-status');
+  const container = $('admin-bots-users');
+  if (!container) return;
+  if (status) {
+    status.textContent = 'Loading…';
+    status.classList.remove('hidden');
+  }
+  container.innerHTML = '';
+  try {
+    const r = await fetch('/api/admin/bots');
+    if (r.status === 403) {
+      if (status) status.textContent = 'Admin access required.';
+      return;
+    }
+    if (!r.ok) {
+      if (status) {
+        status.textContent = 'Could not load bots (' + r.status + ').';
+      }
+      return;
+    }
+    const j = await r.json();
+    const users = (j && j.users) || [];
+    if (users.length === 0) {
+      if (status) status.textContent = 'No bots configured across any user.';
+      return;
+    }
+    if (status) status.classList.add('hidden');
+    users.forEach((u) => container.appendChild(_renderAdminUserGroup(u)));
+  } catch (e) {
+    if (status) status.textContent = 'Network error loading bots.';
+  }
+}
+
+function _renderAdminUserGroup(userEntry) {
+  const group = document.createElement('section');
+  group.className = 'admin-user-group';
+
+  const header = document.createElement('div');
+  header.className = 'admin-user-header';
+  header.textContent = String(userEntry.username || 'user');
+  const meta = document.createElement('span');
+  meta.className = 'admin-user-header-meta';
+  meta.textContent = '(user_id=' + Number(userEntry.user_id) + ')';
+  header.appendChild(meta);
+  group.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'admin-bot-grid';
+  const bots = Array.isArray(userEntry.bots) ? userEntry.bots : [];
+  if (bots.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'admin-bot-empty';
+    empty.textContent = 'No bots for this user.';
+    grid.appendChild(empty);
   } else {
-    index.classList.remove('hidden');
-    sub.classList.add('hidden');
+    bots.forEach((b) => {
+      grid.appendChild(_renderAdminBotCard(Number(userEntry.user_id), b));
+    });
+  }
+  group.appendChild(grid);
+  return group;
+}
+
+function _renderAdminBotCard(userId, bot) {
+  const card = document.createElement('div');
+  card.className = 'card admin-bot-card';
+
+  const head = document.createElement('div');
+  head.className = 'admin-bot-card-head';
+  const name = document.createElement('span');
+  name.className = 'admin-bot-card-name';
+  name.textContent = bot.name || bot.slug;
+  const pill = document.createElement('div');
+  pill.className = 'pill ' + (bot.running ? 'running' : 'stopped') + ' tab-pill-static';
+  const dot = document.createElement('div');
+  dot.className = 'dot';
+  const pillLabel = document.createElement('span');
+  pillLabel.textContent = bot.running ? 'Running' : 'Stopped';
+  pill.appendChild(dot);
+  pill.appendChild(pillLabel);
+  head.appendChild(name);
+  head.appendChild(pill);
+  card.appendChild(head);
+
+  const meta = document.createElement('div');
+  meta.className = 'admin-bot-card-meta';
+  const mode = String(bot.mode || 'paper').toUpperCase();
+  const exchange = String(bot.exchange || '—').toUpperCase();
+  const pair = String(bot.pair || '—');
+  meta.textContent = `${exchange} · ${pair} · ${mode}`;
+  card.appendChild(meta);
+
+  const stats = document.createElement('div');
+  stats.className = 'admin-bot-card-stats';
+  stats.appendChild(_renderAdminStat('Price', bot.current_price
+    ? fmtPrice(bot.current_price) : '—'));
+  const balance = Number(bot.balance_btc) || 0;
+  stats.appendChild(_renderAdminStat(
+    'Balance', balance ? balance.toFixed(4) : '—',
+  ));
+  const pnl = Number(bot.total_pnl_btc) || 0;
+  const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'neu';
+  stats.appendChild(_renderAdminStat(
+    'PnL', (pnl >= 0 ? '+' : '') + pnl.toFixed(6), pnlCls,
+  ));
+  const winRate = Number(bot.win_rate) || 0;
+  stats.appendChild(_renderAdminStat('Win rate', winRate.toFixed(0) + '%'));
+  stats.appendChild(_renderAdminStat(
+    'Open', String(Number(bot.open_deals_count) || 0),
+  ));
+  stats.appendChild(_renderAdminStat(
+    'Closed', String(Number(bot.closed_deals_count) || 0),
+  ));
+  card.appendChild(stats);
+
+  const actions = document.createElement('div');
+  actions.className = 'admin-bot-card-actions';
+  const isLive = String(bot.mode || '').toLowerCase() === 'live';
+  if (bot.running) {
+    actions.appendChild(_mkAdminBtn(
+      '■ Stop', 'btn-sm btn-stop',
+      () => _handleAdminLifecycle(userId, bot.slug, 'stop'),
+    ));
+    actions.appendChild(_mkAdminBtn(
+      '↺ Restart', 'btn-sm btn-restart',
+      () => _handleAdminLifecycle(userId, bot.slug, 'restart'),
+    ));
+  } else if (isLive) {
+    actions.appendChild(_mkAdminBtn(
+      '▶ Start dry-run', 'btn-sm btn-warning',
+      () => _handleAdminLifecycle(userId, bot.slug, 'start-dry-run'),
+    ));
+  } else {
+    actions.appendChild(_mkAdminBtn(
+      '▶ Start', 'btn-sm btn-start',
+      () => _handleAdminLifecycle(userId, bot.slug, 'start'),
+    ));
+  }
+  card.appendChild(actions);
+  return card;
+}
+
+function _renderAdminStat(label, value, valueCls = '') {
+  const wrap = document.createElement('div');
+  const l = document.createElement('div');
+  l.className = 'admin-bot-stat-label';
+  l.textContent = label;
+  const v = document.createElement('div');
+  v.className = 'admin-bot-stat-value ' + valueCls;
+  v.textContent = value;
+  wrap.appendChild(l);
+  wrap.appendChild(v);
+  return wrap;
+}
+
+function _mkAdminBtn(label, cls, onClick) {
+  const btn = document.createElement('button');
+  btn.className = cls;
+  btn.textContent = label;
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    onClick();
+  });
+  return btn;
+}
+
+async function _handleAdminLifecycle(userId, slug, action) {
+  // action ∈ {"start", "stop", "restart", "start-dry-run"}
+  const url = '/api/admin/bots/' + Number(userId)
+    + '/' + encodeURIComponent(slug) + '/' + action;
+  try {
+    const r = await fetch(url, { method: 'POST' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.ok === false) {
+      const detail = (data && (data.detail || data.error)) || r.statusText;
+      alert(`Admin ${action} failed for ${slug}: ${detail}`);
+      return;
+    }
+    // Re-fetch the overview so running-state + PIDs reflect reality.
+    loadAdminBotsOverview();
+  } catch (e) {
+    alert(`Admin ${action} request failed: ${(e && e.message) || e}`);
+  }
+}
+
+// Emergency-stop modal — moved out of the profile dropdown so it
+// sits next to the Admin Bot Overview where it belongs. The
+// confirmation is a custom modal (not window.confirm) so the
+// destructive button styling makes the consequence obvious.
+
+function _openEmergencyStopModal() {
+  const modal = $('emergency-stop-modal');
+  if (!modal) return;
+  modal.classList.add('show');
+}
+
+function _closeEmergencyStopModal() {
+  const modal = $('emergency-stop-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+}
+
+async function _confirmEmergencyStop() {
+  _closeEmergencyStopModal();
+  try {
+    const res = await fetch('/api/emergency-stop', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = (data && (data.detail || data.error)) || res.statusText;
+      alert('Emergency stop failed: ' + detail);
+      return;
+    }
+    const stopped = (data.stopped_bots || []).join(', ') || 'none';
+    const failed = (data.failed || []).length;
+    alert(`Emergency stop complete. Stopped: ${stopped}. Failed: ${failed}.`);
+    // Refresh the overview so the running pills flip back to "Stopped".
+    loadAdminBotsOverview();
+  } catch (e) {
+    alert('Emergency stop request failed: ' + (e && e.message || e));
   }
 }
 
@@ -6551,8 +6766,6 @@ function setupEventListeners() {
   });
   $('profile-menu-profile').addEventListener('click', showProfileModal);
   $('profile-menu-settings').addEventListener('click', showSettingsModal);
-  const emergencyBtn = $('profile-menu-emergency-stop');
-  if (emergencyBtn) emergencyBtn.addEventListener('click', handleEmergencyStop);
   $('profile-menu-logout').addEventListener('click', handleLogout);
   _installProfileOutsideClickHandler();
 
@@ -6591,11 +6804,37 @@ function setupEventListeners() {
     e.preventDefault();
     goAdmin(false, 'changelog-manage');
   });
-  const adminBack = $('admin-back-link');
-  if (adminBack) adminBack.addEventListener('click', (e) => {
+  const adminBotsCard = $('admin-card-bots');
+  if (adminBotsCard) adminBotsCard.addEventListener('click', (e) => {
     e.preventDefault();
-    goAdmin();
+    goAdmin(false, 'bots');
   });
+  // Admin sub-page back-link — the changelog subpage carries id
+  // "admin-back-link" (legacy), the new bots subpage uses
+  // class="admin-back-link". One handler per element, no duplicates.
+  const backTargets = new Set([
+    ...document.querySelectorAll('.admin-back-link'),
+  ]);
+  const legacyBack = $('admin-back-link');
+  if (legacyBack) backTargets.add(legacyBack);
+  backTargets.forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      goAdmin();
+    });
+  });
+  const emergencyOpenBtn = $('admin-emergency-stop-btn');
+  if (emergencyOpenBtn) {
+    emergencyOpenBtn.addEventListener('click', _openEmergencyStopModal);
+  }
+  const emergencyCancel = $('emergency-stop-cancel');
+  if (emergencyCancel) {
+    emergencyCancel.addEventListener('click', _closeEmergencyStopModal);
+  }
+  const emergencyConfirm = $('emergency-stop-confirm');
+  if (emergencyConfirm) {
+    emergencyConfirm.addEventListener('click', _confirmEmergencyStop);
+  }
   const clNewBtn = $('admin-cl-new-btn');
   if (clNewBtn) clNewBtn.addEventListener('click', () => openClEditModal(null));
   const clCancel = $('cl-modal-cancel');
