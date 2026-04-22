@@ -24,9 +24,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from config.config_loader import load_bot_config
-from config.models import Mode
 from core import deal_store, paths
 from core.user import User
+from notifications.telegram import TelegramNotifier
 from paper.close_handler import DealCloseHandler
 from paper.state_io import load_paper_state_from_file
 from web.app import (
@@ -197,14 +197,58 @@ async def _fetch_current_price_for_close(
     return await asyncio.to_thread(_fetch)
 
 
-async def _close_paper_deal_offline(
+def _build_portal_notifier(
+    bot_config, *, user_id: int, slug: str,
+) -> Optional[TelegramNotifier]:
+    """Construct a TelegramNotifier for portal-origin close events.
+
+    Returns None (no notification) when Telegram env-vars aren't set
+    — ``TelegramNotifier.__init__`` raises ValueError in that case,
+    which we translate to "silent, don't block the close". The close
+    is the critical path; Telegram is a side channel.
+    """
+    try:
+        notify_on = getattr(
+            getattr(bot_config, "telegram", None), "notify_on", None,
+        )
+        return TelegramNotifier(notify_on=notify_on)
+    except ValueError as e:
+        # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing — documented
+        # path for operators who haven't configured Telegram. We log
+        # at INFO rather than WARNING because this is a conscious
+        # deployment choice, not an error.
+        logger.info(
+            "Portal close for %s/%s: Telegram notifier unavailable (%s) — "
+            "close will proceed without notification",
+            user_id, slug, e,
+        )
+        return None
+    except Exception as e:
+        # Any other instantiation failure → skip notification but
+        # don't block the close. Log at WARNING because this is
+        # unexpected (we already documented the no-env case above).
+        logger.warning(
+            "Portal close for %s/%s: unexpected TelegramNotifier error "
+            "(%s) — close will proceed without notification",
+            user_id, slug, type(e).__name__,
+        )
+        return None
+
+
+async def _close_deal_offline(
     user_id: int, slug: str, deal_id: str, action: str, actor: str,
     bot_info,
 ) -> dict:
     """Offline-close path: bot process is stopped, portal closes the
-    deal directly via ``DealCloseHandler``. Paper-only. Live/dry-run
-    bots need exchange-order cancellation which lives in a follow-up
-    PR; those get 501 before reaching this helper.
+    deal directly via ``DealCloseHandler``.
+
+    All modes (paper, live, live-dry) share the same path because
+    LiveEngine is still Phase 1 dry-run only — no real orders exist
+    on the exchange yet. When Phase 3 enables real order placement,
+    this will need to be extended with
+    ``exchange.cancel_open_orders(...)`` before the state mutation;
+    for now the offline close is state-only, identical to paper
+    semantics.
 
     Raises ``HTTPException`` on any recoverable failure so the
     endpoint can surface clean HTTP status codes. The caller wraps
@@ -225,19 +269,6 @@ async def _close_paper_deal_offline(
             user_id, slug, e,
         )
         raise HTTPException(status_code=400, detail="Invalid bot config")
-
-    # Paper-only gate. Live/dry-run bots have open exchange orders
-    # that need cancellation via the ccxt client before flipping the
-    # deal to closed in our ledger — tracked for PR B.
-    if bot_config.mode != Mode.PAPER:
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                "Offline close for live/dry-run bots is not yet "
-                "supported. Start the bot first to close deals. "
-                "(Tracking: PR B of close-handler refactor.)"
-            ),
-        )
 
     # Fetch current market price via the public ticker endpoint.
     exchange_name = (
@@ -266,8 +297,16 @@ async def _close_paper_deal_offline(
 
     # Load the paper state from disk + instantiate handler. The
     # handler then mutates state + writes state.json atomically.
+    # The notifier is portal-scoped: when Telegram is configured the
+    # operator gets a distinct "Manual close" / "Manual cancel" line
+    # (see DealCloseHandler._maybe_notify_manual_* + triggered_by
+    # dispatch). When Telegram env-vars aren't set the notifier is
+    # None and the close proceeds silently.
     state, state_io = await asyncio.to_thread(
         load_paper_state_from_file, bot_info.state_file, slug,
+    )
+    notifier = _build_portal_notifier(
+        bot_config, user_id=user_id, slug=slug,
     )
     handler = DealCloseHandler(
         user_id=user_id,
@@ -276,11 +315,17 @@ async def _close_paper_deal_offline(
         state=state,
         state_io=state_io,
         taker_fee=bot_config.dca.taker_fee,
-        notifier=None,          # manual close via UI — no Telegram spam
+        notifier=notifier,
+        # Portal context is synchronous — no tick loop, so no non-
+        # blocking queue is needed. The notifier call runs inline on
+        # the asyncio.to_thread worker.
         notify_enqueue=None,
     )
     result = await asyncio.to_thread(
-        handler.close_deal, deal_id, current_price, action,
+        lambda: handler.close_deal(
+            deal_id, current_price,
+            action=action, triggered_by="portal",
+        ),
     )
     if not result.get("ok"):
         raise HTTPException(
@@ -350,10 +395,11 @@ async def api_deal_action(
             "action": action,
         }
 
-    # Offline path — known bot, not running. Paper-only; live/dry-run
-    # return 501 inside the helper (PR B handles exchange-order
-    # cancellation).
-    return await _close_paper_deal_offline(
+    # Offline path — known bot, not running. All modes share the
+    # same state-only close (LiveEngine is Phase-1 dry-run only; no
+    # real exchange orders exist yet to cancel). Phase 3 will add
+    # an exchange.cancel_open_orders(...) call before mutation.
+    return await _close_deal_offline(
         user.id, slug, deal_id, action, actor, bot,
     )
 
