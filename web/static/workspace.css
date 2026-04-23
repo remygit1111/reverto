@@ -570,9 +570,10 @@
 .panel-deals-table thead th.sortable:hover .col-sort-arrow {
   opacity: 1;
 }
-.panel-deals-table thead th.sorted {
-  background: var(--surface);
-}
+/* Sorted-column background tint removed — see the matching note in
+   style.css ``table thead th.sorted``. The accent arrow alone marks
+   the sorted column; adding a background made the workspace panel
+   diverge from the global Active Deals / Detail Deals tables. */
 .panel-deals-table thead th.sorted .col-sort-arrow {
   color: var(--accent);
   opacity: 1;
