@@ -361,6 +361,14 @@ th {
   text-align: left;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
+  /* Use page-background so every thead sits at the same tone —
+     Active Deals / Detail Deals / Workspace open-deals-panel
+     previously drifted per-table (white vs grey vs inverse-on-
+     sort). Light-mode: thead reads slightly cooler than the
+     ``--surface`` card body behind it; dark-mode: slightly
+     darker than the surface. Either direction, it's the SAME
+     direction everywhere. */
+  background: var(--bg);
 }
 
 td {
