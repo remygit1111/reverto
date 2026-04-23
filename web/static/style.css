@@ -1515,6 +1515,61 @@ tr:hover td { background: rgba(128,128,128,.04); }
   margin-bottom: 6px;
 }
 
+/* Scroll-to-load-history overlays. Used by both the main bot-chart
+   (siblings of #chart-main inside #chart-main-wrap) and the
+   Workspace chart-panel (children of .panel-chart-canvas). Both
+   mount points have ``position: relative`` so these absolute-
+   positioned overlays anchor correctly. ``pointer-events: none``
+   on both so crosshair + click behaviour is unaffected. */
+.chart-loading-spinner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  z-index: 11;
+  pointer-events: none;
+  font-family: var(--mono);
+}
+.chart-loading-spinner.hidden { display: none; }
+.chart-loading-spinner .spinner-icon {
+  animation: chart-spin-pulse 1s infinite ease-in-out;
+}
+@keyframes chart-spin-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+
+.chart-no-more-data {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  transform: translateY(-50%);
+  max-width: 200px;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  z-index: 11;
+  pointer-events: none;
+  line-height: 1.35;
+  font-family: var(--mono);
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.chart-no-more-data.hidden { display: none; }
+.chart-no-more-data .no-more-icon { color: var(--red); flex-shrink: 0; }
+
 /* Header context subtext — breadcrumb "Reverto › SLUG" on bot-detail,
    tagline ("Bitcoin bots. Done seriously.") elsewhere. */
 .hdr-sep {
