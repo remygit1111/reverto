@@ -850,6 +850,69 @@ function saveColumns(key, cols) {
   } catch (e) {}
 }
 
+// Click-to-sort state lives under `${lsKey}-sort` so each column-driven
+// table gets its own independent sort-memory without colliding with the
+// column-visibility array stored at `${lsKey}`. Value shape is either
+// null (unsorted) or {key, dir} where dir is 'asc' | 'desc'. loadSort
+// returns null on any corruption (malformed JSON, unknown dir) so a
+// stale entry from an older build can't throw during render.
+function loadSort(key) {
+  try {
+    const raw = localStorage.getItem(`${key}-sort`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed.key || typeof parsed.key !== 'string') return null;
+    if (parsed.dir !== 'asc' && parsed.dir !== 'desc') return null;
+    return { key: parsed.key, dir: parsed.dir };
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveSort(key, sort) {
+  try {
+    if (sort === null) {
+      localStorage.removeItem(`${key}-sort`);
+    } else {
+      localStorage.setItem(
+        `${key}-sort`,
+        JSON.stringify({ key: sort.key, dir: sort.dir }),
+      );
+    }
+  } catch (e) {}
+}
+
+// Stable sort with null/undefined always sinking to the bottom — that
+// way a partially-populated column (e.g. closed_at on deals that are
+// still open) doesn't pollute the visible-sorted top of the table in
+// either direction. Numeric vs string detection is by typeof on the
+// first non-null sample; that's enough for the deal-row shape (which
+// is the only caller today) without introducing a per-column
+// comparator registry we don't yet need.
+function _applySortToRows(rows, sort) {
+  if (!sort || !rows || !rows.length) return rows;
+  const { key, dir } = sort;
+  const mult = dir === 'asc' ? 1 : -1;
+  const withIdx = rows.map((r, i) => [r, i]);
+  withIdx.sort((a, b) => {
+    const va = a[0] == null ? null : a[0][key];
+    const vb = b[0] == null ? null : b[0][key];
+    if (va == null && vb == null) return a[1] - b[1];
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') {
+      if (va === vb) return a[1] - b[1];
+      return (va - vb) * mult;
+    }
+    const sa = String(va).toLowerCase();
+    const sb = String(vb).toLowerCase();
+    if (sa === sb) return a[1] - b[1];
+    return (sa < sb ? -1 : 1) * mult;
+  });
+  return withIdx.map((p) => p[0]);
+}
+
 function getActiveDealsColumns() {
   return loadColumns(ACTIVE_DEALS_LS_KEY, ACTIVE_DEALS_COLUMNS);
 }
@@ -897,14 +960,31 @@ function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, empty
   if (!tbody) return;
   const cols = loadColumns(lsKey, defaults).filter(c => c.visible);
   const defs = new Map(defaults.map(c => [c.key, c]));
+  const sort = loadSort(lsKey);
+  const sortedRows = _applySortToRows(rows, sort);
+  const onResort = (opts && typeof opts.onResort === 'function') ? opts.onResort : null;
   if (head) {
-    head.innerHTML = cols.map((c, i) =>
-      `<th draggable="true" data-col-idx="${i}" data-col-key="${safeText(c.key)}">${safeText((defs.get(c.key) || c).label)}</th>`
-    ).join('');
+    head.innerHTML = cols.map((c, i) => {
+      const isSorted = sort && sort.key === c.key;
+      const arrow = isSorted ? (sort.dir === 'asc' ? '▲' : '▼') : '';
+      // Action columns (no label, just buttons) shouldn't participate
+      // in sort — their data isn't a comparable value. We still keep
+      // them draggable for reorder, just without the sort affordance.
+      const def = defs.get(c.key) || c;
+      const label = def.label || '';
+      const sortable = label !== '';
+      const sortedCls = isSorted ? ` sorted sorted-${sort.dir}` : '';
+      const sortableCls = sortable ? ' sortable' : '';
+      return `<th draggable="true" data-col-idx="${i}" data-col-key="${safeText(c.key)}"${sortable ? ' data-sortable="1"' : ''} class="${(sortedCls + sortableCls).trim()}">`
+        + `<span class="col-label">${safeText(label)}</span>`
+        + `<span class="col-sort-arrow">${arrow}</span>`
+        + `</th>`;
+    }).join('');
     _attachHeaderDragHandlers(head, lsKey, defaults);
+    if (onResort) _attachHeaderSortHandlers(head, lsKey, onResort);
   }
   const colSpan = Math.max(1, cols.length);
-  if (!rows || !rows.length) {
+  if (!sortedRows || !sortedRows.length) {
     tbody.innerHTML = `<tr class="empty-row"><td colspan="${colSpan}">${safeText(emptyMsg)}</td></tr>`;
     return;
   }
@@ -912,7 +992,7 @@ function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, empty
   // each row with the deal id and a clickable-row class so the tbody
   // delegate handler can find the deal without re-rendering the table.
   const rowAttrs = (opts && typeof opts.rowAttrs === 'function') ? opts.rowAttrs : null;
-  tbody.innerHTML = rows.map(row => {
+  tbody.innerHTML = sortedRows.map(row => {
     const cells = cols.map(c => {
       const def = defs.get(c.key);
       return def ? def.cell(row) : '<td></td>';
@@ -923,11 +1003,15 @@ function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, empty
 }
 
 function renderDetailClosedDeals(deals) {
+  _detailClosedDealsLastRows = Array.isArray(deals) ? deals : [];
   _renderColumnDrivenTable(
     'd-closed-thead-row', 'd-closed-tbody',
     CLOSED_DEALS_LS_KEY, CLOSED_DEALS_COLUMNS,
-    deals, 'No closed deals',
-    { rowAttrs: d => `data-deal-id="${safeText(d.id)}" class="clickable-row"` },
+    _detailClosedDealsLastRows, 'No closed deals',
+    {
+      rowAttrs: d => `data-deal-id="${safeText(d.id)}" class="clickable-row"`,
+      onResort: () => renderDetailClosedDeals(_detailClosedDealsLastRows),
+    },
   );
 }
 
@@ -965,28 +1049,28 @@ const DETAIL_OPEN_DEALS_COLUMNS = [
 const DETAIL_OPEN_DEALS_LS_KEY = 'reverto.detail_open_deals_columns';
 
 function renderDetailOpenDeals(deals) {
+  _detailOpenDealsLastRows = Array.isArray(deals) ? deals : [];
   _renderColumnDrivenTable(
     'd-open-thead-row', 'd-open-tbody',
     DETAIL_OPEN_DEALS_LS_KEY, DETAIL_OPEN_DEALS_COLUMNS,
-    deals, 'No open deals',
-    { rowAttrs: d => `data-deal-id="${safeText(d.id)}" class="clickable-row"` },
+    _detailOpenDealsLastRows, 'No open deals',
+    {
+      rowAttrs: d => `data-deal-id="${safeText(d.id)}" class="clickable-row"`,
+      onResort: () => renderDetailOpenDeals(_detailOpenDealsLastRows),
+    },
   );
-}
-
-function renderActiveDealsHead() {
-  const head = $('all-deals-thead-row');
-  if (!head) return;
-  const cols = getActiveDealsColumns().filter(c => c.visible);
-  const defs = new Map(ACTIVE_DEALS_COLUMNS.map(c => [c.key, c]));
-  head.innerHTML = cols.map((c, i) =>
-    `<th draggable="true" data-col-idx="${i}" data-col-key="${safeText(c.key)}">${safeText((defs.get(c.key) || c).label)}</th>`
-  ).join('');
-  _attachHeaderDragHandlers(head, ACTIVE_DEALS_LS_KEY, ACTIVE_DEALS_COLUMNS);
 }
 
 // Map lsKey → re-render callback so the header drag drop can refresh
 // both the table and any open cog menu after persisting a new order.
 const _HEADER_RERENDER = new Map();
+
+// Drag-vs-click conflict guard. HTML5 drag events fire a trailing
+// click on the source element in some browsers (Chrome + Firefox both
+// do this for draggable="true" th's when the drop lands back inside
+// the same element). Record the dragend timestamp so the sort
+// handler below can suppress any click that follows within ~250ms.
+let _lastHeaderDragEndAt = 0;
 
 function _attachHeaderDragHandlers(headEl, lsKey, defaults) {
   // Header drag-and-drop: swaps two visible columns by their VISIBLE
@@ -1004,6 +1088,7 @@ function _attachHeaderDragHandlers(headEl, lsKey, defaults) {
     th.addEventListener('dragend', () => {
       th.classList.remove('dragging');
       ths.forEach(x => x.classList.remove('drop-before', 'drop-after'));
+      _lastHeaderDragEndAt = Date.now();
     });
     th.addEventListener('dragover', e => {
       e.preventDefault();
@@ -1035,24 +1120,50 @@ function _attachHeaderDragHandlers(headEl, lsKey, defaults) {
   });
 }
 
+// Click-to-sort on column-driven tables. Cycles through unsorted →
+// asc → desc → unsorted per column. Picking a new column resets the
+// previous one to unsorted and starts at asc. Only th's whose
+// defaults entry has a non-empty label participate (data-sortable is
+// set by _renderColumnDrivenTable's header render) so action-button
+// columns stay reorder-only.
+function _attachHeaderSortHandlers(headEl, lsKey, onResort) {
+  const ths = Array.from(headEl.querySelectorAll('th[data-sortable="1"]'));
+  ths.forEach((th) => {
+    th.addEventListener('click', (e) => {
+      // Suppress the click that trails a drag on the same th — see
+      // _lastHeaderDragEndAt above.
+      if (Date.now() - _lastHeaderDragEndAt < 250) return;
+      if (e.defaultPrevented) return;
+      const key = th.dataset.colKey;
+      if (!key) return;
+      const cur = loadSort(lsKey);
+      let next;
+      if (!cur || cur.key !== key) next = { key, dir: 'asc' };
+      else if (cur.dir === 'asc')  next = { key, dir: 'desc' };
+      else                          next = null;
+      saveSort(lsKey, next);
+      onResort();
+    });
+  });
+}
+
+// Rows caches — each column-driven table keeps the last-rendered rows
+// so onResort can re-render the same data in the new order without
+// hitting the network. Fetch paths (fetchOverview, fetchDetail) call
+// the renderer with fresh rows and overwrite the cache; the handler
+// below just needs a stable snapshot while the user clicks around.
+let _activeDealsLastRows = [];
+let _detailOpenDealsLastRows = [];
+let _detailClosedDealsLastRows = [];
+
 function renderActiveDeals(deals) {
-  const tbody = $('all-deals-tbody');
-  if (!tbody) return;
-  renderActiveDealsHead();
-  const cols = getActiveDealsColumns().filter(c => c.visible);
-  const colSpan = Math.max(1, cols.length);
-  if (!deals.length) {
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="${colSpan}">No open deals across any bot</td></tr>`;
-    return;
-  }
-  const defs = new Map(ACTIVE_DEALS_COLUMNS.map(c => [c.key, c]));
-  tbody.innerHTML = deals.map(deal => {
-    const cells = cols.map(c => {
-      const def = defs.get(c.key);
-      return def ? def.cell(deal) : '<td></td>';
-    }).join('');
-    return `<tr>${cells}</tr>`;
-  }).join('');
+  _activeDealsLastRows = Array.isArray(deals) ? deals : [];
+  _renderColumnDrivenTable(
+    'all-deals-thead-row', 'all-deals-tbody',
+    ACTIVE_DEALS_LS_KEY, ACTIVE_DEALS_COLUMNS,
+    _activeDealsLastRows, 'No open deals across any bot',
+    { onResort: () => renderActiveDeals(_activeDealsLastRows) },
+  );
 }
 
 // Track every cog-menu instance we set up. The single document-level
