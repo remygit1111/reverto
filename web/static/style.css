@@ -1827,9 +1827,11 @@ table thead th .col-sort-arrow {
 table thead th.sortable:hover .col-sort-arrow {
   opacity: 1;
 }
-table thead th.sorted {
-  background: var(--surface2);
-}
+/* The sorted column used to carry a ``background: var(--surface2)``
+   tint — it surfaced in light mode as a whiter-than-default cell
+   (confusingly inverted vs. the workspace deals-table, which tinted
+   the sorted cell grayer-than-default). The accent-coloured arrow
+   below is a sufficient indicator; no background change needed. */
 table thead th.sorted .col-sort-arrow {
   color: var(--accent);
   opacity: 1;
