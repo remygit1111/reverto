@@ -526,7 +526,11 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--surface2);
+  /* Match the global ``th`` rule in style.css — thead consistently
+     reads ``var(--bg)`` across Active Deals, Detail Open/Closed
+     Deals, and this workspace open-deals panel. Sticky positioning
+     keeps the header pinned as the user scrolls the panel body. */
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
   padding: 6px 8px;
   text-align: left;
