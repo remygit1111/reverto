@@ -121,3 +121,199 @@
 .grid-stack > .grid-stack-item > .ui-resizable-se:hover {
   opacity: 1;
 }
+
+/* ── Chart panel ──────────────────────────────────────────────────────────
+   PR 3b: dedicated styling for the candle-chart panel type. The factory
+   inside chart_module.js materialises a header that packs a lot more
+   than the skeleton panel (title + binding subtitle + annotations
+   toolbar + settings + remove), a body that gives the LWC canvas the
+   full cell rect, and an absolute-positioned settings popover that
+   hovers inside the panel without leaking out of the grid cell. */
+
+.panel-chart {
+  /* The LWC canvas needs position:relative anchor above it so the
+     SVG annotation overlay can lie flush. .panel is already a
+     flex column, so we just tighten padding below and let the body
+     absorb the rest. */
+}
+
+.panel-chart .panel-header {
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.panel-chart .panel-title-wrap {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.panel-chart .panel-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-subtitle {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.panel-subtitle.bound {
+  color: var(--accent);
+}
+
+.panel-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.panel-annotations-toolbar {
+  display: flex;
+  gap: 2px;
+  margin-right: 4px;
+}
+
+.panel-tool-btn,
+.panel-settings-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 3px;
+}
+.panel-tool-btn:hover,
+.panel-settings-btn:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+.panel-tool-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.panel-chart-body {
+  /* Pad-less body — the LWC canvas wants to paint edge-to-edge so
+     the candle wicks aren't visually cropped by panel padding.
+     display:flex lets .panel-chart-canvas's flex:1 claim the body
+     rect without a height cascade (percent-height inside a flex
+     item with no explicit height collapses to 0 in some engines).
+     overflow:hidden stops the LWC canvas from forcing a scrollbar
+     when the user resizes the cell smaller. */
+  padding: 0;
+  position: relative;
+  display: flex;
+  overflow: hidden;
+}
+
+.panel-chart-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Settings popover — anchored to the panel top-right, inside the
+   panel's grid cell so GridStack's overflow:hidden on the cell
+   content doesn't clip it. z-index:20 sits above the LWC canvas
+   (which uses z-index:10 for its annotation overlay). */
+.panel-settings-popover {
+  position: absolute;
+  top: 36px;
+  right: 8px;
+  width: 280px;
+  max-width: calc(100% - 16px);
+  max-height: calc(100% - 44px);
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.panel-settings-popover.hidden {
+  display: none;
+}
+
+.panel-settings-popover .form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.panel-settings-popover .form-row label {
+  flex: 0 0 80px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.panel-settings-popover .form-row input[type=text],
+.panel-settings-popover .form-row select {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.panel-settings-popover .form-row-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.panel-settings-popover .form-row-block label {
+  flex: none;
+}
+
+.panel-ind-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 10px;
+}
+.panel-ind-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text);
+  font-family: var(--mono);
+  cursor: pointer;
+}
+.panel-ind-item input[type=checkbox] {
+  accent-color: var(--accent);
+}
+
+.panel-binding-hint {
+  font-size: 11px;
+  color: var(--red);
+  font-family: var(--mono);
+  line-height: 1.4;
+}
+.panel-binding-hint:empty {
+  display: none;
+}
+
+.panel-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
