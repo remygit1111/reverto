@@ -5570,6 +5570,14 @@ function _applyChartTheme() {
     if (!series) continue;
     try { series.applyOptions(seriesOpts); } catch (e) {}
   }
+  // Workspace chart-panels keep their own live set of LWC instances
+  // inside chart_module.js. The helper below iterates every active
+  // panel and re-applies the same layout + candle-series palette
+  // that the loops above applied to the main/wizard charts.
+  if (window.RevertoChart
+      && typeof window.RevertoChart.applyThemeToAll === 'function') {
+    try { window.RevertoChart.applyThemeToAll(); } catch (e) {}
+  }
 }
 
 function _chartLibAvailable() { return typeof window.LightweightCharts !== 'undefined'; }

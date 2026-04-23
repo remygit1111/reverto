@@ -675,6 +675,52 @@ function _buildSidebar(state) {
   };
 }
 
+// ── Theme propagation ────────────────────────────────────────────────────
+// Module-scoped registry of live panel-chart instances so app.js's
+// ``_applyChartTheme`` can fan the theme-switch out across every
+// workspace panel in a single call. Each entry holds the raw LWC
+// chart + its candle-series so we can re-apply both layout options
+// (background / grid / borders) and series options (up/down body +
+// wick colours) — the same split that _applyChartTheme does for the
+// main bot-detail chart.
+
+const _activePanelCharts = new Set();
+
+function _applyThemeToPanel(entry) {
+  // Defensive against a race where destroy() runs between the
+  // _applyChartTheme() dispatch and this call. null chart means the
+  // panel is already torn down; leave it be.
+  if (!entry || !entry.chart) return;
+  try {
+    const opts = (typeof _chartLayoutOpts === 'function')
+      ? _chartLayoutOpts()
+      : null;
+    if (opts) entry.chart.applyOptions(opts);
+  } catch (e) { /* best-effort — theme change must not explode */ }
+  // Candle-series colours live on the series, not the chart, so the
+  // applyOptions above leaves wick/body colours at creation-time
+  // values. Push the up/down palette onto the series too.
+  const colorsFn = (typeof getChartColors === 'function') ? getChartColors : null;
+  const c = colorsFn ? colorsFn() : null;
+  if (!c || !entry.candleSeries) return;
+  try {
+    entry.candleSeries.applyOptions({
+      upColor: c.upColor,
+      downColor: c.downColor,
+      borderUpColor: c.upColor,
+      borderDownColor: c.downColor,
+      wickUpColor: c.upColor,
+      wickDownColor: c.downColor,
+    });
+  } catch (e) { /* best-effort */ }
+}
+
+function _applyThemeToAllPanels() {
+  for (const entry of _activePanelCharts) {
+    _applyThemeToPanel(entry);
+  }
+}
+
 function createPanelChart(container, config) {
   // Consumer contract (see PR 3b spec):
   //   container: the grid-stack-item-content element. The factory
@@ -1085,6 +1131,16 @@ function createPanelChart(container, config) {
       wickUpColor: _cssVar('--accent', '#26a69a'),
       wickDownColor: _cssVar('--red', '#ef5350'),
     });
+    // Register with the module-scoped active-panels set so
+    // ``_applyThemeToAllPanels`` (called from app.js's
+    // ``_applyChartTheme`` after a theme switch) can re-apply the
+    // layout + candle-series palette without needing a reference to
+    // this particular factory instance.
+    state._themeRegistryEntry = {
+      chart: state._chart,
+      candleSeries: state._candleSeries,
+    };
+    _activePanelCharts.add(state._themeRegistryEntry);
     _rebuildIndicatorSeries();
     if (typeof ResizeObserver !== 'undefined') {
       state._resizeObs = new ResizeObserver((entries) => {
@@ -1850,6 +1906,15 @@ function createPanelChart(container, config) {
         document.removeEventListener('mousedown', state._outsideClickCloser);
         state._outsideClickCloser = null;
       }
+      if (state._themeRegistryEntry) {
+        _activePanelCharts.delete(state._themeRegistryEntry);
+        // Clear refs on the entry so a mid-flight theme-switch after
+        // destroy finds an obvious null rather than the released
+        // LWC instance.
+        state._themeRegistryEntry.chart = null;
+        state._themeRegistryEntry.candleSeries = null;
+        state._themeRegistryEntry = null;
+      }
       // Cascade annotations: workspace-panel-<id> rows have no other
       // home, so drop them server-side alongside the panel.
       try {
@@ -2329,6 +2394,13 @@ window.RevertoChart = Object.assign(window.RevertoChart || {}, {
   calcMarketStructureMarkers,
   createPanelChart,
   createOpenDealsPanel,
+  // Called by app.js's ``_applyChartTheme`` after a theme switch.
+  // Iterates every live panel-chart and re-applies layout + candle
+  // colours. Safe to call when no panels exist (no-op). Exposed as
+  // an arrow function so the closure captures _applyThemeToAllPanels
+  // at namespace-export time and can't accidentally be shadowed by
+  // consumers poking at window.RevertoChart after the fact.
+  applyThemeToAll: () => _applyThemeToAllPanels(),
   PANEL_INDICATOR_TYPES,
   PANEL_INDICATOR_LABELS,
   PANEL_TIMEFRAMES,
