@@ -391,6 +391,30 @@ const PANEL_INDICATOR_LABELS = {
 // back to '1h' on load (see _panelNormalizeTimeframe below).
 const PANEL_TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '12h', '1d', '3d', '1w'];
 
+// Shared timeframe-to-seconds map used by the scroll-to-load-history
+// path. The map-form isn't exposed; the helper ``tfSeconds`` below
+// is the public surface so consumers can't mutate the table. Mirrors
+// ``web/app.py``'s ``_TF_SECONDS`` but the frontend only needs the
+// subset that PANEL_TIMEFRAMES exposes. Unknown timeframes fall back
+// to 3600 (1 h) — the loaders treat the computed start-window as
+// "roughly one batch ago" so a bad map-hit still produces a fetch
+// that asks for too-many candles (clamped by the backend) rather
+// than zero.
+const _CHART_TF_SECONDS = {
+  '15m': 900,
+  '30m': 1800,
+  '1h':  3600,
+  '2h':  7200,
+  '4h':  14400,
+  '12h': 43200,
+  '1d':  86400,
+  '3d':  259200,
+  '1w':  604800,
+};
+function tfSeconds(tf) {
+  return _CHART_TF_SECONDS[tf] || 3600;
+}
+
 // Shared timezone catalogue used by every chart type that offers a
 // per-chart timezone dropdown (main bot-chart, wizard chart,
 // backtest-candle chart, Workspace chart-panel). IANA names are
@@ -881,6 +905,11 @@ function createPanelChart(container, config) {
     _tickerTimer: null,
     _tickerData: null,
     _openDropdown: null, // tracks the currently-open header dropdown for outside-click dismissal
+    // scroll-to-load history state — see _maybeLoadMoreHistory below.
+    _loadingMore: false,
+    _noMoreData: false,
+    _historyAbort: null,
+    _rangeUnsub: null,
   };
 
   // ── DOM scaffold ───────────────────────────────────────────────────
@@ -983,6 +1012,27 @@ function createPanelChart(container, config) {
   canvasHost.className = 'panel-chart-canvas';
   canvasHost.style.position = 'relative';
   body.appendChild(canvasHost);
+
+  // Scroll-to-load overlays, absolute-positioned inside the canvas
+  // host. The spinner flashes while a history batch is in-flight;
+  // the no-more-data marker replaces it when Bitget returns no
+  // older candles (the exchange explicitly is named so operators
+  // don't blame Reverto for the limit). Both start hidden.
+  const loadingOverlay = document.createElement('div');
+  loadingOverlay.className = 'chart-loading-spinner hidden';
+  loadingOverlay.setAttribute('data-role', 'loading');
+  loadingOverlay.innerHTML =
+    '<span class="spinner-icon">⏳</span>' +
+    '<span class="spinner-text">Loading history…</span>';
+  canvasHost.appendChild(loadingOverlay);
+
+  const noMoreOverlay = document.createElement('div');
+  noMoreOverlay.className = 'chart-no-more-data hidden';
+  noMoreOverlay.setAttribute('data-role', 'no-more-data');
+  noMoreOverlay.innerHTML =
+    '<span class="no-more-icon">⚠</span>' +
+    '<span class="no-more-text">No more historical data available from Bitget for this timeframe</span>';
+  canvasHost.appendChild(noMoreOverlay);
 
   // Info-sidebar — poll /api/ticker every 5 s and render price +
   // 24h change + high/low/volume. DOM is built once; subsequent
@@ -1340,7 +1390,23 @@ function createPanelChart(container, config) {
       state._resizeObs.observe(panel);
     }
     try {
-      state._chart.timeScale().subscribeVisibleLogicalRangeChange(_renderAnnotations);
+      // Combined handler: render annotations on every range change
+      // (they're pixel-positioned, so any pan/zoom needs a redraw)
+      // + peek at the range to trigger scroll-to-load when the left
+      // edge nears the data's start. Wrapping in one subscribe call
+      // is cheaper than two separate ones and keeps the unsubscribe
+      // single-purpose on destroy.
+      state._rangeUnsub = state._chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        _renderAnnotations();
+        if (!range || state._loadingMore || state._noMoreData) return;
+        // Left-edge buffer: trigger when the visible range's start
+        // is within 20 % of the loaded candles' left side. ``range.from``
+        // is a logical index into the series — can go negative when
+        // the user has scrolled past the oldest candle (empty space
+        // on the left), which still satisfies ``from < 20 %``.
+        const threshold = Math.max(1, state._candles.length * 0.20);
+        if (range.from < threshold) _maybeLoadMoreHistory();
+      });
     } catch (e) {}
     _installChartClickHandler();
     return true;
@@ -1573,6 +1639,18 @@ function createPanelChart(container, config) {
 
   async function _loadCandles() {
     if (!state._chart || !state._candleSeries) return;
+    // Reset scroll-to-load state — a fresh candle set means the
+    // left-edge marker is no longer accurate and any abort-in-flight
+    // should drop its response on the floor.
+    if (state._historyAbort) {
+      try { state._historyAbort.abort(); } catch (e) {}
+      state._historyAbort = null;
+    }
+    state._loadingMore = false;
+    state._noMoreData = false;
+    _toggleOverlay(loadingOverlay, false);
+    _toggleOverlay(noMoreOverlay, false);
+
     let candles = [];
     try {
       const r = await fetch(`/api/chart/${_panelPairForUrl(state.pair)}/${state.timeframe}?limit=200`);
@@ -1584,6 +1662,94 @@ function createPanelChart(container, config) {
     _renderIndicatorOverlays();
     _renderDealOverlays();
     _loadAnnotations();
+  }
+
+  function _toggleOverlay(el, show) {
+    if (!el) return;
+    el.classList.toggle('hidden', !show);
+  }
+
+  // Scroll-to-load-history: when the visible logical range's left
+  // edge crosses into the first 20 % of loaded candles, fetch the
+  // next-older batch via /api/candles and prepend to the series.
+  // Keeps user-driven pan a seamless experience — by the time they
+  // hit the true left edge, 500 older candles are usually already
+  // in place. Cancelable via AbortController so timeframe/pair
+  // switches don't race stale responses onto the next chart.
+  async function _maybeLoadMoreHistory() {
+    if (state._destroyed) return;
+    if (state._loadingMore || state._noMoreData) return;
+    if (!state._candles.length) return;
+    state._loadingMore = true;
+    _toggleOverlay(loadingOverlay, true);
+
+    const batchSize = 500;
+    const secPerBar = tfSeconds(state.timeframe);
+    const oldest = state._candles[0].time;
+    const endMs = oldest * 1000;
+    const startMs = (oldest - batchSize * secPerBar) * 1000;
+    const endIso = new Date(endMs).toISOString();
+    const startIso = new Date(startMs).toISOString();
+
+    const ctrl = new AbortController();
+    state._historyAbort = ctrl;
+    const url = `/api/candles/${_panelPairForUrl(state.pair)}/${state.timeframe}`
+      + `?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`
+      + `&limit=${batchSize}`;
+
+    try {
+      let r = await fetch(url, { signal: ctrl.signal });
+      if (r.status === 429) {
+        // Rate limit — wait out the typical per-minute window and
+        // retry once. If it 429s again the user's scroll speed is
+        // beyond what the backend allows; log + give up without
+        // poisoning the no-more-data flag (they can pan again
+        // later once the budget resets).
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (ctrl.signal.aborted) return;
+        r = await fetch(url, { signal: ctrl.signal });
+      }
+      if (!r.ok) {
+        console.warn('Scroll-to-load failed:', r.status);
+        return;
+      }
+      const body = await r.json();
+      // /api/candles returns {candles: [...], gaps: N} (unlike
+      // /api/chart which returns a bare array). Pick the list out
+      // defensively in case the backend evolves.
+      const batch = Array.isArray(body) ? body
+        : (body && Array.isArray(body.candles) ? body.candles : []);
+      if (!batch.length) {
+        state._noMoreData = true;
+        _toggleOverlay(noMoreOverlay, true);
+        return;
+      }
+      // Dedupe on time — the backend's window rounding can overlap
+      // with our oldest candle by one bar.
+      const prior = batch.filter((c) => c.time < oldest);
+      if (!prior.length) {
+        state._noMoreData = true;
+        _toggleOverlay(noMoreOverlay, true);
+        return;
+      }
+      state._candles = prior.concat(state._candles);
+      state._candleSeries.setData(state._candles);
+      // Indicator series read from state._candles on each render
+      // call, so a full re-render on the larger dataset is the
+      // right move (RSI / MACD / EMA all use the oldest-anchored
+      // warm-up windows). Annotations + deal markers are stored
+      // by timestamp and follow the new range automatically.
+      _renderIndicatorOverlays();
+      _renderDealOverlays();
+      _renderAnnotations();
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;  // expected on tf/pair switch
+      console.warn('Scroll-to-load error:', e);
+    } finally {
+      if (state._historyAbort === ctrl) state._historyAbort = null;
+      state._loadingMore = false;
+      _toggleOverlay(loadingOverlay, false);
+    }
   }
 
   // ── Deal overlays (bot-binding) ───────────────────────────────────
@@ -2184,6 +2350,17 @@ function createPanelChart(container, config) {
       state._destroyed = true;
       if (state._refreshTimer) { clearInterval(state._refreshTimer); state._refreshTimer = null; }
       if (state._tickerTimer) { clearInterval(state._tickerTimer); state._tickerTimer = null; }
+      if (state._historyAbort) {
+        try { state._historyAbort.abort(); } catch (e) {}
+        state._historyAbort = null;
+      }
+      // LWC v5's subscribeVisibleLogicalRangeChange returns the
+      // disposer via the subscribe call's return value on the
+      // timeScale instance — but v5.1.0 doesn't expose an
+      // explicit unsubscribe. The chart.remove() call below tears
+      // the timeScale down with it, so cleanup is implicit — we
+      // just drop our reference for clarity.
+      state._rangeUnsub = null;
       if (state._resizeObs) { try { state._resizeObs.disconnect(); } catch (e) {} state._resizeObs = null; }
       if (state._outsideClickCloser) {
         document.removeEventListener('mousedown', state._outsideClickCloser);
@@ -2685,6 +2862,7 @@ window.RevertoChart = Object.assign(window.RevertoChart || {}, {
   // consumers poking at window.RevertoChart after the fact.
   applyThemeToAll: () => _applyThemeToAllPanels(),
   buildTimezoneFormatter,
+  tfSeconds,
   PANEL_INDICATOR_TYPES,
   PANEL_INDICATOR_LABELS,
   PANEL_TIMEFRAMES,
