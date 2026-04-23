@@ -765,9 +765,14 @@ function createPanelChart(container, config) {
   subtitle.className = 'panel-subtitle';
   subtitle.style.marginLeft = '8px';
 
+  // Title + binding-subtitle stay inside the wrap because both are
+  // text that benefits from the wrap's overflow:hidden + ellipsis
+  // behaviour on long pair-names. The header dropdowns used to sit
+  // here too, but the wrap is only ~18 px tall (flex row with
+  // overflow:hidden) — the ~200 px dropdown menus opened correctly
+  // but were clipped to the wrap's height. Moving them one level
+  // up to the header so the menus can overflow downward freely.
   titleWrap.appendChild(title);
-  titleWrap.appendChild(tfDropdown.root);
-  titleWrap.appendChild(indDropdown.root);
   titleWrap.appendChild(subtitle);
 
   const toolbar = document.createElement('div');
@@ -809,6 +814,8 @@ function createPanelChart(container, config) {
   headerRight.appendChild(removeBtn);
 
   header.appendChild(titleWrap);
+  header.appendChild(tfDropdown.root);
+  header.appendChild(indDropdown.root);
   header.appendChild(headerRight);
 
   const body = document.createElement('div');
