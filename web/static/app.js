@@ -5779,6 +5779,19 @@ async function loadChartTab(slug) {
 function teardownChartTab() {
   if (_chartRefreshTimer) { clearInterval(_chartRefreshTimer); _chartRefreshTimer = null; }
   if (_chartResizeObs) { try { _chartResizeObs.disconnect(); } catch (e) {} _chartResizeObs = null; }
+  // Abort any in-flight history fetch before the new tab's setup
+  // runs — otherwise a late response would try to prepend onto
+  // a chart-instance that no longer exists, and _chartCandles is
+  // null by then (a setData() call would throw).
+  if (_chartHistoryAbort) {
+    try { _chartHistoryAbort.abort(); } catch (e) {}
+    _chartHistoryAbort = null;
+  }
+  _chartCandlesArr = [];
+  _chartLoadingMore = false;
+  _chartNoMoreData = false;
+  _chartMainToggleOverlay('chart-main-loading', false);
+  _chartMainToggleOverlay('chart-main-no-more', false);
   try { if (_chartMain) _chartMain.remove(); } catch (e) {}
   _chartMain = null;
   _chartCandles = null;
@@ -5902,14 +5915,103 @@ function initCharts() {
     _chartResizeObs.observe(mainEl);
   }
 
-  // Redraw the SVG annotation overlay whenever the user pans or zooms
-  // the chart — without this, existing annotations would stick to
-  // stale pixel positions until the next full fetch.
+  // Redraw the SVG annotation overlay whenever the user pans or
+  // zooms the chart — without this, existing annotations would
+  // stick to stale pixel positions until the next full fetch.
+  // Same subscribe-call also triggers the scroll-to-load-history
+  // path when the visible range's left edge nears the data's
+  // oldest candle.
   try {
-    _chartMain.timeScale().subscribeVisibleLogicalRangeChange(_renderAnnotations);
+    _chartMain.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      _renderAnnotations();
+      if (!range || _chartLoadingMore || _chartNoMoreData) return;
+      const n = _chartCandlesArr.length;
+      if (!n) return;
+      const threshold = Math.max(1, n * 0.20);
+      if (range.from < threshold) _loadMainChartMoreHistory();
+    });
   } catch (e) {}
 
   _installChartToolHandlers();
+}
+
+// Scroll-to-load-history state for the main bot-chart. Module-level
+// so fetchChartData() can reset and re-populate the full candle
+// array, and so the subscribeVisibleLogicalRangeChange handler
+// above can inspect the array's length without reaching into
+// LWC's series.
+let _chartCandlesArr = [];
+let _chartLoadingMore = false;
+let _chartNoMoreData = false;
+let _chartHistoryAbort = null;
+
+function _chartMainToggleOverlay(id, show) {
+  const el = $(id);
+  if (!el) return;
+  el.classList.toggle('hidden', !show);
+}
+
+async function _loadMainChartMoreHistory() {
+  if (_chartLoadingMore || _chartNoMoreData) return;
+  if (!_chartCandlesArr.length || !_chartCandles) return;
+  _chartLoadingMore = true;
+  _chartMainToggleOverlay('chart-main-loading', true);
+
+  const batchSize = 500;
+  const tfSeconds = (window.RevertoChart && window.RevertoChart.tfSeconds)
+    ? window.RevertoChart.tfSeconds : (() => 3600);
+  const secPerBar = tfSeconds(_chartTimeframe);
+  const oldest = _chartCandlesArr[0].time;
+  const endIso = new Date(oldest * 1000).toISOString();
+  const startIso = new Date((oldest - batchSize * secPerBar) * 1000).toISOString();
+
+  const ctrl = new AbortController();
+  _chartHistoryAbort = ctrl;
+  const url = `/api/candles/${_pairForUrl(_chartPair)}/${_chartTimeframe}`
+    + `?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`
+    + `&limit=${batchSize}`;
+
+  try {
+    let r = await fetch(url, { signal: ctrl.signal });
+    if (r.status === 429) {
+      // Wait past the typical 1-minute slowapi window, then retry.
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (ctrl.signal.aborted) return;
+      r = await fetch(url, { signal: ctrl.signal });
+    }
+    if (!r.ok) {
+      console.warn('Main-chart scroll-to-load failed:', r.status);
+      return;
+    }
+    const body = await r.json();
+    const batch = Array.isArray(body) ? body
+      : (body && Array.isArray(body.candles) ? body.candles : []);
+    if (!batch.length) {
+      _chartNoMoreData = true;
+      _chartMainToggleOverlay('chart-main-no-more', true);
+      return;
+    }
+    const prior = batch.filter((c) => c.time < oldest);
+    if (!prior.length) {
+      _chartNoMoreData = true;
+      _chartMainToggleOverlay('chart-main-no-more', true);
+      return;
+    }
+    _chartCandlesArr = prior.concat(_chartCandlesArr);
+    _chartCandles.setData(_chartCandlesArr);
+    // Full re-render of indicator overlays on the extended dataset
+    // — the existing _renderIndicatorOverlays takes the candles
+    // array as argument. Deal overlays + pending-deal markers
+    // follow their timestamps automatically.
+    _renderIndicatorOverlays(_chartCandlesArr);
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    console.warn('Main-chart scroll-to-load error:', e);
+  } finally {
+    if (_chartHistoryAbort === ctrl) _chartHistoryAbort = null;
+    _chartLoadingMore = false;
+    _chartMainToggleOverlay('chart-main-loading', false);
+  }
 }
 
 async function fetchChartData() {
@@ -5922,7 +6024,17 @@ async function fetchChartData() {
   } catch (e) { return; }
   if (!Array.isArray(candles) || !candles.length) return;
 
-  _chartCandles.setData(candles);
+  // Scroll-to-load preserves user-loaded history across the 30 s
+  // polling refresh. If the stored array carries candles older
+  // than the new batch's first timestamp, merge them back so the
+  // user's pan-back progress survives the refresh — otherwise
+  // they'd lose everything they scrolled to every half-minute.
+  // Initial load (array empty) / timeframe-switch (array cleared
+  // by teardownChartTab) both follow the plain replace-path.
+  const newOldest = candles[0].time;
+  const priorHistory = _chartCandlesArr.filter((c) => c.time < newOldest);
+  _chartCandlesArr = priorHistory.concat(candles);
+  _chartCandles.setData(_chartCandlesArr);
   // First candles in — drop the skeleton placeholder.
   const sk = $('chart-skeleton');
   if (sk) sk.classList.add('chart-skeleton-hidden');
