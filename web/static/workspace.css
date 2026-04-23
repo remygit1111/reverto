@@ -321,6 +321,10 @@
    popover. Horizontal label + checkbox row matching the popover's
    compact styling. */
 .panel-utc-toggle {
+  /* Retained for backwards-compat; no current UI emits this class
+     after the PR 5b → timezone-dropdown migration. Kept so an old
+     cached copy of the popover HTML still renders cleanly on an
+     operator's first post-upgrade load. */
   display: flex;
   align-items: center;
   gap: 6px;
@@ -332,6 +336,14 @@
 .panel-utc-toggle input[type=checkbox] {
   accent-color: var(--accent);
   margin: 0;
+}
+
+/* Timezone select inside the chart-panel settings popover. Matches
+   the existing form-row select styling; no separate class rules
+   needed because ``select`` picks up the
+   ``.panel-settings-popover .form-row select`` block above. */
+.panel-tz-select {
+  width: 100%;
 }
 
 .panel-settings-actions {
