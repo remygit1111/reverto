@@ -1174,7 +1174,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # as plain vertically-stacked divs.
             "style-src 'self' 'unsafe-inline' https://unpkg.com; "
             "img-src 'self' data:; "
-            "connect-src 'self' ws: wss:; "
+            # unpkg.com is allowed here so DevTools can fetch the
+            # Lightweight Charts + GridStack sourcemap files that
+            # accompany the minified bundles we load. Pure-
+            # developer-ergonomics: the browser emits CSP-violation
+            # console noise for every missing .map otherwise. No
+            # data-endpoint risk — the files are public static
+            # assets. r1-076 broader wildcard tightening (connect-
+            # src ws:/wss: → pinned portal-host) is scope-out for
+            # this PR.
+            "connect-src 'self' ws: wss: https://unpkg.com; "
             "frame-ancestors 'none'"
         )
         response.headers["X-Frame-Options"]        = "DENY"

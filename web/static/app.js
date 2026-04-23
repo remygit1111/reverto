@@ -282,6 +282,11 @@ async function showProfileModal() {
     } catch (e) {}
   }
   document.getElementById('profile-username').value = _cachedUsername || '';
+  // PR 5b: hidden username field anchors the password-change form so
+  // browser password managers can associate the new password with
+  // the logged-in account. Visually-hidden via CSS; not tab-focusable.
+  const _pwHiddenUser = document.getElementById('profile-pw-hidden-username');
+  if (_pwHiddenUser) _pwHiddenUser.value = _cachedUsername || '';
   document.getElementById('profile-display-name').value =
     localStorage.getItem('reverto-display-name') || '';
   // Show the API key masked: first 8 chars visible, the rest replaced
@@ -2863,6 +2868,7 @@ function _createPanelElement(panelId, panelType, config, gridAttrs) {
       indicators: (config && config.indicators) || [],
       boundBotSlug: (config && config.boundBotSlug) || null,
       boundBotUserId: (config && config.boundBotUserId) || null,
+      useUtc: !!(config && config.useUtc),
       onRemove: () => _removeWorkspacePanel(wrap),
       onConfigChange: () => {
         // Persist the chart's current config immediately so a later
@@ -7433,6 +7439,18 @@ function setupEventListeners() {
   $('profile-close').addEventListener('click', closeProfileModal);
   $('profile-save').addEventListener('click', saveProfileModal);
   $('profile-api-copy').addEventListener('click', copyProfileApiKey);
+  // PR 5b: Enter-key submit inside the wrapped <form>. Routes
+  // through saveProfileModal so the form-path and the explicit
+  // Save-button path are identical. preventDefault stops the
+  // browser's default form submit (which would navigate away and
+  // break the SPA).
+  const _profilePwForm = $('profile-pw-form');
+  if (_profilePwForm) {
+    _profilePwForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      saveProfileModal();
+    });
+  }
 
   // Settings modal
   $('settings-close').addEventListener('click', closeSettingsModal);

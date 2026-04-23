@@ -7,9 +7,9 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=80">
+<link rel="stylesheet" href="/static/style.css?v=81">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
-<link rel="stylesheet" href="/static/workspace.css?v=6">
+<link rel="stylesheet" href="/static/workspace.css?v=7">
 <link rel="stylesheet" href="https://unpkg.com/gridstack@11.5.1/dist/gridstack.min.css">
 </head>
 <body>
@@ -79,17 +79,26 @@
       <input id="profile-display-name" class="modal-input" type="text" maxlength="40" placeholder="Optional — used for the avatar initial">
     </section>
 
-    <section class="profile-section">
+    <!-- PR 5b: wrapped in a <form> so password managers treat the
+         three inputs as a coherent "change password" bundle. Submit
+         is intercepted by JS; the hidden username input is a
+         browser-hinted anchor so managers can associate the new
+         password with the right account (pattern recommended by
+         Chrome + the HTML Living Standard). -->
+    <form id="profile-pw-form" class="profile-section" autocomplete="on">
       <div class="profile-section-title">Change password</div>
-      <label class="profile-label">Current password</label>
+      <input id="profile-pw-hidden-username" type="text" name="username"
+             autocomplete="username" class="visually-hidden"
+             aria-hidden="true" tabindex="-1">
+      <label class="profile-label" for="profile-pw-current">Current password</label>
       <input id="profile-pw-current" class="modal-input" type="password" autocomplete="current-password">
-      <label class="profile-label">New password</label>
+      <label class="profile-label" for="profile-pw-new">New password</label>
       <input id="profile-pw-new" class="modal-input" type="password" autocomplete="new-password">
-      <label class="profile-label">Confirm new password</label>
+      <label class="profile-label" for="profile-pw-confirm">Confirm new password</label>
       <input id="profile-pw-confirm" class="modal-input" type="password" autocomplete="new-password">
       <div id="profile-pw-error" class="login-error hidden"></div>
       <div id="profile-pw-success" class="profile-success hidden">Password updated.</div>
-    </section>
+    </form>
 
     <section class="profile-section">
       <div class="profile-section-title">API key</div>
@@ -1507,7 +1516,7 @@
      all three candle-chart sites use. Must load BEFORE app.js so
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
-<script src="/static/chart_module.js?v=7"></script>
-<script src="/static/app.js?v=196"></script>
+<script src="/static/chart_module.js?v=8"></script>
+<script src="/static/app.js?v=197"></script>
 </body>
 </html>
