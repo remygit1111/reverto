@@ -2045,7 +2045,7 @@ function _resetHeaderForTopLevel() {
   teardownChartTab();
   teardownWizardChart();
   if (ws) { ws.close(); ws = null; }
-  $('hdr-context').textContent = 'Multi-Bot Portal';
+  $('hdr-context').textContent = 'Bitcoin bots. Done seriously.';
   $('hdr-context').classList.remove('clickable');
   $('hdr-context').onclick = null;
   $('hdr-pill').classList.add('hidden');
@@ -2868,6 +2868,12 @@ function _createPanelElement(panelId, panelType, config, gridAttrs) {
       indicators: (config && config.indicators) || [],
       boundBotSlug: (config && config.boundBotSlug) || null,
       boundBotUserId: (config && config.boundBotUserId) || null,
+      // Pass both fields through — the factory's state-init
+      // normalises ``timezone`` first and falls back to migrating
+      // ``useUtc`` when only the legacy field is set. Once saved,
+      // getConfig() only emits ``timezone`` so the layout_json
+      // self-heals on next write.
+      timezone: (config && config.timezone) || null,
       useUtc: !!(config && config.useUtc),
       onRemove: () => _removeWorkspacePanel(wrap),
       onConfigChange: () => {
@@ -3103,9 +3109,12 @@ async function _saveWorkspaceLayout(isRetry = false) {
   }
 }
 
-function _handleWorkspaceAddPanel() {
-  _addWorkspacePanel('empty', { w: 4, h: 3 });
-}
+// _handleWorkspaceAddPanel — dropped. The "+ Add panel" button was a
+// placeholder from the PR 2 Workspace skeleton before chart + deals
+// panel-types shipped their own dedicated add-buttons. Empty panels
+// remain a valid panel-type in saved layouts so the factory in
+// ``_createPanelElement`` still handles ``panelType === 'empty'``
+// on load; there's just no UI path to create new ones.
 
 function _handleWorkspaceAddChartPanel() {
   // Chart panels default to 8×6 cells — enough room for a readable
@@ -4811,12 +4820,14 @@ function openBot(slug, fromPop = false) {
   // will kick in again in loadChartTab if the new bot has open deals.
   _chartPendingDeal = null;
 
-  // Detail is a sub-view of Bots — keep the Bots tab active and surface
-  // the slug in the header subtext as "Multi-Bot Portal › SLUG".
+  // Detail is a sub-view of Bots — keep the Bots tab active and
+  // surface the slug in the header subtext as "Reverto › SLUG".
+  // The breadcrumb uses the bare product name (not the full tagline)
+  // so the slug stays readable at normal header widths.
   _setActiveTab('nav-bots-btn');
   $('hdr-pill').classList.remove('hidden');
   $('hdr-context').innerHTML =
-    'Multi-Bot Portal <span class="hdr-sep">›</span> ' +
+    'Reverto <span class="hdr-sep">›</span> ' +
     '<span class="hdr-slug">' + safeText(slug.toUpperCase()) + '</span>';
 
   // Explicit Dashboard tab selection — previously used the first
@@ -5506,30 +5517,86 @@ function getChartColors() {
   };
 }
 
-let _chartTimezone = localStorage.getItem('reverto_timezone') || 'UTC';
+// Per-chart timezone state. Each chart-type keeps its own
+// localStorage key + module-level variable + formatter. The central
+// ``window.RevertoChart.buildTimezoneFormatter`` helper produces the
+// ``{short, full}`` pair used by LWC's ``timeScale.tickMarkFormatter``
+// (axis labels) and ``localization.timeFormatter`` (crosshair tooltip).
+//
+// Legacy fallback: a pre-migration operator may still have the old
+// ``reverto_timezone`` key hanging around. Check that once on boot
+// so their previous choice persists into the new per-chart scheme,
+// then write the new key so the next boot reads from there.
+const _MAIN_CHART_TZ_LS_KEY = 'reverto.main_chart_timezone';
+
+function _loadMainChartTz() {
+  const v = localStorage.getItem(_MAIN_CHART_TZ_LS_KEY);
+  if (v) return v;
+  const legacy = localStorage.getItem('reverto_timezone');
+  if (legacy) {
+    // Migrate once + drop the old key. Keeps legacy behaviour
+    // (pre-upgrade user had 'UTC' as default) but re-homes storage
+    // under the per-chart namespace the rest of the PR uses.
+    localStorage.setItem(_MAIN_CHART_TZ_LS_KEY, legacy);
+    localStorage.removeItem('reverto_timezone');
+    return legacy;
+  }
+  return 'local';
+}
+function _saveMainChartTz(tz) {
+  try { localStorage.setItem(_MAIN_CHART_TZ_LS_KEY, tz); } catch (e) {}
+}
+
+let _chartTimezone = _loadMainChartTz();
+
+function _buildChartTzFormatter(tz) {
+  // Thin wrapper around window.RevertoChart.buildTimezoneFormatter so
+  // callers have a stable global name + a safe fallback if the chart
+  // module failed to load (e.g. CDN blocked). The fallback formatter
+  // mirrors the pre-helper shape so the chart axis never renders a
+  // literal "undefined".
+  if (window.RevertoChart && typeof window.RevertoChart.buildTimezoneFormatter === 'function') {
+    return window.RevertoChart.buildTimezoneFormatter(tz);
+  }
+  return {
+    short: (s) => new Date(s * 1000).toISOString().slice(11, 16),
+    full: (s) => new Date(s * 1000).toISOString().slice(0, 16).replace('T', ' '),
+  };
+}
 
 function _tzFormatter(ts) {
-  // Chart tooltips + crosshair share the same DD-MM-YYYY HH:MM format
-  // used by the deal panel (fmtDateTimeNL). Built by walking the parts
-  // via Intl.DateTimeFormat so _chartTimezone (an IANA zone name) keeps
-  // applying — toLocaleString("en-GB", { timeZone }) returned "14 Apr
-  // 2026 11:22", which clashed with the rest of the UI.
-  const d = new Date(ts * 1000);
-  try {
-    const parts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: _chartTimezone,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hour12: false,
-    }).formatToParts(d);
-    const lookup = {};
-    for (const p of parts) lookup[p.type] = p.value;
-    // Intl's "hour: '2-digit'" returns 24 as "24" on some runtimes at
-    // midnight; normalise to "00" so the string is always 16 chars.
-    const hh = lookup.hour === '24' ? '00' : lookup.hour;
-    return `${lookup.day}-${lookup.month}-${lookup.year} ${hh}:${lookup.minute}`;
-  } catch (e) {
-    return d.toISOString().slice(0, 16).replace('T', ' ');
+  // Back-compat shim: the default ``_chartLayoutOpts`` passes this
+  // as ``localization.timeFormatter``, so the backtest-equity chart
+  // + any other site that uses ``_chartLayoutOpts()`` without its
+  // own dropdown falls back to the main-chart timezone. Charts
+  // with their own dropdown override via applyOptions.
+  return _buildChartTzFormatter(_chartTimezone).full(ts);
+}
+
+// Wizard + backtest-candle chart timezone state. Same per-chart
+// pattern as the main-chart — own localStorage key, own module-
+// level variable, own dropdown. No legacy migration because
+// neither was wired to a timezone before this PR.
+const _WIZARD_CHART_TZ_LS_KEY   = 'reverto.wizard_chart_timezone';
+const _BT_CANDLE_TZ_LS_KEY      = 'reverto.backtest_candle_timezone';
+
+let _wizardChartTimezone   = localStorage.getItem(_WIZARD_CHART_TZ_LS_KEY) || 'local';
+let _btCandleChartTimezone = localStorage.getItem(_BT_CANDLE_TZ_LS_KEY)   || 'local';
+
+function _populateTzDropdown(sel, current) {
+  // Shared population helper. Called by the main-chart + wizard +
+  // backtest setup paths with their own select elements so the
+  // 20-entry IANA list only lives in chart_module.js.
+  const tzList = (window.RevertoChart && window.RevertoChart.CHART_TIMEZONES) || [];
+  if (!tzList.length) return;
+  sel.innerHTML = '';
+  for (const tz of tzList) {
+    const o = document.createElement('option');
+    o.value = tz.value;
+    o.textContent = tz.label;
+    sel.appendChild(o);
   }
+  sel.value = current;
 }
 
 function _chartLayoutOpts() {
@@ -5766,8 +5833,18 @@ function initCharts() {
   const mainEl = $('chart-main');
   if (!mainEl) return;
   const opts = _chartLayoutOpts();
+  // PR timezone-per-chart: override the shared formatter bundle
+  // with the main-chart's own so the dropdown at #chart-tz drives
+  // both axis ticks and crosshair tooltip.
+  const _mainFmt = _buildChartTzFormatter(_chartTimezone);
   _chartMain = _lwcCreateChart(mainEl, {
     ...opts,
+    localization: { timeFormatter: _mainFmt.full },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: _mainFmt.short,
+    },
     width:  mainEl.clientWidth,
     height: mainEl.clientHeight || 500,
   });
@@ -6774,11 +6851,36 @@ function initWizardChart() {
   // hidden again inside fetchWizardChartData on success.
   const sk = $('wizard-chart-skeleton');
   if (sk) sk.classList.remove('chart-skeleton-hidden');
+  const _wizardFmt = _buildChartTzFormatter(_wizardChartTimezone);
   _wizardChart = _lwcCreateChart(el, {
     ..._chartLayoutOpts(),
+    localization: { timeFormatter: _wizardFmt.full },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: _wizardFmt.short,
+    },
     width:  el.clientWidth,
     height: el.clientHeight || 250,
   });
+  // Populate + wire the wizard timezone dropdown once per init —
+  // teardown nulls _wizardChart so a re-init re-runs this block
+  // with the fresh instance.
+  const _wzTzSel = document.getElementById('wizard-chart-tz');
+  if (_wzTzSel) {
+    _populateTzDropdown(_wzTzSel, _wizardChartTimezone);
+    _wzTzSel.onchange = () => {
+      _wizardChartTimezone = _wzTzSel.value;
+      try { localStorage.setItem(_WIZARD_CHART_TZ_LS_KEY, _wizardChartTimezone); } catch (e) {}
+      if (_wizardChart) {
+        const f = _buildChartTzFormatter(_wizardChartTimezone);
+        _wizardChart.applyOptions({
+          localization: { timeFormatter: f.full },
+          timeScale: { tickMarkFormatter: f.short },
+        });
+      }
+    };
+  }
   _wizardCandles = _wizardChart.addSeries(_LWC().CandlestickSeries, {
     upColor:        _cssVar('--accent', '#26a69a'),
     downColor:      _cssVar('--red',    '#ef5350'),
@@ -7475,8 +7577,6 @@ function setupEventListeners() {
   $('nav-deals-btn').addEventListener('click', () => goDeals());
   const navWsBtn = $('nav-workspace-btn');
   if (navWsBtn) navWsBtn.addEventListener('click', () => goWorkspace());
-  const wsAdd = $('workspace-add-panel');
-  if (wsAdd) wsAdd.addEventListener('click', _handleWorkspaceAddPanel);
   const wsAddChart = $('workspace-add-chart');
   if (wsAddChart) wsAddChart.addEventListener('click', _handleWorkspaceAddChartPanel);
   const wsAddDeals = $('workspace-add-deals');
@@ -7614,11 +7714,30 @@ function setupEventListeners() {
   });
   const tzSel = document.getElementById('chart-tz');
   if (tzSel) {
+    // Populate options from the central catalogue so adding a new
+    // IANA zone is a one-line change in chart_module.js. Clearing
+    // first removes the placeholder option the HTML ships with.
+    const tzList = (window.RevertoChart && window.RevertoChart.CHART_TIMEZONES) || [];
+    if (tzList.length) {
+      tzSel.innerHTML = '';
+      for (const tz of tzList) {
+        const o = document.createElement('option');
+        o.value = tz.value;
+        o.textContent = tz.label;
+        tzSel.appendChild(o);
+      }
+    }
     tzSel.value = _chartTimezone;
     tzSel.addEventListener('change', () => {
       _chartTimezone = tzSel.value;
-      localStorage.setItem('reverto_timezone', _chartTimezone);
-      if (_chartMain) _chartMain.applyOptions({ localization: { timeFormatter: _tzFormatter } });
+      _saveMainChartTz(_chartTimezone);
+      if (_chartMain) {
+        const fmt = _buildChartTzFormatter(_chartTimezone);
+        _chartMain.applyOptions({
+          localization: { timeFormatter: fmt.full },
+          timeScale: { tickMarkFormatter: fmt.short },
+        });
+      }
     });
   }
 
@@ -10504,11 +10623,38 @@ function btInitChart(candles, deals) {
   if (_btCandleChart) { try { _btCandleChart.remove(); } catch (e) {} }
   _btMarkersPrimitive = null;
   _btDealLines = [];
+  const _btFmt = _buildChartTzFormatter(_btCandleChartTimezone);
   _btCandleChart = _lwcCreateChart(el, {
     ..._chartLayoutOpts(),
+    localization: { timeFormatter: _btFmt.full },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: _btFmt.short,
+    },
     width: el.clientWidth || 800,
     height: 500,
   });
+  // Show + populate the backtest-candle timezone toolbar next to
+  // the chart. The toolbar is hidden by default (display:none in
+  // HTML) so it doesn't flash while the backtest is still running.
+  const _btTbar = $('bt-candle-toolbar');
+  if (_btTbar) _btTbar.style.display = '';
+  const _btTzSel = $('bt-candle-tz');
+  if (_btTzSel) {
+    _populateTzDropdown(_btTzSel, _btCandleChartTimezone);
+    _btTzSel.onchange = () => {
+      _btCandleChartTimezone = _btTzSel.value;
+      try { localStorage.setItem(_BT_CANDLE_TZ_LS_KEY, _btCandleChartTimezone); } catch (e) {}
+      if (_btCandleChart) {
+        const f = _buildChartTzFormatter(_btCandleChartTimezone);
+        _btCandleChart.applyOptions({
+          localization: { timeFormatter: f.full },
+          timeScale: { tickMarkFormatter: f.short },
+        });
+      }
+    };
+  }
   _btCandleSeries = _btCandleChart.addSeries(_LWC().CandlestickSeries, {
     upColor: _cssVar('--accent', '#26a69a'),
     downColor: _cssVar('--red', '#ef5350'),

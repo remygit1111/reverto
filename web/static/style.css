@@ -145,8 +145,8 @@ body.is-login #profile-btn,
 body.is-login #profile-menu {
   display: none !important;
 }
-/* Hide the "Multi-Bot Portal" subtitle too — only the bare "Reverto"
-   logo remains visible in the header during login. */
+/* Hide the tagline subtitle too — only the bare "Reverto" logo
+   remains visible in the header during login. */
 body.is-login #hdr-context {
   display: none;
 }
@@ -1515,7 +1515,8 @@ tr:hover td { background: rgba(128,128,128,.04); }
   margin-bottom: 6px;
 }
 
-/* Header context subtext — "Multi-Bot Portal › SLUG" */
+/* Header context subtext — breadcrumb "Reverto › SLUG" on bot-detail,
+   tagline ("Bitcoin bots. Done seriously.") elsewhere. */
 .hdr-sep {
   color: var(--muted);
   margin: 0 4px;
@@ -2016,6 +2017,10 @@ table thead th.sorted .col-sort-arrow {
 .chart-tf-btn:hover { color:var(--text); }
 .chart-tf-btn.active { background:var(--accent); color:var(--bg); border-color:var(--accent); }
 .chart-tool-bar { display:flex; gap:4px; margin-bottom:6px; }
+/* Toolbar rendered above the backtest-candle chart. Right-aligns
+   the timezone dropdown so it sits at the same horizontal position
+   as the main-chart's tz-select, visually anchoring the two. */
+.bt-candle-toolbar { display:flex; justify-content:flex-end; margin-bottom:6px; }
 .chart-tool { background:var(--surface2); border:1px solid var(--border); color:var(--muted); padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.9em; min-width:32px; }
 .chart-tool:hover { color:var(--text); }
 .chart-tool.active { color:var(--accent); border-color:var(--accent); }
