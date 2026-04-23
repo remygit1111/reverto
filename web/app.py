@@ -1449,6 +1449,18 @@ def _normalize_chart_pair(raw: str) -> str:
 # /api/chart/{pair}/{timeframe} moved to web/routes/chart.py.
 
 
+# ── Ticker cache (for /api/ticker — workspace chart-panel info-sidebar) ─────
+# 10 s TTL covers the sidebar's 5 s poll without hitting Bitget on every
+# request. 32-entry cap is generous — we rarely serve more than a
+# handful of distinct pairs. Shares the same _price_lock semantic as
+# /api/price because both call ccxt.fetch_ticker on the module-level
+# _bitget_client, and ccxt clients aren't thread-safe.
+_ticker_cache: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
+_TICKER_CACHE_TTL = 10.0
+_TICKER_CACHE_MAX = 32
+_ticker_lock = asyncio.Lock()
+
+
 # ── Candle range endpoint (for client-side backtester) ───────────────────────
 #
 # Separate cache from /api/chart: different TTL needs and different key shape

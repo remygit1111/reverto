@@ -245,3 +245,119 @@ class TestPriceTickerPath:
         body = r.json()
         assert body["price"] == 71_234.5
         assert body["source"] == "bitget"
+
+
+# ── /api/ticker/{pair} — info-sidebar payload ─────────────────────────────
+
+
+class TestTickerEndpoint:
+    """Regression for the PR 5a workspace chart-panel info-sidebar.
+
+    Covers shape conformance, 10 s cache behaviour, upstream failure
+    → 502, and the auth gate. Monkeypatches ``_bitget_client.fetch_ticker``
+    so the real Bitget endpoint is never hit during tests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_ticker_cache(self):
+        """The ticker cache is process-global; tests running after
+        each other would otherwise see cached values from neighbours.
+        Resets before AND after so both entry and exit are clean."""
+        webapp._ticker_cache.clear()
+        yield
+        webapp._ticker_cache.clear()
+
+    def test_ticker_returns_shape(self, session, monkeypatch):
+        """fetch_ticker returns the standard ccxt dict; the endpoint
+        maps it onto the sidebar-facing shape."""
+        monkeypatch.setattr(
+            webapp._bitget_client, "fetch_ticker",
+            lambda *a, **kw: {
+                "last": 78_077.9,
+                "close": 78_077.9,
+                "change": -143.9,
+                "percentage": -0.18,
+                "baseVolume": 12_543.67,
+                "high": 79_500.0,
+                "low": 75_750.0,
+                "bid": 78_067.7,
+                "ask": 78_078.2,
+                "timestamp": 1_714_053_600_000,
+            },
+        )
+        r = session.get("/api/ticker/BTCUSD")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["pair"] == "BTC/USD"
+        assert body["price"] == 78_077.9
+        assert body["change_24h"] == -143.9
+        assert body["change_pct_24h"] == -0.18
+        assert body["volume_24h"] == 12_543.67
+        assert body["high_24h"] == 79_500.0
+        assert body["low_24h"] == 75_750.0
+        assert body["bid"] == 78_067.7
+        assert body["ask"] == 78_078.2
+        assert body["timestamp"] == 1_714_053_600_000
+
+    def test_ticker_caches_within_ttl(self, session, monkeypatch):
+        """Two calls within the 10 s TTL should only hit Bitget once."""
+        call_count = {"n": 0}
+
+        def _fake_fetch(*a, **kw):
+            call_count["n"] += 1
+            return {"last": 1.0, "close": 1.0, "change": 0.0,
+                    "percentage": 0.0, "baseVolume": 0.0,
+                    "high": 0.0, "low": 0.0, "bid": 0.0, "ask": 0.0,
+                    "timestamp": 1}
+
+        monkeypatch.setattr(
+            webapp._bitget_client, "fetch_ticker", _fake_fetch,
+        )
+        r1 = session.get("/api/ticker/BTCUSD")
+        r2 = session.get("/api/ticker/BTCUSD")
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert call_count["n"] == 1, (
+            "second call within TTL should hit cache, not Bitget"
+        )
+        assert r1.json() == r2.json()
+
+    def test_ticker_upstream_failure_returns_502(
+        self, session, monkeypatch,
+    ):
+        """A ccxt-level exception maps to 502 — the SPA surfaces a
+        sidebar em-dash without a user-visible 5xx alarm."""
+        def _boom(*a, **kw):
+            raise RuntimeError("exchange down")
+        monkeypatch.setattr(
+            webapp._bitget_client, "fetch_ticker", _boom,
+        )
+        r = session.get("/api/ticker/BTCUSD")
+        assert r.status_code == 502, r.text
+
+    def test_ticker_requires_auth(self, client, monkeypatch):
+        """Auth middleware gates /api/ticker just like every other
+        /api/* route — no session cookie, no ticker."""
+        r = client.get("/api/ticker/BTCUSD")
+        assert r.status_code == 401
+
+    def test_ticker_coerces_missing_fields_to_none(
+        self, session, monkeypatch,
+    ):
+        """ccxt may emit a sparse ticker (e.g. an exchange without
+        bid/ask in its response shape). Missing keys become None in
+        the JSON payload so the SPA renders em-dashes without crashing."""
+        monkeypatch.setattr(
+            webapp._bitget_client, "fetch_ticker",
+            lambda *a, **kw: {"last": 100.0, "close": 100.0},
+        )
+        r = session.get("/api/ticker/BTCUSD")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["price"] == 100.0
+        # Every absent key collapses to None, not KeyError or 0.
+        for key in (
+            "change_24h", "change_pct_24h", "volume_24h",
+            "high_24h", "low_24h", "bid", "ask", "timestamp",
+        ):
+            assert body[key] is None, f"{key} should be None, got {body[key]!r}"
