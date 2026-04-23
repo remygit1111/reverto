@@ -431,6 +431,250 @@ function _panelSvg(name, attrs) {
   return el;
 }
 
+// ── Header-dropdown helpers (PR 5a) ──────────────────────────────────────
+// Two factories kept module-local so the per-panel state closure stays
+// tight. Each returns a ``{root, menu, updateLabel/updateCount}``
+// object; the panel calls ``_wireXxxDropdown`` to hook up state +
+// onChange. Keeping build + wire separate lets tests mount the DOM
+// without driving real handlers (none yet, but cheap insurance).
+
+function _buildHeaderTfDropdown(state) {
+  const root = document.createElement('div');
+  root.className = 'panel-tf-dropdown';
+  root.dataset.role = 'tf-dropdown';
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'dropdown-trigger';
+  const current = document.createElement('span');
+  current.className = 'tf-current';
+  current.textContent = state.timeframe;
+  const caret = document.createElement('span');
+  caret.className = 'dropdown-caret';
+  caret.textContent = '▾';
+  trigger.appendChild(current);
+  trigger.appendChild(caret);
+  const menu = document.createElement('div');
+  menu.className = 'dropdown-menu hidden';
+  menu.setAttribute('role', 'menu');
+  for (const tf of PANEL_TIMEFRAMES) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'dropdown-item';
+    if (tf === state.timeframe) item.classList.add('active');
+    item.dataset.value = tf;
+    item.textContent = tf;
+    menu.appendChild(item);
+  }
+  root.appendChild(trigger);
+  root.appendChild(menu);
+  return {
+    root, trigger, menu,
+    updateLabel(tf) {
+      current.textContent = tf;
+      menu.querySelectorAll('.dropdown-item').forEach((b) => {
+        b.classList.toggle('active', b.dataset.value === tf);
+      });
+    },
+  };
+}
+
+function _buildHeaderIndicatorsDropdown(state) {
+  const root = document.createElement('div');
+  root.className = 'panel-indicators-dropdown';
+  root.dataset.role = 'indicators-dropdown';
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'dropdown-trigger';
+  const count = document.createElement('span');
+  count.className = 'indicators-count';
+  count.textContent = String(state.indicators.length);
+  const label = document.createElement('span');
+  label.className = 'indicators-label';
+  label.textContent = 'Indicators';
+  const caret = document.createElement('span');
+  caret.className = 'dropdown-caret';
+  caret.textContent = '▾';
+  trigger.appendChild(count);
+  trigger.appendChild(label);
+  trigger.appendChild(caret);
+  const menu = document.createElement('div');
+  menu.className = 'dropdown-menu hidden';
+  menu.setAttribute('role', 'menu');
+  for (const t of PANEL_INDICATOR_TYPES) {
+    const row = document.createElement('label');
+    row.className = 'dropdown-checkbox';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = t;
+    cb.checked = state.indicators.includes(t);
+    const span = document.createElement('span');
+    span.textContent = PANEL_INDICATOR_LABELS[t] || t;
+    row.appendChild(cb);
+    row.appendChild(span);
+    menu.appendChild(row);
+  }
+  root.appendChild(trigger);
+  root.appendChild(menu);
+  return {
+    root, trigger, menu,
+    updateCount(n) { count.textContent = String(n); },
+  };
+}
+
+// ── Header-dropdown click wiring ──────────────────────────────────────────
+// Each dropdown manages its own open/close via state._openDropdown so
+// only one can be open at a time. A single document-level click
+// listener (attached once per panel on construction) dismisses both.
+
+function _closeAllDropdowns(state) {
+  if (!state._openDropdown) return;
+  state._openDropdown.menu.classList.add('hidden');
+  state._openDropdown = null;
+}
+
+function _toggleDropdown(state, dd) {
+  if (state._openDropdown === dd) {
+    _closeAllDropdowns(state);
+    return;
+  }
+  _closeAllDropdowns(state);
+  dd.menu.classList.remove('hidden');
+  state._openDropdown = dd;
+}
+
+function _wireTfDropdown(dd, state, onPick) {
+  dd.trigger.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    _toggleDropdown(state, dd);
+  });
+  dd.menu.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.dropdown-item');
+    if (!btn) return;
+    e.stopPropagation();
+    _closeAllDropdowns(state);
+    await onPick(btn.dataset.value);
+  });
+}
+
+function _wireIndicatorsDropdown(dd, state, onChange) {
+  dd.trigger.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    _toggleDropdown(state, dd);
+  });
+  // Multi-select: keep the menu open while the operator toggles
+  // several indicators. e.stopPropagation on the checkbox click
+  // prevents the document-level outside-click handler from closing
+  // the menu on its own label click.
+  dd.menu.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const cb = e.target.closest('input[type=checkbox]');
+    if (!cb) return;
+    const t = cb.value;
+    const idx = state.indicators.indexOf(t);
+    if (cb.checked && idx < 0) state.indicators.push(t);
+    else if (!cb.checked && idx >= 0) state.indicators.splice(idx, 1);
+    else return;
+    onChange();
+  });
+}
+
+// ── Info-sidebar helpers (PR 5a) ─────────────────────────────────────────
+
+function _fmtSidebarPrice(v) {
+  if (v == null || !Number.isFinite(v)) return '—';
+  // Match the operator's expectations from the main dashboard: thousands
+  // separator, two decimals for BTC-USD-scale values. Keeps the sidebar
+  // compact enough for the 160 px minimum width without truncation.
+  return Number(v).toLocaleString(undefined, {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+}
+
+function _fmtSidebarVolume(v) {
+  if (v == null || !Number.isFinite(v)) return '—';
+  const n = Number(v);
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(2) + 'K';
+  return n.toFixed(2);
+}
+
+function _buildSidebar(state) {
+  const root = document.createElement('div');
+  root.className = 'panel-chart-sidebar';
+
+  const priceSection = document.createElement('div');
+  priceSection.className = 'sidebar-section sidebar-price';
+  const pairLabel = document.createElement('div');
+  pairLabel.className = 'sidebar-label';
+  pairLabel.textContent = state.pair;
+  const priceValue = document.createElement('div');
+  priceValue.className = 'sidebar-price-value';
+  priceValue.textContent = '—';
+  const change = document.createElement('div');
+  change.className = 'sidebar-change';
+  change.textContent = '—';
+  priceSection.appendChild(pairLabel);
+  priceSection.appendChild(priceValue);
+  priceSection.appendChild(change);
+
+  const rangeSection = document.createElement('div');
+  rangeSection.className = 'sidebar-section sidebar-range';
+  const mkRow = (labelText) => {
+    const row = document.createElement('div');
+    row.className = 'sidebar-row';
+    const lb = document.createElement('span');
+    lb.className = 'sidebar-row-label';
+    lb.textContent = labelText;
+    const val = document.createElement('span');
+    val.className = 'sidebar-row-value';
+    val.textContent = '—';
+    row.appendChild(lb);
+    row.appendChild(val);
+    rangeSection.appendChild(row);
+    return val;
+  };
+  const highValue = mkRow('High 24h');
+  const lowValue = mkRow('Low 24h');
+  const volumeValue = mkRow('Volume 24h');
+
+  root.appendChild(priceSection);
+  root.appendChild(rangeSection);
+
+  return {
+    root,
+    updatePair(pair) { pairLabel.textContent = pair; },
+    renderTicker(data) {
+      if (!data) {
+        priceValue.textContent = '—';
+        change.textContent = '—';
+        change.classList.remove('sidebar-change-positive', 'sidebar-change-negative');
+        highValue.textContent = '—';
+        lowValue.textContent = '—';
+        volumeValue.textContent = '—';
+        return;
+      }
+      priceValue.textContent = _fmtSidebarPrice(data.price);
+      const abs = Number(data.change_24h);
+      const pct = Number(data.change_pct_24h);
+      if (Number.isFinite(abs) && Number.isFinite(pct)) {
+        const sign = abs >= 0 ? '+' : '';
+        change.textContent =
+          `${sign}${abs.toFixed(1)} (${sign}${pct.toFixed(2)}%)`;
+        change.classList.toggle('sidebar-change-positive', abs >= 0);
+        change.classList.toggle('sidebar-change-negative', abs < 0);
+      } else {
+        change.textContent = '—';
+        change.classList.remove('sidebar-change-positive', 'sidebar-change-negative');
+      }
+      highValue.textContent = _fmtSidebarPrice(data.high_24h);
+      lowValue.textContent = _fmtSidebarPrice(data.low_24h);
+      volumeValue.textContent = _fmtSidebarVolume(data.volume_24h);
+    },
+  };
+}
+
 function createPanelChart(container, config) {
   // Consumer contract (see PR 3b spec):
   //   container: the grid-stack-item-content element. The factory
@@ -485,9 +729,20 @@ function createPanelChart(container, config) {
     _refreshTimer: null,
     _destroyed: false,
     _bindingMissingHint: false,
+    // PR 5a: info-sidebar poll + last-known ticker shape for the
+    // re-render-without-fetch path on resize.
+    _tickerTimer: null,
+    _tickerData: null,
+    _openDropdown: null, // tracks the currently-open header dropdown for outside-click dismissal
   };
 
   // ── DOM scaffold ───────────────────────────────────────────────────
+  // PR 5a layout (TradingView-style): pair-title + TF-dropdown +
+  // Indicators-dropdown as always-visible controls in the header;
+  // subtitle (binding indicator) + annotations toolbar + ⚙ + × on
+  // the right. Settings popover now only houses pair + bot-binding
+  // (the less-frequently touched config). Body is split into the
+  // LWC canvas on the left + info-sidebar on the right.
   const panel = document.createElement('div');
   panel.className = 'panel panel-chart';
 
@@ -500,11 +755,19 @@ function createPanelChart(container, config) {
   const title = document.createElement('span');
   title.className = 'panel-title';
 
+  // TF-dropdown — standalone control, builds its own menu lazily.
+  const tfDropdown = _buildHeaderTfDropdown(state);
+  // Indicators-dropdown — multi-select checkbox list, count shown
+  // in the trigger label.
+  const indDropdown = _buildHeaderIndicatorsDropdown(state);
+
   const subtitle = document.createElement('span');
   subtitle.className = 'panel-subtitle';
   subtitle.style.marginLeft = '8px';
 
   titleWrap.appendChild(title);
+  titleWrap.appendChild(tfDropdown.root);
+  titleWrap.appendChild(indDropdown.root);
   titleWrap.appendChild(subtitle);
 
   const toolbar = document.createElement('div');
@@ -553,9 +816,14 @@ function createPanelChart(container, config) {
   const canvasHost = document.createElement('div');
   canvasHost.className = 'panel-chart-canvas';
   canvasHost.style.position = 'relative';
-  canvasHost.style.width = '100%';
-  canvasHost.style.height = '100%';
   body.appendChild(canvasHost);
+
+  // Info-sidebar — poll /api/ticker every 5 s and render price +
+  // 24h change + high/low/volume. DOM is built once; subsequent
+  // refreshes only mutate text nodes + change-class so we don't
+  // churn LWC's neighbouring canvas layout.
+  const sidebar = _buildSidebar(state);
+  body.appendChild(sidebar.root);
 
   const popover = document.createElement('div');
   popover.className = 'panel-settings-popover hidden';
@@ -564,7 +832,41 @@ function createPanelChart(container, config) {
   panel.appendChild(popover);
   container.appendChild(panel);
 
+  // Wire dropdown handlers now that state + render helpers exist.
+  _wireTfDropdown(tfDropdown, state, async (tf) => {
+    if (!tf || tf === state.timeframe) return;
+    state.timeframe = tf;
+    tfDropdown.updateLabel(tf);
+    _updateTitle();
+    await _loadCandles();
+    if (state.onConfigChange) state.onConfigChange();
+  });
+  _wireIndicatorsDropdown(indDropdown, state, () => {
+    _rebuildIndicatorSeries();
+    _renderIndicatorOverlays();
+    indDropdown.updateCount(state.indicators.length);
+    if (state.onConfigChange) state.onConfigChange();
+  });
+
+  // Outside-click closes whichever header dropdown is currently open.
+  // Anchored on ``panel`` so the listener scope dies with the panel
+  // — destroy() removes the DOM, and the handler has nothing left to
+  // run against. Uses mousedown so the click that opens the new
+  // dropdown doesn't first close via its own click event.
+  const _outsideClickCloser = (e) => {
+    if (!state._openDropdown) return;
+    if (state._openDropdown.root.contains(e.target)) return;
+    _closeAllDropdowns(state);
+  };
+  document.addEventListener('mousedown', _outsideClickCloser);
+  state._outsideClickCloser = _outsideClickCloser;
+
   // ── Popover UI ────────────────────────────────────────────────────
+  // PR 5a: timeframe + indicators moved to standalone header
+  // dropdowns. The popover is now only pair + bot-binding — the
+  // less-frequently touched config. Keeps the settings-dialog
+  // shape for future additions (default-indicator params,
+  // annotations export, etc.) without bloating the header.
   function _buildPopover() {
     popover.innerHTML = '';
     const mkRow = (labelText, input) => {
@@ -580,32 +882,6 @@ function createPanelChart(container, config) {
     pairInput.type = 'text';
     pairInput.value = state.pair;
     pairInput.dataset.field = 'pair';
-
-    const tfSel = document.createElement('select');
-    tfSel.dataset.field = 'timeframe';
-    for (const tf of PANEL_TIMEFRAMES) {
-      const o = document.createElement('option');
-      o.value = tf;
-      o.textContent = tf;
-      if (tf === state.timeframe) o.selected = true;
-      tfSel.appendChild(o);
-    }
-
-    const indBox = document.createElement('div');
-    indBox.className = 'panel-ind-grid';
-    for (const t of PANEL_INDICATOR_TYPES) {
-      const lb = document.createElement('label');
-      lb.className = 'panel-ind-item';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.dataset.indicator = t;
-      cb.checked = state.indicators.includes(t);
-      lb.appendChild(cb);
-      const span = document.createElement('span');
-      span.textContent = PANEL_INDICATOR_LABELS[t] || t;
-      lb.appendChild(span);
-      indBox.appendChild(lb);
-    }
 
     const botSel = document.createElement('select');
     botSel.dataset.field = 'bot';
@@ -631,14 +907,6 @@ function createPanelChart(container, config) {
     btnRow.appendChild(cancelBtn);
 
     popover.appendChild(mkRow('Pair', pairInput));
-    popover.appendChild(mkRow('Timeframe', tfSel));
-    const indRow = document.createElement('div');
-    indRow.className = 'form-row form-row-block';
-    const indLabel = document.createElement('label');
-    indLabel.textContent = 'Indicators';
-    indRow.appendChild(indLabel);
-    indRow.appendChild(indBox);
-    popover.appendChild(indRow);
     popover.appendChild(mkRow('Bind to bot', botSel));
     popover.appendChild(bindingHint);
     popover.appendChild(btnRow);
@@ -654,22 +922,17 @@ function createPanelChart(container, config) {
     saveBtn.addEventListener('click', async (e) => {
       e.preventDefault();
       const newPair = _panelNormalizePair(pairInput.value.trim() || state.pair);
-      const newTf = tfSel.value || state.timeframe;
-      const newInds = Array.from(indBox.querySelectorAll('input[type=checkbox]'))
-        .filter((c) => c.checked)
-        .map((c) => c.dataset.indicator);
       const newBot = botSel.value || '';
       const pairChanged = newPair !== state.pair;
-      const tfChanged = newTf !== state.timeframe;
-      const indsChanged = newInds.join(',') !== state.indicators.join(',');
 
-      // If the user picked a bot, its pair/timeframe wins — auto-sync.
-      // /api/bots returns state (includes pair) but not the YAML
-      // config's timeframe, so fetch it explicitly. boundBotUserId
-      // is stored in layout_json for future use; the backend scopes
-      // every request by session cookie so it isn't actually needed
-      // for correctness today.
-      let forcedPair = newPair, forcedTf = newTf;
+      // Binding auto-syncs pair + timeframe to the picked bot's
+      // config. /api/bots returns state (includes pair) but not the
+      // YAML config's timeframe, so we fetch the YAML explicitly.
+      // boundBotUserId is stored in layout_json for future use; the
+      // backend scopes every request by session cookie so it isn't
+      // needed for correctness today.
+      let forcedPair = newPair;
+      let forcedTf = state.timeframe;
       let boundUserId = state.boundBotUserId;
       if (newBot && newBot !== state.boundBotSlug) {
         const bot = (state._botList || []).find((b) => b.slug === newBot);
@@ -683,18 +946,20 @@ function createPanelChart(container, config) {
         } catch (e) { /* fall back to state-level pair only */ }
       }
 
+      const tfChanged = forcedTf !== state.timeframe;
       const needsReload = pairChanged || tfChanged
-        || forcedPair !== state.pair || forcedTf !== state.timeframe;
+        || forcedPair !== state.pair;
       state.pair = forcedPair;
       state.timeframe = forcedTf;
-      state.indicators = newInds;
 
       if (needsReload) {
+        if (tfChanged) tfDropdown.updateLabel(state.timeframe);
+        sidebar.updatePair(state.pair);
         _updateTitle();
         await _loadCandles();
-      } else if (indsChanged) {
-        _rebuildIndicatorSeries();
-        _renderIndicatorOverlays();
+        // Pair changed → the /api/ticker cache is keyed on pair so
+        // we must refetch rather than keep rendering the stale one.
+        _tickerFetch();
       }
 
       if (newBot !== (state.boundBotSlug || '')) {
@@ -762,13 +1027,35 @@ function createPanelChart(container, config) {
 
   // ── Header indicators ─────────────────────────────────────────────
   function _updateTitle() {
-    title.textContent = `${state.pair} ${state.timeframe}`;
+    // PR 5a: title is now just the pair. The TF moved to its own
+    // dropdown next to the title; the binding indicator stays on
+    // the subtitle.
+    title.textContent = state.pair;
     if (state.boundBotSlug) {
       subtitle.textContent = `⚡ ${state.boundBotSlug}`;
       subtitle.classList.add('bound');
     } else {
       subtitle.textContent = '';
       subtitle.classList.remove('bound');
+    }
+  }
+
+  // ── Info-sidebar poll ────────────────────────────────────────────
+  // 5 s cadence mirrors the server-side 10 s cache so N panels on the
+  // same pair cost one upstream fetch per window. fetch() errors map
+  // to the sidebar's em-dash state; the chart itself is unaffected.
+  async function _tickerFetch() {
+    if (state._destroyed) return;
+    try {
+      const r = await fetch(`/api/ticker/${_panelPairForUrl(state.pair)}`);
+      if (!r.ok) throw new Error(`ticker ${r.status}`);
+      const data = await r.json();
+      if (state._destroyed) return;
+      state._tickerData = data;
+      sidebar.renderTicker(data);
+    } catch (e) {
+      state._tickerData = null;
+      sidebar.renderTicker(null);
     }
   }
 
@@ -795,14 +1082,24 @@ function createPanelChart(container, config) {
     if (typeof ResizeObserver !== 'undefined') {
       state._resizeObs = new ResizeObserver((entries) => {
         for (const e of entries) {
-          if (e.target !== canvasHost || !state._chart) continue;
-          const w = e.contentRect.width;
-          const h = e.contentRect.height || 200;
-          state._chart.applyOptions({ width: w, height: h });
-          _renderAnnotations();
+          if (e.target === canvasHost && state._chart) {
+            const w = e.contentRect.width;
+            const h = e.contentRect.height || 200;
+            state._chart.applyOptions({ width: w, height: h });
+            _renderAnnotations();
+          } else if (e.target === panel) {
+            // PR 5a: responsive sidebar — hide below 400 px panel
+            // width. Toggling a class on ``panel`` lets the CSS own
+            // the hide-rule without coupling to every caller. Chart
+            // reclaims the full body width because ``.panel-chart-
+            // sidebar`` collapses to ``display: none``.
+            const narrow = e.contentRect.width < 400;
+            panel.classList.toggle('panel-chart-narrow', narrow);
+          }
         }
       });
       state._resizeObs.observe(canvasHost);
+      state._resizeObs.observe(panel);
     }
     try {
       state._chart.timeScale().subscribeVisibleLogicalRangeChange(_renderAnnotations);
@@ -1448,6 +1745,14 @@ function createPanelChart(container, config) {
       state._refreshTimer = setInterval(() => {
         if (!state._destroyed) _loadCandles();
       }, 30000);
+      // Info-sidebar poll — 5 s cadence, backend 10 s cache keeps N
+      // panels on the same pair at 1 upstream call per window. An
+      // immediate fetch on init so the sidebar doesn't sit on "—"
+      // for the first 5 s after page-load.
+      _tickerFetch();
+      state._tickerTimer = setInterval(() => {
+        if (!state._destroyed) _tickerFetch();
+      }, 5000);
     },
 
     async setTimeframe(tf) {
@@ -1462,8 +1767,13 @@ function createPanelChart(container, config) {
       const np = _panelNormalizePair(pair);
       if (!np || np === state.pair) return;
       state.pair = np;
+      sidebar.updatePair(state.pair);
       _updateTitle();
       await _loadCandles();
+      // Pair change → ticker cache is keyed on pair, old reading is
+      // wrong, force an immediate refetch rather than wait for the
+      // 5 s poll.
+      _tickerFetch();
       if (state.onConfigChange) state.onConfigChange();
     },
 
@@ -1527,7 +1837,12 @@ function createPanelChart(container, config) {
       if (state._destroyed) return;
       state._destroyed = true;
       if (state._refreshTimer) { clearInterval(state._refreshTimer); state._refreshTimer = null; }
+      if (state._tickerTimer) { clearInterval(state._tickerTimer); state._tickerTimer = null; }
       if (state._resizeObs) { try { state._resizeObs.disconnect(); } catch (e) {} state._resizeObs = null; }
+      if (state._outsideClickCloser) {
+        document.removeEventListener('mousedown', state._outsideClickCloser);
+        state._outsideClickCloser = null;
+      }
       // Cascade annotations: workspace-panel-<id> rows have no other
       // home, so drop them server-side alongside the panel.
       try {

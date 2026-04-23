@@ -2,6 +2,7 @@
 
 Routes:
   GET /api/price                      — spot price via shared Bitget client
+  GET /api/ticker/{pair}              — full ticker (price + 24h stats) for panel sidebar
   GET /api/chart/{pair}/{timeframe}   — cached OHLCV for the dashboard chart
   GET /api/candles/{pair}/{timeframe} — paginated OHLCV for the backtester
 
@@ -43,6 +44,10 @@ from web.app import (
     _parse_iso_utc,
     _price_lock,
     _request_user,
+    _ticker_cache,
+    _TICKER_CACHE_MAX,
+    _TICKER_CACHE_TTL,
+    _ticker_lock,
     limiter,
     registry,
 )
@@ -85,6 +90,95 @@ async def api_price(
         raise HTTPException(
             status_code=503, detail="price unavailable",
         )
+
+
+@router.get("/api/ticker/{pair}")
+@limiter.limit("60/minute")
+async def api_ticker(
+    request: Request, pair: str, user: User = Depends(_request_user),
+):
+    """Full ticker payload for a pair — price, 24h change (absolute +
+    percent), 24h volume, high/low, bid/ask.
+
+    Used by the Workspace chart-panel info-sidebar (polled every 5 s).
+    A 10 s cache fronts the Bitget call so N panels showing the same
+    pair only cost one upstream fetch per window, and Bitget's
+    per-IP ticker-endpoint rate-limit isn't burned by simultaneous
+    panels.
+
+    Output shape mirrors the ccxt ticker dict after coercion so a
+    future Kraken wiring can populate the same keys without touching
+    the consumer.
+    """
+    normalized = _normalize_chart_pair(pair)
+    now = time.time()
+
+    async with _ticker_lock:
+        cached = _ticker_cache.get(normalized)
+        if cached and cached[0] > now:
+            _ticker_cache.move_to_end(normalized)
+            return cached[1]
+        if cached:
+            _ticker_cache.pop(normalized, None)
+
+    # _price_lock serialises every ccxt.fetch_ticker call because the
+    # module-level _bitget_client shares state across async workers
+    # (see /api/price). Holding the price-lock around to_thread keeps
+    # /api/ticker from racing /api/price's cache-miss on the same
+    # client. Exception path surfaces as 502 so the SPA can show the
+    # sidebar's "—" fallback without a user-visible 5xx alarm.
+    try:
+        async with _price_lock:
+            raw = await asyncio.to_thread(
+                _bitget_client.fetch_ticker, normalized.replace("/", ""),
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502, detail=f"ticker fetch failed: {str(e)[:200]}",
+        )
+
+    # ccxt's ticker dict has ``last``/``close`` for the mark price,
+    # ``change`` for the 24h absolute delta, ``percentage`` for the
+    # 24h percent (typically already × 100 — e.g. -0.18 means -0.18 %),
+    # ``high``/``low``/``baseVolume`` for the 24h stats, ``bid``/``ask``
+    # for the order-book tip, ``timestamp`` in ms. Every field is
+    # coerced through ``_ticker_float`` so a missing key surfaces as
+    # None instead of crashing the response, and the sidebar renders
+    # an em-dash for each gap.
+    payload = {
+        "pair": normalized,
+        "price": _ticker_float(raw.get("last") or raw.get("close")),
+        "change_24h": _ticker_float(raw.get("change")),
+        "change_pct_24h": _ticker_float(raw.get("percentage")),
+        "volume_24h": _ticker_float(raw.get("baseVolume")),
+        "high_24h": _ticker_float(raw.get("high")),
+        "low_24h": _ticker_float(raw.get("low")),
+        "bid": _ticker_float(raw.get("bid")),
+        "ask": _ticker_float(raw.get("ask")),
+        "timestamp": int(raw["timestamp"]) if raw.get("timestamp") else None,
+    }
+
+    async with _ticker_lock:
+        _ticker_cache[normalized] = (now + _TICKER_CACHE_TTL, payload)
+        _ticker_cache.move_to_end(normalized)
+        while len(_ticker_cache) > _TICKER_CACHE_MAX:
+            _ticker_cache.popitem(last=False)
+    return payload
+
+
+def _ticker_float(value):
+    """Coerce a ccxt ticker field to float or None.
+
+    ccxt returns numerics as float already, but a missing key maps to
+    None and some exchanges occasionally emit a string. None-through
+    lets the SPA render ``—`` without server-side interpolation.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @router.get("/api/chart/{pair}/{timeframe}")
