@@ -2796,11 +2796,12 @@ function _attachPanelToGrid(el) {
   // path hid behind its own DOM manipulation.
   _workspaceGrid.el.appendChild(el);
   _workspaceGrid.makeWidget(el);
-  // Chart-panel factory defers Lightweight Charts init until the
-  // grid cell has a measurable rect — otherwise LWC renders at 0×0
-  // and ignores a later applyOptions(width/height). Now that the
-  // grid owns the node and has laid it out, kick off init.
-  if (el._chartHandle) _initChartPanel(el);
+  // Panel factories defer their own async init until the grid cell
+  // has a measurable rect. For chart-panels LWC renders at 0×0
+  // otherwise; for open-deals-panels the initial fetch can start
+  // straight away but we still funnel through the same hook so
+  // every factory has one place to hang async startup off.
+  if (el._panelHandle) _initPanel(el);
 }
 
 function _showWorkspaceEmptyState(show) {
@@ -2867,14 +2868,46 @@ function _createPanelElement(panelId, panelType, config, gridAttrs) {
         // Persist the chart's current config immediately so a later
         // _saveWorkspaceLayout reads fresh dataset state even if the
         // grid's own 'change' event hasn't fired.
-        _syncChartPanelConfig(wrap);
+        _syncPanelConfig(wrap);
         _queueWorkspaceSave();
       },
     });
-    wrap._chartHandle = handle;
+    wrap._panelHandle = handle;
     // ``init`` must wait until the element is in the DOM (LWC needs
     // a real layout rect for width/height). We defer attachment to
-    // _attachPanelToGrid, which calls _initChartPanel post-append.
+    // _attachPanelToGrid, which calls _initPanel post-append.
+    return wrap;
+  }
+
+  if (panelType === 'open_deals') {
+    if (!window.RevertoChart || typeof window.RevertoChart.createOpenDealsPanel !== 'function') {
+      const fallback = document.createElement('div');
+      fallback.className = 'panel';
+      fallback.innerHTML = '<div class="panel-header"><span class="panel-title">Open deals</span></div>'
+        + '<div class="panel-body"><p class="panel-placeholder">chart_module.js not loaded — refresh the page.</p></div>';
+      content.appendChild(fallback);
+      return wrap;
+    }
+    const handle = window.RevertoChart.createOpenDealsPanel(content, {
+      panelId,
+      // ACTIVE_DEALS_COLUMNS is declared earlier in this file, same
+      // global scope — the open-deals panel is deliberately built on
+      // the same cell renderers + sortValue extractors so action
+      // buttons, pnl formatting, and sort semantics match the
+      // Active Deals page row-for-row.
+      columnDefs: ACTIVE_DEALS_COLUMNS,
+      visibleColumns: (config && Array.isArray(config.visibleColumns))
+        ? config.visibleColumns : null,
+      columnOrder: (config && Array.isArray(config.columnOrder))
+        ? config.columnOrder : null,
+      sort: (config && config.sort) || null,
+      onRemove: () => _removeWorkspacePanel(wrap),
+      onConfigChange: () => {
+        _syncPanelConfig(wrap);
+        _queueWorkspaceSave();
+      },
+    });
+    wrap._panelHandle = handle;
     return wrap;
   }
 
@@ -2914,13 +2947,13 @@ function _createPanelElement(panelId, panelType, config, gridAttrs) {
 
 function _removeWorkspacePanel(wrap) {
   if (!_workspaceGrid || !wrap) return;
-  // Tear down the chart handle (cancels the candle-refresh interval,
-  // drops annotations rows, releases the LWC instance) before the
-  // grid removes the DOM node, so nothing keeps firing against a
-  // detached container.
-  if (wrap._chartHandle && typeof wrap._chartHandle.destroy === 'function') {
-    try { wrap._chartHandle.destroy(); } catch (e) {}
-    wrap._chartHandle = null;
+  // Let the panel's factory release its resources (candle refresh,
+  // LWC instance, state-refetch timers, annotation rows …) before
+  // the grid removes the DOM node, so nothing keeps firing against
+  // a detached container.
+  if (wrap._panelHandle && typeof wrap._panelHandle.destroy === 'function') {
+    try { wrap._panelHandle.destroy(); } catch (e) {}
+    wrap._panelHandle = null;
   }
   _workspaceGrid.removeWidget(wrap);
   if (_workspaceGrid.engine.nodes.length === 0) {
@@ -2928,17 +2961,17 @@ function _removeWorkspacePanel(wrap) {
   }
 }
 
-function _syncChartPanelConfig(wrap) {
-  if (!wrap || !wrap._chartHandle || typeof wrap._chartHandle.getConfig !== 'function') return;
+function _syncPanelConfig(wrap) {
+  if (!wrap || !wrap._panelHandle || typeof wrap._panelHandle.getConfig !== 'function') return;
   try {
-    wrap.dataset.panelConfig = JSON.stringify(wrap._chartHandle.getConfig());
+    wrap.dataset.panelConfig = JSON.stringify(wrap._panelHandle.getConfig());
   } catch (e) { /* leave previous config on error */ }
 }
 
-async function _initChartPanel(wrap) {
-  if (!wrap || !wrap._chartHandle) return;
+async function _initPanel(wrap) {
+  if (!wrap || !wrap._panelHandle) return;
   try {
-    await wrap._chartHandle.init();
+    await wrap._panelHandle.init();
   } catch (e) {
     console.warn('Workspace chart panel init failed:', e);
   }
@@ -2951,14 +2984,16 @@ function _panelTitleForType(type) {
 }
 
 function _panelPlaceholderForType(type) {
-  if (type === 'open_deals') {
-    // Defensive fallback: PR 4 will teach the renderer to
-    // materialise open_deals for real. If a layout saved by a
-    // future version of the frontend is loaded by today's build,
-    // we surface a placeholder instead of crashing.
+  // Defensive fallback for unknown panel types in saved layouts
+  // (e.g. a future build introduced a type the current build
+  // doesn't know how to render). The non-empty branch is no
+  // longer reachable from the current panel-type menu, but we
+  // keep the guard so loading a newer layout in an older tab
+  // still surfaces something instead of a silent blank cell.
+  if (type && type !== 'empty') {
     return 'Panel type "' + type + '" not yet implemented on this build.';
   }
-  return 'Placeholder — PR 4 brings open deals.';
+  return 'Placeholder.';
 }
 
 function _queueWorkspaceSave() {
@@ -2984,14 +3019,15 @@ async function _saveWorkspaceLayout(isRetry = false) {
   if (!_workspaceGrid) return;
   const indicator = $('workspace-save-indicator');
   const panels = _workspaceGrid.engine.nodes.map((node) => {
-    // Chart panels carry their own mutable state (pair, timeframe,
-    // indicators, binding) inside the factory closure. Prefer the
-    // handle's getConfig() over the dataset cache so the saved
-    // layout always reflects whichever control the user touched
-    // most recently — even if _syncChartPanelConfig hasn't run yet.
+    // Panels that own a factory handle carry their own mutable state
+    // inside a closure (chart pair/timeframe/indicators/binding,
+    // open-deals visible columns + sort, …). Prefer the handle's
+    // getConfig() over the dataset cache so the saved layout always
+    // reflects whichever control the user touched most recently —
+    // even if _syncPanelConfig hasn't run yet for the last mutation.
     let config = {};
-    if (node.el._chartHandle && typeof node.el._chartHandle.getConfig === 'function') {
-      try { config = node.el._chartHandle.getConfig(); } catch (_) { config = {}; }
+    if (node.el._panelHandle && typeof node.el._panelHandle.getConfig === 'function') {
+      try { config = node.el._panelHandle.getConfig(); } catch (_) { config = {}; }
     } else {
       try {
         config = JSON.parse(node.el.dataset.panelConfig || '{}');
@@ -3074,6 +3110,15 @@ function _handleWorkspaceAddChartPanel() {
   _addWorkspacePanel('chart', { w: 8, h: 6 });
 }
 
+function _handleWorkspaceAddOpenDealsPanel() {
+  // 8×5 gives a comfortable visible row count before the body
+  // starts scrolling, matching the chart-panel width so two panels
+  // side-by-side in a 12-column grid leave an asymmetric 4-wide
+  // slot for a future compact panel type rather than an awkward
+  // half-empty fit.
+  _addWorkspacePanel('open_deals', { w: 8, h: 5 });
+}
+
 function _addWorkspacePanel(type, size) {
   if (!_workspaceGrid) return;
   const panelId = _workspaceNewPanelId();
@@ -3086,15 +3131,17 @@ function _addWorkspacePanel(type, size) {
   // 'added' event fires → _queueWorkspaceSave → persists.
 }
 
-// Fan out /ws/state bot-state pushes to every chart panel with an
-// active binding. Workspace-grid owns a single WS subscription via
-// _stateWs — we don't open one per panel, because the /ws/state
-// endpoint is already user-scoped (v26-16) and multiplexes all
-// bots into a single stream.
+// Fan out /ws/state bot-state pushes to every workspace panel that
+// cares about state updates. Chart-panels filter by their own
+// boundBotSlug; open-deals-panels accept any slug and use the push
+// as a debounced "refetch now" trigger. Workspace-grid owns a
+// single WS subscription via _stateWs — we don't open one per
+// panel, because the /ws/state endpoint is already user-scoped
+// (v26-16) and multiplexes all bots into a single stream.
 function _dispatchWorkspaceBotState(slug, data) {
   if (!_workspaceGrid) return;
   for (const node of _workspaceGrid.engine.nodes) {
-    const h = node.el && node.el._chartHandle;
+    const h = node.el && node.el._panelHandle;
     if (h && typeof h.handleStateUpdate === 'function') {
       try { h.handleStateUpdate({ slug, data }); } catch (e) {}
     }
@@ -7406,6 +7453,8 @@ function setupEventListeners() {
   if (wsAdd) wsAdd.addEventListener('click', _handleWorkspaceAddPanel);
   const wsAddChart = $('workspace-add-chart');
   if (wsAddChart) wsAddChart.addEventListener('click', _handleWorkspaceAddChartPanel);
+  const wsAddDeals = $('workspace-add-deals');
+  if (wsAddDeals) wsAddDeals.addEventListener('click', _handleWorkspaceAddOpenDealsPanel);
   const navClBtn = $('nav-changelog-btn');
   if (navClBtn) navClBtn.addEventListener('click', () => goChangelog());
   const navAdminBtn = $('nav-admin-btn');
