@@ -391,6 +391,94 @@ const PANEL_INDICATOR_LABELS = {
 // back to '1h' on load (see _panelNormalizeTimeframe below).
 const PANEL_TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '12h', '1d', '3d', '1w'];
 
+// Shared timezone catalogue used by every chart type that offers a
+// per-chart timezone dropdown (main bot-chart, wizard chart,
+// backtest-candle chart, Workspace chart-panel). IANA names are
+// kept as the ``value`` so Intl.DateTimeFormat applies them
+// directly; the special ``'local'`` sentinel means "use the
+// browser's default" and maps to an ``undefined`` timeZone option
+// (which is the HTML Living Standard's "drop the option" behaviour).
+// Alphabetic ordering within each continent-group for predictable
+// dropdown scanning.
+const CHART_TIMEZONES = [
+  { value: 'local',              label: 'Local (browser)' },
+  { value: 'UTC',                label: 'UTC' },
+  { value: 'Europe/Amsterdam',   label: 'Europe/Amsterdam' },
+  { value: 'Europe/London',      label: 'Europe/London' },
+  { value: 'Europe/Berlin',      label: 'Europe/Berlin' },
+  { value: 'Europe/Moscow',      label: 'Europe/Moscow' },
+  { value: 'America/New_York',   label: 'America/New_York' },
+  { value: 'America/Chicago',    label: 'America/Chicago' },
+  { value: 'America/Denver',     label: 'America/Denver' },
+  { value: 'America/Los_Angeles',label: 'America/Los_Angeles' },
+  { value: 'America/Toronto',    label: 'America/Toronto' },
+  { value: 'America/Sao_Paulo',  label: 'America/Sao_Paulo' },
+  { value: 'Asia/Tokyo',         label: 'Asia/Tokyo' },
+  { value: 'Asia/Shanghai',      label: 'Asia/Shanghai' },
+  { value: 'Asia/Hong_Kong',     label: 'Asia/Hong_Kong' },
+  { value: 'Asia/Singapore',     label: 'Asia/Singapore' },
+  { value: 'Asia/Dubai',         label: 'Asia/Dubai' },
+  { value: 'Asia/Kolkata',       label: 'Asia/Kolkata' },
+  { value: 'Australia/Sydney',   label: 'Australia/Sydney' },
+  { value: 'Pacific/Auckland',   label: 'Pacific/Auckland' },
+];
+const _CHART_TIMEZONE_VALUES = new Set(CHART_TIMEZONES.map((t) => t.value));
+
+function _normalizeChartTimezone(tz) {
+  return _CHART_TIMEZONE_VALUES.has(tz) ? tz : 'local';
+}
+
+// Central formatter factory shared between every chart site. Returns
+// ``{short, full}``:
+//   * ``short(unixSec)`` → HH:MM, used by ``timeScale.tickMarkFormatter``
+//     for the x-axis labels.
+//   * ``full(unixSec)``  → DD-MM-YYYY HH:MM, used by
+//     ``localization.timeFormatter`` for the crosshair tooltip.
+// Output shape matches app.js's pre-existing _tzFormatter contract so
+// migrating callers don't regress the deal-panel's fmtDateTimeNL
+// style. ``'local'`` sentinel drops the ``timeZone`` option so the
+// browser's default applies.
+function buildTimezoneFormatter(timezone) {
+  const tz = _normalizeChartTimezone(timezone);
+  const shortOpts = {
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  };
+  const fullOpts = {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  };
+  if (tz !== 'local') {
+    shortOpts.timeZone = tz;
+    fullOpts.timeZone = tz;
+  }
+  const shortFmt = new Intl.DateTimeFormat('en-GB', shortOpts);
+  const fullFmt = new Intl.DateTimeFormat('en-GB', fullOpts);
+  return {
+    short(unixSec) {
+      try {
+        const parts = shortFmt.formatToParts(new Date(unixSec * 1000));
+        const lookup = {};
+        for (const p of parts) lookup[p.type] = p.value;
+        const hh = lookup.hour === '24' ? '00' : lookup.hour;
+        return `${hh}:${lookup.minute}`;
+      } catch (e) {
+        return new Date(unixSec * 1000).toISOString().slice(11, 16);
+      }
+    },
+    full(unixSec) {
+      try {
+        const parts = fullFmt.formatToParts(new Date(unixSec * 1000));
+        const lookup = {};
+        for (const p of parts) lookup[p.type] = p.value;
+        const hh = lookup.hour === '24' ? '00' : lookup.hour;
+        return `${lookup.day}-${lookup.month}-${lookup.year} ${hh}:${lookup.minute}`;
+      } catch (e) {
+        return new Date(unixSec * 1000).toISOString().slice(0, 16).replace('T', ' ');
+      }
+    },
+  };
+}
+
 const PANEL_SVG_NS = 'http://www.w3.org/2000/svg';
 
 // FastAPI path params reject %2F, so the backend /api/chart route takes
@@ -751,11 +839,19 @@ function createPanelChart(container, config) {
     indicators: Array.isArray(cfg.indicators)
       ? cfg.indicators.filter((i) => PANEL_INDICATOR_TYPES.includes(i))
       : [],
-    // PR 5b: optional UTC axis labels. false ⇒ local timezone
-    // (operator's browser), true ⇒ UTC. Persists in layout_json as
-    // ``useUtc``. The per-panel formatter closes over this flag and
-    // is swapped in via applyOptions when the setting toggles.
-    useUtc: Boolean(cfg.useUtc),
+    // PR 5b → timezone-cleanup: per-panel timezone for axis labels +
+    // crosshair tooltip. Stored as an IANA name ('UTC', 'Europe/
+    // Amsterdam', …) or the literal 'local' sentinel (use browser
+    // default). Legacy ``useUtc: bool`` saved layouts migrate here
+    // on load: true → 'UTC', false/absent → 'local'. Keeps the
+    // pre-migration operator's setting intact and lets the new
+    // dropdown surface the richer choice without a user-visible
+    // reset.
+    timezone: (() => {
+      if (typeof cfg.timezone === 'string') return _normalizeChartTimezone(cfg.timezone);
+      if (cfg.useUtc === true) return 'UTC';
+      return 'local';
+    })(),
     boundBotSlug: cfg.boundBotSlug || null,
     boundBotUserId: cfg.boundBotUserId || null,
     onRemove: typeof cfg.onRemove === 'function' ? cfg.onRemove : null,
@@ -963,20 +1059,21 @@ function createPanelChart(container, config) {
     bindingHint.className = 'panel-binding-hint';
     bindingHint.textContent = '';
 
-    // PR 5b: UTC-axis-labels toggle. Checkbox (label wrapped) so a
-    // click anywhere on the label flips the state; no JS-side
-    // click-on-label plumbing needed. ``data-field`` just keeps
-    // the element searchable via the same pattern as pair/bot.
-    const utcWrap = document.createElement('label');
-    utcWrap.className = 'panel-utc-toggle';
-    const utcInput = document.createElement('input');
-    utcInput.type = 'checkbox';
-    utcInput.checked = !!state.useUtc;
-    utcInput.dataset.field = 'useUtc';
-    const utcText = document.createElement('span');
-    utcText.textContent = 'UTC axis labels';
-    utcWrap.appendChild(utcInput);
-    utcWrap.appendChild(utcText);
+    // Timezone dropdown. PR 5b shipped a binary UTC-axis-labels
+    // checkbox; this supersedes it with a full 20-entry list
+    // (local + UTC + common IANA names). Legacy useUtc config is
+    // migrated to timezone at state-init so operators see their
+    // previous choice pre-selected.
+    const tzSel = document.createElement('select');
+    tzSel.dataset.field = 'timezone';
+    tzSel.className = 'panel-tz-select';
+    for (const tz of CHART_TIMEZONES) {
+      const o = document.createElement('option');
+      o.value = tz.value;
+      o.textContent = tz.label;
+      if (tz.value === state.timezone) o.selected = true;
+      tzSel.appendChild(o);
+    }
 
     const btnRow = document.createElement('div');
     btnRow.className = 'panel-settings-actions';
@@ -994,7 +1091,7 @@ function createPanelChart(container, config) {
     popover.appendChild(mkRow('Pair', pairInput));
     popover.appendChild(mkRow('Bind to bot', botSel));
     popover.appendChild(bindingHint);
-    popover.appendChild(utcWrap);
+    popover.appendChild(mkRow('Timezone', tzSel));
     popover.appendChild(btnRow);
 
     // Populate bot list lazily on open; keep reference for later refresh.
@@ -1048,19 +1145,20 @@ function createPanelChart(container, config) {
         _tickerFetch();
       }
 
-      // UTC toggle — re-apply the localization bundle to the LWC
-      // instance so axis labels + crosshair timestamps swap
-      // UTC ↔ local without requiring a candle reload. Safe to run
-      // on every Apply click; LWC no-ops if the formatter
-      // reference is identical (ours always closes over the live
-      // ``state.useUtc`` so the reference is stable).
-      const newUseUtc = !!utcInput.checked;
-      const utcChanged = newUseUtc !== !!state.useUtc;
-      if (utcChanged) {
-        state.useUtc = newUseUtc;
+      // Timezone — re-apply localization + tick-mark formatter to
+      // the LWC instance so axis labels + crosshair timestamps swap
+      // without a candle reload. Safe to run on every Apply click;
+      // our formatter closes over the live ``state.timezone`` so
+      // LWC's reference-equality short-circuit still works when the
+      // value is unchanged.
+      const newTz = _normalizeChartTimezone(tzSel.value);
+      const tzChanged = newTz !== state.timezone;
+      if (tzChanged) {
+        state.timezone = newTz;
         try {
           state._chart.applyOptions({
             localization: { timeFormatter: _panelTimeFormatter },
+            timeScale: { tickMarkFormatter: _panelTickMarkFormatter },
           });
         } catch (e) { /* best-effort; cosmetic only */ }
       }
@@ -1163,25 +1261,17 @@ function createPanelChart(container, config) {
   }
 
   // ── Timezone formatter ────────────────────────────────────────────
-  // Per-panel axis-label formatter. Mirrors app.js's ``_tzFormatter``
-  // shape (DD-MM-YYYY HH:MM) but closes over ``state.useUtc`` so a
-  // panel-level toggle swaps UTC ↔ local without touching the
-  // global ``_chartTimezone``.
+  // Per-panel axis-label formatter. Wraps the module-level
+  // ``buildTimezoneFormatter`` helper so every chart site (main,
+  // wizard, backtest-candle, workspace panel) uses the same shape.
+  // The returned closure reads ``state.timezone`` at call time, so
+  // swapping the dropdown selection doesn't require re-building the
+  // LWC instance — just an ``applyOptions`` re-hook.
   function _panelTimeFormatter(ts) {
-    const d = new Date(ts * 1000);
-    try {
-      const parts = new Intl.DateTimeFormat('en-GB', {
-        timeZone: state.useUtc ? 'UTC' : undefined,
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', hour12: false,
-      }).formatToParts(d);
-      const lookup = {};
-      for (const p of parts) lookup[p.type] = p.value;
-      const hh = lookup.hour === '24' ? '00' : lookup.hour;
-      return `${lookup.day}-${lookup.month}-${lookup.year} ${hh}:${lookup.minute}`;
-    } catch (e) {
-      return d.toISOString().slice(0, 16).replace('T', ' ');
-    }
+    return buildTimezoneFormatter(state.timezone).full(ts);
+  }
+  function _panelTickMarkFormatter(ts) {
+    return buildTimezoneFormatter(state.timezone).short(ts);
   }
 
   // ── Chart init ────────────────────────────────────────────────────
@@ -1193,10 +1283,18 @@ function createPanelChart(container, config) {
     state._chart = LWC.createChart(canvasHost, {
       ...opts,
       // Per-panel formatter overrides the global one from
-      // _chartLayoutOpts so the UTC toggle works independently per
-      // panel. Shallow-merge: ``localization`` is replaced whole,
-      // which is what we want.
+      // _chartLayoutOpts so the timezone dropdown works
+      // independently per panel. Shallow-merge: ``localization``
+      // and ``timeScale`` are replaced whole (the latter merges
+      // with the opts-provided ``timeVisible``/``secondsVisible``
+      // only via LWC's own later applyOptions elsewhere — the
+      // base values here are fine).
       localization: { timeFormatter: _panelTimeFormatter },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        tickMarkFormatter: _panelTickMarkFormatter,
+      },
       width: canvasHost.clientWidth || 300,
       height: canvasHost.clientHeight || 200,
     });
@@ -2074,7 +2172,10 @@ function createPanelChart(container, config) {
         indicators: state.indicators.slice(),
         boundBotSlug: state.boundBotSlug,
         boundBotUserId: state.boundBotUserId,
-        useUtc: !!state.useUtc,
+        // ``timezone`` supersedes the legacy ``useUtc`` field from
+        // PR 5b. Old saved layouts with ``useUtc: true`` migrate on
+        // load; writes always produce ``timezone`` going forward.
+        timezone: state.timezone,
       };
     },
 
@@ -2583,7 +2684,9 @@ window.RevertoChart = Object.assign(window.RevertoChart || {}, {
   // at namespace-export time and can't accidentally be shadowed by
   // consumers poking at window.RevertoChart after the fact.
   applyThemeToAll: () => _applyThemeToAllPanels(),
+  buildTimezoneFormatter,
   PANEL_INDICATOR_TYPES,
   PANEL_INDICATOR_LABELS,
   PANEL_TIMEFRAMES,
+  CHART_TIMEZONES,
 });
