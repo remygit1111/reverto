@@ -1807,6 +1807,34 @@ table thead th.drop-after {
   box-shadow: inset -2px 0 0 var(--accent);
 }
 
+/* Click-to-sort affordance. Only columns with data-sortable="1"
+   (i.e. columns that have a non-empty label, so not the action-button
+   column) get the pointer cursor + hover arrow. Sorted columns carry
+   a subtle background tint and a persistent arrow that lives in the
+   .col-sort-arrow span populated by _renderColumnDrivenTable. */
+table thead th.sortable .col-label {
+  margin-right: 4px;
+}
+table thead th.sortable {
+  cursor: pointer;
+}
+table thead th .col-sort-arrow {
+  display: inline-block;
+  min-width: 0.6em;
+  font-size: 0.75em;
+  opacity: 0.7;
+}
+table thead th.sortable:hover .col-sort-arrow {
+  opacity: 1;
+}
+table thead th.sorted {
+  background: var(--surface2);
+}
+table thead th.sorted .col-sort-arrow {
+  color: var(--accent);
+  opacity: 1;
+}
+
 /* ── Schedule windows ──────────────────────────────────────────── */
 .sched-window {
   background: var(--surface2);
