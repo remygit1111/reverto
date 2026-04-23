@@ -317,6 +317,23 @@
   display: none;
 }
 
+/* PR 5b: UTC-axis-labels toggle inside the chart-panel settings
+   popover. Horizontal label + checkbox row matching the popover's
+   compact styling. */
+.panel-utc-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text);
+  font-family: var(--mono);
+  cursor: pointer;
+}
+.panel-utc-toggle input[type=checkbox] {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
 .panel-settings-actions {
   display: flex;
   justify-content: flex-end;
