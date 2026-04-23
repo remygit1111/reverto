@@ -777,30 +777,55 @@ function renderBotGrid(bots) {
 
 // ── Active Deals column manager ─────────────────────────────────────────────
 // Default ordered column set. Each column has a key (used as localStorage
-// id), label (shown in cog menu + thead), and a cell renderer that takes
-// a deal row and returns an HTML string. Visibility + order live in
-// localStorage under "reverto.active_deals_columns".
+// id), label (shown in cog menu + thead), a cell renderer that takes a
+// deal row and returns an HTML string, and an optional sortValue(row)
+// extractor used by the click-to-sort path. The extractor exists
+// because the column key is a display-shorthand (e.g. 'pair', 'age')
+// that intentionally doesn't match the underlying data field
+// (d.symbol, d.opened_at), so rows[key] would return undefined for
+// most columns. Columns without a sortValue (like the action-button
+// column) are deliberately unsortable.
+// Visibility + order live in localStorage under
+// "reverto.active_deals_columns".
+const _sortTs = (iso) => {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : null;
+};
 const ACTIVE_DEALS_COLUMNS = [
   { key: 'bot',        label: 'Bot',
-    cell: d => `<td><span class="link-like" data-action="open" data-slug="${safeText(d.bot_slug)}">${safeText(d.bot_name)}</span></td>` },
+    cell: d => `<td><span class="link-like" data-action="open" data-slug="${safeText(d.bot_slug)}">${safeText(d.bot_name)}</span></td>`,
+    sortValue: d => d.bot_name || d.bot_slug || '' },
   { key: 'deal_id',    label: 'Deal ID',
-    cell: d => `<td class="muted-cell">${safeText(d.id)}</td>` },
+    cell: d => `<td class="muted-cell">${safeText(d.id)}</td>`,
+    sortValue: d => d.id || '' },
   { key: 'pair',       label: 'Pair',
-    cell: d => `<td>${safeText(d.symbol || '—')}</td>` },
+    cell: d => `<td>${safeText(d.symbol || '—')}</td>`,
+    sortValue: d => d.symbol || '' },
   { key: 'entry',      label: 'Entry',
-    cell: d => `<td>${fmtPrice(d.entry_price)}</td>` },
+    cell: d => `<td>${fmtPrice(d.entry_price)}</td>`,
+    sortValue: d => (d.entry_price == null ? null : Number(d.entry_price)) },
   { key: 'avg_entry',  label: 'Avg Entry',
-    cell: d => `<td>${fmtPrice(d.avg_entry_price)}</td>` },
+    cell: d => `<td>${fmtPrice(d.avg_entry_price)}</td>`,
+    sortValue: d => (d.avg_entry_price == null ? null : Number(d.avg_entry_price)) },
   { key: 'orders',     label: 'Orders',
-    cell: d => `<td>${d.order_count}</td>` },
+    cell: d => `<td>${d.order_count}</td>`,
+    sortValue: d => (d.order_count == null ? null : Number(d.order_count)) },
   { key: 'pnl_btc',    label: 'PnL BTC',
-    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
+    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>`,
+    sortValue: d => (d.pnl_btc == null ? null : Number(d.pnl_btc)) },
   { key: 'pnl_pct',    label: 'PnL %',
-    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
+    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>`,
+    sortValue: d => (d.pnl_pct == null ? null : Number(d.pnl_pct)) },
+  // Start Date + Age share the opened_at timestamp — the two columns
+  // render differently (absolute date vs relative "5h ago") but the
+  // underlying monotonic-order is the same, so they sort identically.
   { key: 'started',    label: 'Start Date',
-    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>` },
+    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>`,
+    sortValue: d => _sortTs(d.opened_at) },
   { key: 'age',        label: 'Age',
-    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>`,
+    sortValue: d => _sortTs(d.opened_at) },
   { key: 'actions',    label: '',
     cell: d => `<td class="deal-actions-cell">` +
       `<button class="deal-btn deal-btn-edit" data-slug="${safeText(d.bot_slug)}" data-deal="${safeText(d.id)}" title="Edit">✎</button>` +
@@ -890,14 +915,28 @@ function saveSort(key, sort) {
 // first non-null sample; that's enough for the deal-row shape (which
 // is the only caller today) without introducing a per-column
 // comparator registry we don't yet need.
-function _applySortToRows(rows, sort) {
+//
+// ``defs`` is the Map built by _renderColumnDrivenTable (key →
+// column-definition). When a column declares ``sortValue(row)`` we
+// call that to extract the comparable; otherwise we fall back to
+// ``row[key]``. The extractor indirection matters because the column
+// key is a display-shorthand (e.g. 'pair', 'age', 'started') that
+// doesn't have to match the underlying data field (symbol,
+// opened_at). Without sortValue the fallback returns undefined for
+// mismatches and the column sorts as a no-op — which is the bug
+// this file path fixes.
+function _applySortToRows(rows, sort, defs) {
   if (!sort || !rows || !rows.length) return rows;
   const { key, dir } = sort;
   const mult = dir === 'asc' ? 1 : -1;
-  const withIdx = rows.map((r, i) => [r, i]);
+  const colDef = defs && typeof defs.get === 'function' ? defs.get(key) : null;
+  const extract = colDef && typeof colDef.sortValue === 'function'
+    ? colDef.sortValue
+    : (r) => (r == null ? null : r[key]);
+  const withIdx = rows.map((r, i) => [extract(r), i, r]);
   withIdx.sort((a, b) => {
-    const va = a[0] == null ? null : a[0][key];
-    const vb = b[0] == null ? null : b[0][key];
+    const va = a[0];
+    const vb = b[0];
     if (va == null && vb == null) return a[1] - b[1];
     if (va == null) return 1;
     if (vb == null) return -1;
@@ -910,7 +949,7 @@ function _applySortToRows(rows, sort) {
     if (sa === sb) return a[1] - b[1];
     return (sa < sb ? -1 : 1) * mult;
   });
-  return withIdx.map((p) => p[0]);
+  return withIdx.map((p) => p[2]);
 }
 
 function getActiveDealsColumns() {
@@ -928,25 +967,45 @@ function saveActiveDealsColumns(cols) {
 // commit only adds the column array + render path.
 const CLOSED_DEALS_COLUMNS = [
   { key: 'deal_id',     label: 'Deal ID',
-    cell: d => `<td class="muted-cell">${safeText(d.id)}</td>` },
+    cell: d => `<td class="muted-cell">${safeText(d.id)}</td>`,
+    sortValue: d => d.id || '' },
   { key: 'side',        label: 'Side',
-    cell: d => `<td>${safeText((d.side || '—').toUpperCase())}</td>` },
+    cell: d => `<td>${safeText((d.side || '—').toUpperCase())}</td>`,
+    sortValue: d => d.side || '' },
   { key: 'avg_entry',   label: 'Avg Entry',
-    cell: d => `<td>${fmtPrice(d.avg_entry_price || d.entry_price)}</td>` },
+    cell: d => `<td>${fmtPrice(d.avg_entry_price || d.entry_price)}</td>`,
+    sortValue: d => {
+      const v = d.avg_entry_price != null ? d.avg_entry_price : d.entry_price;
+      return v == null ? null : Number(v);
+    } },
   { key: 'close_price', label: 'Close Price',
-    cell: d => `<td>${fmtPrice(d.close_price)}</td>` },
+    cell: d => `<td>${fmtPrice(d.close_price)}</td>`,
+    sortValue: d => (d.close_price == null ? null : Number(d.close_price)) },
   { key: 'pnl_btc',     label: 'PnL BTC',
-    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
+    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>`,
+    sortValue: d => (d.pnl_btc == null ? null : Number(d.pnl_btc)) },
   { key: 'pnl_pct',     label: 'PnL %',
-    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
+    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>`,
+    sortValue: d => (d.pnl_pct == null ? null : Number(d.pnl_pct)) },
   { key: 'reason',      label: 'Reason',
-    cell: d => `<td>${reasonBadge(d.close_reason)}</td>` },
+    cell: d => `<td>${reasonBadge(d.close_reason)}</td>`,
+    sortValue: d => d.close_reason || '' },
   { key: 'opened',      label: 'Start Date',
-    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>` },
+    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>`,
+    sortValue: d => _sortTs(d.opened_at) },
   { key: 'closed',      label: 'Close Date',
-    cell: d => `<td class="muted-cell" title="${safeText(d.closed_at || '')}">${formatDateTime(d.closed_at)}</td>` },
+    cell: d => `<td class="muted-cell" title="${safeText(d.closed_at || '')}">${formatDateTime(d.closed_at)}</td>`,
+    sortValue: d => _sortTs(d.closed_at) },
+  // Duration = closed_at − opened_at in ms; null when either end is
+  // missing so deals that haven't closed yet sink to the bottom via
+  // the null-last rule in _applySortToRows.
   { key: 'duration',    label: 'Duration',
-    cell: d => `<td class="muted-cell">${formatDuration(d.opened_at, d.closed_at)}</td>` },
+    cell: d => `<td class="muted-cell">${formatDuration(d.opened_at, d.closed_at)}</td>`,
+    sortValue: d => {
+      const a = _sortTs(d.opened_at);
+      const b = _sortTs(d.closed_at);
+      return (a == null || b == null) ? null : b - a;
+    } },
 ];
 const CLOSED_DEALS_LS_KEY = 'reverto.closed_deals_columns';
 
@@ -961,18 +1020,20 @@ function _renderColumnDrivenTable(theadId, tbodyId, lsKey, defaults, rows, empty
   const cols = loadColumns(lsKey, defaults).filter(c => c.visible);
   const defs = new Map(defaults.map(c => [c.key, c]));
   const sort = loadSort(lsKey);
-  const sortedRows = _applySortToRows(rows, sort);
+  const sortedRows = _applySortToRows(rows, sort, defs);
   const onResort = (opts && typeof opts.onResort === 'function') ? opts.onResort : null;
   if (head) {
     head.innerHTML = cols.map((c, i) => {
       const isSorted = sort && sort.key === c.key;
       const arrow = isSorted ? (sort.dir === 'asc' ? '▲' : '▼') : '';
-      // Action columns (no label, just buttons) shouldn't participate
-      // in sort — their data isn't a comparable value. We still keep
-      // them draggable for reorder, just without the sort affordance.
+      // A column only participates in sort when it has BOTH a
+      // non-empty label (so there's a header to click) AND a
+      // sortValue extractor (so there's something meaningful to
+      // compare). Action-button columns have neither; they remain
+      // draggable for reorder but are not sortable.
       const def = defs.get(c.key) || c;
       const label = def.label || '';
-      const sortable = label !== '';
+      const sortable = label !== '' && typeof def.sortValue === 'function';
       const sortedCls = isSorted ? ` sorted sorted-${sort.dir}` : '';
       const sortableCls = sortable ? ' sortable' : '';
       return `<th draggable="true" data-col-idx="${i}" data-col-key="${safeText(c.key)}"${sortable ? ' data-sortable="1"' : ''} class="${(sortedCls + sortableCls).trim()}">`
@@ -1022,23 +1083,32 @@ function renderDetailClosedDeals(deals) {
 // already in the page header.
 const DETAIL_OPEN_DEALS_COLUMNS = [
   { key: 'deal_id',   label: 'Deal ID',
-    cell: d => `<td class="deal-id-cell">${safeText(d.id)}</td>` },
+    cell: d => `<td class="deal-id-cell">${safeText(d.id)}</td>`,
+    sortValue: d => d.id || '' },
   { key: 'pair',      label: 'Pair',
-    cell: d => `<td>${safeText(d.symbol || '—')}</td>` },
+    cell: d => `<td>${safeText(d.symbol || '—')}</td>`,
+    sortValue: d => d.symbol || '' },
   { key: 'entry',     label: 'Entry',
-    cell: d => `<td>${fmtPrice(d.entry_price)}</td>` },
+    cell: d => `<td>${fmtPrice(d.entry_price)}</td>`,
+    sortValue: d => (d.entry_price == null ? null : Number(d.entry_price)) },
   { key: 'avg_entry', label: 'Avg Entry',
-    cell: d => `<td>${fmtPrice(d.avg_entry_price)}</td>` },
+    cell: d => `<td>${fmtPrice(d.avg_entry_price)}</td>`,
+    sortValue: d => (d.avg_entry_price == null ? null : Number(d.avg_entry_price)) },
   { key: 'orders',    label: 'Orders',
-    cell: d => `<td>${d.order_count}</td>` },
+    cell: d => `<td>${d.order_count}</td>`,
+    sortValue: d => (d.order_count == null ? null : Number(d.order_count)) },
   { key: 'pnl_btc',   label: 'PnL BTC',
-    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>` },
+    cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>`,
+    sortValue: d => (d.pnl_btc == null ? null : Number(d.pnl_btc)) },
   { key: 'pnl_pct',   label: 'PnL %',
-    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>` },
+    cell: d => `<td>${fmtPct(d.pnl_pct)}</td>`,
+    sortValue: d => (d.pnl_pct == null ? null : Number(d.pnl_pct)) },
   { key: 'started',   label: 'Start Date',
-    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>` },
+    cell: d => `<td class="muted-cell" title="${safeText(d.opened_at || '')}">${formatDateTime(d.opened_at)}</td>`,
+    sortValue: d => _sortTs(d.opened_at) },
   { key: 'age',       label: 'Age',
-    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>` },
+    cell: d => `<td class="muted-cell">${timeAgo(d.opened_at)}</td>`,
+    sortValue: d => _sortTs(d.opened_at) },
   { key: 'actions',  label: '',
     cell: d => `<td class="deal-actions-cell">` +
       `<button class="deal-btn deal-btn-edit" data-slug="${safeText(d.bot_slug || currentSlug || '')}" data-deal="${safeText(d.id)}" title="Edit">✎</button>` +
