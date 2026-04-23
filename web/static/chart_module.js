@@ -1550,11 +1550,451 @@ function createPanelChart(container, config) {
 }
 
 // ── Public namespace ──────────────────────────────────────────────────────
+// ── Workspace open-deals-panel factory ────────────────────────────────────
+// PR 4: a "global" (no bot-binding) panel that lists all currently-open
+// deals across the user's bots in a sortable, column-configurable
+// table. Each open-deals-panel keeps its own visibleColumns /
+// columnOrder / sort inside layout_json — two panels in the same
+// workspace show the same data-set but can be configured
+// independently.
+//
+// Column definitions come in via config.columnDefs (app.js passes
+// ACTIVE_DEALS_COLUMNS here, so cell renderers + sortValue
+// extractors stay in one place). Action-button clicks ride the same
+// document-level ``.deal-btn`` delegate that the Active Deals page
+// uses — no extra listeners per panel.
+
+const OPEN_DEALS_DEFAULT_VISIBLE = ['bot', 'pair', 'pnl_pct', 'age', 'actions'];
+const OPEN_DEALS_REFETCH_DEBOUNCE_MS = 500;
+
+function _odStableSort(rows, sort, colDefsMap) {
+  if (!sort || !rows || !rows.length) return rows;
+  const { key, dir } = sort;
+  const mult = dir === 'asc' ? 1 : -1;
+  const colDef = colDefsMap.get(key);
+  const extract = colDef && typeof colDef.sortValue === 'function'
+    ? colDef.sortValue
+    : (r) => (r == null ? null : r[key]);
+  const withIdx = rows.map((r, i) => [extract(r), i, r]);
+  withIdx.sort((a, b) => {
+    const va = a[0], vb = b[0];
+    if (va == null && vb == null) return a[1] - b[1];
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') {
+      if (va === vb) return a[1] - b[1];
+      return (va - vb) * mult;
+    }
+    const sa = String(va).toLowerCase();
+    const sb = String(vb).toLowerCase();
+    if (sa === sb) return a[1] - b[1];
+    return (sa < sb ? -1 : 1) * mult;
+  });
+  return withIdx.map((p) => p[2]);
+}
+
+function createOpenDealsPanel(container, config) {
+  const cfg = config || {};
+  const columnDefs = Array.isArray(cfg.columnDefs) ? cfg.columnDefs : [];
+  const allKeys = columnDefs.map((c) => c.key);
+  const defsMap = new Map(columnDefs.map((c) => [c.key, c]));
+
+  // Resolve visibleColumns + columnOrder, defaulting when the saved
+  // layout is new / missing either. Unknown keys (older layout from
+  // a build with a different column set) are filtered out so the
+  // table can't crash on a dangling key.
+  const visibleInit = Array.isArray(cfg.visibleColumns) && cfg.visibleColumns.length
+    ? cfg.visibleColumns.filter((k) => defsMap.has(k))
+    : OPEN_DEALS_DEFAULT_VISIBLE.filter((k) => defsMap.has(k));
+  const orderInit = Array.isArray(cfg.columnOrder) && cfg.columnOrder.length
+    ? [
+        // Keep stored order for keys we still know about, then append
+        // any columns that were added to the default set since the
+        // layout was saved (so new columns surface as hidden-but-
+        // orderable after the known tail).
+        ...cfg.columnOrder.filter((k) => defsMap.has(k)),
+        ...allKeys.filter((k) => !cfg.columnOrder.includes(k)),
+      ]
+    : allKeys.slice();
+
+  const state = {
+    panelId: cfg.panelId,
+    visibleColumns: visibleInit.slice(),
+    columnOrder: orderInit.slice(),
+    sort: cfg.sort && cfg.sort.key && (cfg.sort.dir === 'asc' || cfg.sort.dir === 'desc')
+      ? { key: cfg.sort.key, dir: cfg.sort.dir }
+      : null,
+    onRemove: typeof cfg.onRemove === 'function' ? cfg.onRemove : null,
+    onConfigChange: typeof cfg.onConfigChange === 'function' ? cfg.onConfigChange : null,
+    _rows: [],
+    _destroyed: false,
+    _fetchInFlight: false,
+    _debounceTimer: null,
+    _lastHeaderDragEndAt: 0,
+    _popoverOpen: false,
+  };
+
+  // ── DOM scaffold ──────────────────────────────────────────────────
+  const panel = document.createElement('div');
+  panel.className = 'panel panel-open-deals';
+
+  const header = document.createElement('div');
+  header.className = 'panel-header';
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'panel-title-wrap';
+  const title = document.createElement('span');
+  title.className = 'panel-title';
+  title.textContent = 'Open deals';
+  const subtitle = document.createElement('span');
+  subtitle.className = 'panel-subtitle';
+  subtitle.style.marginLeft = '8px';
+  titleWrap.appendChild(title);
+  titleWrap.appendChild(subtitle);
+
+  const headerRight = document.createElement('div');
+  headerRight.className = 'panel-header-right';
+  const settingsBtn = document.createElement('button');
+  settingsBtn.type = 'button';
+  settingsBtn.className = 'panel-settings-btn';
+  settingsBtn.setAttribute('aria-label', 'Panel settings');
+  settingsBtn.textContent = '⚙';
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'panel-remove';
+  removeBtn.setAttribute('aria-label', 'Remove panel');
+  removeBtn.textContent = '×';
+  headerRight.appendChild(settingsBtn);
+  headerRight.appendChild(removeBtn);
+
+  header.appendChild(titleWrap);
+  header.appendChild(headerRight);
+
+  const body = document.createElement('div');
+  body.className = 'panel-body panel-open-deals-body';
+
+  const table = document.createElement('table');
+  table.className = 'panel-deals-table';
+  const thead = document.createElement('thead');
+  const theadRow = document.createElement('tr');
+  thead.appendChild(theadRow);
+  const tbody = document.createElement('tbody');
+  table.appendChild(thead);
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  const popover = document.createElement('div');
+  popover.className = 'panel-settings-popover hidden';
+
+  panel.appendChild(header);
+  panel.appendChild(body);
+  panel.appendChild(popover);
+  container.appendChild(panel);
+
+  removeBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (state.onRemove) state.onRemove();
+  });
+
+  // ── Rendering ─────────────────────────────────────────────────────
+  function _orderedVisibleKeys() {
+    // Column order controls position; visibility is a separate set.
+    // Filter the order list down to keys that are (a) still known
+    // and (b) currently visible.
+    const visible = new Set(state.visibleColumns);
+    return state.columnOrder.filter((k) => defsMap.has(k) && visible.has(k));
+  }
+
+  function _renderHead() {
+    const keys = _orderedVisibleKeys();
+    theadRow.innerHTML = keys.map((k) => {
+      const def = defsMap.get(k);
+      const label = (def && def.label) || '';
+      const isSorted = state.sort && state.sort.key === k;
+      const arrow = isSorted ? (state.sort.dir === 'asc' ? '▲' : '▼') : '';
+      const sortable = label !== '' && typeof def.sortValue === 'function';
+      const sortedCls = isSorted ? ` sorted sorted-${state.sort.dir}` : '';
+      const sortableCls = sortable ? ' sortable' : '';
+      return `<th draggable="true" data-col-key="${_odEscape(k)}"${sortable ? ' data-sortable="1"' : ''} class="${(sortedCls + sortableCls).trim()}">`
+        + `<span class="col-label">${_odEscape(label)}</span>`
+        + `<span class="col-sort-arrow">${arrow}</span>`
+        + `</th>`;
+    }).join('');
+    _attachHeadHandlers();
+  }
+
+  function _renderBody() {
+    const keys = _orderedVisibleKeys();
+    const colSpan = Math.max(1, keys.length);
+    const sorted = _odStableSort(state._rows, state.sort, defsMap);
+    if (!sorted.length) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="${colSpan}">No open deals across any bot</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = sorted.map((row) => {
+      const cells = keys.map((k) => {
+        const def = defsMap.get(k);
+        return def && typeof def.cell === 'function' ? def.cell(row) : '<td></td>';
+      }).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('');
+  }
+
+  function _renderSubtitle() {
+    const n = state._rows.length;
+    subtitle.textContent = `${n} open`;
+  }
+
+  function _render() {
+    _renderSubtitle();
+    _renderHead();
+    _renderBody();
+  }
+
+  // ── Head event handlers (sort + drag-to-reorder) ─────────────────
+  function _attachHeadHandlers() {
+    const ths = Array.from(theadRow.querySelectorAll('th'));
+    ths.forEach((th) => {
+      // Drag-to-reorder — mirrors _attachHeaderDragHandlers in app.js
+      // but uses panel-local state (columnOrder) instead of the
+      // localStorage-backed loadColumns/saveColumns pair.
+      th.addEventListener('dragstart', (e) => {
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', th.dataset.colKey || ''); } catch (err) {}
+        th.classList.add('dragging');
+      });
+      th.addEventListener('dragend', () => {
+        th.classList.remove('dragging');
+        ths.forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+        state._lastHeaderDragEndAt = Date.now();
+      });
+      th.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const half = th.offsetWidth / 2;
+        const before = e.offsetX < half;
+        ths.forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+        th.classList.add(before ? 'drop-before' : 'drop-after');
+      });
+      th.addEventListener('dragleave', () => {
+        th.classList.remove('drop-before', 'drop-after');
+      });
+      th.addEventListener('drop', (e) => {
+        e.preventDefault();
+        ths.forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+        let srcKey = '';
+        try { srcKey = e.dataTransfer.getData('text/plain'); } catch (err) {}
+        const dstKey = th.dataset.colKey;
+        if (!srcKey || !dstKey || srcKey === dstKey) return;
+        const a = state.columnOrder.indexOf(srcKey);
+        const b = state.columnOrder.indexOf(dstKey);
+        if (a < 0 || b < 0) return;
+        // Swap the two keys — matches the app.js helper's semantics
+        // so hidden columns keep their original slots instead of
+        // shuffling into surprise positions on toggle-back.
+        const next = state.columnOrder.slice();
+        [next[a], next[b]] = [next[b], next[a]];
+        state.columnOrder = next;
+        _render();
+        if (state.onConfigChange) state.onConfigChange();
+      });
+
+      // Click-to-sort — asc → desc → unsorted cycle per column.
+      if (th.dataset.sortable !== '1') return;
+      th.addEventListener('click', (e) => {
+        if (Date.now() - state._lastHeaderDragEndAt < 250) return;
+        if (e.defaultPrevented) return;
+        const key = th.dataset.colKey;
+        if (!key) return;
+        let next;
+        if (!state.sort || state.sort.key !== key) next = { key, dir: 'asc' };
+        else if (state.sort.dir === 'asc')         next = { key, dir: 'desc' };
+        else                                        next = null;
+        state.sort = next;
+        _render();
+        if (state.onConfigChange) state.onConfigChange();
+      });
+    });
+  }
+
+  // ── Settings popover ─────────────────────────────────────────────
+  function _buildPopover() {
+    popover.innerHTML = '';
+    const label = document.createElement('div');
+    label.className = 'form-row form-row-block';
+    const lbl = document.createElement('label');
+    lbl.textContent = 'Visible columns';
+    label.appendChild(lbl);
+    const grid = document.createElement('div');
+    grid.className = 'panel-ind-grid';
+    // Iterate by column order so the checkboxes follow the actual
+    // table order — drag-to-reorder in the header also updates this
+    // list on the next open.
+    for (const k of state.columnOrder) {
+      const def = defsMap.get(k);
+      if (!def) continue;
+      const item = document.createElement('label');
+      item.className = 'panel-ind-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.colKey = k;
+      cb.checked = state.visibleColumns.includes(k);
+      item.appendChild(cb);
+      const span = document.createElement('span');
+      span.textContent = def.label || '(actions)';
+      item.appendChild(span);
+      grid.appendChild(item);
+    }
+    label.appendChild(grid);
+    popover.appendChild(label);
+
+    const actions = document.createElement('div');
+    actions.className = 'panel-settings-actions';
+    const apply = document.createElement('button');
+    apply.type = 'button';
+    apply.className = 'hbtn hbtn-theme btn-accent';
+    apply.textContent = 'Apply';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'hbtn hbtn-theme';
+    close.textContent = 'Close';
+    actions.appendChild(apply);
+    actions.appendChild(close);
+    popover.appendChild(actions);
+
+    close.addEventListener('click', (e) => {
+      e.preventDefault();
+      popover.classList.add('hidden');
+      state._popoverOpen = false;
+    });
+    apply.addEventListener('click', (e) => {
+      e.preventDefault();
+      const next = Array.from(grid.querySelectorAll('input[type=checkbox]'))
+        .filter((c) => c.checked)
+        .map((c) => c.dataset.colKey);
+      const changed = next.length !== state.visibleColumns.length
+        || next.some((k, i) => state.visibleColumns[i] !== k);
+      state.visibleColumns = next;
+      _render();
+      popover.classList.add('hidden');
+      state._popoverOpen = false;
+      if (changed && state.onConfigChange) state.onConfigChange();
+    });
+  }
+
+  settingsBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (popover.classList.contains('hidden')) {
+      _buildPopover();
+      popover.classList.remove('hidden');
+      state._popoverOpen = true;
+    } else {
+      popover.classList.add('hidden');
+      state._popoverOpen = false;
+    }
+  });
+
+  // ── Data fetch + refresh ─────────────────────────────────────────
+  async function _refetch() {
+    if (state._destroyed || state._fetchInFlight) return;
+    state._fetchInFlight = true;
+    try {
+      const r = await fetch('/api/bots');
+      if (!r.ok) return;
+      const d = await r.json();
+      if (state._destroyed) return;
+      state._rows = Array.isArray(d && d.all_open_deals) ? d.all_open_deals : [];
+      _render();
+    } catch (e) {
+      // Network blip — leave the last-rendered rows in place. The
+      // next WS push or manual settings-apply will re-kick the
+      // fetcher, so we don't need a retry loop here.
+    } finally {
+      state._fetchInFlight = false;
+    }
+  }
+
+  function _scheduleRefetch() {
+    if (state._destroyed) return;
+    if (state._debounceTimer) clearTimeout(state._debounceTimer);
+    state._debounceTimer = setTimeout(() => {
+      state._debounceTimer = null;
+      _refetch();
+    }, OPEN_DEALS_REFETCH_DEBOUNCE_MS);
+  }
+
+  // ── Public handle ────────────────────────────────────────────────
+  const api = {
+    panelId: state.panelId,
+    get element() { return panel; },
+
+    async init() {
+      _render();
+      await _refetch();
+    },
+
+    handleStateUpdate(_payload) {
+      // Any bot_state push means "a deal may have opened/closed on
+      // some bot" — the panel shows cross-bot open deals, so we
+      // debounce-refetch the authoritative /api/bots view rather
+      // than trying to reconcile incrementally from the single-bot
+      // payload. 500ms mirrors the debounce we use elsewhere for
+      // trade-event bursts; multiple pushes inside the window
+      // collapse into one network round-trip.
+      _scheduleRefetch();
+    },
+
+    resize() {
+      // Table reflows via CSS width:100% — nothing for the factory
+      // to do on panel resize. Kept for handle-API parity with
+      // createPanelChart.
+    },
+
+    getConfig() {
+      return {
+        visibleColumns: state.visibleColumns.slice(),
+        columnOrder: state.columnOrder.slice(),
+        sort: state.sort ? { key: state.sort.key, dir: state.sort.dir } : null,
+      };
+    },
+
+    destroy() {
+      if (state._destroyed) return;
+      state._destroyed = true;
+      if (state._debounceTimer) {
+        clearTimeout(state._debounceTimer);
+        state._debounceTimer = null;
+      }
+      // No WS-unsubscribe — the workspace module owns the single
+      // /ws/state socket and fans out to panels; destroying one
+      // panel just stops its handleStateUpdate from scheduling
+      // further refetches (guarded by state._destroyed above).
+    },
+  };
+  return api;
+}
+
+// Minimal HTML-escape for the small amount of user-controlled text
+// the open-deals-panel emits (column labels + keys come from
+// columnDefs which are defined in app.js; deal-row cell rendering
+// goes through the column cell functions which have their own
+// safeText guards). Kept local so chart_module.js doesn't need a
+// runtime dependency on app.js's helpers.
+function _odEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ── Public namespace ──────────────────────────────────────────────────────
 // The functions above are still available as plain globals (app.js
 // call sites use them that way) — the namespace is additive, giving
-// future code an explicit import target. PR 3b grows this with
-// createPanelChart, the chart-instance factory consumed by the
-// Workspace chart-panel.
+// future code an explicit import target. PR 3b grew this with
+// createPanelChart, PR 4 adds createOpenDealsPanel.
 window.RevertoChart = Object.assign(window.RevertoChart || {}, {
   calcEMALine,
   calcRSILine,
@@ -1566,6 +2006,7 @@ window.RevertoChart = Object.assign(window.RevertoChart || {}, {
   calcParabolicSAR,
   calcMarketStructureMarkers,
   createPanelChart,
+  createOpenDealsPanel,
   PANEL_INDICATOR_TYPES,
   PANEL_INDICATOR_LABELS,
   PANEL_TIMEFRAMES,

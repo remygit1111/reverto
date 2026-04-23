@@ -317,3 +317,84 @@
   gap: 6px;
   margin-top: 4px;
 }
+
+/* ── Open-deals panel ─────────────────────────────────────────────────────
+   PR 4: compact deal-table that fills the panel body edge-to-edge. The
+   panel reuses .panel-header / .panel-settings-popover / .panel-subtitle
+   from the chart-panel rules above; only the body + table are new.
+   .panel-body gives the body a default flex:1 so the scrollable table
+   region absorbs the remaining cell height. */
+
+.panel-open-deals-body {
+  padding: 0;
+  overflow: auto;
+}
+
+.panel-deals-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.panel-deals-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: normal;
+  color: var(--text);
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  user-select: none;
+  white-space: nowrap;
+}
+.panel-deals-table tbody td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.panel-deals-table tbody tr:hover {
+  background: var(--surface2);
+}
+.panel-deals-table tbody tr.empty-row td {
+  text-align: center;
+  color: var(--muted);
+  padding: 18px 8px;
+  font-style: italic;
+}
+
+/* Header sort + drag affordances — these mirror the rules in style.css
+   for regular tables but re-declared here so the panel's inlined table
+   picks them up even if the base tbody cascade differs. */
+.panel-deals-table thead th.sortable {
+  cursor: pointer;
+}
+.panel-deals-table thead th .col-sort-arrow {
+  display: inline-block;
+  min-width: 0.6em;
+  margin-left: 4px;
+  font-size: 0.75em;
+  opacity: 0.7;
+}
+.panel-deals-table thead th.sortable:hover .col-sort-arrow {
+  opacity: 1;
+}
+.panel-deals-table thead th.sorted {
+  background: var(--surface);
+}
+.panel-deals-table thead th.sorted .col-sort-arrow {
+  color: var(--accent);
+  opacity: 1;
+}
+.panel-deals-table thead th.dragging { opacity: 0.4; }
+.panel-deals-table thead th.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.panel-deals-table thead th.drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
+}
