@@ -1497,6 +1497,11 @@
 
 <script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://unpkg.com/gridstack@11.5.1/dist/gridstack-all.js"></script>
-<script src="/static/app.js?v=189"></script>
+<!-- chart_module.js hosts the shared indicator-math helpers that
+     all three candle-chart sites use. Must load BEFORE app.js so
+     the top-level function declarations are visible to app.js's
+     call sites at runtime. -->
+<script src="/static/chart_module.js?v=1"></script>
+<script src="/static/app.js?v=190"></script>
 </body>
 </html>
