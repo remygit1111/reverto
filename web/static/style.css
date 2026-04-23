@@ -724,6 +724,21 @@ tr:hover td { background: rgba(128,128,128,.04); }
 /* ── Utility classes vervangen voorheen inline style="..." ─────────────── */
 .hidden { display: none !important; }
 
+/* Hidden to sighted users + screen readers treat it as absent in the
+   tab-order (tabindex="-1" does the latter), but crucially still
+   discoverable by password managers so ``autocomplete="username"``
+   on an otherwise-invisible input anchors a new-password field to
+   the right account. ``display: none`` would make autofill skip it. */
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .modal-overlay {
   display: none;
   position: fixed;

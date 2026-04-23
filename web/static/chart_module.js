@@ -751,6 +751,11 @@ function createPanelChart(container, config) {
     indicators: Array.isArray(cfg.indicators)
       ? cfg.indicators.filter((i) => PANEL_INDICATOR_TYPES.includes(i))
       : [],
+    // PR 5b: optional UTC axis labels. false ⇒ local timezone
+    // (operator's browser), true ⇒ UTC. Persists in layout_json as
+    // ``useUtc``. The per-panel formatter closes over this flag and
+    // is swapped in via applyOptions when the setting toggles.
+    useUtc: Boolean(cfg.useUtc),
     boundBotSlug: cfg.boundBotSlug || null,
     boundBotUserId: cfg.boundBotUserId || null,
     onRemove: typeof cfg.onRemove === 'function' ? cfg.onRemove : null,
@@ -823,8 +828,20 @@ function createPanelChart(container, config) {
 
   const toolbar = document.createElement('div');
   toolbar.className = 'panel-annotations-toolbar';
+  // PR 5b: three new annotation types alongside the existing arrow
+  // + text + delete tools. ``measure`` is a two-click ruler (% +
+  // absolute delta label between the endpoints); ``trendline`` is
+  // a two-click plain line for sloped support/resistance; ``hline``
+  // is a one-click horizontal line spanning the full canvas at the
+  // clicked price. All three persist through the same
+  // /api/db/annotations endpoint the arrow + text annotations
+  // already use — only the ``type`` field differs, and the backend
+  // column is just TEXT.
   const toolbarTools = [
     { tool: 'arrow', label: '→', title: 'Arrow (two clicks)' },
+    { tool: 'trendline', label: '╱', title: 'Trendline (two clicks)' },
+    { tool: 'hline', label: '━', title: 'Horizontal line (one click)' },
+    { tool: 'measure', label: 'M', title: 'Measure — %-change + Δ (two clicks)' },
     { tool: 'text', label: 'T', title: 'Text label' },
     { tool: 'delete', label: '×', title: 'Delete nearest annotation' },
     { tool: 'clear-all', label: 'CA', title: 'Clear all annotations' },
@@ -946,6 +963,21 @@ function createPanelChart(container, config) {
     bindingHint.className = 'panel-binding-hint';
     bindingHint.textContent = '';
 
+    // PR 5b: UTC-axis-labels toggle. Checkbox (label wrapped) so a
+    // click anywhere on the label flips the state; no JS-side
+    // click-on-label plumbing needed. ``data-field`` just keeps
+    // the element searchable via the same pattern as pair/bot.
+    const utcWrap = document.createElement('label');
+    utcWrap.className = 'panel-utc-toggle';
+    const utcInput = document.createElement('input');
+    utcInput.type = 'checkbox';
+    utcInput.checked = !!state.useUtc;
+    utcInput.dataset.field = 'useUtc';
+    const utcText = document.createElement('span');
+    utcText.textContent = 'UTC axis labels';
+    utcWrap.appendChild(utcInput);
+    utcWrap.appendChild(utcText);
+
     const btnRow = document.createElement('div');
     btnRow.className = 'panel-settings-actions';
     const saveBtn = document.createElement('button');
@@ -962,6 +994,7 @@ function createPanelChart(container, config) {
     popover.appendChild(mkRow('Pair', pairInput));
     popover.appendChild(mkRow('Bind to bot', botSel));
     popover.appendChild(bindingHint);
+    popover.appendChild(utcWrap);
     popover.appendChild(btnRow);
 
     // Populate bot list lazily on open; keep reference for later refresh.
@@ -1013,6 +1046,23 @@ function createPanelChart(container, config) {
         // Pair changed → the /api/ticker cache is keyed on pair so
         // we must refetch rather than keep rendering the stale one.
         _tickerFetch();
+      }
+
+      // UTC toggle — re-apply the localization bundle to the LWC
+      // instance so axis labels + crosshair timestamps swap
+      // UTC ↔ local without requiring a candle reload. Safe to run
+      // on every Apply click; LWC no-ops if the formatter
+      // reference is identical (ours always closes over the live
+      // ``state.useUtc`` so the reference is stable).
+      const newUseUtc = !!utcInput.checked;
+      const utcChanged = newUseUtc !== !!state.useUtc;
+      if (utcChanged) {
+        state.useUtc = newUseUtc;
+        try {
+          state._chart.applyOptions({
+            localization: { timeFormatter: _panelTimeFormatter },
+          });
+        } catch (e) { /* best-effort; cosmetic only */ }
       }
 
       if (newBot !== (state.boundBotSlug || '')) {
@@ -1112,6 +1162,28 @@ function createPanelChart(container, config) {
     }
   }
 
+  // ── Timezone formatter ────────────────────────────────────────────
+  // Per-panel axis-label formatter. Mirrors app.js's ``_tzFormatter``
+  // shape (DD-MM-YYYY HH:MM) but closes over ``state.useUtc`` so a
+  // panel-level toggle swaps UTC ↔ local without touching the
+  // global ``_chartTimezone``.
+  function _panelTimeFormatter(ts) {
+    const d = new Date(ts * 1000);
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: state.useUtc ? 'UTC' : undefined,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      }).formatToParts(d);
+      const lookup = {};
+      for (const p of parts) lookup[p.type] = p.value;
+      const hh = lookup.hour === '24' ? '00' : lookup.hour;
+      return `${lookup.day}-${lookup.month}-${lookup.year} ${hh}:${lookup.minute}`;
+    } catch (e) {
+      return d.toISOString().slice(0, 16).replace('T', ' ');
+    }
+  }
+
   // ── Chart init ────────────────────────────────────────────────────
   function _initChart() {
     if (typeof window.LightweightCharts === 'undefined') return false;
@@ -1120,6 +1192,11 @@ function createPanelChart(container, config) {
     const opts = layoutFn ? layoutFn() : {};
     state._chart = LWC.createChart(canvasHost, {
       ...opts,
+      // Per-panel formatter overrides the global one from
+      // _chartLayoutOpts so the UTC toggle works independently per
+      // panel. Shallow-merge: ``localization`` is replaced whole,
+      // which is what we want.
+      localization: { timeFormatter: _panelTimeFormatter },
       width: canvasHost.clientWidth || 300,
       height: canvasHost.clientHeight || 200,
     });
@@ -1557,10 +1634,46 @@ function createPanelChart(container, config) {
     svg.setAttribute('height', String(h));
     svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
     while (svg.firstChild) svg.removeChild(svg.firstChild);
-    const blue = _cssVar('--blue', '#5b8dee');
-    const amber = _cssVar('--amber', '#ffb347');
+    const blue   = _cssVar('--blue',   '#5b8dee');
+    const amber  = _cssVar('--amber',  '#ffb347');
+    const accent = _cssVar('--accent', '#26a69a');
+    const defaultColorFor = (type) => {
+      if (type === 'text') return amber;
+      if (type === 'hline') return amber;
+      if (type === 'measure') return accent;
+      return blue;  // arrow, trendline, unknown
+    };
     for (const a of (state._annotations || [])) {
-      const color = a.color || (a.type === 'text' ? amber : blue);
+      const color = a.color || defaultColorFor(a.type);
+      if (a.type === 'hline') {
+        // Horizontal line: price-only annotation. Spans the full
+        // canvas width at y = _yOfPrice(y1); a small right-side
+        // label shows the price so stacked lines stay
+        // distinguishable. x1 was stored as the click's timestamp
+        // for debuggability but is not consulted here.
+        const y = _yOfPrice(a.y1);
+        if (y == null) continue;
+        const g = _panelSvg('g', { 'data-ann-id': a.id });
+        g.appendChild(_panelSvg('line', {
+          x1: 0, y1: y, x2: w, y2: y,
+          stroke: color, 'stroke-width': 1, 'stroke-dasharray': '4 3',
+        }));
+        const priceTxt = typeof a.y1 === 'number'
+          ? _fmtSidebarPrice(a.y1) : String(a.y1 || '');
+        const tw = Math.max(28, priceTxt.length * 7 + 6);
+        g.appendChild(_panelSvg('rect', {
+          x: w - tw - 4, y: y - 8, width: tw, height: 14,
+          fill: 'rgba(0,0,0,0.6)', rx: 2,
+        }));
+        const t = _panelSvg('text', {
+          x: w - 4 - 3, y: y + 3, fill: color,
+          'font-family': 'monospace', 'font-size': 10, 'text-anchor': 'end',
+        });
+        t.textContent = priceTxt;
+        g.appendChild(t);
+        svg.appendChild(g);
+        continue;
+      }
       const x1 = _xOfTime(a.x1);
       const y1 = _yOfPrice(a.y1);
       if (x1 == null || y1 == null) continue;
@@ -1571,20 +1684,51 @@ function createPanelChart(container, config) {
         text.textContent = a.label || 'text';
         g.appendChild(text);
         svg.appendChild(g);
-      } else if (a.type === 'arrow') {
+      } else if (a.type === 'arrow' || a.type === 'trendline' || a.type === 'measure') {
         const x2 = _xOfTime(a.x2);
         const y2 = _yOfPrice(a.y2);
         if (x2 == null || y2 == null) continue;
         const g = _panelSvg('g', { 'data-ann-id': a.id });
-        g.appendChild(_panelSvg('line', { x1, y1, x2, y2, stroke: color, 'stroke-width': 2 }));
-        const dx = x2 - x1, dy = y2 - y1;
-        const len = Math.sqrt(dx * dx + dy * dy);
-        if (len > 0.01) {
-          const ux = dx / len, uy = dy / len;
-          const bx = x2 - ux * 10, by = y2 - uy * 10;
-          const px = -uy * 5, py = ux * 5;
-          g.appendChild(_panelSvg('polygon', { points: `${x2},${y2} ${bx + px},${by + py} ${bx - px},${by - py}`, fill: color }));
+        const lineAttrs = { x1, y1, x2, y2, stroke: color, 'stroke-width': 2 };
+        if (a.type === 'measure') lineAttrs['stroke-dasharray'] = '4 3';
+        g.appendChild(_panelSvg('line', lineAttrs));
+        if (a.type === 'arrow') {
+          // Arrowhead — shared with the original PR 3b code path.
+          const dx = x2 - x1, dy = y2 - y1;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 0.01) {
+            const ux = dx / len, uy = dy / len;
+            const bx = x2 - ux * 10, by = y2 - uy * 10;
+            const px = -uy * 5, py = ux * 5;
+            g.appendChild(_panelSvg('polygon', { points: `${x2},${y2} ${bx + px},${by + py} ${bx - px},${by - py}`, fill: color }));
+          }
+        } else if (a.type === 'measure') {
+          // Measure: endpoint circles + midpoint label carrying the
+          // absolute + percentage delta. Matches the main-chart
+          // measure session visualisation from app.js.
+          g.appendChild(_panelSvg('circle', { cx: x1, cy: y1, r: 3, fill: color }));
+          g.appendChild(_panelSvg('circle', { cx: x2, cy: y2, r: 3, fill: color }));
+          const p1 = Number(a.y1), p2 = Number(a.y2);
+          if (Number.isFinite(p1) && Number.isFinite(p2) && p1 !== 0) {
+            const abs = p2 - p1;
+            const pct = (abs / p1) * 100;
+            const sign = abs >= 0 ? '+' : '';
+            const label = `${sign}${pct.toFixed(2)}% / ${sign}${abs.toFixed(2)}`;
+            const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+            const tw = label.length * 6.5 + 8;
+            g.appendChild(_panelSvg('rect', {
+              x: mx - tw / 2, y: my - 16, width: tw, height: 14,
+              fill: 'rgba(0,0,0,0.7)', rx: 2,
+            }));
+            const text = _panelSvg('text', {
+              x: mx, y: my - 5, fill: color,
+              'font-family': 'monospace', 'font-size': 11, 'text-anchor': 'middle',
+            });
+            text.textContent = label;
+            g.appendChild(text);
+          }
         }
+        // Trendline has no decoration beyond the line itself.
         svg.appendChild(g);
       }
     }
@@ -1634,8 +1778,13 @@ function createPanelChart(container, config) {
     if (!state._annotations.length) return;
     let tMin = Infinity, tMax = -Infinity, pMin = Infinity, pMax = -Infinity;
     for (const a of state._annotations) {
-      if (a.x1 != null) { tMin = Math.min(tMin, a.x1); tMax = Math.max(tMax, a.x1); }
-      if (a.x2 != null) { tMin = Math.min(tMin, a.x2); tMax = Math.max(tMax, a.x2); }
+      // Skip hlines from the x-axis span calculation — their x1 is
+      // the click timestamp at draw time, which can pollute the
+      // tMin/tMax if the user drew a very old or very new hline.
+      if (a.type !== 'hline') {
+        if (a.x1 != null) { tMin = Math.min(tMin, a.x1); tMax = Math.max(tMax, a.x1); }
+        if (a.x2 != null) { tMin = Math.min(tMin, a.x2); tMax = Math.max(tMax, a.x2); }
+      }
       if (a.y1 != null) { pMin = Math.min(pMin, a.y1); pMax = Math.max(pMax, a.y1); }
       if (a.y2 != null) { pMin = Math.min(pMin, a.y2); pMax = Math.max(pMax, a.y2); }
     }
@@ -1643,9 +1792,17 @@ function createPanelChart(container, config) {
     const pSpan = Math.max(1, pMax - pMin);
     let best = null, bestD = Infinity;
     for (const a of state._annotations) {
-      const dt = ((Number(a.x1) || point.time) - point.time) / tSpan;
-      const dp = ((Number(a.y1) || point.price) - point.price) / pSpan;
-      const d = dt * dt + dp * dp;
+      let d;
+      if (a.type === 'hline') {
+        // Horizontal line: x is irrelevant (line spans full canvas).
+        // Distance is purely the normalised price-delta.
+        const dp = ((Number(a.y1) || point.price) - point.price) / pSpan;
+        d = dp * dp;
+      } else {
+        const dt = ((Number(a.x1) || point.time) - point.time) / tSpan;
+        const dp = ((Number(a.y1) || point.price) - point.price) / pSpan;
+        d = dt * dt + dp * dp;
+      }
       if (d < bestD) { bestD = d; best = a; }
     }
     if (!best) return;
@@ -1679,7 +1836,7 @@ function createPanelChart(container, config) {
     }
   }
 
-  for (const key of ['arrow', 'text', 'delete']) {
+  for (const key of ['arrow', 'trendline', 'hline', 'measure', 'text', 'delete']) {
     toolbarBtns[key].addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1720,19 +1877,43 @@ function createPanelChart(container, config) {
         _setActiveTool('select');
         return;
       }
-      if (state._activeTool === 'arrow') {
+      // Two-click tools share the same "first click stashes the
+      // point, second click persists the annotation" flow. Only the
+      // colour + type field change per tool.
+      const twoClickSpecs = {
+        arrow:     { type: 'arrow',     color: _cssVar('--blue',   '#5b8dee') },
+        trendline: { type: 'trendline', color: _cssVar('--blue',   '#5b8dee') },
+        measure:   { type: 'measure',   color: _cssVar('--accent', '#26a69a') },
+      };
+      const twoClick = twoClickSpecs[state._activeTool];
+      if (twoClick) {
         if (!state._toolFirstPoint) {
           state._toolFirstPoint = point;
         } else {
           _persistAnnotation({
-            type: 'arrow',
+            type: twoClick.type,
             x1: state._toolFirstPoint.time, y1: state._toolFirstPoint.price,
             x2: point.time, y2: point.price,
-            color: _cssVar('--blue', '#5b8dee'),
+            color: twoClick.color,
           });
           state._toolFirstPoint = null;
           _setActiveTool('select');
         }
+        return;
+      }
+      if (state._activeTool === 'hline') {
+        // Single-click horizontal line: x values are irrelevant to
+        // rendering (the line spans the full canvas), but the
+        // backend requires x1 in [0, 2_000_000_000]. Store the
+        // click's timestamp so the row remains debuggable — "when
+        // did the operator draw this" — without affecting the
+        // render.
+        _persistAnnotation({
+          type: 'hline',
+          x1: point.time, y1: point.price,
+          color: _cssVar('--amber', '#ffb347'),
+        });
+        _setActiveTool('select');
         return;
       }
       if (state._activeTool === 'delete') {
@@ -1893,6 +2074,7 @@ function createPanelChart(container, config) {
         indicators: state.indicators.slice(),
         boundBotSlug: state.boundBotSlug,
         boundBotUserId: state.boundBotUserId,
+        useUtc: !!state.useUtc,
       };
     },
 
