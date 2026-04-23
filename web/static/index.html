@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reverto</title>
+<title>Reverto — Bitcoin bots</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=81">
+<link rel="stylesheet" href="/static/style.css?v=82">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
-<link rel="stylesheet" href="/static/workspace.css?v=7">
+<link rel="stylesheet" href="/static/workspace.css?v=8">
 <link rel="stylesheet" href="https://unpkg.com/gridstack@11.5.1/dist/gridstack.min.css">
 </head>
 <body>
@@ -17,7 +17,7 @@
 <!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <header>
   <span class="logo">Reverto</span>
-  <span class="logo-sub" id="hdr-context">Multi-Bot Portal</span>
+  <span class="logo-sub" id="hdr-context">Bitcoin bots. Done seriously.</span>
   <div class="header-spacer"></div>
   <span class="header-pair" id="hdr-pair">BTC/USD</span>
   <span class="header-price" id="hdr-price">—</span>
@@ -406,7 +406,7 @@
   <div class="login-container">
     <div class="login-card">
       <div class="login-logo">REVERTO</div>
-      <div class="login-subtitle">Multi-Bot Portal</div>
+      <div class="login-subtitle">Bitcoin bots. Done seriously.</div>
       <form id="login-form" class="login-form">
         <label for="login-username">Username</label>
         <input id="login-username" type="text" autocomplete="username" required>
@@ -562,10 +562,12 @@
      /api/dashboard/layout endpoints delivered in PR 1. -->
 <div id="view-workspace" class="page">
   <div class="workspace-toolbar">
-    <button id="workspace-add-panel" type="button" class="hbtn hbtn-theme btn-accent">
-      + Add panel
-    </button>
-    <button id="workspace-add-chart" type="button" class="hbtn hbtn-theme">
+    <!-- The generic "+ Add panel" button (placeholder from the PR 2
+         skeleton) was removed once "+ Add chart" (PR 3b) and
+         "+ Add deals" (PR 4) shipped per-type add-buttons. The
+         empty-panel factory stays wired for backwards-compat with
+         old saved layouts that still contain empty panels. -->
+    <button id="workspace-add-chart" type="button" class="hbtn hbtn-theme btn-accent">
       + Add chart
     </button>
     <button id="workspace-add-deals" type="button" class="hbtn hbtn-theme">
@@ -794,6 +796,9 @@
           <button type="button" class="chart-tool" data-wtool="text" title="Text label (saved)" aria-label="Add text label annotation (saved)">T</button>
           <button type="button" class="chart-tool" data-wtool="delete" title="Delete annotation" aria-label="Delete single annotation">&#x1F5D1;</button>
           <button type="button" class="chart-tool chart-tool-clear-all" id="wizard-chart-clear-all" title="Delete all annotations" aria-label="Delete all annotations">&#x1F5D1; Clear all</button>
+          <select id="wizard-chart-tz" class="chart-tz-select" title="Timezone for axis labels + crosshair">
+            <option value="local">Local (browser)</option>
+          </select>
         </div>
         <div id="wizard-chart-wrap" class="chart-main-wrap">
           <div id="wizard-chart" class="wizard-chart-container"></div>
@@ -1179,14 +1184,12 @@
         <button type="button" class="chart-tf-btn" data-tf="4h">4h</button>
         <button type="button" class="chart-tf-btn" data-tf="1d">1d</button>
         <select id="chart-tz" class="chart-tz-select">
-          <option value="UTC">UTC</option>
-          <option value="Europe/Amsterdam">Amsterdam</option>
-          <option value="Europe/London">London</option>
-          <option value="America/New_York">New York</option>
-          <option value="America/Chicago">Chicago</option>
-          <option value="Asia/Tokyo">Tokyo</option>
-          <option value="Asia/Singapore">Singapore</option>
-          <option value="Asia/Hong_Kong">Hong Kong</option>
+          <!-- Options populated from window.RevertoChart.CHART_TIMEZONES
+               on DOMContentLoaded so every chart (main / wizard /
+               backtest-candle / workspace panel) shares one source of
+               truth. Placeholder option renders while JS boots; the
+               SPA swaps it out before the user can interact. -->
+          <option value="local">Local (browser)</option>
         </select>
       </div>
       <button id="chart-clear-deal" class="hbtn hbtn-theme hidden" type="button">Clear deal markers</button>
@@ -1437,6 +1440,11 @@
     </div>
     <div id="bt-results" class="bt-results hidden">
       <div id="bt-open-deals-note" class="bt-info hidden"></div>
+      <div id="bt-candle-toolbar" class="bt-candle-toolbar" style="display:none">
+        <select id="bt-candle-tz" class="chart-tz-select" title="Timezone for axis labels + crosshair">
+          <option value="local">Local (browser)</option>
+        </select>
+      </div>
       <div id="bt-chart-container" class="bt-chart-pane" style="display:none"></div>
       <div id="bt-deal-info" class="bt-deal-info"></div>
       <div class="section-title">Deals</div>
@@ -1516,7 +1524,7 @@
      all three candle-chart sites use. Must load BEFORE app.js so
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
-<script src="/static/chart_module.js?v=8"></script>
-<script src="/static/app.js?v=197"></script>
+<script src="/static/chart_module.js?v=9"></script>
+<script src="/static/app.js?v=198"></script>
 </body>
 </html>
