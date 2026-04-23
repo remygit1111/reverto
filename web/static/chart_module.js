@@ -384,7 +384,12 @@ const PANEL_INDICATOR_LABELS = {
   MARKET_STRUCTURE: 'Market structure',
 };
 
-const PANEL_TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'];
+// Aligned with the backend _CHART_TIMEFRAMES whitelist in web/app.py —
+// 1m/5m are intentionally excluded because Reverto is DCA/swing, not a
+// scalping platform, and the /api/chart endpoint 400s for anything
+// outside this set. A layout saved with a now-invalid timeframe falls
+// back to '1h' on load (see _panelNormalizeTimeframe below).
+const PANEL_TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '12h', '1d', '3d', '1w'];
 
 const PANEL_SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -401,6 +406,15 @@ function _panelNormalizePair(p) {
   if (p.endsWith('USDT')) return p.slice(0, -4) + '/USDT';
   if (p.endsWith('USD')) return p.slice(0, -3) + '/USD';
   return p;
+}
+
+// A layout persisted before the PANEL_TIMEFRAMES narrowing could hold a
+// timeframe that the backend now rejects (1m, 5m were briefly exposed
+// in PR 3b's popover but /api/chart always 400d them). Substitute an
+// unknown value with the default '1h' so the chart loads instead of
+// hitting a guaranteed 400 on every candle fetch.
+function _panelNormalizeTimeframe(tf) {
+  return PANEL_TIMEFRAMES.includes(tf) ? tf : '1h';
 }
 
 function _panelIsoToUnix(iso) {
@@ -443,7 +457,7 @@ function createPanelChart(container, config) {
   const state = {
     panelId: cfg.panelId,
     pair: _panelNormalizePair(cfg.pair || 'BTC/USD'),
-    timeframe: cfg.timeframe || '1h',
+    timeframe: _panelNormalizeTimeframe(cfg.timeframe || '1h'),
     indicators: Array.isArray(cfg.indicators)
       ? cfg.indicators.filter((i) => PANEL_INDICATOR_TYPES.includes(i))
       : [],
@@ -893,13 +907,13 @@ function createPanelChart(container, config) {
     if (has('SUPPORT_RESISTANCE')) {
       const d = PANEL_INDICATOR_DEFAULTS.SUPPORT_RESISTANCE;
       const sr = calcSR(candles, d.left_bars, d.right_bars, d.volume_threshold, d.min_touches);
-      _renderSegmentedLevels(sr.resSeries, '#e53935', 'SUPPORT_RESISTANCE', 'R');
-      _renderSegmentedLevels(sr.supSeries, '#1e88e5', 'SUPPORT_RESISTANCE', 'S');
+      _renderSegmentedLevels(sr.resSeries, '#e53935', 'SUPPORT_RESISTANCE', 'R', 'R');
+      _renderSegmentedLevels(sr.supSeries, '#1e88e5', 'SUPPORT_RESISTANCE', 'S', 'S');
     }
     if (has('QFL')) {
       const d = PANEL_INDICATOR_DEFAULTS.QFL;
       const qfl = calcQFL(candles, d.base_periods, d.pump_periods, d.pump_pct, d.base_crack_pct);
-      _renderSegmentedLevels(qfl.baseSeries, '#f050a0', 'QFL', null);
+      _renderSegmentedLevels(qfl.baseSeries, '#f050a0', 'QFL', null, null);
     }
     if (has('PARABOLIC_SAR')) {
       const d = PANEL_INDICATOR_DEFAULTS.PARABOLIC_SAR;
@@ -954,10 +968,23 @@ function createPanelChart(container, config) {
     _setCombinedMarkers();
   }
 
-  function _renderSegmentedLevels(series, color, typeKey, labelStart) {
+  // Indicator buckets are keyed by type by default, but S/R needs two
+  // coexisting buckets (resistance + support) under the same indicator
+  // type. ``subKey`` is optional; when present, the actual bucket key
+  // becomes `${typeKey}__${subKey}` so each direction owns its own
+  // series list and the self-cleanup loop in _renderSegmentedLevels
+  // doesn't wipe the sibling direction's lines on re-render.
+  function _getIndicatorBucketKeys(typeKey) {
+    return Object.keys(state._indicatorSeries).filter(
+      (k) => k === typeKey || k.startsWith(typeKey + '__'),
+    );
+  }
+
+  function _renderSegmentedLevels(series, color, typeKey, subKey, labelStart) {
     const candles = state._candles;
     const LWC = window.LightweightCharts;
-    const rec = state._indicatorSeries[typeKey] || { main: [], paneSeries: [] };
+    const bucketKey = subKey ? `${typeKey}__${subKey}` : typeKey;
+    const rec = state._indicatorSeries[bucketKey] || { main: [], paneSeries: [] };
     for (const s of (rec.main || [])) {
       try { state._chart.removeSeries(s); } catch (e) {}
     }
@@ -990,7 +1017,7 @@ function createPanelChart(container, config) {
         });
       }
     }
-    state._indicatorSeries[typeKey] = rec;
+    state._indicatorSeries[bucketKey] = rec;
   }
 
   function _setCombinedMarkers() {
