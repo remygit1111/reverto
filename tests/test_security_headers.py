@@ -68,3 +68,25 @@ def test_csp_still_allows_self_and_unpkg():
     csp = r.headers.get("Content-Security-Policy", "")
     assert "connect-src 'self'" in csp
     assert "https://unpkg.com" in csp
+
+
+def test_permissions_policy_header_present():
+    """Audit pd-011 — Permissions-Policy must deny every browser
+    sensor / device API. A trading portal has no legit use for
+    camera/microphone/geolocation/payment etc., so an XSS or
+    compromised third-party script can't prompt the user either.
+    """
+    client = TestClient(app)
+    r = client.get("/health")
+    pp = r.headers.get("Permissions-Policy", "")
+    assert pp, "Permissions-Policy header missing"
+    for directive in (
+        "camera=()",
+        "microphone=()",
+        "geolocation=()",
+        "payment=()",
+        "usb=()",
+    ):
+        assert directive in pp, (
+            f"Permissions-Policy missing {directive!r}: got {pp!r}"
+        )

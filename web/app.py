@@ -1586,6 +1586,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"]        = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"]        = "no-referrer"
+        # Permissions-Policy (audit pd-011) — opt out of every
+        # browser sensor / device API. Reverto is a trading portal:
+        # it has no legit use for camera / microphone / geolocation
+        # / payment / usb / sensors. Denying them here means an XSS
+        # or compromised third-party script can't prompt the user
+        # for those permissions either. Empty allowlist `=()` is
+        # the "deny-all-origins" syntax.
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), "
+            "payment=(), usb=(), bluetooth=(), "
+            "accelerometer=(), gyroscope=(), magnetometer=()"
+        )
         # HSTS — audit r1-075: instruct browsers to pin HTTPS for the
         # portal host. Only emit on an actual HTTPS request so an
         # operator running `make start` on http://localhost doesn't
