@@ -62,8 +62,12 @@ class TestClassifyError:
 class TestRecordTick:
 
     def test_record_tick_increments(self):
-        """record_tick() increases the per-slug counter by exactly 1."""
-        counter = metrics.bot_ticks_total.labels(bot_slug="rt", mode="paper")
+        """record_tick() increases the per-slug counter by exactly 1.
+        Audit r1-033: legacy caller without a user_id lands on the
+        'unknown' bucket."""
+        counter = metrics.bot_ticks_total.labels(
+            user_id="unknown", bot_slug="rt", mode="paper",
+        )
         before = counter._value.get()
         metrics.record_tick("rt", "paper")
         assert counter._value.get() == before + 1
@@ -71,7 +75,7 @@ class TestRecordTick:
     def test_record_tick_error_accepts_exception(self):
         """Passing an exception instance maps via classify_error."""
         c = metrics.bot_tick_errors_total.labels(
-            bot_slug="rt_err", kind="rate_limit",
+            user_id="unknown", bot_slug="rt_err", kind="rate_limit",
         )
         before = c._value.get()
         metrics.record_tick_error("rt_err", ccxt.RateLimitExceeded("x"))
@@ -80,7 +84,7 @@ class TestRecordTick:
     def test_record_tick_error_accepts_label_string(self):
         """Legacy caller path: str label passes through unchanged."""
         c = metrics.bot_tick_errors_total.labels(
-            bot_slug="rt_str", kind="legacy_label",
+            user_id="unknown", bot_slug="rt_str", kind="legacy_label",
         )
         before = c._value.get()
         metrics.record_tick_error("rt_str", "legacy_label")
@@ -91,15 +95,52 @@ class TestGaugeSetters:
 
     def test_set_balance(self):
         metrics.set_balance("gb", 0.12345)
-        assert metrics.bot_balance_btc.labels(bot_slug="gb")._value.get() == 0.12345
+        assert metrics.bot_balance_btc.labels(
+            user_id="unknown", bot_slug="gb",
+        )._value.get() == 0.12345
 
     def test_set_open_deals(self):
         metrics.set_open_deals("gd", 3)
-        assert metrics.bot_open_deals.labels(bot_slug="gd")._value.get() == 3
+        assert metrics.bot_open_deals.labels(
+            user_id="unknown", bot_slug="gd",
+        )._value.get() == 3
 
     def test_set_drawdown_pct(self):
         metrics.set_drawdown_pct("gp", 7.5)
-        assert metrics.bot_drawdown_pct.labels(bot_slug="gp")._value.get() == 7.5
+        assert metrics.bot_drawdown_pct.labels(
+            user_id="unknown", bot_slug="gp",
+        )._value.get() == 7.5
+
+
+class TestUserIdLabel:
+    """Audit r1-033: every bot-scoped metric carries a user_id
+    label so multi-tenant deploys can slice by tenant."""
+
+    def test_record_tick_with_user_id_uses_label(self):
+        metrics.record_tick("u_rt", "paper", user_id=42)
+        counter = metrics.bot_ticks_total.labels(
+            user_id="42", bot_slug="u_rt", mode="paper",
+        )
+        assert counter._value.get() >= 1
+
+    def test_user_id_none_falls_back_to_unknown(self):
+        metrics.record_tick("u_none", "paper", user_id=None)
+        counter = metrics.bot_ticks_total.labels(
+            user_id="unknown", bot_slug="u_none", mode="paper",
+        )
+        assert counter._value.get() >= 1
+
+    def test_two_users_same_slug_have_separate_series(self):
+        metrics.set_balance("shared_slug", 1.1, user_id=1)
+        metrics.set_balance("shared_slug", 2.2, user_id=2)
+        v1 = metrics.bot_balance_btc.labels(
+            user_id="1", bot_slug="shared_slug",
+        )._value.get()
+        v2 = metrics.bot_balance_btc.labels(
+            user_id="2", bot_slug="shared_slug",
+        )._value.get()
+        assert v1 == 1.1
+        assert v2 == 2.2
 
 
 # ── /metrics endpoint ───────────────────────────────────────────────────────

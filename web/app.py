@@ -4,6 +4,7 @@
 # Manages bot processes via start/stop API.
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -20,6 +21,7 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from config.config_loader import load_bot_config
 from config.models import BotConfig, Mode
@@ -149,6 +151,25 @@ _SESSION_COOKIE = "reverto_session"
 _SESSION_TTL = 86400  # 24h
 _SESSION_SALT = "reverto.session.v1"
 _session_serializer = URLSafeTimedSerializer(_SECRET_KEY, salt=_SESSION_SALT)
+
+# Audit r1-073: double-submit cookie CSRF defence. The login
+# endpoint mints a random token, sets it as a non-HttpOnly
+# cookie (so the SPA's JS can read it), and CSRFMiddleware
+# compares it against the ``X-CSRF-Token`` header on every
+# mutating request. This adds defence-in-depth alongside the
+# existing SameSite=strict cookies; a future subdomain-takeover
+# or partial-SameSite-enforcement scenario would need to defeat
+# both layers to hijack a session.
+_CSRF_COOKIE = "reverto_csrf"
+_CSRF_HEADER = "X-CSRF-Token"
+_CSRF_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Paths that opt out of CSRF check — unauth-reachable endpoints
+# where the client has no way to know the token yet (login) or
+# where the request shape is purely read-like (logout just bumps
+# an epoch; missing token can't cause a meaningful side-effect).
+_CSRF_EXEMPT_PATHS = frozenset({
+    "/auth/login",
+})
 
 # Secure-cookie flag default. Cookies are marked secure (HTTPS-only) by
 # default; this protects production deployments behind a TLS reverse
@@ -479,9 +500,67 @@ if not _audit_logger.handlers:
     _audit_logger.addHandler(_audit_handler)
 
 
-def _audit(action: str, slug: str = "-", key_hint: str = "-") -> None:
-    """Schrijf één regel naar de audit log."""
+def _audit(
+    action: str,
+    slug: str = "-",
+    key_hint: str = "-",
+    user_id: Optional[int] = None,
+) -> None:
+    """Append one record to the audit trail.
+
+    Audit r1-031: dual-write. The legacy pipe-delimited line goes
+    to ``logs/audit.log`` (RotatingFileHandler, grep-friendly) so
+    existing tooling keeps working. A structured JSONL record
+    lands in ``logs/audit.jsonl`` (parser-friendly — Loki, Vector,
+    DataDog agents can ingest it without regex).
+
+    If ``user_id`` is provided, a *secondary* JSONL record also
+    lands in ``logs/<user_id>/audit.jsonl`` so per-tenant audit
+    pulls are a single file read instead of a grep over the global
+    log. Callers don't have to pass user_id — legacy call sites
+    that omit it still produce the global JSONL + pipe lines
+    (just no per-user copy).
+
+    The JSON record embeds the current request id (r1-034) so
+    an operator correlating an audit event with surrounding
+    portal-log lines can filter both streams on the same id.
+    """
+    # Pipe-format (legacy, grep-friendly).
     _audit_logger.info("%s | %s | %s", action, slug, key_hint)
+
+    # JSONL — dual-write. Failures stay local to the audit path;
+    # an unwritable logs/ dir must never break the mutating
+    # endpoint that invoked us.
+    ts = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "ts": ts,
+        "action": action,
+        "slug": slug,
+        "user": key_hint,
+        "user_id": user_id,
+        "request_id": _request_id_ctx.get(),
+    }
+    line = json.dumps(entry, separators=(",", ":")) + "\n"
+    try:
+        with open(LOG_DIR / "audit.jsonl", "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError as e:
+        logger.debug("audit.jsonl write failed: %s", e)
+
+    # Per-user split — only when an explicit user_id was passed
+    # by the caller. Deriving user_id from ``key_hint`` string
+    # parsing would be fragile (session:<username> vs apikey:
+    # <hint> vs "-"), so we keep it opt-in at the call-site.
+    if user_id is not None:
+        try:
+            user_dir = paths.user_logs_dir(user_id)
+            with open(user_dir / "audit.jsonl", "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError as e:
+            logger.debug(
+                "per-user audit.jsonl write failed for user=%d: %s",
+                user_id, e,
+            )
 
 
 def _log_to_bot_log(user_id: int, slug: str, line: str) -> None:
@@ -1286,6 +1365,124 @@ async def restart_bot(user_id: int, slug: str) -> dict:
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 
+# ── Request-ID context (audit r1-034) ───────────────────────────────────────
+# contextvar so every logger call during a request's lifecycle can
+# include the same ID. Set by RequestIdMiddleware, read by the
+# ``_RequestIdFilter`` attached to the root logger. Default "-" means
+# "no request context" (background tasks, module-import, test
+# fixtures that don't go through the middleware).
+_request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "reverto_request_id", default="-",
+)
+
+
+def current_request_id() -> str:
+    """Accessor used by ``_audit`` (r1-031) and any other code that
+    wants to correlate records. Returns ``'-'`` outside a request."""
+    return _request_id_ctx.get()
+
+
+class _RequestIdFilter(logging.Filter):
+    """Injects ``record.request_id`` on every log record so the
+    formatter can include it. Filter-based attach instead of
+    ``logging.setLogRecordFactory`` so we don't stomp on unrelated
+    attributes a third-party library may also set."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_ctx.get()
+        return True
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Assign a 12-char request-id to every HTTP request. If the
+    caller sent ``X-Request-Id``, honour it so an upstream proxy /
+    tracing tool can stitch logs across service boundaries;
+    otherwise mint a fresh one from uuid4().hex[:12]. The id lands
+    back on the response as ``X-Request-Id`` for the client. Audit
+    r1-034.
+    """
+
+    async def dispatch(self, request, call_next):
+        raw = request.headers.get("X-Request-Id")
+        # Defensive: ignore header values outside the allowed shape
+        # so an attacker can't inject control characters into the
+        # log-line via a spoofed header.
+        if raw and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", raw):
+            req_id = raw
+        else:
+            req_id = uuid4().hex[:12]
+        token = _request_id_ctx.set(req_id)
+        try:
+            response = await call_next(request)
+        finally:
+            _request_id_ctx.reset(token)
+        response.headers["X-Request-Id"] = req_id
+        return response
+
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    """Double-submit-cookie CSRF defence (audit r1-073).
+
+    On mutating requests (POST/PUT/PATCH/DELETE) the middleware
+    compares the ``reverto_csrf`` cookie with the
+    ``X-CSRF-Token`` header. Both must be present and equal —
+    otherwise 403. This complements (not replaces) the existing
+    SameSite=strict session cookie; an attacker who finds a way
+    around SameSite (subdomain takeover, stale browser) still
+    can't mint a matching token because the cookie is same-
+    origin-only readable.
+
+    Scope carve-outs:
+      * Only authenticated requests are checked. A caller
+        without the session cookie can't have meaningful side
+        effects anyway — the auth layer rejects them.
+      * ``/auth/login`` itself is exempt because the caller has
+        no token yet; that endpoint issues the first CSRF
+        cookie on success.
+      * Only mutating HTTP methods are checked. GET/HEAD/OPTIONS
+        are read-only by HTTP spec; letting them through is the
+        standard CSRF pattern.
+
+    Timing-safe compare via ``secrets.compare_digest`` so a
+    malicious client can't infer token bytes from response
+    timing.
+    """
+
+    async def dispatch(self, request, call_next):
+        if request.method not in _CSRF_MUTATING_METHODS:
+            return await call_next(request)
+        if request.url.path in _CSRF_EXEMPT_PATHS:
+            return await call_next(request)
+        # No session cookie → unauth path, let the auth layer
+        # handle the rejection. Checking CSRF here would just
+        # produce a 403 instead of the auth layer's 401; the
+        # latter is the correct signal to the client.
+        if not request.cookies.get(_SESSION_COOKIE):
+            return await call_next(request)
+
+        cookie_token = request.cookies.get(_CSRF_COOKIE)
+        header_token = request.headers.get(_CSRF_HEADER)
+        if not cookie_token or not header_token:
+            logger.warning(
+                "CSRF check failed (missing token): path=%s cookie=%s header=%s",
+                request.url.path,
+                bool(cookie_token),
+                bool(header_token),
+            )
+            return JSONResponse(
+                {"detail": "CSRF token required"},
+                status_code=403,
+            )
+        if not secrets.compare_digest(cookie_token, header_token):
+            logger.warning("CSRF check failed (token mismatch): path=%s",
+                           request.url.path)
+            return JSONResponse(
+                {"detail": "CSRF token mismatch"},
+                status_code=403,
+            )
+        return await call_next(request)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach standard hardening headers to every HTTP response."""
 
@@ -1298,6 +1495,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # Workspace view pulls in. Without this entry the
             # panel grid loses its layout rules and panels render
             # as plain vertically-stacked divs.
+            # r1-076: 'unsafe-inline' on style-src stays by necessity
+            # for now — the SPA uses inline styles across chart
+            # tooltips, dynamic panel layouts, theme-switching, and
+            # several dashboards. Full removal needs a refactor of
+            # every inline style-attribute + <style> block into CSS
+            # classes; deferred to post-launch hardening (tracked
+            # in the audit report).
             "style-src 'self' 'unsafe-inline' https://unpkg.com; "
             "img-src 'self' data:; "
             # unpkg.com is allowed here so DevTools can fetch the
@@ -1306,10 +1510,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # developer-ergonomics: the browser emits CSP-violation
             # console noise for every missing .map otherwise. No
             # data-endpoint risk — the files are public static
-            # assets. r1-076 broader wildcard tightening (connect-
-            # src ws:/wss: → pinned portal-host) is scope-out for
-            # this PR.
-            "connect-src 'self' ws: wss: https://unpkg.com; "
+            # assets.
+            #
+            # r1-076 (VPS-1): ws:/wss: wildcards removed. All
+            # Reverto WebSocket endpoints (/ws/state, /ws/logs/*)
+            # are same-origin and are covered by 'self', which
+            # matches the request scheme (ws:// on http://,
+            # wss:// on https://). Browsers with partial SameSite
+            # implementations or subdomain-takeover scenarios no
+            # longer have an open WS channel to abuse.
+            "connect-src 'self' https://unpkg.com; "
             "frame-ancestors 'none'"
         )
         response.headers["X-Frame-Options"]        = "DENY"
@@ -1398,6 +1608,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
 # ``reverse_proxy`` and nginx's ``proxy_set_header X-Forwarded-For
 # $remote_addr;`` pattern. Document in runbook.
 def _rate_limit_key_func(request: Request) -> str:
+    # Audit r1-044: prefer a per-user key when the caller has a
+    # valid session cookie. Two users behind the same NAT IP
+    # (office, VPN, household) then don't stomp on each other's
+    # rate-limit buckets. Unauthenticated paths (login, health
+    # probes, password-reset) fall through to the IP-based keying
+    # because there's no user identity to key on yet.
+    cookie = request.cookies.get(_SESSION_COOKIE)
+    if cookie:
+        payload = _verify_session_cookie(cookie)
+        if payload is not None:
+            uid = payload.get("uid")
+            if isinstance(uid, int) and uid > 0:
+                return f"user:{uid}"
+    # IP fallback — same X-Forwarded-For handling as before (r1-004).
     xff = request.headers.get("X-Forwarded-For")
     if xff:
         first = xff.split(",", 1)[0].strip()
@@ -1592,15 +1816,30 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 # Middleware order (Starlette wraps last-added = outermost):
-#   add_middleware(AuthMiddleware)            → runs inner
-#   add_middleware(SecurityHeadersMiddleware) → runs outer
-# Request flow:  SecurityHeaders → Auth → route handler
-# Response flow: route handler   → Auth → SecurityHeaders
-# This lets 401/403 short-circuits from Auth still pass through
-# SecurityHeaders on the way out, so *every* response — including
-# authentication failures — carries CSP / X-Frame-Options / etc.
+#   add_middleware(AuthMiddleware)            → runs innermost
+#   add_middleware(SecurityHeadersMiddleware) → runs middle
+#   add_middleware(RequestIdMiddleware)       → runs outermost
+# Request flow:  RequestId → SecurityHeaders → Auth → route handler
+# Response flow: route handler → Auth → SecurityHeaders → RequestId
+# RequestId sits outermost so the X-Request-Id header lands on
+# *every* response (including auth 401/403 short-circuits) and so
+# the contextvar is populated before any middleware's log lines
+# reference it.
 app.add_middleware(AuthMiddleware)
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestIdMiddleware)
+
+# Attach the request-id filter to the root logger + every existing
+# handler so ``%(request_id)s`` in any formatter resolves to the
+# active request's id. Filter is safe to attach multiple times —
+# logging.Filter is checked with .addFilter's identity semantics,
+# but a fresh instance is cheap. We wire a new instance into each
+# handler to avoid any cross-filter state concern.
+_root_logger = logging.getLogger()
+_root_logger.addFilter(_RequestIdFilter())
+for _h in _root_logger.handlers:
+    _h.addFilter(_RequestIdFilter())
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

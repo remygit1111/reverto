@@ -35,6 +35,18 @@ class PublicExchange(BaseExchange):
     Read-only exchange connection for public market data.
     No API key required — used for paper trading and backtesting.
     Supports Bitget and Kraken via ccxt.
+
+    THREAD-SAFETY (audit r1-068):
+        ccxt clients are not thread-safe. ``web/app.py`` owns one
+        module-level PublicExchange per exchange + serialises
+        every call behind ``_price_lock`` via
+        ``asyncio.to_thread``. Do NOT share a PublicExchange
+        instance across OS threads without holding the same lock
+        — see ``exchanges/bitget.py`` docstring for the full
+        rationale. The wrapper's ``_breaker_for`` circuit
+        breakers are module-scope-per-exchange and reuse the
+        same ccxt client, so they sit under the same
+        serialisation contract.
     """
 
     SYMBOL_MAPS = {
