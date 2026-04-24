@@ -243,21 +243,25 @@ def _authenticated_exchange(name: str, user_id: int):
     the caller must refuse to boot in that case.
 
     Only Bitget is wired today; Kraken follows the same shape once
-    implemented. Passphrase is pulled from an env var because the
-    current credentials.get_keys() only returns api_key / api_secret
-    — rather than touch that schema mid-phase we expect Bitget users
-    to set ``BITGET_PASSPHRASE`` alongside the saved keys.
+    implemented. Audit r1-012: Bitget's passphrase comes from
+    ``core.credentials.get_bitget_passphrase`` which prefers the
+    per-user credentials store and only falls back to the legacy
+    ``BITGET_PASSPHRASE`` env-var while the operator is migrating.
+    If neither source yields a passphrase the helper raises and we
+    refuse to boot live — matches the pre-fix behaviour of returning
+    None on missing passphrase.
     """
-    from core.credentials import get_keys
+    from core.credentials import get_bitget_passphrase, get_keys
     keys = get_keys(name, user_id=user_id)
     if not keys:
         return None
 
     if name == "bitget":
         from exchanges.bitget import BitgetExchange
-        passphrase = os.environ.get("BITGET_PASSPHRASE", "")
-        if not passphrase:
-            logger.error("BITGET_PASSPHRASE env var is required for live Bitget")
+        try:
+            passphrase = get_bitget_passphrase(user_id)
+        except ValueError as e:
+            logger.error("Bitget passphrase unavailable for user %d: %s", user_id, e)
             return None
         return BitgetExchange(
             api_key=keys["api_key"],

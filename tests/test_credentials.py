@@ -54,7 +54,15 @@ class TestSaveAndGet:
     def test_roundtrip(self, tmp_store):
         credentials.save_keys("bitget", "my-api-key", "my-secret", user_id=1)
         got = credentials.get_keys("bitget", user_id=1)
-        assert got == {"api_key": "my-api-key", "api_secret": "my-secret"}
+        # Audit r1-012: get_keys returns a stable shape with
+        # ``passphrase`` always present. An empty string signals
+        # "no passphrase stored" — ``get_bitget_passphrase`` then
+        # falls through to its env-var migration path.
+        assert got == {
+            "api_key": "my-api-key",
+            "api_secret": "my-secret",
+            "passphrase": "",
+        }
 
     def test_get_unknown_returns_none(self, tmp_store):
         assert credentials.get_keys("bitget", user_id=1) is None
@@ -63,10 +71,10 @@ class TestSaveAndGet:
         credentials.save_keys("bitget", "b-key", "b-sec", user_id=1)
         credentials.save_keys("kraken", "k-key", "k-sec", user_id=1)
         assert credentials.get_keys("bitget", user_id=1) == {
-            "api_key": "b-key", "api_secret": "b-sec",
+            "api_key": "b-key", "api_secret": "b-sec", "passphrase": "",
         }
         assert credentials.get_keys("kraken", user_id=1) == {
-            "api_key": "k-key", "api_secret": "k-sec",
+            "api_key": "k-key", "api_secret": "k-sec", "passphrase": "",
         }
 
     def test_ciphertext_is_actually_encrypted(self, tmp_store):
@@ -106,7 +114,7 @@ class TestDeleteKeys:
         credentials.delete_keys("bitget", user_id=1)
         assert credentials.get_keys("bitget", user_id=1) is None
         assert credentials.get_keys("kraken", user_id=1) == {
-            "api_key": "k", "api_secret": "K",
+            "api_key": "k", "api_secret": "K", "passphrase": "",
         }
 
 
@@ -168,8 +176,8 @@ class TestPerUserIsolation:
 
         u1 = credentials.get_keys("bitget", user_id=1)
         u2 = credentials.get_keys("bitget", user_id=2)
-        assert u1 == {"api_key": "u1-ak", "api_secret": "u1-sc"}
-        assert u2 == {"api_key": "u2-ak", "api_secret": "u2-sc"}
+        assert u1 == {"api_key": "u1-ak", "api_secret": "u1-sc", "passphrase": ""}
+        assert u2 == {"api_key": "u2-ak", "api_secret": "u2-sc", "passphrase": ""}
 
     def test_list_exchanges_scoped_per_user(self, tmp_store):
         credentials.save_keys("bitget", "a", "b", user_id=1)
