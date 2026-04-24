@@ -10,10 +10,8 @@ Surface:
   POST   /api/admin/changelog/{id}/unpublish   — admin unpublish
   DELETE /api/admin/changelog/{id}             — admin delete
 
-Admin gate: Phase-3b role-checks aren't wired yet (audit v26-02 —
-emergency-stop has the same hole). For now "admin" == ``user.id == 1``;
-``_require_admin_user`` is the one place that decision lives so the
-Phase-3b swap is a one-line change.
+Admin gate: ``_require_admin_user`` checks ``user.role == 'admin'`` —
+same pattern as emergency-stop in ``web/routes/admin.py`` (v26-02).
 
 The server-rendered HTML variants (``/changelog``, ``/admin``,
 ``/admin/changelog``, POST form endpoints) used to live here. They
@@ -45,14 +43,11 @@ router = APIRouter(tags=["changelog"])
 def _require_admin_user(
     user: User = Depends(_request_user),
 ) -> User:
-    """Admin-only dependency. Today "admin" is the seeded user_id=1.
-
-    Once Phase-3b role-checks ship this becomes ``user.role == 'admin'``
-    and the user-id literal goes away; the swap lives in one place so
-    every admin route picks it up automatically. Emergency-stop has the
-    same shape in audit v26-02 — follow this helper when that lands too.
+    """Admin-only dependency. Gates on ``user.role == 'admin'`` — matches
+    the emergency-stop pattern in ``web/routes/admin.py`` (audit v26-02)
+    and accepts any admin, not just the seeded id=1.
     """
-    if user.id != 1:
+    if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
