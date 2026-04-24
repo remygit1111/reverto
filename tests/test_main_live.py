@@ -74,11 +74,16 @@ class TestAuthenticatedExchange:
         monkeypatch.setattr("core.credentials.get_keys", lambda _name, user_id=1: None)
         assert main_live._authenticated_exchange("bitget", user_id=1) is None
 
-    def test_bitget_requires_passphrase_env(self, monkeypatch):
-        """Even with saved keys, BITGET_PASSPHRASE must be set for live."""
+    def test_bitget_requires_passphrase_source(self, monkeypatch):
+        """Even with saved keys, a passphrase must come from somewhere —
+        the per-user credentials store (audit r1-012 preferred path) or
+        the legacy BITGET_PASSPHRASE env-var. Neither present → None
+        (refuse to boot live)."""
         monkeypatch.setattr(
             "core.credentials.get_keys",
-            lambda _name, user_id=1: {"api_key": "a", "api_secret": "b"},
+            lambda _name, user_id=1: {
+                "api_key": "a", "api_secret": "b", "passphrase": "",
+            },
         )
         monkeypatch.delenv("BITGET_PASSPHRASE", raising=False)
         assert main_live._authenticated_exchange("bitget", user_id=1) is None
