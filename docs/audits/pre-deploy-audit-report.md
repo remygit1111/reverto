@@ -447,6 +447,8 @@ All logging practices verify clean. Single-operator file-permission posture (064
 
 **Category.** MONITORING.
 
+**STATUS.** RESOLVED — auto-resolved by `fix/vps-1.5-polish` (pd-026 added `REVERTO_LOG_LEVEL=` to `.env.example`). Confirmed at HEAD `a02df35` that `_validate_config_completeness` now sees the entry and would warn if the runtime env unsets it. No code change required; tracked here only for audit completeness.
+
 #### pd-028 — Ephemeral-key fail-soft (ACCEPTED)
 
 **What.** Module-import fallback generates an ephemeral key + writes to `logs/.api_key_ephemeral` with atexit cleanup. Dev-friendly; survives a single session.
