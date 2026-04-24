@@ -1407,13 +1407,67 @@ except DatabaseMigrationError as _dbe:
 except Exception as _e:  # pragma: no cover - defensive
     logger.warning("init_db failed on portal startup: %s", _e)
 
+def _validate_config() -> None:
+    """Check critical env-vars at portal boot (audit r1-058).
+
+    Raises ``RuntimeError`` for missing *required* vars so uvicorn
+    fails fast and the operator sees a clear stderr message
+    instead of discovering the gap at first user-action. Logs a
+    ``WARNING`` for missing *recommended* vars (features that
+    degrade gracefully but should be flagged — live-mode bots
+    without exchange credentials, say).
+
+    Required:
+      * REVERTO_SECRET_KEY — session-cookie signing. The module-
+        import fallback generates an ephemeral key with a warning
+        for local dev, but in a real deploy an ephemeral key
+        invalidates every live session on the next restart. Hard
+        fail at boot is strictly better observability.
+
+    Recommended (warn only):
+      * REVERTO_API_KEY   — required for X-API-Key authentication
+      * BITGET_API_KEY    — required for live-mode Bitget bots
+      * BITGET_API_SECRET — required for live-mode Bitget bots
+    """
+    required = {
+        "REVERTO_SECRET_KEY": "required for session signing",
+    }
+    recommended = {
+        "REVERTO_API_KEY":   "required for API-key authentication",
+        "BITGET_API_KEY":    "required for live-mode Bitget bots",
+        "BITGET_API_SECRET": "required for live-mode Bitget bots",
+    }
+
+    missing_required = [
+        f"{k} ({desc})" for k, desc in required.items()
+        if not os.environ.get(k)
+    ]
+    if missing_required:
+        raise RuntimeError(
+            "Missing required env-vars: " + ", ".join(missing_required)
+            + ". Set them in .env (see .env.example) before starting the "
+            "portal.",
+        )
+
+    missing_recommended = [
+        f"{k} ({desc})" for k, desc in recommended.items()
+        if not os.environ.get(k)
+    ]
+    if missing_recommended:
+        logger.warning(
+            "Missing recommended env-vars: %s",
+            ", ".join(missing_recommended),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan handler.
 
-    Startup: spawn background tasks that tail bot logs and watch
-    state.json mtimes. References are stored so shutdown can cancel
-    them cleanly.
+    Startup: validate critical env-vars (audit r1-058) then spawn
+    background tasks that tail bot logs and watch state.json
+    mtimes. References are stored so shutdown can cancel them
+    cleanly.
 
     Shutdown: cancel background tasks and wait for them to return.
     Without this, uvicorn's graceful-shutdown path hangs waiting for
@@ -1421,6 +1475,7 @@ async def lifespan(app: FastAPI):
     is what caused the SIGKILL fallback in stop.sh to fire on every
     make restart.
     """
+    _validate_config()
     logger.info("=== Portal started ===")
 
     background_tasks: list[asyncio.Task] = [
