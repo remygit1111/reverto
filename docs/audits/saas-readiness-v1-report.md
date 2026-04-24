@@ -39,6 +39,34 @@ Foundation (Phase A) is where most work has already landed; everything after is 
 
 ---
 
+## Remediation status (post-Sprint 2)
+
+Sprint 1 (five HIGHs, individually merged) + Sprint 2 (eleven MEDIUM/LOWs bundled) have closed the following findings. Detailed sections below also carry inline **STATUS.** markers.
+
+| Finding | Severity | Branch |
+|---|---|---|
+| r1-001 | HIGH | `fix/r1-001-api-key-respects-active` |
+| r1-002 | HIGH | `fix/r1-002-changelog-admin-role-gate` |
+| r1-012 | HIGH | `fix/r1-012-bitget-passphrase-per-user` |
+| r1-023 | HIGH | `fix/r1-023-subprocess-env-whitelist` |
+| r1-041 | HIGH | `fix/r1-041-state-mtimes-per-user` |
+| r1-004 | MEDIUM | `feat/sprint-2-audit-sweep` |
+| r1-007 | LOW    | `feat/sprint-2-audit-sweep` (bundled with r1-032) |
+| r1-020 | MEDIUM | `feat/sprint-2-audit-sweep` |
+| r1-032 | MEDIUM | `feat/sprint-2-audit-sweep` |
+| r1-042 | MEDIUM | `feat/sprint-2-audit-sweep` |
+| r1-051 | LOW    | `feat/sprint-2-audit-sweep` |
+| r1-052 | LOW    | `feat/sprint-2-audit-sweep` (already clean — no TODO-comments remain after v26-16; noted explicitly) |
+| r1-053 | MEDIUM | `feat/sprint-2-audit-sweep` (3 E2E tests; /api/bots listing deferred pending FS-sandbox fixture) |
+| r1-054 | LOW    | `feat/sprint-2-audit-sweep` |
+| r1-056 | MEDIUM | `feat/sprint-2-audit-sweep` |
+| r1-058 | MEDIUM | `feat/sprint-2-audit-sweep` |
+| r1-075 | LOW    | `feat/sprint-2-audit-sweep` |
+
+Still open: r1-003, r1-005, r1-006, r1-008–r1-011, r1-013–r1-019, r1-021, r1-022, r1-024–r1-031, r1-033–r1-040, r1-043–r1-050, r1-055, r1-057, r1-059–r1-074, r1-076.
+
+---
+
 ## Severity Definitions
 
 | Severity | Meaning |
@@ -178,6 +206,8 @@ raise HTTPException(status_code=401, detail="Not authenticated")
 
 **Phase.** B (authentication hardening).
 
+**STATUS.** RESOLVED in fix/r1-001-api-key-respects-active (Sprint 1).
+
 #### r1-002 — Changelog admin gate uses user-id literal, not role (HIGH)
 
 **Wat.** `_require_admin_user` in `web/routes/changelog.py:45-57` checks `user.id != 1`:
@@ -196,6 +226,8 @@ Inline TODO acknowledges Phase-3b swap.
 **Remediation.** Change to `if user.role != "admin":`. Match emergency-stop's wording. Low risk — test coverage on `tests/test_changelog_api.py` exercises this gate.
 
 **Phase.** B.
+
+**STATUS.** RESOLVED in fix/r1-002-changelog-admin-role-gate (Sprint 1).
 
 #### r1-041 — `_state_mtimes` cross-user cache collision (HIGH)
 
@@ -228,6 +260,8 @@ Trivial change. Should pair with a regression test seeding two users with identi
 
 **Phase.** B (blocker for first multi-user seed).
 
+**STATUS.** RESOLVED in fix/r1-041-state-mtimes-per-user (Sprint 1).
+
 #### r1-049 — ML `_persist_results` unscoped filename (MEDIUM — v27 B-03 carry)
 
 **Wat.** `ml/nightly_pipeline.py:382-388`:
@@ -254,6 +288,8 @@ Two users with the same slug would overwrite each other's ML output.
 **Remediation.** Add `tests/test_cross_tenant_isolation.py` with the three scenarios above. Reuses the existing `auth_client` fixture pattern + the second-user insert from `test_logout_bumps_only_callers_epoch`.
 
 **Phase.** A.
+
+**STATUS.** RESOLVED in feat/sprint-2-audit-sweep (tests/test_cross_tenant_isolation.py — 3 E2E tests for deals + annotations; /api/bots listing deferred pending FS-sandbox fixture).
 
 **Items verified clean in this domain:**
 
@@ -348,6 +384,8 @@ def save_keys(exchange, api_key, api_secret, user_id, *, passphrase: str = "") -
 `get_keys` returns the triple; `main_live.py` reads from there. `/api/exchanges/{name}/keys` route body gets an optional `passphrase` field. Migration path for existing `.enc` files: add a `passphrase` key on next write (read-side treats missing as empty → live-mode refuses until user re-uploads keys with passphrase).
 
 **Phase.** C (service-separation also moves the whole flow into the signing-service).
+
+**STATUS.** RESOLVED in fix/r1-012-bitget-passphrase-per-user (Sprint 1).
 
 #### r1-011 — No exchange-key rotation flow (HIGH)
 
@@ -482,6 +520,8 @@ Each `get_deal_orders` is a separate SQL query. For `limit=1000` that's 1001 que
 
 **Remediation.** Add a `deal_store.get_deals_with_orders(user_id, bot_slug, status, limit)` helper that does one `LEFT JOIN orders` query and groups order rows into their parent deal. ~30 lines. Mentioned here as MEDIUM not HIGH because current UI paginates at 100.
 
+**STATUS.** RESOLVED in feat/sprint-2-audit-sweep (batch-fetch via `get_orders_for_deal_ids`; one IN-list query instead of N+1, response shape unchanged).
+
 #### r1-018 — Destructive migrations (MEDIUM, v26-10 guard in place)
 
 **Wat.** v3 and v4 schema migrations drop + recreate owned tables. v26-10's guard (env-var opt-in + auto-backup) is live, but the pattern itself remains the only migration style. Future schema changes that actually need ALTER TABLE ADD COLUMN have to work around `_SCHEMA_STATEMENTS` at `database.py:108-280` being declarative-idempotent for table CREATEs.
@@ -543,6 +583,8 @@ env = {k: v for k, v in os.environ.items() if k in _BOT_ENV_ALLOWLIST}
 Then inject the PER-USER values explicitly — the bot already resolves `get_keys(name, user_id)` internally for api_key+api_secret, so only `BITGET_PASSPHRASE` needs per-user plumbing (see r1-012). This finding couples with r1-012.
 
 **Phase.** B.
+
+**STATUS.** RESOLVED in fix/r1-023-subprocess-env-whitelist (Sprint 1).
 
 #### r1-024 — BotRegistry single-process (HIGH — Phase C blocker)
 
@@ -647,6 +689,8 @@ Raise the backupCount to cover expected tenant-scale evidence retention (e.g. 30
 
 **Phase.** G.
 
+**STATUS.** RESOLVED in feat/sprint-2-audit-sweep (core.user_store.validate_username — also closes r1-007).
+
 ---
 
 ## Part 9 — Deployment & Operations
@@ -725,6 +769,8 @@ Trusted-proxy allowlist reads from env.
 
 **Phase.** B.
 
+**STATUS.** RESOLVED in feat/sprint-2-audit-sweep (X-Forwarded-For rate-limit key).
+
 #### r1-044 — No per-user or per-exchange rate-limits (MEDIUM)
 
 **Wat.** All current limits are per-IP. Security-model.md Part 3.3 prescribes three-dimensional limits: per-IP (current), per-user (new, post-auth), per-exchange (new, in signing-service). No code paths implement the latter two.
@@ -787,6 +833,8 @@ def get_default_user() -> User:
 ```
 
 Usage is limited to `_request_user` API-key fallback (r1-001). Once r1-001 is fixed the stub has no other callers except possibly tests. Worth a grep sweep + removal.
+
+**STATUS.** RESOLVED in feat/sprint-2-audit-sweep (constant + helper deleted from `core/user.py`; test_user_model.py dropped the two dataclass-only tests that asserted the stub shape).
 
 ---
 
@@ -893,6 +941,8 @@ class TestApiKeyActiveBypass:
 **Remediation.** `pip-compile --generate-hashes` against `requirements.in`. Adds ~30 lines per package; materially more robust.
 
 **Phase.** A.
+
+**STATUS.** RESOLVED in feat/sprint-2-audit-sweep (_validate_config in lifespan).
 
 **Items verified clean:**
 
