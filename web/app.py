@@ -1277,6 +1277,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"]        = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"]        = "no-referrer"
+        # HSTS — audit r1-075: instruct browsers to pin HTTPS for the
+        # portal host. Only emit on an actual HTTPS request so an
+        # operator running `make start` on http://localhost doesn't
+        # end up with the browser stuck in a forced-HTTPS state. The
+        # scheme check covers both direct TLS and the standard
+        # Forwarded headers that reverse proxies (Caddy, nginx)
+        # inject — Starlette's ``url.scheme`` reads the
+        # ``X-Forwarded-Proto`` header via its Trusted Host setup, so
+        # this works transparently behind a TLS-terminating proxy.
+        # max-age=31536000 (1 year) + includeSubDomains matches the
+        # industry-standard HSTS policy recommended by OWASP.
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
+            )
         return response
 
 
