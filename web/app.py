@@ -111,13 +111,19 @@ if not _API_KEY:
             _EPHEMERAL_API_KEY_FILE,
         )
     except OSError as e:
-        # Last-resort fallback: if we genuinely can't write the file
-        # the operator still needs the key, so log it. Should never
-        # hit in practice — logs/ is writable on every supported host.
+        # Last-resort fallback: can't persist the key file. Audit
+        # r1-035: log only a short SHA hint — never the full key
+        # itself — so a log-shipping pipeline post-VPS can't leak
+        # the auth secret. The operator's recovery path is: set
+        # REVERTO_API_KEY=<their choice> in .env, restart; the
+        # ephemeral key is inherently short-lived and clients using
+        # it would have to re-auth anyway.
+        hint = hashlib.sha256(_API_KEY.encode("utf-8")).hexdigest()[:8]
         logger.error(
             "REVERTO_API_KEY not set and could not write %s (%s). "
-            "Ephemeral key (will be lost on restart): %s",
-            _EPHEMERAL_API_KEY_FILE, e, _API_KEY,
+            "Ephemeral key in use (hint=%s); set REVERTO_API_KEY "
+            "in .env and restart to recover a stable key.",
+            _EPHEMERAL_API_KEY_FILE, e, hint,
         )
 
 
