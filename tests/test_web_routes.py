@@ -214,6 +214,16 @@ def _admin_cookie() -> str:
     return webapp._create_session_cookie(admin)
 
 
+# Audit r1-073: tests that mint a session cookie by calling
+# ``_create_session_cookie`` directly (not through /auth/login)
+# don't get a matching CSRF cookie. We let the ``auth_client``
+# fixture set a test-CSRF value on BOTH the cookie jar and every
+# outgoing request's header; CSRFMiddleware then sees a match
+# and waves the request through. Tests that explicitly want to
+# exercise the CSRF failure paths override the header manually.
+_TEST_CSRF_TOKEN = "pytest-csrf-token-r1073"
+
+
 @pytest.fixture(autouse=True)
 def _disable_hibp_by_default(monkeypatch):
     """Patch ``web.routes.auth.is_password_pwned`` to an async no-op
@@ -265,6 +275,11 @@ def auth_client():
     # Origin/Referer so the strict policy fires as intended there).
     webapp._COOKIE_SAMESITE = "lax"
     client = TestClient(webapp.app)
+    # Audit r1-073: seed the CSRF cookie + auto-inject the matching
+    # header on every outgoing request. Tests that want to exercise
+    # the failure path override the header explicitly.
+    client.cookies.set("reverto_csrf", _TEST_CSRF_TOKEN)
+    client.headers.update({"X-CSRF-Token": _TEST_CSRF_TOKEN})
     try:
         yield client
     finally:
@@ -300,10 +315,16 @@ class TestAuth:
             json={"username": "admin", "password": _KNOWN_PW},
         )
         assert r.status_code == 200
-        assert r.json() == {"ok": True}
-        # Set-Cookie header must carry the session cookie.
+        body = r.json()
+        assert body["ok"] is True
+        # Audit r1-073: login response now also includes a fresh
+        # csrf_token for the SPA to remember (it's also set as a
+        # non-HttpOnly cookie on the response, same value).
+        assert "csrf_token" in body
+        assert len(body["csrf_token"]) >= 20
         set_cookie = r.headers.get("set-cookie", "")
         assert "reverto_session=" in set_cookie
+        assert "reverto_csrf=" in set_cookie
 
     def test_gated_endpoint_requires_session(self):
         client = TestClient(webapp.app)
