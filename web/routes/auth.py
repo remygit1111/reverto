@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 import time
 from datetime import UTC, datetime
 
@@ -205,10 +204,13 @@ async def auth_login(body: LoginBody, request: Request):
             new_count = _unknown_user_fail_bump(client_ip)
 
         if new_count > 0 and new_count % _ANOMALY_LOG_EVERY_N == 0:
+            # user_record is None for unknown usernames — keep the
+            # per-user split opt-out in that case (nothing to key by).
             _audit(
                 "suspicious_login_pattern",
                 body.username,
                 f"count={new_count}",
+                user_id=user_record.id if user_record is not None else None,
             )
 
         # Backoff uses the PRE-attempt count so the first failure
@@ -229,7 +231,7 @@ async def auth_login(body: LoginBody, request: Request):
     # Audit r1-073: mint a CSRF token on successful login. Random
     # per-session URL-safe value; readable by JS so the SPA can
     # echo it in the X-CSRF-Token header on mutating requests.
-    csrf_token = secrets.token_urlsafe(32)
+    csrf_token = _webapp._mint_csrf_token()
     resp = JSONResponse({"ok": True, "csrf_token": csrf_token})
     # Look up cookie flags on the module at call-time (not at import)
     # so tests can override _COOKIE_SECURE / _COOKIE_SAMESITE on the
@@ -244,20 +246,11 @@ async def auth_login(body: LoginBody, request: Request):
         secure=_webapp._COOKIE_SECURE,
         path="/",
     )
-    resp.set_cookie(
-        key=_webapp._CSRF_COOKIE,
-        value=csrf_token,
-        max_age=_SESSION_TTL,
-        # httponly=False so the SPA's JS can read it and echo in
-        # the X-CSRF-Token header. That's the whole point of
-        # double-submit: the cookie is readable by same-origin
-        # JS but not cross-origin fetches.
-        httponly=False,
-        samesite=_webapp._COOKIE_SAMESITE,
-        secure=_webapp._COOKIE_SECURE,
-        path="/",
-    )
-    _audit("auth_login", user.username, "-")
+    # CSRF cookie via shared helper — keeps the flag set in sync
+    # with the graceful-migration mint path in CSRFMiddleware so
+    # the two mint sites can't drift.
+    _webapp._set_csrf_cookie_on_response(resp, csrf_token)
+    _audit("auth_login", user.username, "-", user_id=user.id)
     return resp
 
 
@@ -383,5 +376,5 @@ async def auth_change_password(
     # routing choice: forcing a fresh login after password-change is
     # the standard expectation.
     user_store.bump_session_epoch(user.id)
-    _audit("auth_change_password", username, "-")
+    _audit("auth_change_password", username, "-", user_id=user.id)
     return {"ok": True}

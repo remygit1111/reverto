@@ -4,7 +4,6 @@
 # Manages bot processes via start/stop API.
 
 import asyncio
-import contextvars
 import hashlib
 import json
 import logging
@@ -28,6 +27,8 @@ from config.models import BotConfig, Mode
 from core import paths, user_store
 from core.database import DatabaseMigrationError, init_db as _init_db
 from core.ids import DEAL_ID_RE
+from core.logging_setup import RequestIdFilter as _RequestIdFilter
+from core.logging_setup import request_id_ctx as _request_id_ctx
 from core.user import User
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import NOTIFY_DRAIN_TIMEOUT_S
@@ -170,6 +171,35 @@ _CSRF_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _CSRF_EXEMPT_PATHS = frozenset({
     "/auth/login",
 })
+
+
+def _mint_csrf_token() -> str:
+    """URL-safe random token used for the double-submit cookie.
+    Same shape as the login-path mint so call-sites share the
+    entropy budget."""
+    return secrets.token_urlsafe(32)
+
+
+def _set_csrf_cookie_on_response(response, token: str) -> None:
+    """Attach a fresh CSRF cookie to ``response``.
+
+    Kept out of the login handler + graceful-migration path so the
+    three flags (httponly=False, max_age, secure/samesite) stay in
+    one place — drift between the login mint and the migration
+    mint would break the double-submit contract.
+    """
+    response.set_cookie(
+        key=_CSRF_COOKIE,
+        value=token,
+        max_age=_SESSION_TTL,
+        # non-HttpOnly so the SPA's JS can read it + echo it back
+        # in the X-CSRF-Token header. That's the whole point of
+        # double-submit.
+        httponly=False,
+        samesite=_COOKIE_SAMESITE,
+        secure=_COOKIE_SECURE,
+        path="/",
+    )
 
 # Secure-cookie flag default. Cookies are marked secure (HTTPS-only) by
 # default; this protects production deployments behind a TLS reverse
@@ -1366,31 +1396,16 @@ async def restart_bot(user_id: int, slug: str) -> dict:
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 
 # ── Request-ID context (audit r1-034) ───────────────────────────────────────
-# contextvar so every logger call during a request's lifecycle can
-# include the same ID. Set by RequestIdMiddleware, read by the
-# ``_RequestIdFilter`` attached to the root logger. Default "-" means
-# "no request context" (background tasks, module-import, test
-# fixtures that don't go through the middleware).
-_request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "reverto_request_id", default="-",
-)
+# The contextvar + filter live in core.logging_setup so main_web.py
+# can attach the filter to its handlers at boot, before any module-
+# import log lines fire. We import them above as _request_id_ctx /
+# _RequestIdFilter and wire middleware + helpers against them here.
 
 
 def current_request_id() -> str:
     """Accessor used by ``_audit`` (r1-031) and any other code that
     wants to correlate records. Returns ``'-'`` outside a request."""
     return _request_id_ctx.get()
-
-
-class _RequestIdFilter(logging.Filter):
-    """Injects ``record.request_id`` on every log record so the
-    formatter can include it. Filter-based attach instead of
-    ``logging.setLogRecordFactory`` so we don't stomp on unrelated
-    attributes a third-party library may also set."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = _request_id_ctx.get()
-        return True
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
@@ -1443,12 +1458,48 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         are read-only by HTTP spec; letting them through is the
         standard CSRF pattern.
 
+    Graceful migration (hotfix): sessions minted before VPS-1
+    shipped have no ``reverto_csrf`` cookie. A strict check
+    would 403 every mutating request from those sessions until
+    the user logs out + back in. Instead, when an authenticated
+    request arrives without the CSRF cookie, the middleware
+    mints one on the fly and attaches it to the response. On
+    mutating requests this is a one-shot bypass — the NEXT
+    mutating request will have the cookie and face normal
+    enforcement. Safe because SameSite=strict on the session
+    cookie already blocks the cross-site attack this check
+    defends against; the bypass window is a single same-origin
+    request per legacy session.
+
     Timing-safe compare via ``secrets.compare_digest`` so a
     malicious client can't infer token bytes from response
     timing.
     """
 
     async def dispatch(self, request, call_next):
+        authenticated = bool(request.cookies.get(_SESSION_COOKIE))
+        has_csrf_cookie = bool(request.cookies.get(_CSRF_COOKIE))
+
+        # Graceful-migration path: authenticated request that pre-
+        # dates the CSRF rollout. Mint a cookie + attach it to the
+        # response so the SPA has one for the next request. The
+        # current request is allowed through regardless of method
+        # — SameSite=strict on the session cookie means this can
+        # only have been same-origin, so the CSRF threat model
+        # isn't broken by the one-shot grant.
+        migrate_legacy_session = authenticated and not has_csrf_cookie
+
+        if migrate_legacy_session:
+            logger.info(
+                "CSRF graceful-migration: minting cookie for legacy "
+                "session path=%s method=%s",
+                request.url.path, request.method,
+            )
+            new_token = _mint_csrf_token()
+            response = await call_next(request)
+            _set_csrf_cookie_on_response(response, new_token)
+            return response
+
         if request.method not in _CSRF_MUTATING_METHODS:
             return await call_next(request)
         if request.url.path in _CSRF_EXEMPT_PATHS:
@@ -1457,7 +1508,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         # handle the rejection. Checking CSRF here would just
         # produce a 403 instead of the auth layer's 401; the
         # latter is the correct signal to the client.
-        if not request.cookies.get(_SESSION_COOKIE):
+        if not authenticated:
             return await call_next(request)
 
         cookie_token = request.cookies.get(_CSRF_COOKIE)

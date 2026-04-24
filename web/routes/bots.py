@@ -191,7 +191,7 @@ async def api_start(
     actor: str = Depends(_request_actor),
     user: User = Depends(_request_user),
 ):
-    _audit("bot_start", slug, actor)
+    _audit("bot_start", slug, actor, user_id=user.id)
     return await start_bot(user.id, slug)
 
 
@@ -214,7 +214,7 @@ async def api_start_dry_run(
     """
     if not _BOT_SLUG_RE.match(slug):
         raise HTTPException(status_code=400, detail="Invalid slug")
-    _audit("bot_start_dry_run", slug, actor)
+    _audit("bot_start_dry_run", slug, actor, user_id=user.id)
     return await start_bot_dry_run(user.id, slug)
 
 
@@ -225,7 +225,7 @@ async def api_stop(
     actor: str = Depends(_request_actor),
     user: User = Depends(_request_user),
 ):
-    _audit("bot_stop", slug, actor)
+    _audit("bot_stop", slug, actor, user_id=user.id)
     return await stop_bot(user.id, slug)
 
 
@@ -236,7 +236,7 @@ async def api_restart(
     actor: str = Depends(_request_actor),
     user: User = Depends(_request_user),
 ):
-    _audit("bot_restart", slug, actor)
+    _audit("bot_restart", slug, actor, user_id=user.id)
     return await restart_bot(user.id, slug)
 
 
@@ -257,7 +257,7 @@ async def api_deal_start(
         trigger.write_text("", encoding="utf-8")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to write trigger: {e}")
-    _audit("bot_manual_deal", slug, actor)
+    _audit("bot_manual_deal", slug, actor, user_id=user.id)
     return {"ok": True}
 
 
@@ -444,7 +444,7 @@ async def create_bot(
         encoding="utf-8",
     )
     await registry.invalidate()
-    _audit("bot_create", slug, actor)
+    _audit("bot_create", slug, actor, user_id=user.id)
     return {"ok": True, "slug": slug}
 
 
@@ -494,7 +494,7 @@ async def update_bot_config(
         yaml.safe_dump({"bot": inner}, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
-    _audit("bot_update", slug, actor)
+    _audit("bot_update", slug, actor, user_id=user.id)
     return {"ok": True, "slug": slug}
 
 
@@ -518,7 +518,7 @@ async def delete_bot(
         raise HTTPException(status_code=404, detail="YAML not found")
     path.unlink()
     await registry.invalidate()
-    _audit("bot_delete", slug, actor)
+    _audit("bot_delete", slug, actor, user_id=user.id)
     return {"ok": True, "slug": slug}
 
 
@@ -570,7 +570,7 @@ async def export_bot(
         "\n"
     )
 
-    _audit("bot_export", slug, actor)
+    _audit("bot_export", slug, actor, user_id=user.id)
     return Response(
         content=header + config_yaml,
         media_type="application/x-yaml",
@@ -635,7 +635,7 @@ async def duplicate_bot(
         encoding="utf-8",
     )
     await registry.invalidate()
-    _audit(f"bot_duplicate from={slug}", new_slug, actor)
+    _audit(f"bot_duplicate from={slug}", new_slug, actor, user_id=user.id)
     return {"ok": True, "slug": new_slug}
 
 
@@ -700,5 +700,5 @@ async def import_bot(
         encoding="utf-8",
     )
     await registry.invalidate()
-    _audit("bot_import", target_slug, actor)
+    _audit("bot_import", target_slug, actor, user_id=user.id)
     return {"ok": True, "slug": target_slug}
