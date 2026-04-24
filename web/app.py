@@ -1526,6 +1526,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
 # ``reverse_proxy`` and nginx's ``proxy_set_header X-Forwarded-For
 # $remote_addr;`` pattern. Document in runbook.
 def _rate_limit_key_func(request: Request) -> str:
+    # Audit r1-044: prefer a per-user key when the caller has a
+    # valid session cookie. Two users behind the same NAT IP
+    # (office, VPN, household) then don't stomp on each other's
+    # rate-limit buckets. Unauthenticated paths (login, health
+    # probes, password-reset) fall through to the IP-based keying
+    # because there's no user identity to key on yet.
+    cookie = request.cookies.get(_SESSION_COOKIE)
+    if cookie:
+        payload = _verify_session_cookie(cookie)
+        if payload is not None:
+            uid = payload.get("uid")
+            if isinstance(uid, int) and uid > 0:
+                return f"user:{uid}"
+    # IP fallback — same X-Forwarded-For handling as before (r1-004).
     xff = request.headers.get("X-Forwarded-For")
     if xff:
         first = xff.split(",", 1)[0].strip()
