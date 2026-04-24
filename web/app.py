@@ -2129,7 +2129,11 @@ async def ws_state(websocket: WebSocket):
         for bot in bots:
             try:
                 state = bot.read_state()
-            except Exception:
+            except Exception as e:
+                logger.debug(
+                    "ws_state: read_state failed for bot %s: %s",
+                    bot.slug, e,
+                )
                 continue
             snapshot.append(state)
             try:
@@ -2138,24 +2142,24 @@ async def ws_state(websocket: WebSocket):
                     "slug": bot.slug,
                     "data": state,
                 }))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("ws_state: initial send failed: %s", e)
         try:
             await websocket.send_text(json.dumps({
                 "type": "summary",
                 "data": _compute_summary(snapshot),
             }))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("ws_state: summary send failed: %s", e)
 
         # Keep the socket alive — broadcasts come from watch_state_files.
         while True:
             await asyncio.sleep(30)
             await websocket.send_text("__ping__")
     except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
+        pass  # Expected lifecycle — client disconnected cleanly.
+    except Exception as e:
+        logger.debug("ws_state: loop exited with %s", e)
     finally:
         await state_broadcaster.disconnect(websocket)
 
@@ -2211,8 +2215,10 @@ async def tail_logs():
                             )
                 elif size < prev:
                     last[slug] = size
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "tail_logs: scan failed for %s: %s", slug, e,
+                )
         await asyncio.sleep(1)
 
 
