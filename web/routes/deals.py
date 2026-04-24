@@ -380,7 +380,7 @@ async def _close_deal_offline(
             status_code=404,
             detail=result.get("error") or "Could not close deal",
         )
-    _audit(f"deal_{action}_offline", slug, actor, user_id=user.id)
+    _audit(f"deal_{action}_offline", slug, actor, user_id=user_id)
     return {
         "ok": True,
         "method": "direct",
