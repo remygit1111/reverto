@@ -77,22 +77,31 @@ def classify_error(exc: BaseException) -> str:
 
 # ── Tick loop ────────────────────────────────────────────────────────
 
+# Audit r1-033: every bot-scoped metric carries a ``user_id`` label
+# so Prometheus queries can slice by tenant. Cardinality warning —
+# each (user_id, bot_slug, ...) tuple is a distinct series. For
+# Reverto's horizon (<100 users × ~10 bots each) that's fine; above
+# that the operator should consider bucketed labels or tenant
+# sampling. Callers without a user-id in context pass the literal
+# string "unknown" so Prometheus still records the event + the
+# operator can see there's an un-attributed source to investigate.
+
 bot_ticks_total = Counter(
     "reverto_bot_ticks_total",
     "Total tick iterations executed by an engine.",
-    ["bot_slug", "mode"],
+    ["user_id", "bot_slug", "mode"],
 )
 
 bot_tick_errors_total = Counter(
     "reverto_bot_tick_errors_total",
     "Exceptions caught in the engine tick loop.",
-    ["bot_slug", "kind"],
+    ["user_id", "bot_slug", "kind"],
 )
 
 tick_duration_seconds = Histogram(
     "reverto_tick_duration_seconds",
     "Tick processing time in seconds.",
-    ["bot_slug"],
+    ["user_id", "bot_slug"],
     # Buckets tuned for the default 10s poll — most ticks should land
     # well under a second; anything above 5s is a real problem.
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
@@ -103,19 +112,19 @@ tick_duration_seconds = Histogram(
 bot_balance_btc = Gauge(
     "reverto_bot_balance_btc",
     "Current engine balance in BTC (realised only — excludes open-deal PnL).",
-    ["bot_slug"],
+    ["user_id", "bot_slug"],
 )
 
 bot_open_deals = Gauge(
     "reverto_bot_open_deals",
     "Number of currently-open deals.",
-    ["bot_slug"],
+    ["user_id", "bot_slug"],
 )
 
 bot_drawdown_pct = Gauge(
     "reverto_bot_drawdown_pct",
     "Current drawdown percentage from the running peak.",
-    ["bot_slug"],
+    ["user_id", "bot_slug"],
 )
 
 # ── Orders ───────────────────────────────────────────────────────────
@@ -123,17 +132,32 @@ bot_drawdown_pct = Gauge(
 orders_placed_total = Counter(
     "reverto_orders_placed_total",
     "Orders placed (paper fills also count here for parity).",
-    ["bot_slug", "side", "type", "status"],
+    ["user_id", "bot_slug", "side", "type", "status"],
 )
 
 
 # ── Helpers — prefer these over touching the raw metric objects ──────
+# Helper signatures gain ``user_id`` as an optional trailing arg so
+# legacy callers (single-operator paper paths) keep working with
+# ``user_id="unknown"`` while multi-tenant callers thread the real
+# id through. str-coerced so a numeric id passes cleanly; Prom
+# label values must be strings.
 
-def record_tick(bot_slug: str, mode: str) -> None:
-    bot_ticks_total.labels(bot_slug=bot_slug, mode=mode).inc()
+
+def _uid(user_id) -> str:
+    """Coerce an optional user_id to the string shape Prom wants."""
+    if user_id is None:
+        return "unknown"
+    return str(user_id)
 
 
-def record_tick_error(bot_slug: str, exc_or_kind) -> None:
+def record_tick(bot_slug: str, mode: str, user_id=None) -> None:
+    bot_ticks_total.labels(
+        user_id=_uid(user_id), bot_slug=bot_slug, mode=mode,
+    ).inc()
+
+
+def record_tick_error(bot_slug: str, exc_or_kind, user_id=None) -> None:
     """Record a tick-loop exception.
 
     Accepts either an exception instance (preferred — classified to a
@@ -145,24 +169,34 @@ def record_tick_error(bot_slug: str, exc_or_kind) -> None:
         kind = classify_error(exc_or_kind)
     else:
         kind = str(exc_or_kind)
-    bot_tick_errors_total.labels(bot_slug=bot_slug, kind=kind).inc()
+    bot_tick_errors_total.labels(
+        user_id=_uid(user_id), bot_slug=bot_slug, kind=kind,
+    ).inc()
 
 
-def set_balance(bot_slug: str, balance_btc: float) -> None:
-    bot_balance_btc.labels(bot_slug=bot_slug).set(balance_btc)
+def set_balance(bot_slug: str, balance_btc: float, user_id=None) -> None:
+    bot_balance_btc.labels(
+        user_id=_uid(user_id), bot_slug=bot_slug,
+    ).set(balance_btc)
 
 
-def set_open_deals(bot_slug: str, n: int) -> None:
-    bot_open_deals.labels(bot_slug=bot_slug).set(n)
+def set_open_deals(bot_slug: str, n: int, user_id=None) -> None:
+    bot_open_deals.labels(
+        user_id=_uid(user_id), bot_slug=bot_slug,
+    ).set(n)
 
 
-def set_drawdown_pct(bot_slug: str, pct: float) -> None:
-    bot_drawdown_pct.labels(bot_slug=bot_slug).set(pct)
+def set_drawdown_pct(bot_slug: str, pct: float, user_id=None) -> None:
+    bot_drawdown_pct.labels(
+        user_id=_uid(user_id), bot_slug=bot_slug,
+    ).set(pct)
 
 
 def record_order(
-    bot_slug: str, side: str, order_type: str, status: str
+    bot_slug: str, side: str, order_type: str, status: str,
+    user_id=None,
 ) -> None:
     orders_placed_total.labels(
-        bot_slug=bot_slug, side=side, type=order_type, status=status,
+        user_id=_uid(user_id), bot_slug=bot_slug,
+        side=side, type=order_type, status=status,
     ).inc()
