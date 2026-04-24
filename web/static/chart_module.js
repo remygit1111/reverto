@@ -361,6 +361,56 @@ function calcMarketStructureMarkers(candles, lookback) {
 // too) and resolve via window at call time, just like the pure-math
 // helpers above.
 
+// ── Indicator-styling helpers ────────────────────────────────────────────
+// Shared mappings + utilities used by every plugin's createSeries / render
+// so the per-line styling knobs (color + lineStyle + lineWidth + opacity)
+// translate to Lightweight Charts options without each plugin duplicating
+// the logic.
+
+// Human-readable line-style names ↔ LWC's LineStyle enum values.
+// 0 = Solid, 1 = Dotted, 2 = Dashed (v5.1.0).
+const LINE_STYLE_MAP = { solid: 0, dashed: 2, dotted: 1 };
+function _lwcLineStyle(name) {
+  const v = LINE_STYLE_MAP[String(name || '').toLowerCase()];
+  return v != null ? v : 0;
+}
+
+// Apply an opacity percentage (0-100) to a hex color. Accepts '#RRGGBB',
+// '#RGB', or already-alphaed '#RRGGBBAA'; anything else is returned as-is
+// so callers can pass raw rgba()/named colors without the helper
+// clobbering them. Percentages <= 0 fully transparent; >= 100 returns
+// the input unchanged.
+function _applyOpacityToColor(color, opacityPct) {
+  if (typeof color !== 'string' || !color) return color;
+  const pct = Math.max(0, Math.min(100, Number(opacityPct)));
+  if (!Number.isFinite(pct)) return color;
+  if (pct >= 100 && !/^#[0-9a-fA-F]{8}$/.test(color)) return color;
+  let hex = color;
+  if (/^#[0-9a-fA-F]{3}$/.test(hex)) {
+    // Expand shorthand '#rgb' → '#rrggbb' so alpha appends correctly.
+    hex = '#' + hex.slice(1).split('').map((c) => c + c).join('');
+  }
+  const base = /^#[0-9a-fA-F]{8}$/.test(hex) ? hex.slice(0, 7) : hex;
+  if (!/^#[0-9a-fA-F]{6}$/.test(base)) return color;
+  const alpha = Math.round(pct * 2.55);
+  return base + alpha.toString(16).padStart(2, '0');
+}
+
+// Map a style-object entry ({color, lineStyle, lineWidth, opacity}) to
+// LineSeries addSeries options. Extras (LWC-specific flags a plugin
+// wants to tack on, like priceLineVisible) merge in via the second
+// arg so the callers stay terse.
+function _seriesOptsFromStyle(style, extra) {
+  const s = style || {};
+  return Object.assign({
+    color: _applyOpacityToColor(s.color, s.opacity),
+    lineStyle: _lwcLineStyle(s.lineStyle),
+    lineWidth: Number(s.lineWidth) || 1,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  }, extra || {});
+}
+
 // ── Indicator plugin architecture ────────────────────────────────────────
 // Each indicator is a plugin object conforming to the contract below.
 // The Workspace chart-panel holds an array of *instances*, each one
@@ -405,24 +455,27 @@ function calcMarketStructureMarkers(candles, lookback) {
 // createSeries returns an empty array and render manages the full
 // add/remove lifecycle against ``inst._series``.
 
-// EMA — single overlay line, one param.
+// EMA — single overlay line, one param. One `line` entry in `lines`
+// exposes color + style + width + opacity through the Style tab.
 const _EMA_PLUGIN = {
   type: 'EMA',
   displayName: 'EMA',
-  defaultColor: '#ffb347',
   paneType: 'overlay',
   params: [
     { key: 'period', label: 'Period', type: 'int', default: 21, min: 1, max: 500 },
   ],
+  lines: [
+    { id: 'line', label: 'Line', defaultColor: '#ffb347',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
+  ],
   labelTemplate: (p) => `EMA(${p.period})`,
   createSeries({ chart, LWC, inst }) {
-    return [chart.addSeries(LWC.LineSeries, {
-      color: inst.color, lineWidth: 2,
-      priceLineVisible: false, lastValueVisible: false,
-    })];
+    return [chart.addSeries(LWC.LineSeries, _seriesOptsFromStyle(inst.styles.line))];
   },
   render({ inst, candles }) {
-    if (inst._series[0]) inst._series[0].setData(calcEMALine(candles, inst.params.period));
+    if (!inst._series[0]) return null;
+    inst._series[0].applyOptions(_seriesOptsFromStyle(inst.styles.line));
+    inst._series[0].setData(calcEMALine(candles, inst.params.period));
     return null;
   },
 };
@@ -432,124 +485,174 @@ const _EMA_PLUGIN = {
 const _RSI_PLUGIN = {
   type: 'RSI',
   displayName: 'RSI',
-  defaultColor: '#5b8dee',
   paneType: 'pane',
   params: [
     { key: 'period', label: 'Period', type: 'int', default: 14, min: 2, max: 200 },
   ],
+  lines: [
+    { id: 'line', label: 'Line', defaultColor: '#5b8dee',
+      defaultStyle: 'solid', defaultWidth: 1, defaultOpacity: 100 },
+  ],
   labelTemplate: (p) => `RSI(${p.period})`,
   createSeries({ chart, LWC, inst, paneIdx }) {
-    return [chart.addSeries(LWC.LineSeries, {
-      color: inst.color, lineWidth: 1,
-      priceLineVisible: false, lastValueVisible: true,
-    }, paneIdx)];
+    const opts = _seriesOptsFromStyle(inst.styles.line, { lastValueVisible: true });
+    return [chart.addSeries(LWC.LineSeries, opts, paneIdx)];
   },
   render({ inst, candles }) {
-    if (inst._series[0]) inst._series[0].setData(calcRSILine(candles, inst.params.period));
+    if (!inst._series[0]) return null;
+    inst._series[0].applyOptions(_seriesOptsFromStyle(inst.styles.line, { lastValueVisible: true }));
+    inst._series[0].setData(calcRSILine(candles, inst.params.period));
     return null;
   },
 };
 
-// MACD — histogram + MACD-line + signal-line in its own pane. Three
-// ints on the instance; inst.color drives the MACD line, the signal
-// keeps the classic amber so the two are visually distinguishable.
+// MACD — histogram + MACD-line + signal-line in its own pane. The
+// histogram's positive-bar color follows the style; negative bars
+// keep the default red so sign flips remain visually obvious.
 const _MACD_PLUGIN = {
   type: 'MACD',
   displayName: 'MACD',
-  defaultColor: '#5b8dee',
   paneType: 'pane',
   params: [
     { key: 'fast',   label: 'Fast',   type: 'int', default: 12, min: 1 },
     { key: 'slow',   label: 'Slow',   type: 'int', default: 26, min: 1 },
     { key: 'signal', label: 'Signal', type: 'int', default: 9,  min: 1 },
   ],
+  lines: [
+    { id: 'histogram', label: 'Histogram', defaultColor: '#26a69a',
+      defaultStyle: 'solid', defaultWidth: 1, defaultOpacity: 100 },
+    { id: 'macd_line', label: 'MACD line', defaultColor: '#5b8dee',
+      defaultStyle: 'solid', defaultWidth: 1, defaultOpacity: 100 },
+    { id: 'signal_line', label: 'Signal line', defaultColor: '#ffb347',
+      defaultStyle: 'solid', defaultWidth: 1, defaultOpacity: 100 },
+  ],
   labelTemplate: (p) => `MACD(${p.fast},${p.slow},${p.signal})`,
   createSeries({ chart, LWC, inst, paneIdx }) {
     return [
-      chart.addSeries(LWC.HistogramSeries, { color: _cssVar('--muted', '#888') }, paneIdx),
-      chart.addSeries(LWC.LineSeries, { color: inst.color, lineWidth: 1 }, paneIdx),
-      chart.addSeries(LWC.LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 }, paneIdx),
+      chart.addSeries(LWC.HistogramSeries, {
+        color: _applyOpacityToColor(inst.styles.histogram.color, inst.styles.histogram.opacity),
+      }, paneIdx),
+      chart.addSeries(LWC.LineSeries, _seriesOptsFromStyle(inst.styles.macd_line), paneIdx),
+      chart.addSeries(LWC.LineSeries, _seriesOptsFromStyle(inst.styles.signal_line), paneIdx),
     ];
   },
   render({ inst, candles }) {
     const m = calcMACDLines(candles, inst.params.fast, inst.params.slow, inst.params.signal);
+    const histPos = _applyOpacityToColor(inst.styles.histogram.color, inst.styles.histogram.opacity);
+    const histNeg = _applyOpacityToColor(_cssVar('--red', '#ef5350'), inst.styles.histogram.opacity);
+    // The calcMACDLines helper colours bars from CSS vars at compute
+    // time — override per-bar so the style's positive colour drives
+    // up-bars and the default red stays on down-bars.
+    for (const row of m.histogram) row.color = row.value >= 0 ? histPos : histNeg;
     if (inst._series[0]) inst._series[0].setData(m.histogram);
-    if (inst._series[1]) inst._series[1].setData(m.macd);
-    if (inst._series[2]) inst._series[2].setData(m.signal);
+    if (inst._series[1]) {
+      inst._series[1].applyOptions(_seriesOptsFromStyle(inst.styles.macd_line));
+      inst._series[1].setData(m.macd);
+    }
+    if (inst._series[2]) {
+      inst._series[2].applyOptions(_seriesOptsFromStyle(inst.styles.signal_line));
+      inst._series[2].setData(m.signal);
+    }
     return null;
   },
 };
 
-// Bollinger — three overlay lines (upper/middle/lower). inst.color
-// drives upper + lower; middle stays muted so the envelope is readable.
+// Bollinger — three overlay lines (upper / middle / lower), each with
+// independent styling.
 const _BOLLINGER_PLUGIN = {
   type: 'BOLLINGER',
-  displayName: 'Bollinger',
-  defaultColor: '#5b8dee',
+  displayName: 'Bollinger Bands',
   paneType: 'overlay',
   params: [
     { key: 'period',     label: 'Period',      type: 'int',   default: 20, min: 2 },
     { key: 'multiplier', label: 'Stddev mult', type: 'float', default: 2.0, min: 0.1, step: 0.1 },
   ],
+  lines: [
+    { id: 'upper',  label: 'Upper',  defaultColor: '#ef5350',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
+    { id: 'middle', label: 'Middle', defaultColor: '#888888',
+      defaultStyle: 'dashed', defaultWidth: 1, defaultOpacity: 100 },
+    { id: 'lower',  label: 'Lower',  defaultColor: '#1e88e5',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
+  ],
   labelTemplate: (p) => `BB(${p.period},${p.multiplier})`,
   createSeries({ chart, LWC, inst }) {
-    const common = { lineWidth: 1, priceLineVisible: false, lastValueVisible: false };
     return [
-      chart.addSeries(LWC.LineSeries, Object.assign({ color: inst.color }, common)),
-      chart.addSeries(LWC.LineSeries, Object.assign({ color: _cssVar('--muted', '#888') }, common)),
-      chart.addSeries(LWC.LineSeries, Object.assign({ color: inst.color }, common)),
+      chart.addSeries(LWC.LineSeries, _seriesOptsFromStyle(inst.styles.upper)),
+      chart.addSeries(LWC.LineSeries, _seriesOptsFromStyle(inst.styles.middle)),
+      chart.addSeries(LWC.LineSeries, _seriesOptsFromStyle(inst.styles.lower)),
     ];
   },
   render({ inst, candles }) {
     const bb = calcBollingerLines(candles, inst.params.period, inst.params.multiplier);
-    if (inst._series[0]) inst._series[0].setData(bb.upper);
-    if (inst._series[1]) inst._series[1].setData(bb.middle);
-    if (inst._series[2]) inst._series[2].setData(bb.lower);
+    const order = ['upper', 'middle', 'lower'];
+    const data = [bb.upper, bb.middle, bb.lower];
+    for (let i = 0; i < 3; i++) {
+      if (!inst._series[i]) continue;
+      inst._series[i].applyOptions(_seriesOptsFromStyle(inst.styles[order[i]]));
+      inst._series[i].setData(data[i]);
+    }
     return null;
   },
 };
 
-// Supertrend — two overlay lines (bull leg uses inst.color, bear stays
-// red). ATR period + multiplier are the two knobs.
+// Supertrend — two overlay lines (bull / bear), each independently
+// styled. The trend-following calc fills only one direction at a
+// time so the inactive leg stays an empty array.
 const _SUPERTREND_PLUGIN = {
   type: 'SUPERTREND',
   displayName: 'Supertrend',
-  defaultColor: '#26a69a',
   paneType: 'overlay',
   params: [
     { key: 'atr_period', label: 'ATR period', type: 'int',   default: 10, min: 1 },
     { key: 'multiplier', label: 'Multiplier', type: 'float', default: 3.0, min: 0.1, step: 0.1 },
   ],
+  lines: [
+    { id: 'bull', label: 'Bull', defaultColor: '#26a69a',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
+    { id: 'bear', label: 'Bear', defaultColor: '#ef5350',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
+  ],
   labelTemplate: (p) => `ST(${p.atr_period},${p.multiplier})`,
   createSeries({ chart, LWC, inst }) {
-    const common = { lineWidth: 2, priceLineVisible: false, lastValueVisible: false };
     return [
-      chart.addSeries(LWC.LineSeries, Object.assign({ color: inst.color }, common)),
-      chart.addSeries(LWC.LineSeries, Object.assign({ color: _cssVar('--red', '#ef5350') }, common)),
+      chart.addSeries(LWC.LineSeries, _seriesOptsFromStyle(inst.styles.bull)),
+      chart.addSeries(LWC.LineSeries, _seriesOptsFromStyle(inst.styles.bear)),
     ];
   },
   render({ inst, candles }) {
     const st = calcSupertrendLines(candles, inst.params.atr_period, inst.params.multiplier);
-    if (inst._series[0]) inst._series[0].setData(st.bull);
-    if (inst._series[1]) inst._series[1].setData(st.bear);
+    if (inst._series[0]) {
+      inst._series[0].applyOptions(_seriesOptsFromStyle(inst.styles.bull));
+      inst._series[0].setData(st.bull);
+    }
+    if (inst._series[1]) {
+      inst._series[1].applyOptions(_seriesOptsFromStyle(inst.styles.bear));
+      inst._series[1].setData(st.bear);
+    }
     return null;
   },
 };
 
 // Support/Resistance — dynamic per-segment lines. createSeries is a
-// no-op; render clears inst._series and rebuilds per segment. R and S
-// share the instance color but differ in line style so an operator
-// can tell them apart without two color-pickers per instance.
+// no-op; render clears inst._series and rebuilds per segment. Each
+// direction has its own styled entry so resistance + support can be
+// distinguished without needing two separate instances.
 const _SR_PLUGIN = {
   type: 'SUPPORT_RESISTANCE',
   displayName: 'S/R',
-  defaultColor: '#e53935',
   paneType: 'overlay',
   params: [
     { key: 'left_bars',        label: 'Left bars',     type: 'int',   default: 15, min: 1 },
     { key: 'right_bars',       label: 'Right bars',    type: 'int',   default: 15, min: 1 },
     { key: 'volume_threshold', label: 'Vol threshold', type: 'float', default: 0,  min: 0, step: 0.1 },
     { key: 'min_touches',      label: 'Min touches',   type: 'int',   default: 1,  min: 1 },
+  ],
+  lines: [
+    { id: 'resistance', label: 'Resistance', defaultColor: '#ef5350',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
+    { id: 'support', label: 'Support', defaultColor: '#1e88e5',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
   ],
   labelTemplate: (p) => `S/R(${p.left_bars},${p.right_bars})`,
   createSeries() { return []; },
@@ -559,23 +662,27 @@ const _SR_PLUGIN = {
       candles, inst.params.left_bars, inst.params.right_bars,
       inst.params.volume_threshold, inst.params.min_touches,
     );
-    _addSegmentedLevelSeries(chart, LWC, inst, candles, sr.resSeries, inst.color, 0, 'R');
-    _addSegmentedLevelSeries(chart, LWC, inst, candles, sr.supSeries, inst.color, 2, 'S');
+    _addSegmentedLevelSeries(chart, LWC, inst, candles, sr.resSeries, inst.styles.resistance, 'R');
+    _addSegmentedLevelSeries(chart, LWC, inst, candles, sr.supSeries, inst.styles.support, 'S');
     return null;
   },
 };
 
-// QFL — dashed dynamic-segment base line. Single color from instance.
+// QFL — dynamic-segment base-level line, dashed by default to set it
+// apart from S/R on the same chart.
 const _QFL_PLUGIN = {
   type: 'QFL',
   displayName: 'QFL',
-  defaultColor: '#f050a0',
   paneType: 'overlay',
   params: [
     { key: 'base_periods',   label: 'Base periods',  type: 'int',   default: 36, min: 1 },
     { key: 'pump_periods',   label: 'Pump periods',  type: 'int',   default: 8,  min: 1 },
     { key: 'pump_pct',       label: 'Pump %',        type: 'float', default: 3.0, min: 0, step: 0.1 },
     { key: 'base_crack_pct', label: 'Base crack %',  type: 'float', default: 3.0, min: 0, step: 0.1 },
+  ],
+  lines: [
+    { id: 'base', label: 'Base', defaultColor: '#f050a0',
+      defaultStyle: 'dashed', defaultWidth: 2, defaultOpacity: 100 },
   ],
   labelTemplate: (p) => `QFL(${p.base_periods},${p.pump_periods})`,
   createSeries() { return []; },
@@ -585,7 +692,7 @@ const _QFL_PLUGIN = {
       candles, inst.params.base_periods, inst.params.pump_periods,
       inst.params.pump_pct, inst.params.base_crack_pct,
     );
-    _addSegmentedLevelSeries(chart, LWC, inst, candles, qfl.baseSeries, inst.color, 2, null);
+    _addSegmentedLevelSeries(chart, LWC, inst, candles, qfl.baseSeries, inst.styles.base, null);
     return null;
   },
 };
@@ -593,20 +700,28 @@ const _QFL_PLUGIN = {
 // Parabolic SAR — dots per direction (via transparent line + marker
 // primitives) plus trend-flip arrow markers returned to the caller so
 // every instance's arrows merge into the candle-series marker set.
+// Both dot colours + the flip-arrow colours follow the styled entries.
 const _PARABOLIC_SAR_PLUGIN = {
   type: 'PARABOLIC_SAR',
   displayName: 'Parabolic SAR',
-  defaultColor: '#3388bb',
   paneType: 'overlay',
   params: [
     { key: 'initial_af', label: 'Initial AF', type: 'float', default: 0.02, min: 0.001, step: 0.005 },
     { key: 'max_af',     label: 'Max AF',     type: 'float', default: 0.20, min: 0.01,  step: 0.01 },
+  ],
+  lines: [
+    { id: 'bull', label: 'Bull dots', defaultColor: '#3388bb',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
+    { id: 'bear', label: 'Bear dots', defaultColor: '#ffb347',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
   ],
   labelTemplate: (p) => `PSAR(${p.initial_af},${p.max_af})`,
   createSeries() { return []; },
   render({ inst, candles, chart, LWC }) {
     _clearInstanceSeries(chart, inst);
     const ps = calcParabolicSAR(candles, inst.params.initial_af, inst.params.max_af);
+    const bullColor = _applyOpacityToColor(inst.styles.bull.color, inst.styles.bull.opacity);
+    const bearColor = _applyOpacityToColor(inst.styles.bear.color, inst.styles.bear.opacity);
     const bullData = [], bearData = [], markers = [];
     for (let i = 0; i < candles.length; i++) {
       if (ps.sarValues[i] === null) continue;
@@ -618,7 +733,7 @@ const _PARABOLIC_SAR_PLUGIN = {
           time: t,
           position: ps.dirs[i] === 1 ? 'belowBar' : 'aboveBar',
           shape: ps.dirs[i] === 1 ? 'arrowUp' : 'arrowDown',
-          color: ps.dirs[i] === 1 ? _cssVar('--accent', '#26a69a') : _cssVar('--red', '#ef5350'),
+          color: ps.dirs[i] === 1 ? bullColor : bearColor,
           size: 1,
         });
       }
@@ -639,32 +754,32 @@ const _PARABOLIC_SAR_PLUGIN = {
       else { try { s.setMarkers(dotMarkers); } catch (e) {} }
       inst._series.push(s);
     };
-    addDots(bullData, inst.color);
-    addDots(bearData, _cssVar('--amber', '#ffb347'));
+    addDots(bullData, bullColor);
+    addDots(bearData, bearColor);
     return { markers };
   },
 };
 
 // Market structure — pure swing-high/low markers, no series at all.
-// Instance color tints both the up + down arrows so two instances on
-// different lookbacks remain visually distinguishable.
+// The single styled `marker` entry tints both up + down arrows so
+// two instances on different lookbacks remain distinguishable.
 const _MARKET_STRUCTURE_PLUGIN = {
   type: 'MARKET_STRUCTURE',
   displayName: 'Market structure',
-  defaultColor: '#26a69a',
   paneType: 'overlay',
   params: [
     { key: 'lookback', label: 'Lookback', type: 'int', default: 3, min: 1 },
+  ],
+  lines: [
+    { id: 'marker', label: 'Markers', defaultColor: '#26a69a',
+      defaultStyle: 'solid', defaultWidth: 2, defaultOpacity: 100 },
   ],
   labelTemplate: (p) => `MS(${p.lookback})`,
   createSeries() { return []; },
   render({ inst, candles }) {
     const ms = calcMarketStructureMarkers(candles, inst.params.lookback);
-    // Re-tint to the instance's color. calcMarketStructureMarkers
-    // returns hard-coded accent/red for up/down; we override the
-    // ``color`` field per marker so the operator's color-picker
-    // choice follows through.
-    for (const m of ms) m.color = inst.color;
+    const color = _applyOpacityToColor(inst.styles.marker.color, inst.styles.marker.opacity);
+    for (const m of ms) m.color = color;
     return { markers: ms };
   },
 };
@@ -690,11 +805,11 @@ function _clearInstanceSeries(chart, inst) {
 
 // Segmented-level renderer shared by S/R and QFL. Walks a per-bar
 // value-or-null series, groups consecutive equal values into flat
-// horizontal segments, and draws each segment as its own LineSeries.
-// The last segment (if ``labelStart`` is truthy) gets a price-axis
-// label so the operator can read the level without hovering.
-// ``lineStyle``: 0 = solid, 2 = dashed (LWC's LineStyle enum).
-function _addSegmentedLevelSeries(chart, LWC, inst, candles, series, color, lineStyle, labelStart) {
+// horizontal segments, and draws each segment as its own LineSeries
+// styled from the given style-object ({color, lineStyle, lineWidth,
+// opacity}). The last segment (if ``labelStart`` is truthy) gets a
+// price-axis label so the operator can read the level without hovering.
+function _addSegmentedLevelSeries(chart, LWC, inst, candles, series, style, labelStart) {
   const segs = [];
   let segStart = null, segVal = null;
   for (let i = 0; i < candles.length; i++) {
@@ -706,21 +821,20 @@ function _addSegmentedLevelSeries(chart, LWC, inst, candles, series, color, line
     }
   }
   if (segVal !== null) segs.push({ start: segStart, end: candles.length - 1, value: segVal });
+  const seriesOpts = _seriesOptsFromStyle(style, { crosshairMarkerVisible: false });
+  const axisLabelColor = _applyOpacityToColor(style.color, style.opacity);
   for (const seg of segs) {
     const data = [];
     for (let j = seg.start; j <= seg.end; j++) {
       data.push({ time: candles[j].time, value: seg.value });
     }
-    const s = chart.addSeries(LWC.LineSeries, {
-      color, lineWidth: 2, lineStyle,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
+    const s = chart.addSeries(LWC.LineSeries, seriesOpts);
     s.setData(data);
     inst._series.push(s);
     if (labelStart && seg.end === candles.length - 1) {
       s.createPriceLine({
-        price: seg.value, color, lineWidth: 0, lineStyle: 0,
+        price: seg.value, color: axisLabelColor,
+        lineWidth: 0, lineStyle: 0,
         axisLabelVisible: true, title: labelStart,
       });
     }
@@ -759,6 +873,81 @@ function _defaultParamsFor(type) {
   return out;
 }
 
+// Build the default styles-object for a plugin — keyed on line.id with
+// {color, lineStyle, lineWidth, opacity} for each entry. Invoked from
+// _createIndicatorInstance and from the style migration helper when an
+// instance is missing its styles entirely.
+function _defaultStylesFor(type) {
+  const plugin = INDICATOR_PLUGINS[type];
+  if (!plugin || !Array.isArray(plugin.lines)) return {};
+  const out = {};
+  for (const line of plugin.lines) {
+    out[line.id] = {
+      color: line.defaultColor,
+      lineStyle: line.defaultStyle,
+      lineWidth: line.defaultWidth,
+      opacity: line.defaultOpacity,
+    };
+  }
+  return out;
+}
+
+// Reconcile an instance's styles-object with the plugin's current
+// lines list. Three jobs:
+//   1. Legacy single-color layouts (``color: "#RRGGBB"``) → fan the
+//      color out across every line.id, seeding other style fields
+//      from plugin defaults.
+//   2. Missing or partial styles → fill gaps with plugin defaults so
+//      render doesn't crash on ``style.color`` lookups.
+//   3. Stale line.id entries (plugin removed a line post-save) →
+//      drop them so the layout doesn't accumulate garbage.
+// Mutates ``instance`` in place; the legacy ``color`` field is
+// removed after fan-out so getConfig serialises only the new shape.
+function _migrateInstanceStyles(instance, plugin) {
+  if (!instance || !plugin || !Array.isArray(plugin.lines)) return;
+  const legacyColor = typeof instance.color === 'string' && instance.color
+    ? instance.color : null;
+  if (!instance.styles || typeof instance.styles !== 'object') instance.styles = {};
+  for (const line of plugin.lines) {
+    const cur = instance.styles[line.id];
+    const seed = {
+      color: legacyColor || line.defaultColor,
+      lineStyle: line.defaultStyle,
+      lineWidth: line.defaultWidth,
+      opacity: line.defaultOpacity,
+    };
+    if (!cur || typeof cur !== 'object') {
+      instance.styles[line.id] = seed;
+      continue;
+    }
+    if (typeof cur.color !== 'string' || !cur.color) cur.color = seed.color;
+    if (typeof cur.lineStyle !== 'string') cur.lineStyle = seed.lineStyle;
+    if (typeof cur.lineWidth !== 'number') cur.lineWidth = seed.lineWidth;
+    if (typeof cur.opacity !== 'number') cur.opacity = seed.opacity;
+  }
+  const valid = new Set(plugin.lines.map((l) => l.id));
+  for (const k of Object.keys(instance.styles)) {
+    if (!valid.has(k)) delete instance.styles[k];
+  }
+  if (legacyColor) delete instance.color;
+}
+
+// Resolve the "primary" color for an instance — the first line's
+// color, used by the manager-list dot and anywhere we need a single
+// glance-able tint without pulling the whole style-tab up. Falls back
+// through instance.color (legacy, pre-migration) → plugin default →
+// a muted grey if the plugin has no lines defined.
+function _getInstancePrimaryColor(instance, plugin) {
+  if (!plugin || !Array.isArray(plugin.lines) || plugin.lines.length === 0) {
+    return instance && typeof instance.color === 'string' ? instance.color : '#888';
+  }
+  const first = plugin.lines[0];
+  const style = instance && instance.styles && instance.styles[first.id];
+  if (style && typeof style.color === 'string') return style.color;
+  if (instance && typeof instance.color === 'string' && instance.color) return instance.color;
+  return first.defaultColor;
+}
+
 // Mint a new instance with defaults. The id uniquely names the
 // instance for state lookups + form-element ids; the uniqueness
 // scope is the single panel (two panels can share ids without
@@ -777,22 +966,33 @@ function _createIndicatorInstance(type, existing, colorHint) {
   }));
   let n = 1;
   while (used.has(n)) n++;
-  return {
+  const inst = {
     id: `${type}_${n}`,
     type,
     params: _defaultParamsFor(type),
-    color: colorHint || plugin.defaultColor,
+    styles: _defaultStylesFor(type),
   };
+  // colorHint (rare — came from a pre-plugin migration path) seeds
+  // every line's color to match; _migrateInstanceStyles would
+  // otherwise handle this for read-from-disk instances.
+  if (colorHint && plugin.lines) {
+    for (const line of plugin.lines) {
+      if (inst.styles[line.id]) inst.styles[line.id].color = colorHint;
+    }
+  }
+  return inst;
 }
 
 // Convert whatever landed from disk into the in-memory instance
 // array. Three input shapes to tolerate:
-//   1. Legacy string array: ['EMA', 'RSI'] → one default instance
-//      per type, skipping unknown types.
-//   2. Mixed array (paranoia): ['EMA', {type:'RSI', ...}]
-//   3. New instance array: [{id, type, params, color}, ...]
-// Missing params fields re-seed from plugin defaults so adding a new
-// param to an existing plugin doesn't break old layouts.
+//   1. Legacy v1 — string array: ['EMA', 'RSI'] → one default
+//      instance per type, skipping unknown types.
+//   2. Legacy v2 — single-color instance: [{type, params, color}]
+//      → styles object fanned out from the one color.
+//   3. Current — per-line-styled instance: [{type, params, styles}]
+//      → passed through with defaults backfilling gaps.
+// Missing params or style fields re-seed from plugin defaults so
+// adding a new param / line to a plugin doesn't break old layouts.
 function _migrateIndicators(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -816,12 +1016,19 @@ function _migrateIndicators(raw) {
     let uid = id, bump = 2;
     const taken = new Set(out.map((x) => x.id));
     while (taken.has(uid)) { uid = `${id}_${bump++}`; }
-    out.push({
+    const inst = {
       id: uid,
       type,
       params,
-      color: typeof item.color === 'string' && item.color ? item.color : plugin.defaultColor,
-    });
+      styles: (item.styles && typeof item.styles === 'object')
+        ? Object.assign({}, item.styles) : {},
+    };
+    // Preserve legacy ``color`` temporarily so _migrateInstanceStyles
+    // can use it as the fan-out seed; the helper deletes the field
+    // after fan-out so writes go out clean.
+    if (typeof item.color === 'string' && item.color) inst.color = item.color;
+    _migrateInstanceStyles(inst, plugin);
+    out.push(inst);
   }
   return out;
 }
@@ -1749,15 +1956,16 @@ function createPanelChart(container, config) {
     return input;
   }
 
-  // Schema-driven edit form — renders one label/input row per
-  // plugin.params entry. Apply collects the values, coerces to
-  // numbers respecting the 'int' vs 'float' type, and delegates
-  // to api.updateIndicator which triggers a rebuild + save.
-  function _buildEditForm(inst) {
-    const plugin = INDICATOR_PLUGINS[inst.type];
-    if (!plugin) return null;
-    const form = document.createElement('div');
-    form.className = 'panel-indicators-edit-form';
+  // Tabbed edit form — "Inputs" tab holds the param schema rows, "Style"
+  // tab holds per-line styling controls driven by plugin.lines. Apply
+  // collects from both tabs in one go, so switching tabs mid-edit
+  // doesn't drop user input before the final write. The active tab is
+  // cached on state so re-renders (from row-delete elsewhere) don't
+  // bounce the operator back to Inputs mid-session.
+  function _buildInputsTab(plugin, inst) {
+    const container = document.createElement('div');
+    container.className = 'panel-indicators-tab-content';
+    container.dataset.tab = 'inputs';
     for (const schema of plugin.params) {
       const row = document.createElement('div');
       row.className = 'panel-indicators-param-row';
@@ -1766,8 +1974,127 @@ function createPanelChart(container, config) {
       lbl.textContent = schema.label;
       row.appendChild(lbl);
       row.appendChild(_buildParamInput(schema, inst.params[schema.key]));
-      form.appendChild(row);
+      container.appendChild(row);
     }
+    return container;
+  }
+
+  function _buildStyleTab(plugin, inst) {
+    const container = document.createElement('div');
+    container.className = 'panel-indicators-tab-content hidden';
+    container.dataset.tab = 'style';
+    const lines = Array.isArray(plugin.lines) ? plugin.lines : [];
+    if (!lines.length) {
+      const empty = document.createElement('div');
+      empty.className = 'panel-indicators-empty';
+      empty.textContent = 'No styled lines for this indicator.';
+      container.appendChild(empty);
+      return container;
+    }
+    for (const line of lines) {
+      const style = (inst.styles && inst.styles[line.id]) || {};
+      const row = document.createElement('div');
+      row.className = 'panel-indicators-line-row';
+      row.dataset.lineId = line.id;
+
+      const label = document.createElement('span');
+      label.className = 'panel-indicators-line-label';
+      label.textContent = line.label;
+
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.dataset.lineProp = 'color';
+      colorInput.value = style.color || line.defaultColor;
+
+      const styleSelect = document.createElement('select');
+      styleSelect.dataset.lineProp = 'lineStyle';
+      for (const v of ['solid', 'dashed', 'dotted']) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v.charAt(0).toUpperCase() + v.slice(1);
+        if ((style.lineStyle || line.defaultStyle) === v) opt.selected = true;
+        styleSelect.appendChild(opt);
+      }
+
+      const widthSelect = document.createElement('select');
+      widthSelect.dataset.lineProp = 'lineWidth';
+      for (const v of [1, 2, 3, 4]) {
+        const opt = document.createElement('option');
+        opt.value = String(v);
+        opt.textContent = String(v);
+        if ((Number(style.lineWidth) || line.defaultWidth) === v) opt.selected = true;
+        widthSelect.appendChild(opt);
+      }
+
+      const opacityInput = document.createElement('input');
+      opacityInput.type = 'number';
+      opacityInput.min = '0';
+      opacityInput.max = '100';
+      opacityInput.step = '5';
+      opacityInput.dataset.lineProp = 'opacity';
+      opacityInput.value = String(
+        Number.isFinite(style.opacity) ? style.opacity : line.defaultOpacity,
+      );
+
+      const pct = document.createElement('span');
+      pct.className = 'panel-indicators-opacity-pct';
+      pct.textContent = '%';
+
+      row.append(label, colorInput, styleSelect, widthSelect, opacityInput, pct);
+      container.appendChild(row);
+    }
+    return container;
+  }
+
+  function _buildEditForm(inst) {
+    const plugin = INDICATOR_PLUGINS[inst.type];
+    if (!plugin) return null;
+    const form = document.createElement('div');
+    form.className = 'panel-indicators-edit-form';
+    form.dataset.instanceId = inst.id;
+
+    // Tab buttons.
+    const tabs = document.createElement('div');
+    tabs.className = 'panel-indicators-tabs';
+    const mkTab = (name, label, active) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'panel-indicators-tab' + (active ? ' active' : '');
+      b.dataset.tab = name;
+      b.textContent = label;
+      return b;
+    };
+    const activeTab = state._editTab || 'inputs';
+    const inputsBtn = mkTab('inputs', 'Inputs', activeTab === 'inputs');
+    const styleBtn  = mkTab('style',  'Style',  activeTab === 'style');
+    tabs.append(inputsBtn, styleBtn);
+    form.appendChild(tabs);
+
+    // Tab content panes. Both stay in the DOM so Apply can collect
+    // from the hidden pane without rebuilding; the active tab's
+    // visibility is toggled via the 'hidden' class.
+    const inputsPane = _buildInputsTab(plugin, inst);
+    const stylePane  = _buildStyleTab(plugin, inst);
+    if (activeTab === 'style') { inputsPane.classList.add('hidden'); stylePane.classList.remove('hidden'); }
+    form.appendChild(inputsPane);
+    form.appendChild(stylePane);
+
+    const switchTo = (name) => {
+      state._editTab = name;
+      inputsBtn.classList.toggle('active', name === 'inputs');
+      styleBtn.classList.toggle('active', name === 'style');
+      inputsPane.classList.toggle('hidden', name !== 'inputs');
+      stylePane.classList.toggle('hidden', name !== 'style');
+    };
+    inputsBtn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      switchTo('inputs');
+    });
+    styleBtn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      switchTo('style');
+    });
+
     const actions = document.createElement('div');
     actions.className = 'panel-indicators-edit-actions';
     const applyBtn = document.createElement('button');
@@ -1783,11 +2110,13 @@ function createPanelChart(container, config) {
     actions.appendChild(applyBtn);
     actions.appendChild(closeBtn);
     form.appendChild(actions);
+
     applyBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const patch = { params: {} };
-      for (const inp of form.querySelectorAll('input[data-key]')) {
+      // Collect params from inputs tab (still in DOM even when hidden).
+      const patch = { params: {}, styles: {} };
+      for (const inp of inputsPane.querySelectorAll('input[data-key]')) {
         const key = inp.dataset.key;
         const t = inp.dataset.paramType;
         let v = Number(inp.value);
@@ -1795,14 +2124,28 @@ function createPanelChart(container, config) {
         if (t === 'int') v = Math.round(v);
         patch.params[key] = v;
       }
+      // Collect per-line styles.
+      for (const row of stylePane.querySelectorAll('.panel-indicators-line-row')) {
+        const lineId = row.dataset.lineId;
+        if (!lineId) continue;
+        const color = row.querySelector('[data-line-prop="color"]').value;
+        const lineStyle = row.querySelector('[data-line-prop="lineStyle"]').value;
+        const lineWidth = parseInt(row.querySelector('[data-line-prop="lineWidth"]').value, 10) || 1;
+        const opacityRaw = parseInt(row.querySelector('[data-line-prop="opacity"]').value, 10);
+        const opacity = Number.isFinite(opacityRaw)
+          ? Math.max(0, Math.min(100, opacityRaw)) : 100;
+        patch.styles[lineId] = { color, lineStyle, lineWidth, opacity };
+      }
       api.updateIndicator(inst.id, patch);
       state._editingInstanceId = null;
+      state._editTab = 'inputs';
       _renderIndModal();
     });
     closeBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       state._editingInstanceId = null;
+      state._editTab = 'inputs';
       _renderIndModal();
     });
     return form;
@@ -1840,17 +2183,14 @@ function createPanelChart(container, config) {
       const main = document.createElement('div');
       main.className = 'panel-indicators-row-main';
 
-      const colorInput = document.createElement('input');
-      colorInput.type = 'color';
-      colorInput.className = 'panel-indicators-row-color';
-      colorInput.value = inst.color || plugin.defaultColor;
-      colorInput.addEventListener('input', () => {
-        api.updateIndicator(inst.id, { color: colorInput.value });
-        // Relabel doesn't change — no full re-render needed; updating
-        // the color on the live chart is done by updateIndicator's
-        // rebuild path. Keep the modal open + the form expanded.
-      });
-      main.appendChild(colorInput);
+      // Display-only color swatch — preview of the first line's color.
+      // Color editing lives in the Style tab so multi-line indicators
+      // don't have two competing entry points for the same state.
+      const colorDot = document.createElement('span');
+      colorDot.className = 'panel-indicators-row-color';
+      colorDot.setAttribute('aria-hidden', 'true');
+      colorDot.style.backgroundColor = _getInstancePrimaryColor(inst, plugin);
+      main.appendChild(colorDot);
 
       const label = document.createElement('span');
       label.className = 'panel-indicators-row-label';
@@ -2821,12 +3161,22 @@ function createPanelChart(container, config) {
       if (patch.params && typeof patch.params === 'object') {
         inst.params = Object.assign({}, inst.params, patch.params);
       }
-      if (typeof patch.color === 'string' && patch.color) {
-        inst.color = patch.color;
+      if (patch.styles && typeof patch.styles === 'object') {
+        // Merge per-line style patches so callers can submit a partial
+        // update (e.g. just one line's color change). Re-run the
+        // migration helper afterwards so any missing line entries get
+        // re-seeded from plugin defaults.
+        const next = Object.assign({}, inst.styles);
+        for (const lineId of Object.keys(patch.styles)) {
+          next[lineId] = Object.assign({}, next[lineId] || {}, patch.styles[lineId]);
+        }
+        inst.styles = next;
+        _migrateInstanceStyles(inst, INDICATOR_PLUGINS[inst.type]);
       }
-      // Param or color changes affect the series-creation options
-      // (color on creation), so a full rebuild is needed rather than
-      // a render-only path. Cheap in practice — 9 plugins max.
+      // Param or style changes affect series-creation options (color,
+      // lineStyle, etc. bake in at addSeries time), so a full rebuild
+      // is needed rather than a render-only path. Cheap in practice —
+      // 9 plugins max.
       _rebuildIndicatorSeries();
       _renderIndicatorOverlays();
       if (state.onConfigChange) state.onConfigChange();
@@ -2879,12 +3229,22 @@ function createPanelChart(container, config) {
         // next load anyway. Legacy string-array layouts are migrated
         // on load; writes always produce the instance shape so a
         // layout self-heals on first save.
-        indicators: state.indicators.map((inst) => ({
-          id: inst.id,
-          type: inst.type,
-          params: Object.assign({}, inst.params),
-          color: inst.color,
-        })),
+        indicators: state.indicators.map((inst) => {
+          // Deep-copy styles so a later mutation can't mutate the
+          // saved snapshot. Legacy ``color`` field is dropped on
+          // write — _migrateInstanceStyles already fanned it out
+          // into styles on load, so there's no value in keeping it.
+          const styles = {};
+          for (const k of Object.keys(inst.styles || {})) {
+            styles[k] = Object.assign({}, inst.styles[k]);
+          }
+          return {
+            id: inst.id,
+            type: inst.type,
+            params: Object.assign({}, inst.params),
+            styles,
+          };
+        }),
         boundBotSlug: state.boundBotSlug,
         boundBotUserId: state.boundBotUserId,
         // ``timezone`` supersedes the legacy ``useUtc`` field from
