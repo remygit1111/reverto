@@ -75,6 +75,36 @@ def non_admin_client():
         webapp._COOKIE_SAMESITE = prev_samesite
 
 
+@pytest.fixture
+def second_admin_client():
+    """Second admin (role=admin, id != 1) — regression guard for
+    audit r1-002: _require_admin_user used to check ``user.id == 1``
+    and would 403 any secondary admin. The gate is role-based now, so
+    this client must get the same access as admin_client."""
+    from core.database import get_db
+    conn = get_db()
+    with conn:
+        conn.execute(
+            "INSERT INTO users (username, role) VALUES ('carol', 'admin')",
+        )
+    carol = user_store.get_user_by_username("carol")
+    assert carol.id != 1
+    assert carol.role == "admin"
+    prev_secure = webapp._COOKIE_SECURE
+    prev_samesite = webapp._COOKIE_SAMESITE
+    webapp._COOKIE_SECURE = False
+    webapp._COOKIE_SAMESITE = "lax"
+    client = TestClient(webapp.app)
+    client.cookies.set(
+        "reverto_session", webapp._create_session_cookie(carol),
+    )
+    try:
+        yield client
+    finally:
+        webapp._COOKIE_SECURE = prev_secure
+        webapp._COOKIE_SAMESITE = prev_samesite
+
+
 # ── Auth gates ────────────────────────────────────────────────────────────
 
 class TestAuthGates:
@@ -97,6 +127,20 @@ class TestAuthGates:
             },
         )
         assert r.status_code == 403
+
+    def test_second_admin_can_create(self, second_admin_client):
+        # Regression for audit r1-002: the old user.id == 1 check rejected
+        # any admin other than the seeded one. Role-based gate must
+        # accept any user with role='admin' regardless of id.
+        r = second_admin_client.post(
+            "/api/admin/changelog",
+            json={
+                "title": "Second admin entry",
+                "description": "Created by role=admin user with id != 1.",
+                "category": "feature",
+            },
+        )
+        assert r.status_code == 201, r.text
 
 
 # ── Public /api/changelog ─────────────────────────────────────────────────
