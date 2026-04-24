@@ -24,6 +24,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 import web.app as webapp
+from core.rate_budget import CostBudget
 from core.user import User
 from web.app import (
     _bitget_client,
@@ -51,6 +52,15 @@ from web.app import (
     _ticker_lock,
     limiter,
     registry,
+)
+
+# Audit r1-045: cost-based budget fronting /api/candles. The flat
+# 20/min slowapi limiter treats a 100-candle call the same as a
+# 5000-candle one; this bucket charges the request proportional
+# to its ``limit`` parameter. Default tuning (10k budget, 100/s
+# refill) = sustained 100 candles/sec + up to 10k burst when idle.
+_candles_cost_budget = CostBudget(
+    budget=10000, refill_per_second=100,
 )
 
 logger = logging.getLogger(__name__)
@@ -257,12 +267,19 @@ async def api_candles(
     start: str,
     end: str,
     limit: int = 5000,
+    user: User = Depends(_request_user),
 ):
     """Public OHLCV range endpoint backing the client-side backtester.
 
     _fetch_ohlcv_range is looked up via ``webapp`` so test monkeypatches
     of ``webapp._fetch_ohlcv_page_with_retry`` propagate to the actual
     paginated fetch. Direct imports would capture the pre-patch symbol.
+
+    Audit r1-045: cost-based throttle in addition to the coarse
+    20/minute limiter. Each request debits ``limit`` points from
+    the caller's per-user budget so a 5000-candle request costs
+    50x a 100-candle one. Bucket tuned for ~100 candles/sec
+    sustained with a 10k burst allowance.
     """
     from datetime import timezone
     if timeframe not in _CHART_TIMEFRAMES:
@@ -274,6 +291,18 @@ async def api_candles(
         limit = 100
     if limit > _CANDLES_MAX_BARS:
         limit = _CANDLES_MAX_BARS
+
+    # Cost-based throttle (r1-045). Per-user key; the 20/minute
+    # slowapi decorator still guards the overall request rate.
+    budget_key = f"user:{user.id}"
+    if not _candles_cost_budget.consume(budget_key, limit):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Candle budget exhausted — wait a moment or use a "
+                "smaller ``limit``. The budget refills continuously."
+            ),
+        )
 
     try:
         start_dt = _parse_iso_utc(start)
