@@ -481,9 +481,67 @@ if not _audit_logger.handlers:
     _audit_logger.addHandler(_audit_handler)
 
 
-def _audit(action: str, slug: str = "-", key_hint: str = "-") -> None:
-    """Schrijf één regel naar de audit log."""
+def _audit(
+    action: str,
+    slug: str = "-",
+    key_hint: str = "-",
+    user_id: Optional[int] = None,
+) -> None:
+    """Append one record to the audit trail.
+
+    Audit r1-031: dual-write. The legacy pipe-delimited line goes
+    to ``logs/audit.log`` (RotatingFileHandler, grep-friendly) so
+    existing tooling keeps working. A structured JSONL record
+    lands in ``logs/audit.jsonl`` (parser-friendly — Loki, Vector,
+    DataDog agents can ingest it without regex).
+
+    If ``user_id`` is provided, a *secondary* JSONL record also
+    lands in ``logs/<user_id>/audit.jsonl`` so per-tenant audit
+    pulls are a single file read instead of a grep over the global
+    log. Callers don't have to pass user_id — legacy call sites
+    that omit it still produce the global JSONL + pipe lines
+    (just no per-user copy).
+
+    The JSON record embeds the current request id (r1-034) so
+    an operator correlating an audit event with surrounding
+    portal-log lines can filter both streams on the same id.
+    """
+    # Pipe-format (legacy, grep-friendly).
     _audit_logger.info("%s | %s | %s", action, slug, key_hint)
+
+    # JSONL — dual-write. Failures stay local to the audit path;
+    # an unwritable logs/ dir must never break the mutating
+    # endpoint that invoked us.
+    ts = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "ts": ts,
+        "action": action,
+        "slug": slug,
+        "user": key_hint,
+        "user_id": user_id,
+        "request_id": _request_id_ctx.get(),
+    }
+    line = json.dumps(entry, separators=(",", ":")) + "\n"
+    try:
+        with open(LOG_DIR / "audit.jsonl", "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError as e:
+        logger.debug("audit.jsonl write failed: %s", e)
+
+    # Per-user split — only when an explicit user_id was passed
+    # by the caller. Deriving user_id from ``key_hint`` string
+    # parsing would be fragile (session:<username> vs apikey:
+    # <hint> vs "-"), so we keep it opt-in at the call-site.
+    if user_id is not None:
+        try:
+            user_dir = paths.user_logs_dir(user_id)
+            with open(user_dir / "audit.jsonl", "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError as e:
+            logger.debug(
+                "per-user audit.jsonl write failed for user=%d: %s",
+                user_id, e,
+            )
 
 
 def _log_to_bot_log(user_id: int, slug: str, line: str) -> None:
