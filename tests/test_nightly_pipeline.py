@@ -258,15 +258,41 @@ class TestRunPipeline:
         # the tenant the run belonged to.
         assert result.get("user_id") == 1
 
+    def test_persist_results_writes_under_user_scoped_path(
+        self, tmp_path, monkeypatch,
+    ):
+        """Audit r1-049: results land in ml/<user_id>/results_<slug>.json
+        so two tenants with the same slug don't clobber each other.
+        Call _persist_results directly with a sandboxed BASE_DIR."""
+        from core import paths as _paths
+        from ml import nightly_pipeline
+
+        monkeypatch.setattr(_paths, "BASE_DIR", tmp_path)
+
+        nightly_pipeline._persist_results(42, "shared_slug", {"k": "v42"})
+        nightly_pipeline._persist_results(7,  "shared_slug", {"k": "v7"})
+
+        path_42 = tmp_path / "ml" / "42" / "results_shared_slug.json"
+        path_7  = tmp_path / "ml" / "7"  / "results_shared_slug.json"
+        assert path_42.exists(), f"expected {path_42}"
+        assert path_7.exists(),  f"expected {path_7}"
+
+        import json as _json
+        assert _json.loads(path_42.read_text()) == {"k": "v42"}
+        assert _json.loads(path_7.read_text())  == {"k": "v7"}
+
     def test_results_persisted(self, tmp_path, temp_db, monkeypatch):
-        """The summary should land in ml/results_<bot>.json so operators
-        can diff runs. Redirect the path helper at a tmp dir so we don't
-        pollute the real ml/ directory."""
+        """The summary should land in ml/<user_id>/results_<bot>.json so
+        operators can diff runs. Redirect the path helper at a tmp dir so
+        we don't pollute the real ml/ directory.
+
+        Audit r1-049: signature is now (user_id, bot_slug, results) so
+        the per-user folder is honoured."""
         from ml import nightly_pipeline
 
         results_file = tmp_path / "results_empty_bot.json"
 
-        def fake_persist(bot_slug, results):
+        def fake_persist(user_id, bot_slug, results):
             results_file.write_text("persisted")
             return results_file
 
@@ -374,7 +400,7 @@ class TestFeatureStoreIntegration:
         # the repo's ml/ directory.
         monkeypatch.setattr(
             nightly_pipeline, "_persist_results",
-            lambda slug, results: None,
+            lambda user_id, slug, results: None,
         )
 
         base_ts = 1_750_000_000.0
@@ -407,7 +433,7 @@ class TestFeatureStoreIntegration:
 
         monkeypatch.setattr(
             nightly_pipeline, "_persist_results",
-            lambda slug, results: None,
+            lambda user_id, slug, results: None,
         )
         # Every fetch blows up — feature_store ends up empty but
         # run_pipeline still returns a shape-complete results dict.
