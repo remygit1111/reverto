@@ -4,7 +4,6 @@
 # Manages bot processes via start/stop API.
 
 import asyncio
-import contextvars
 import hashlib
 import json
 import logging
@@ -28,6 +27,8 @@ from config.models import BotConfig, Mode
 from core import paths, user_store
 from core.database import DatabaseMigrationError, init_db as _init_db
 from core.ids import DEAL_ID_RE
+from core.logging_setup import RequestIdFilter as _RequestIdFilter
+from core.logging_setup import request_id_ctx as _request_id_ctx
 from core.user import User
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import NOTIFY_DRAIN_TIMEOUT_S
@@ -1366,31 +1367,16 @@ async def restart_bot(user_id: int, slug: str) -> dict:
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 
 # ── Request-ID context (audit r1-034) ───────────────────────────────────────
-# contextvar so every logger call during a request's lifecycle can
-# include the same ID. Set by RequestIdMiddleware, read by the
-# ``_RequestIdFilter`` attached to the root logger. Default "-" means
-# "no request context" (background tasks, module-import, test
-# fixtures that don't go through the middleware).
-_request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "reverto_request_id", default="-",
-)
+# The contextvar + filter live in core.logging_setup so main_web.py
+# can attach the filter to its handlers at boot, before any module-
+# import log lines fire. We import them above as _request_id_ctx /
+# _RequestIdFilter and wire middleware + helpers against them here.
 
 
 def current_request_id() -> str:
     """Accessor used by ``_audit`` (r1-031) and any other code that
     wants to correlate records. Returns ``'-'`` outside a request."""
     return _request_id_ctx.get()
-
-
-class _RequestIdFilter(logging.Filter):
-    """Injects ``record.request_id`` on every log record so the
-    formatter can include it. Filter-based attach instead of
-    ``logging.setLogRecordFactory`` so we don't stomp on unrelated
-    attributes a third-party library may also set."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = _request_id_ctx.get()
-        return True
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):

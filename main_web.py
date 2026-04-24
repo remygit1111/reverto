@@ -13,6 +13,8 @@ import os
 import atexit
 from logging.handlers import RotatingFileHandler
 
+from core.logging_setup import RequestIdFilter
+
 os.makedirs("logs", exist_ok=True)
 os.makedirs("logs/pids", exist_ok=True)
 
@@ -24,10 +26,16 @@ atexit.register(lambda: os.path.exists("logs/pids/portal.pid")
                 and os.remove("logs/pids/portal.pid"))
 
 # ── Logging — console + logs/portal.log ──────────────────────────────────────
+# ``%(request_id)s`` is populated by web.app._RequestIdFilter when
+# the filter is installed on this handler at app-import time. Records
+# logged outside any request (boot, atexit) fall through the filter's
+# default "-" so the column never blows up with KeyError.
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] [%(request_id)s] %(name)s: %(message)s"
+
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    _LOG_FORMAT,
     datefmt="%Y-%m-%d %H:%M:%S"
 ))
 
@@ -39,9 +47,17 @@ file_handler = RotatingFileHandler(
 )
 file_handler.setLevel(logging.INFO)  # INFO+ in portal log
 file_handler.setFormatter(logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    _LOG_FORMAT,
     datefmt="%Y-%m-%d %H:%M:%S"
 ))
+
+# Attach the request-id filter to every handler BEFORE any log line
+# fires. Each handler runs its filters before formatting, so this
+# guarantees ``record.request_id`` exists for the ``%(request_id)s``
+# column. Records logged at boot (before RequestIdMiddleware runs)
+# pick up the contextvar's default "-".
+console_handler.addFilter(RequestIdFilter())
+file_handler.addFilter(RequestIdFilter())
 
 logging.basicConfig(
     level=logging.INFO,
