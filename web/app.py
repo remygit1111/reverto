@@ -1852,6 +1852,14 @@ async def lifespan(app: FastAPI):
     """
     _validate_config()
     _validate_config_completeness()
+    # Audit pd-044: sweep orphan ``.tmp`` files left behind by
+    # ungraceful previous shutdowns. Cheap per-process; scoped to
+    # directories Reverto owns so we never touch anything else.
+    from core.cleanup import cleanup_orphaned_tmp_files
+    cleanup_orphaned_tmp_files(
+        BASE_DIR / "logs",
+        BASE_DIR / "credentials",
+    )
     logger.info("=== Portal started ===")
 
     background_tasks: list[asyncio.Task] = [

@@ -10,9 +10,9 @@
 
 ---
 
-## Remediation status (post-VPS-1.5 polish)
+## Remediation status (post-VPS-1.5 + pre-deploy final polish)
 
-All 11 SHOULD-FIX items closed in `fix/vps-1.5-polish` (2026-04-24). The deploy-readiness verdict moves from **⚠️ APPROVED WITH CONDITIONS** to **✅ APPROVED FOR DEPLOY**. Individual finding STATUS lines below are marked `RESOLVED in fix/vps-1.5-polish`.
+All 11 SHOULD-FIX items closed in `fix/vps-1.5-polish` (2026-04-24). 3 of 6 MONITORING items closed in `fix/pre-deploy-final-polish` (2026-04-24). The deploy-readiness verdict moves from **⚠️ APPROVED WITH CONDITIONS** to **✅ APPROVED FOR DEPLOY**. Individual finding STATUS lines below are marked `RESOLVED in fix/<branch>`.
 
 | Finding | Branch | Status |
 |---|---|---|
@@ -27,8 +27,11 @@ All 11 SHOULD-FIX items closed in `fix/vps-1.5-polish` (2026-04-24). The deploy-
 | pd-042 (logout CSRF doc) | `fix/vps-1.5-polish` | RESOLVED |
 | pd-043 (layout name validation) | `fix/vps-1.5-polish` | RESOLVED |
 | pd-047 (ML pin) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-019 (secret-redaction tests) | `fix/pre-deploy-final-polish` | RESOLVED |
+| pd-027 (env-example blind spot) | `fix/vps-1.5-polish` (auto via pd-026) | RESOLVED |
+| pd-044 (orphan .tmp cleanup) | `fix/pre-deploy-final-polish` | RESOLVED |
 
-MONITORING items (pd-002, pd-007, pd-009, pd-019, pd-027, pd-044) remain open — they're operational-observation-level, not gating.
+Remaining MONITORING items: **pd-002, pd-007, pd-009**. All three are observational-only (CSRF graceful-migration log rate, slug-regex defensive doctrine, broad-except triage logging). Not gating; tracked for post-deploy runbook attention.
 
 ---
 
@@ -53,17 +56,17 @@ Earlier verdict (pre-polish) was **⚠️ APPROVED WITH CONDITIONS**; those cond
 
 ## Severity Summary
 
-Post-polish (VPS-1.5):
+Post-VPS-1.5 + pre-deploy final polish:
 
-| Severity | Open | Resolved (polish) | Action |
+| Severity | Open | Resolved (polish sweeps) | Action |
 |----------|:----:|:-----:|--------|
 | **BLOCKER**   | **0** | 0 | Must fix before VPS-3 |
 | **SHOULD-FIX** | **0** | 11 | All closed in `fix/vps-1.5-polish` |
-| **MONITORING** | **6** | 0 | OK to deploy, watch post-launch |
+| **MONITORING** | **3** | 3 | Observational-only; runbook tracking |
 | **ACCEPTED**   | **37** | 0 | Verified correct or documented limitation |
-| **Total**      | **43 open** | **11** | |
+| **Total**      | **40 open** | **14** | |
 
-Pre-polish breakdown noted that the only security-primitive SHOULD-FIX items (as opposed to hygiene-level) were **pd-011** (missing `Permissions-Policy`), **pd-001** (`OSError` in response `detail`), and **pd-003** (change-password network-call ordering). All three are now resolved.
+Pre-polish breakdown noted that the only security-primitive SHOULD-FIX items (as opposed to hygiene-level) were **pd-011** (missing `Permissions-Policy`), **pd-001** (`OSError` in response `detail`), and **pd-003** (change-password network-call ordering). All three are now resolved. The final-polish sweep additionally closed **pd-019** (secret-redaction regression tests), **pd-027** (auto-resolved via pd-026), and **pd-044** (startup `.tmp` cleanup hook).
 
 ---
 
@@ -391,6 +394,8 @@ Plus a regression test line in `tests/test_security_headers.py`.
 
 **Category.** MONITORING.
 
+**STATUS.** RESOLVED in `fix/pre-deploy-final-polish` — new [tests/test_secret_redaction.py](tests/test_secret_redaction.py) adds 4 semantic regression tests covering API-key hint format, session-cookie redaction on `_verify_session_cookie` failure, and Bitget passphrase absence from the r1-012 deprecation-warning path. Each test drives the real code path with a recognisable sentinel secret and asserts the sentinel doesn't appear in caplog / audit.log / audit.jsonl.
+
 #### pd-020 through pd-024 (ACCEPTED)
 
 All logging practices verify clean. Single-operator file-permission posture (0644) is correct for a VPS with only the `bot` user as tenant. On any future multi-user host, `mode=0o600` would apply.
@@ -446,6 +451,8 @@ All logging practices verify clean. Single-operator file-permission posture (064
 **What.** The completeness check reads `.env.example` line-by-line and warns on any var listed there but not set. Since `REVERTO_LOG_LEVEL` isn't listed (pd-026), the check can't warn on it. Resolves automatically once pd-026 lands.
 
 **Category.** MONITORING.
+
+**STATUS.** RESOLVED — auto-resolved by `fix/vps-1.5-polish` (pd-026 added `REVERTO_LOG_LEVEL=` to `.env.example`). Confirmed at HEAD `a02df35` that `_validate_config_completeness` now sees the entry and would warn if the runtime env unsets it. No code change required; tracked here only for audit completeness.
 
 #### pd-028 — Ephemeral-key fail-soft (ACCEPTED)
 
@@ -621,6 +628,8 @@ Plus ~20 GET endpoints at 30-120/min (read-side). `/api/candles` additionally ga
 
 **Category.** MONITORING.
 
+**STATUS.** RESOLVED in `fix/pre-deploy-final-polish` — new [core/cleanup.py](core/cleanup.py) exposes `cleanup_orphaned_tmp_files(*directories)`, wired into the lifespan startup just after config validation. Scoped to `logs/` + `credentials/`; missing-dir is silent (boot can't fail over it); per-file unlink errors log at DEBUG + continue so one broken file doesn't halt the sweep. 6 regression tests in [tests/test_cleanup.py](tests/test_cleanup.py).
+
 #### pd-045, pd-046 (ACCEPTED)
 
 Slug validation enforced at every FS-touch site: `_BOT_SLUG_RE` gates before `paths.bot_yaml_path`, before subprocess argv construction. User-dir parents (`config/bots/<user_id>/`, `logs/<user_id>/`, `credentials/<user_id>/`) derive from integer `user_id` only — never a user-supplied string — so there's no traversal surface.
@@ -713,12 +722,17 @@ All 11 items resolved:
 
 ### Deploy + monitor (MONITORING)
 
+Remaining open (observational-only; not gating):
+
 - **pd-002** — Watch logs for repeated "CSRF graceful-migration" on same IP (runbook addition).
 - **pd-007** — Document slug-regex defensive consistency pattern.
 - **pd-009** — Add DEBUG-level exception-type logging in chart routes.
-- **pd-019** — Add regression test that audit logs never contain full API-key.
-- **pd-027** — Auto-resolves when pd-026 lands.
-- **pd-044** — Add startup `.tmp` orphan cleanup hook.
+
+Closed in `fix/pre-deploy-final-polish`:
+
+- ✅ **pd-019** — Secret-redaction regression tests added (4 tests).
+- ✅ **pd-027** — Auto-resolved by pd-026 (REVERTO_LOG_LEVEL in .env.example).
+- ✅ **pd-044** — Startup `.tmp` orphan cleanup hook wired into lifespan (6 tests).
 
 ### Accepted limitations (documented)
 
