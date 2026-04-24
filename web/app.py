@@ -1360,10 +1360,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return RedirectResponse(url="/", status_code=303)
 
 
-# Rate limiter — beperkt brute force en DoS op control endpoints. Sleutel
-# per remote IP; in een setup achter een reverse proxy moet je X-Forwarded-For
-# parsing toevoegen via een eigen key_func.
-limiter = Limiter(key_func=get_remote_address)
+# Rate limiter — beperkt brute force en DoS op control endpoints.
+# Audit r1-004: the key function prefers the leftmost ``X-Forwarded-For``
+# entry when present so every client behind a reverse proxy (Caddy,
+# nginx, Cloudflare) gets its own bucket. Without this every request
+# reaching the portal would share the proxy's IP and rate-limits
+# effectively disappear.
+#
+# Trust model: the reverse proxy MUST overwrite X-Forwarded-For (not
+# append), otherwise a client can inject a fake leftmost entry and
+# sidestep the limiter. This is the default for Caddy's
+# ``reverse_proxy`` and nginx's ``proxy_set_header X-Forwarded-For
+# $remote_addr;`` pattern. Document in runbook.
+def _rate_limit_key_func(request: Request) -> str:
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        first = xff.split(",", 1)[0].strip()
+        if first:
+            return first
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_rate_limit_key_func)
 
 
 async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
