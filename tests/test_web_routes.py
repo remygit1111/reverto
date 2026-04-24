@@ -2306,6 +2306,49 @@ class TestApiBotsReturnsMode:
         finally:
             auth_client.delete(f"/api/bots/{_TEST_SLUG}")
 
+    def test_read_state_stamps_bot_user_id(self, auth_client):
+        """Audit r1-042: read_state must stamp bot_user_id + bot_slug
+        onto the returned dict so cross-tenant aggregators (WS fan-
+        out, summary loops) don't have to re-derive identity from
+        registry state. Covers both the valid-state path and the
+        default-state fallback when no state.json exists yet."""
+        import json as _json
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        assert auth_client.post(
+            "/api/bots", json=_make_payload(),
+        ).status_code == 200
+
+        # Default-state path (no state.json yet).
+        if os.path.exists(_TEST_STATE):
+            os.remove(_TEST_STATE)
+        try:
+            r = auth_client.get("/api/bots")
+            assert r.status_code == 200
+            bots = {b["slug"]: b for b in r.json()["bots"]}
+            row = bots[_TEST_SLUG]
+            assert row["bot_user_id"] == _TEST_USER_ID
+            assert row["bot_slug"] == _TEST_SLUG
+
+            # Valid-state path: plant a minimal state.json, re-query.
+            os.makedirs(os.path.dirname(_TEST_STATE), exist_ok=True)
+            with open(_TEST_STATE, "w") as fh:
+                _json.dump({
+                    "bot_name": "Pytest Route Check",
+                    "mode": "paper",
+                    "exchange": "bitget",
+                    "pair": "BTC/USD",
+                }, fh)
+            r2 = auth_client.get("/api/bots")
+            bots2 = {b["slug"]: b for b in r2.json()["bots"]}
+            row2 = bots2[_TEST_SLUG]
+            assert row2["bot_user_id"] == _TEST_USER_ID
+            assert row2["bot_slug"] == _TEST_SLUG
+        finally:
+            if os.path.exists(_TEST_STATE):
+                os.remove(_TEST_STATE)
+            auth_client.delete(f"/api/bots/{_TEST_SLUG}")
+
     def test_yaml_mode_wins_over_state_file(self, auth_client):
         """If the YAML was edited from paper to live but the engine has
         not yet re-written state.json, the UI must already see 'live'."""
