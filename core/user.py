@@ -1,16 +1,13 @@
 """User model for multi-tenant support.
 
 Phase 1 of the multi-tenant migration introduces a users table + a
-user_id NOT NULL FK on every owned table, but only seeds the single
-``admin`` row (id=1). All portal requests currently resolve to this
-admin user via ``get_default_user``. Phase 2 will wire session-based
-user resolution so the User flows to the engine from the cookie,
-and Phase 3 enables real sign-up.
+user_id NOT NULL FK on every owned table, and seeds the admin row
+(id=1). Phase-3a wires session-based resolution (``_request_user``
+in web/app.py); Phase-3c gates admin routes by ``role == 'admin'``.
 
-Downstream code should accept a ``User`` (or at minimum a ``user_id``)
-rather than reaching for a module-level default. That way the Phase-2
-transition is a matter of swapping the ``_request_user`` dependency
-instead of rewriting every store call.
+Downstream code accepts ``User`` instances resolved per-request from
+the DB — the old ``DEFAULT_USER`` / ``get_default_user`` stub was
+removed in audit r1-051 once r1-001 closed the last API-key caller.
 """
 
 from __future__ import annotations
@@ -42,27 +39,6 @@ class User:
 
     def __repr__(self) -> str:  # pragma: no cover — cosmetic
         return f"User(id={self.id}, username={self.username!r})"
-
-
-# Singleton for Phase-1 fallback. Phase-3a: production-code resolves
-# the real User via core.user_store.get_user_by_id (cookie uid).
-# Kept for tests + tooling that want a zero-I/O User instance without
-# a DB roundtrip — never use in a request-handler hot path.
-DEFAULT_USER = User(id=1, username="admin", role="admin")
-
-
-def get_default_user() -> User:
-    """Return the Phase-1 admin stub.
-
-    WARNING: Phase-3a introduced DB-backed user resolution. Production
-    code paths should go through ``_request_user`` (HTTP) or
-    ``_ws_extract_user_id`` (WS) which both consult the DB via
-    ``core.user_store``. This helper survives as a zero-I/O fallback
-    for tooling + tests; using it in a route handler would skip
-    password/active/session_epoch checks and re-open the "always
-    admin" hole the Phase-3a refactor closed.
-    """
-    return DEFAULT_USER
 
 
 def _row_to_user(row) -> User:
