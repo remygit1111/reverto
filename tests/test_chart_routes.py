@@ -361,3 +361,51 @@ class TestTickerEndpoint:
             "high_24h", "low_24h", "bid", "ask", "timestamp",
         ):
             assert body[key] is None, f"{key} should be None, got {body[key]!r}"
+
+    def test_ticker_rejects_unlisted_pair(self, session, monkeypatch):
+        """Audit r1.1-002: unlisted symbols must 400 BEFORE the LRU
+        cache or the upstream fetch_ticker call. Guards against
+        cache-pollution / eviction-spam by hostile authenticated
+        clients.
+
+        Monkeypatch fetch_ticker to crash loudly if it's ever called
+        on this path — the reject happens pre-cache-pre-fetch."""
+        def _should_not_run(*a, **kw):
+            raise AssertionError(
+                "fetch_ticker invoked despite pair rejection",
+            )
+        monkeypatch.setattr(
+            webapp._bitget_client, "fetch_ticker", _should_not_run,
+        )
+        r = session.get("/api/ticker/ZZZXYZ")
+        assert r.status_code == 400, r.text
+        assert "must be one of" in r.json()["detail"]
+
+    def test_ticker_rejects_injection_shape(self, session, monkeypatch):
+        """Path-component that looks like an attempted script injection
+        must land on the 400 branch, not anywhere near the cache or
+        the exchange client."""
+        def _should_not_run(*a, **kw):
+            raise AssertionError("fetch_ticker should not be called")
+        monkeypatch.setattr(
+            webapp._bitget_client, "fetch_ticker", _should_not_run,
+        )
+        r = session.get("/api/ticker/BTC$USD")
+        assert r.status_code == 400
+
+    def test_ticker_accepts_btc_usdt_pair(self, session, monkeypatch):
+        """BTC/USDT is in the allowlist for forward-compat; the actual
+        upstream call is mocked since Reverto trades BTC/USD inverse
+        perp today."""
+        monkeypatch.setattr(
+            webapp._bitget_client, "fetch_ticker",
+            lambda *a, **kw: {
+                "last": 1.0, "close": 1.0, "change": 0.0,
+                "percentage": 0.0, "baseVolume": 0.0,
+                "high": 0.0, "low": 0.0, "bid": 0.0, "ask": 0.0,
+                "timestamp": 1,
+            },
+        )
+        r = session.get("/api/ticker/BTCUSDT")
+        assert r.status_code == 200
+        assert r.json()["pair"] == "BTC/USDT"

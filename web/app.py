@@ -1628,6 +1628,15 @@ _CHART_CACHE_MAX = 256
 _CHART_TIMEFRAMES = (
     "15m", "30m", "1h", "2h", "4h", "12h", "1d", "3d", "1w",
 )
+# Audit r1.1-002: allowlist of pairs the chart/ticker/candles endpoints
+# accept. Without this, any string passed through ``_normalize_chart_pair``
+# lands in the ccxt call + the LRU caches briefly — a hostile authenticated
+# client could evict legitimate cache entries by spamming unlisted symbols.
+# Keep the set conservative; extend when we wire a new trading pair
+# end-to-end (exchange SYMBOL_MAPS + UI dropdown + state schema). Today
+# Reverto trades BTC/USD inverse-perp; BTC/USDT is future-proofing for
+# when spot wiring lands.
+_CHART_PAIRS_ALLOWLIST = frozenset({"BTC/USD", "BTC/USDT"})
 _chart_lock = asyncio.Lock()
 
 
