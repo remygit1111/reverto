@@ -1844,11 +1844,13 @@ class StateBroadcaster:
 
 state_broadcaster = StateBroadcaster()
 
-# Module-level cache van laatst-geziene mtimes, per slug. Wordt door
-# watch_state_files() gelezen/geüpdatet. Gereset op portal restart,
-# wat prima is: de watcher stuurt in dat geval gewoon één extra
-# broadcast bij de eerste iteratie.
-_state_mtimes: dict[str, float] = {}
+# Module-level cache van laatst-geziene mtimes. Audit r1-041: key is
+# ``(user_id, slug)`` zodat twee users met dezelfde slug-naam elkaar
+# niet besmetten — anders zou user A's mtime-update B's change-
+# detection blokkeren. Gereset op portal restart, wat prima is: de
+# watcher stuurt in dat geval gewoon één extra broadcast bij de
+# eerste iteratie.
+_state_mtimes: dict[tuple[int, str], float] = {}
 
 
 async def watch_state_files():
@@ -1875,9 +1877,10 @@ async def watch_state_files():
                     if not sf.exists():
                         continue
                     mtime = sf.stat().st_mtime
-                    if _state_mtimes.get(bot.slug) == mtime:
+                    key = (bot.user_id, bot.slug)
+                    if _state_mtimes.get(key) == mtime:
                         continue
-                    _state_mtimes[bot.slug] = mtime
+                    _state_mtimes[key] = mtime
                     state = bot.read_state()
                     payload = json.dumps({
                         "type": "bot_state",
