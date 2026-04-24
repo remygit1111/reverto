@@ -79,3 +79,36 @@ def test_audit_global_still_fires_when_user_split_fails(
     assert global_jsonl.exists()
     entry = _read_last_jsonl(global_jsonl)
     assert entry["user_id"] == 7
+
+
+# ── Hotfix: route handlers must propagate user_id ──────────────────────────
+
+
+def test_auth_login_audit_fires_per_user_split(tmp_logs):
+    """Hotfix guard: the auth_login audit call must land in
+    logs/<uid>/audit.jsonl so per-user split actually triggers.
+    Drives the full login flow end-to-end and then checks the
+    per-user file exists + contains the login entry.
+    """
+    from fastapi.testclient import TestClient
+    from core import user_store
+
+    admin = user_store.get_user_by_username("admin")
+    assert admin is not None
+    user_store.set_password(admin.id, "hotfix-pw-r1031-login")
+
+    client = TestClient(webapp.app)
+    r = client.post(
+        "/auth/login",
+        json={"username": "admin", "password": "hotfix-pw-r1031-login"},
+    )
+    assert r.status_code == 200, r.text
+
+    user_jsonl = tmp_logs / "logs" / str(admin.id) / "audit.jsonl"
+    assert user_jsonl.exists(), (
+        "per-user audit.jsonl not written — route handler didn't "
+        "propagate user_id into _audit()"
+    )
+    entry = _read_last_jsonl(user_jsonl)
+    assert entry["action"] == "auth_login"
+    assert entry["user_id"] == admin.id

@@ -64,6 +64,6 @@ async def api_drawdown_reset(
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(state_file)
 
-    _audit("drawdown_reset", slug, actor)
+    _audit("drawdown_reset", slug, actor, user_id=user.id)
     logger.warning("Drawdown guard reset for %s by %s", slug, actor)
     return {"ok": True, "bot": slug}

@@ -92,5 +92,5 @@ async def put_dashboard_layout(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    _audit("dashboard_layout_put", str(user.id), user.username)
+    _audit("dashboard_layout_put", str(user.id), user.username, user_id=user.id)
     return {"ok": True}
