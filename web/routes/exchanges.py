@@ -9,6 +9,7 @@ Routes:
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -27,6 +28,14 @@ _KNOWN_EXCHANGES = ("bitget", "kraken")
 class ExchangeKeysBody(BaseModel):
     api_key: str = Field(min_length=1, max_length=512)
     api_secret: str = Field(min_length=1, max_length=512)
+    # Audit r1-012: Bitget requires a passphrase alongside the api
+    # key/secret; other exchanges (Kraken) don't. Optional on the
+    # wire — the handler validates per exchange-name so Bitget
+    # without a passphrase 400s with a clear error instead of
+    # silently writing an incomplete credential file.
+    passphrase: Optional[str] = Field(
+        default=None, min_length=1, max_length=512,
+    )
 
 
 @router.get("/api/exchanges")
@@ -55,7 +64,19 @@ async def save_exchange_keys(
 ):
     if name not in _KNOWN_EXCHANGES:
         raise HTTPException(status_code=404, detail="Unknown exchange")
-    credentials.save_keys(name, body.api_key, body.api_secret, user.id)
+    # Bitget needs a passphrase; refuse to write an incomplete
+    # credential file that would fail silently later at exchange
+    # init. Other exchanges (Kraken) don't use passphrases and
+    # accept ``passphrase=None`` → empty string in storage.
+    if name == "bitget" and not body.passphrase:
+        raise HTTPException(
+            status_code=400,
+            detail="Bitget credentials require a passphrase (audit r1-012)",
+        )
+    credentials.save_keys(
+        name, body.api_key, body.api_secret, user.id,
+        passphrase=body.passphrase or "",
+    )
     _audit("exchange_keys_set", name, actor)
     return {"ok": True, "exchange": name}
 

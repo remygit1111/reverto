@@ -179,12 +179,14 @@ class TestCredentialsMigration:
         assert (sandbox / "credentials" / "1" / "kraken.enc").exists()
 
         # Re-read through the Phase-2 API returns the original plaintext.
+        # Audit r1-012: get_keys always surfaces a ``passphrase`` field
+        # (empty here — the legacy migration never carried one).
         from core import credentials
         assert credentials.get_keys("bitget", user_id=1) == {
-            "api_key": "ak-b", "api_secret": "sc-b",
+            "api_key": "ak-b", "api_secret": "sc-b", "passphrase": "",
         }
         assert credentials.get_keys("kraken", user_id=1) == {
-            "api_key": "ak-k", "api_secret": "sc-k",
+            "api_key": "ak-k", "api_secret": "sc-k", "passphrase": "",
         }
 
 
