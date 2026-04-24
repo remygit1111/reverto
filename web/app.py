@@ -26,7 +26,7 @@ from config.models import BotConfig, Mode
 from core import paths, user_store
 from core.database import DatabaseMigrationError, init_db as _init_db
 from core.ids import DEAL_ID_RE
-from core.user import User, get_default_user
+from core.user import User
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import NOTIFY_DRAIN_TIMEOUT_S
 
@@ -348,23 +348,40 @@ def _request_user(request: Request) -> User:
     because session cookies carried only a username and Phase-1/2
     only ever had one real user; that Phase-1 assumption is now gone.
 
-    API-key callers (``X-API-Key``) bypass the session cookie and get
-    the Phase-1 admin stub — they're server-to-server traffic and
-    don't carry a user context. Routes that care about the real
-    caller must enforce cookie-auth explicitly.
+    API-key callers (``X-API-Key``) are resolved against the admin row
+    in the DB (id=1, the setup-flow convention). Audit r1-001 closed
+    the prior stub-return hole where a valid key matched a frozen
+    DEFAULT_USER without a DB lookup — that bypassed ``active`` (a
+    deactivated admin could still authenticate) and, post-multi-user
+    seed, would have granted cross-tenant admin to anyone holding the
+    shared key. The single indexed lookup per API-key call is cheap;
+    fail closed on missing or inactive admin.
     """
     cookie = request.cookies.get(_SESSION_COOKIE)
     payload = _verify_session_cookie(cookie)
     if payload is None:
-        # No valid cookie — check for API-key. If that's the auth path,
-        # fall back to the admin stub (matches the pre-3a behaviour
-        # for script/CI traffic). If neither, the AuthMiddleware has
-        # already short-circuited with 401 so this code path is only
-        # reachable via an explicitly-exempted route — in that case
-        # default to admin so audit trails stay consistent.
+        # No valid cookie — check for API-key. AuthMiddleware has
+        # already short-circuited with 401 for unauth routes, so this
+        # branch only runs for explicitly-exempted endpoints and real
+        # API-key traffic. Route the key to the actual admin row so
+        # ``active`` gates, role-swaps, and session-epoch bumps all
+        # apply consistently.
         provided = request.headers.get("X-API-Key")
         if provided and secrets.compare_digest(provided, _API_KEY):
-            return get_default_user()
+            admin_user = user_store.get_user_by_id(1)
+            if admin_user is None or not admin_user.active:
+                # Deliberately log state, not the key. Observability
+                # for operators chasing a sudden 401 without leaking
+                # anything a request-logger would already capture.
+                logger.warning(
+                    "API-key auth rejected: admin row %s (active=%s)",
+                    "missing" if admin_user is None else "present",
+                    admin_user.active if admin_user is not None else "n/a",
+                )
+                raise HTTPException(
+                    status_code=401, detail="Not authenticated",
+                )
+            return admin_user
         raise HTTPException(status_code=401, detail="Not authenticated")
     user_id = payload.get("uid")
     if not isinstance(user_id, int) or user_id <= 0:
