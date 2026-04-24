@@ -74,8 +74,9 @@ Sprint 1 (five HIGHs, individually merged) + Sprint 2 (eleven MEDIUM/LOWs bundle
 | **r1-074** | MEDIUM | `fix/vps-0-sweep` (SHA-384 SRI on unpkg scripts) | RESOLVED |
 | **r1-037** | MEDIUM | `fix/vps-0-deploy-rollback` (maintenance-page HTML + runbook Caddy wiring) | RESOLVED |
 | **r1-038** | MEDIUM | `fix/vps-0-deploy-rollback` (`scripts/rollback.sh` + `make rollback` + runbook) | RESOLVED |
+| **r1-022** | MEDIUM | `fix/vps-0-backup` (daily `scripts/backup.sh` with 7/28/90-day retention + `scripts/restore.sh` + runbook) | RESOLVED (on-host; off-host replication is a Phase-2 follow-up) |
 
-Still open after VPS-0 deploy/rollback: r1-003, r1-005, r1-008, r1-009, r1-011, r1-013–r1-019, r1-021, r1-022, r1-024–r1-031, r1-033, r1-034, r1-036, r1-039, r1-040, r1-044–r1-046, r1-050, r1-055, r1-060–r1-073, r1-076. Delta-findings r1.1-001 still open (Phase-C).
+Still open after VPS-0: r1-003, r1-005, r1-008, r1-009, r1-011, r1-013–r1-019, r1-021, r1-024–r1-031, r1-033, r1-034, r1-036, r1-039, r1-040, r1-044–r1-046, r1-050, r1-055, r1-060–r1-073, r1-076. Delta-findings r1.1-001 still open (Phase-C).
 
 ---
 
