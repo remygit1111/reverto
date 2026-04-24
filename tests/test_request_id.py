@@ -53,3 +53,41 @@ def test_current_request_id_default_outside_request():
     # so background tasks and module-import code can safely log
     # without special-casing.
     assert current_request_id() == "-"
+
+
+# ── Hotfix: request_id must render in the log format ─────────────────────
+
+
+def test_request_id_filter_populates_record_attribute():
+    """Hotfix guard: the filter must set ``record.request_id`` so
+    formatters using ``%(request_id)s`` don't KeyError. Records
+    logged outside a request fall back to the contextvar default."""
+    import logging
+    from core.logging_setup import RequestIdFilter, request_id_ctx
+
+    record = logging.LogRecord(
+        name="t", level=logging.INFO, pathname="x", lineno=1,
+        msg="hi", args=(), exc_info=None,
+    )
+    assert RequestIdFilter().filter(record) is True
+    assert record.request_id == "-"
+
+    token = request_id_ctx.set("abc123")
+    try:
+        record2 = logging.LogRecord(
+            name="t", level=logging.INFO, pathname="x", lineno=1,
+            msg="hi", args=(), exc_info=None,
+        )
+        RequestIdFilter().filter(record2)
+        assert record2.request_id == "abc123"
+    finally:
+        request_id_ctx.reset(token)
+
+
+def test_log_format_renders_request_id_column():
+    """Hotfix guard: the portal log format must include the
+    ``[request_id]`` column. If an operator drops the placeholder,
+    this test catches the regression."""
+    import main_web
+
+    assert "%(request_id)s" in main_web._LOG_FORMAT
