@@ -37,6 +37,7 @@ from web.app import (
     _CHART_CACHE_MAX,
     _CHART_CACHE_TTL,
     _CHART_CACHE_TTL_DEFAULT,
+    _CHART_PAIRS_ALLOWLIST,
     _CHART_TIMEFRAMES,
     _chart_cache,
     _chart_lock,
@@ -111,6 +112,15 @@ async def api_ticker(
     the consumer.
     """
     normalized = _normalize_chart_pair(pair)
+    # Audit r1.1-002: refuse unlisted symbols BEFORE they touch the LRU
+    # cache or the exchange client. Without this a hostile authenticated
+    # client could spam 32+ distinct bogus symbols and evict legitimate
+    # entries (or pollute the upstream rate-budget with failed calls).
+    if normalized not in _CHART_PAIRS_ALLOWLIST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"pair must be one of {sorted(_CHART_PAIRS_ALLOWLIST)}",
+        )
     now = time.time()
 
     async with _ticker_lock:

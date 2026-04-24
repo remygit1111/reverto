@@ -24,12 +24,12 @@ Between the v1 baseline and this delta review the tree absorbed two remediation 
 |----------|:--------:|:--------:|:-------------:|:----------:|
 | CRITICAL | 1 | 0 | 0 | 1 |
 | HIGH     | 12 | 0 | 5 (Sprint 1) | 7 |
-| MEDIUM   | 34 | 2 | 7 (Sprint 2) | 29 |
-| LOW      | 25 | 3 | 4 (Sprint 2) | 24 |
-| INFO     | 4 | 1 | 0 | 5 |
-| **Total** | **76** | **6** | **16** | **66** |
+| MEDIUM   | 34 | 2 | 7 (Sprint 2) + 1 (Sprint 3) | 28 |
+| LOW      | 25 | 3 | 4 (Sprint 2) + 3 (Sprint 3b) | 21 |
+| INFO     | 4 | 1 | 1 (Sprint 3b) | 4 |
+| **Total** | **76** | **6** | **21** | **61** |
 
-Sprint 2 also closed bonus-finding `r1-007` (username character-class) bundled with `r1-032`.
+Sprint 2 also closed bonus-finding `r1-007` (username character-class) bundled with `r1-032`. Sprint 3 (`fix/r1.1-003-workspace-scroll-merge`) resolved `r1.1-003` (MEDIUM). Sprint 3b (`fix/sprint-3b-v1.1-sweep`) bundled the four remaining LOW/INFO items: `r1.1-002`, `r1.1-004`, `r1.1-005`, `r1.1-006`.
 
 ---
 
@@ -107,7 +107,7 @@ Each resolved v1-finding grepped against current main and inspected for coherent
 
 **Phase.** B.
 
-**STATUS.** Open — sweep-PR candidate.
+**STATUS.** RESOLVED in `fix/sprint-3b-v1.1-sweep` (`_CHART_PAIRS_ALLOWLIST = {"BTC/USD", "BTC/USDT"}` enforced at the top of `api_ticker`; 400 before cache/LRU touch).
 
 ---
 
@@ -156,7 +156,7 @@ Ten-minute fix. Needs a regression test that pans back, waits > 30s, and asserts
 
 **Phase.** B.
 
-**STATUS.** Open — small-PR candidate.
+**STATUS.** RESOLVED in `fix/r1.1-003-workspace-scroll-merge` (extracted `_mergePriorHistory` pure helper; `_loadCandles` uses it before `setData`; helper exposed via `window.RevertoChart.mergePriorHistory` for future JS-test infra).
 
 ---
 
@@ -182,7 +182,7 @@ Ten-minute fix. Needs a regression test that pans back, waits > 30s, and asserts
 
 **Phase.** A.
 
-**STATUS.** Open — sweep-PR candidate.
+**STATUS.** RESOLVED in `fix/sprint-3b-v1.1-sweep` (`window.RevertoChart.normalizeChartTimezone` exported; new `_normalizeTzFromLS` helper in app.js wraps all three LS-read sites: main-chart, wizard, backtest).
 
 ---
 
@@ -230,7 +230,7 @@ Fifteen-minute fix.
 
 **Phase.** A.
 
-**STATUS.** Open — sweep-PR candidate.
+**STATUS.** RESOLVED in `fix/sprint-3b-v1.1-sweep` (eight-field `required` list + type-level checks for array/function fields; `console.warn` + `return false` on violation; built-in plugins unaffected because they populate `INDICATOR_PLUGINS` directly).
 
 #### r1.1-006 — `_initChart` failure leaves orphan in `_activePanelCharts` (INFO)
 
@@ -244,7 +244,7 @@ Fifteen-minute fix.
 
 **Phase.** A.
 
-**STATUS.** Open — nice-to-have, not prioritised.
+**STATUS.** RESOLVED in `fix/sprint-3b-v1.1-sweep` (post-add body wrapped in try/catch; on throw: delete from set, null the entry reference, `console.error`, return false).
 
 ---
 

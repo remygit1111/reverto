@@ -5529,17 +5529,34 @@ function getChartColors() {
 // then write the new key so the next boot reads from there.
 const _MAIN_CHART_TZ_LS_KEY = 'reverto.main_chart_timezone';
 
+// Audit r1.1-004: pipe every LS-read through the chart module's
+// normaliser so a corrupted storage value (hand-edit, stale entry
+// from a prior build) collapses to 'local' before it ever reaches
+// module state or the dropdown UI. Helper is a no-op at runtime
+// when chart_module.js exports a normaliser (the common path);
+// when the module fails to load (CDN blocked, network error) the
+// identity fallback at least lets the rest of the app boot.
+function _normalizeTzFromLS(raw) {
+  const fn = window.RevertoChart && window.RevertoChart.normalizeChartTimezone;
+  return fn ? fn(raw) : raw;
+}
+
 function _loadMainChartTz() {
   const v = localStorage.getItem(_MAIN_CHART_TZ_LS_KEY);
-  if (v) return v;
+  if (v) return _normalizeTzFromLS(v);
   const legacy = localStorage.getItem('reverto_timezone');
   if (legacy) {
     // Migrate once + drop the old key. Keeps legacy behaviour
     // (pre-upgrade user had 'UTC' as default) but re-homes storage
-    // under the per-chart namespace the rest of the PR uses.
-    localStorage.setItem(_MAIN_CHART_TZ_LS_KEY, legacy);
+    // under the per-chart namespace the rest of the PR uses. Run
+    // the legacy value through the normaliser too — if an old
+    // build wrote a value that's no longer in the allowlist
+    // (rare but possible across IANA catalogue rewrites) we
+    // quietly drop it rather than carrying the garbage forward.
+    const normalized = _normalizeTzFromLS(legacy);
+    localStorage.setItem(_MAIN_CHART_TZ_LS_KEY, normalized);
     localStorage.removeItem('reverto_timezone');
-    return legacy;
+    return normalized;
   }
   return 'local';
 }
@@ -5580,8 +5597,11 @@ function _tzFormatter(ts) {
 const _WIZARD_CHART_TZ_LS_KEY   = 'reverto.wizard_chart_timezone';
 const _BT_CANDLE_TZ_LS_KEY      = 'reverto.backtest_candle_timezone';
 
-let _wizardChartTimezone   = localStorage.getItem(_WIZARD_CHART_TZ_LS_KEY) || 'local';
-let _btCandleChartTimezone = localStorage.getItem(_BT_CANDLE_TZ_LS_KEY)   || 'local';
+// Audit r1.1-004: same normalisation for the wizard + backtest
+// sites as the main-chart path above. Corrupt / unknown LS values
+// collapse to 'local' before they land in module-scope state.
+let _wizardChartTimezone   = _normalizeTzFromLS(localStorage.getItem(_WIZARD_CHART_TZ_LS_KEY) || 'local');
+let _btCandleChartTimezone = _normalizeTzFromLS(localStorage.getItem(_BT_CANDLE_TZ_LS_KEY)   || 'local');
 
 function _populateTzDropdown(sel, current) {
   // Shared population helper. Called by the main-chart + wizard +
