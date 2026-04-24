@@ -75,7 +75,7 @@ Every RESOLVED marker in prior audit docs was tested against the actual code in 
 | **r1-075** | HSTS on HTTPS only | ✓ | Conditional on `request.url.scheme == "https"` — but see **r2-003** for a deployment caveat |
 | **r1-076** | CSP connect-src ws:/wss: wildcards removed | ✓ | `'self'` covers same-origin WS |
 | **r1.1-002** | Chart pair allowlist | ✓ | `_CHART_PAIRS_ALLOWLIST` |
-| **pd-001** | OSError scrubbing on 500s | **◐ partial** | **Regression: one site at [web/routes/bots.py:638](web/routes/bots.py#L638) missed the sweep. Filed as r2-001.** |
+| **pd-001** | OSError scrubbing on 500s | ✓ (fully) | All sweep sites now scrubbed; r2-001 closed the missed bot-duplicate site + one additional 503-class sibling in deals.py surfaced by the new class-of-issue grep test. |
 | **pd-003** | HIBP after current-password verify | ✓ | Reorder landed |
 | **pd-005** | Cost-budget shared chart+candles | ✓ | Same `_candles_cost_budget` instance |
 | **pd-006** | Passphrase max_length=64 | ✓ | Tightened |
@@ -189,6 +189,8 @@ except yaml.YAMLError:
 **Category.** HIGH · **SHOULD-FIX** (before or immediately after VPS-3 cutover).
 
 **Cross-reference.** pd-001 (partial regression — same class, one site missed).
+
+**STATUS.** RESOLVED in `fix/r2-001-yaml-scrub` — bots.py:638 now uses `logger.exception` + generic detail. Added [tests/test_response_body_hygiene.py](tests/test_response_body_hygiene.py) (class-of-issue grep test that fails CI on any 5XX `HTTPException(detail=f"...{e}...")` pattern in `web/routes/`). The grep test surfaced one additional sibling at [web/routes/deals.py:290](web/routes/deals.py#L290) (503 "Exchange returned invalid ticker: {e}") — scrubbed in the same PR. The v2-audit learning ("class-of-issue fixes need class-of-issue regression tests") is now baked into CI.
 
 ### Area 10 — Logging & observability
 
