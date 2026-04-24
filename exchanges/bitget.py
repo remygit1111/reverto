@@ -138,6 +138,34 @@ class BitgetExchange(BaseExchange):
     """
     Bitget implementation for Reverto.
     Uses ccxt to connect to Bitget's inverse perpetual futures API.
+
+    THREAD-SAFETY (audit r1-068):
+        ccxt's bitget client is NOT thread-safe. It holds shared
+        state for request signing (nonce counter), rate-limit
+        tracking (last-request timestamps), and response parsing
+        (per-market info cache). Calling methods on one client
+        instance from multiple OS threads concurrently can produce
+        torn signatures, duplicate nonces, or mixed rate-limit
+        accounting.
+
+        Reverto's safe patterns (current flow):
+          * One BitgetExchange instance per (user_id, live-engine
+            lifetime) — the engine owns it, no sharing.
+          * Portal routes call ccxt via ``asyncio.to_thread``
+            wrappers serialised behind ``_price_lock`` (shared
+            public client) — one thread touches the client at a
+            time.
+
+        Unsafe patterns (do NOT introduce):
+          * Sharing a BitgetExchange instance across tenants.
+          * Calling ccxt methods from multiple asyncio tasks
+            concurrently without a shared lock. Two coroutines
+            both running ``await loop.run_in_executor(..., client
+            .fetch_ticker)`` against the same client race on the
+            internal nonce.
+          * Introducing a second bitget client on the same user
+            for "read-only" access — the trade path and the read
+            path must converge on one instance.
     """
 
     SYMBOL_MAP = {

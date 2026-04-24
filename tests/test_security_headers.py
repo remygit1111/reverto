@@ -37,3 +37,34 @@ def test_hsts_header_absent_on_http():
     client = TestClient(app)
     r = client.get("/health")
     assert "Strict-Transport-Security" not in r.headers
+
+
+# ── r1-076: CSP connect-src wildcards ──────────────────────────────────────
+
+
+def test_csp_no_ws_wildcard():
+    """Audit r1-076: ws:/wss: wildcards removed — 'self' covers
+    same-origin WS endpoints and matches the request scheme."""
+    client = TestClient(app)
+    r = client.get("/health")
+    csp = r.headers.get("Content-Security-Policy", "")
+    # Find the connect-src directive specifically — 'ws:' as a
+    # substring of the whole CSP would false-positive on other
+    # directives if we ever added one with 'ws' in it.
+    directives = {
+        part.strip().split(" ", 1)[0]: part.strip()
+        for part in csp.split(";") if part.strip()
+    }
+    connect_src = directives.get("connect-src", "")
+    assert "ws:" not in connect_src, f"connect-src contains ws: {connect_src!r}"
+    assert "wss:" not in connect_src, f"connect-src contains wss: {connect_src!r}"
+
+
+def test_csp_still_allows_self_and_unpkg():
+    """connect-src must retain 'self' (same-origin WS + fetch) and
+    unpkg.com (lightweight-charts + gridstack sourcemaps)."""
+    client = TestClient(app)
+    r = client.get("/health")
+    csp = r.headers.get("Content-Security-Policy", "")
+    assert "connect-src 'self'" in csp
+    assert "https://unpkg.com" in csp
