@@ -360,8 +360,7 @@
    toolbar. Use mono font + compact padding to stay inside the
    header's small vertical budget. */
 
-.panel-tf-dropdown,
-.panel-indicators-dropdown {
+.panel-tf-dropdown {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -369,8 +368,7 @@
   font-size: 11px;
 }
 
-.panel-tf-dropdown .dropdown-trigger,
-.panel-indicators-dropdown .dropdown-trigger {
+.panel-tf-dropdown .dropdown-trigger {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -385,37 +383,21 @@
   line-height: 1;
   white-space: nowrap;
 }
-.panel-tf-dropdown .dropdown-trigger:hover,
-.panel-indicators-dropdown .dropdown-trigger:hover {
+.panel-tf-dropdown .dropdown-trigger:hover {
   background: var(--surface2);
   border-color: var(--accent);
 }
 
-.panel-tf-dropdown .tf-current,
-.panel-indicators-dropdown .indicators-label {
+.panel-tf-dropdown .tf-current {
   letter-spacing: .02em;
 }
 
-.panel-indicators-dropdown .indicators-count {
-  display: inline-block;
-  min-width: 14px;
-  padding: 0 3px;
-  background: var(--accent);
-  color: var(--bg);
-  border-radius: 2px;
-  font-weight: 600;
-  text-align: center;
-  font-size: 10px;
-}
-
-.panel-tf-dropdown .dropdown-caret,
-.panel-indicators-dropdown .dropdown-caret {
+.panel-tf-dropdown .dropdown-caret {
   color: var(--muted);
   font-size: 9px;
 }
 
-.panel-tf-dropdown .dropdown-menu,
-.panel-indicators-dropdown .dropdown-menu {
+.panel-tf-dropdown .dropdown-menu {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
@@ -429,8 +411,7 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   z-index: 25;
 }
-.panel-tf-dropdown .dropdown-menu.hidden,
-.panel-indicators-dropdown .dropdown-menu.hidden {
+.panel-tf-dropdown .dropdown-menu.hidden {
   display: none;
 }
 
@@ -455,21 +436,249 @@
   font-weight: 600;
 }
 
-.panel-indicators-dropdown .dropdown-checkbox {
+/* ── Indicators button (header) ─────────────────────────────────────────
+   PR plugin-architecture: single button replacing the old multi-select
+   dropdown. Opens the indicator-manager modal on click. Count badge
+   shows live instance count — matches the old dropdown's trigger
+   styling so the header doesn't reflow after the refactor. */
+
+.panel-indicators-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+}
+.panel-indicators-btn:hover {
+  background: var(--surface2);
+  border-color: var(--accent);
+}
+.panel-indicators-btn .indicators-count {
+  display: inline-block;
+  min-width: 14px;
+  padding: 0 3px;
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 2px;
+  font-weight: 600;
+  text-align: center;
+  font-size: 10px;
+}
+.panel-indicators-btn .indicators-label {
+  letter-spacing: .02em;
+}
+
+/* ── Indicator-manager modal ────────────────────────────────────────────
+   Lists instances with color + edit + remove per row plus an add-row
+   at the bottom. Anchored inside the panel (position: absolute on the
+   modal root) so it respects the grid cell and doesn't leak into the
+   document-level layer. Backdrop dims the chart to signal modality
+   without blocking the operator from clicking outside to dismiss. */
+
+.panel-indicators-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 44px;
+}
+.panel-indicators-modal.hidden {
+  display: none;
+}
+
+.panel-indicators-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.panel-indicators-modal-dialog {
+  position: relative;
+  width: min(420px, calc(100% - 24px));
+  max-height: calc(100% - 60px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.panel-indicators-modal-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  color: var(--text);
-  cursor: pointer;
-  border-radius: 2px;
-}
-.panel-indicators-dropdown .dropdown-checkbox:hover {
+  justify-content: space-between;
+  padding: 8px 12px;
   background: var(--surface);
+  border-bottom: 1px solid var(--border);
 }
-.panel-indicators-dropdown .dropdown-checkbox input[type=checkbox] {
-  accent-color: var(--accent);
-  margin: 0;
+.panel-indicators-modal-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.panel-indicators-modal-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.panel-indicators-modal-close:hover { color: var(--red); }
+
+.panel-indicators-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  overflow-y: auto;
+}
+
+.panel-indicators-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.panel-indicators-empty {
+  padding: 16px 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.panel-indicators-empty.hidden { display: none; }
+
+.panel-indicators-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.panel-indicators-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-indicators-row-color {
+  width: 24px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+}
+.panel-indicators-row-label {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-indicators-row-actions {
+  display: flex;
+  gap: 4px;
+}
+.panel-indicators-row-edit,
+.panel-indicators-row-remove {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.panel-indicators-row-edit:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.panel-indicators-row-remove {
+  padding: 4px 7px;
+}
+.panel-indicators-row-remove:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.panel-indicators-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+}
+.panel-indicators-param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-indicators-param-label {
+  flex: 0 0 110px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.panel-indicators-param-input {
+  flex: 1;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.panel-indicators-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.panel-indicators-add-row {
+  display: flex;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.panel-indicators-add-select {
+  flex: 1;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: var(--mono);
 }
 
 /* ── PR 5a: info-sidebar on the right of the chart ────────────────────── */

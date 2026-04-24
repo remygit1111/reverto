@@ -27,6 +27,16 @@
 // Each function is ALSO attached to window.RevertoChart below so
 // a future PR 3b chart-panel factory has a namespaced home for
 // them without having to re-plumb global lookups.
+//
+// Indicator plugin architecture (PR feat/workspace-indicator-plugins):
+// the Workspace chart-panel reads INDICATOR_PLUGINS to discover what
+// indicators are available. Each plugin owns its own series lifecycle
+// (create / render / destroy) + the param schema that feeds the
+// indicator-manager modal's edit form. Registering a new plugin at
+// runtime is a single call to ``registerIndicatorPlugin``; the
+// modal's add-menu picks it up on next open. Main-chart, wizard,
+// and backtest-candle still use their pre-existing hardcoded
+// indicator dropdowns — this refactor is scoped to Workspace.
 
 // pandas-style EWM with adjust=False, which matches the textbook
 // recurrence: ema[i] = k*x[i] + (1-k)*ema[i-1], k = 2/(period+1).
@@ -351,38 +361,470 @@ function calcMarketStructureMarkers(candles, lookback) {
 // too) and resolve via window at call time, just like the pure-math
 // helpers above.
 
-const PANEL_INDICATOR_TYPES = [
-  'EMA', 'RSI', 'MACD', 'BOLLINGER', 'SUPERTREND',
-  'SUPPORT_RESISTANCE', 'QFL', 'PARABOLIC_SAR', 'MARKET_STRUCTURE',
-];
+// ── Indicator plugin architecture ────────────────────────────────────────
+// Each indicator is a plugin object conforming to the contract below.
+// The Workspace chart-panel holds an array of *instances*, each one
+// referencing a plugin by ``type`` and carrying its own ``params`` +
+// ``color``. Multiple instances of the same type coexist — three EMAs
+// at different periods, two RSIs on separate panes, etc. — without
+// any switch-case bookkeeping on the render side.
+//
+// Contract:
+//
+//   @typedef {Object} IndicatorParamSchema
+//   @property {string} key    — object key on instance.params
+//   @property {string} label  — human-readable label in the edit form
+//   @property {'int'|'float'} type
+//   @property {number} default
+//   @property {number=} min
+//   @property {number=} max
+//   @property {number=} step
+//
+//   @typedef {Object} IndicatorInstance
+//   @property {string} id            — stable id used as dict key ("EMA_1")
+//   @property {string} type          — plugin type, uppercase
+//   @property {Object} params        — key-value map seeded from plugin defaults
+//   @property {string} color         — CSS color used as the instance's primary
+//   @property {Array=} _series       — runtime series handles (not serialized)
+//   @property {number=} _assignedPane — runtime pane idx for paneType='pane'
+//
+//   @typedef {Object} IndicatorPlugin
+//   @property {string} type
+//   @property {string} displayName
+//   @property {string} defaultColor
+//   @property {'overlay'|'pane'} paneType
+//   @property {IndicatorParamSchema[]} params
+//   @property {(params: Object) => string} labelTemplate
+//   @property {(ctx: {chart, LWC, inst, paneIdx}) => Array} createSeries
+//   @property {(ctx: {inst, candles, chart, LWC}) => ({markers?: Array}|null)} render
+//   @property {(ctx: {chart, inst}) => void=} destroy — optional override
+//
+// Panels call createSeries once per rebuild to set up the initial series
+// list; render runs on every candle-data change. For plugins whose
+// series count depends on computed segments (S/R, QFL, Parabolic SAR),
+// createSeries returns an empty array and render manages the full
+// add/remove lifecycle against ``inst._series``.
 
-// Default indicator parameters — workspace chart-panels don't expose
-// per-indicator config (the consumer spec picked "use existing defaults")
-// so we seed the calc* helpers with the same values the bot-config
-// wizard defaults to.
-const PANEL_INDICATOR_DEFAULTS = {
-  EMA: { period: 21 },
-  RSI: { period: 14 },
-  MACD: { fast: 12, slow: 26, signal: 9 },
-  BOLLINGER: { period: 20, multiplier: 2.0 },
-  SUPERTREND: { atr_period: 10, multiplier: 3.0 },
-  SUPPORT_RESISTANCE: { left_bars: 15, right_bars: 15, volume_threshold: 0, min_touches: 1 },
-  QFL: { base_periods: 36, pump_periods: 8, pump_pct: 3.0, base_crack_pct: 3.0 },
-  PARABOLIC_SAR: { initial_af: 0.02, max_af: 0.20 },
-  MARKET_STRUCTURE: { lookback: 3 },
+// EMA — single overlay line, one param.
+const _EMA_PLUGIN = {
+  type: 'EMA',
+  displayName: 'EMA',
+  defaultColor: '#ffb347',
+  paneType: 'overlay',
+  params: [
+    { key: 'period', label: 'Period', type: 'int', default: 21, min: 1, max: 500 },
+  ],
+  labelTemplate: (p) => `EMA(${p.period})`,
+  createSeries({ chart, LWC, inst }) {
+    return [chart.addSeries(LWC.LineSeries, {
+      color: inst.color, lineWidth: 2,
+      priceLineVisible: false, lastValueVisible: false,
+    })];
+  },
+  render({ inst, candles }) {
+    if (inst._series[0]) inst._series[0].setData(calcEMALine(candles, inst.params.period));
+    return null;
+  },
 };
 
-const PANEL_INDICATOR_LABELS = {
-  EMA: 'EMA(21)',
-  RSI: 'RSI',
-  MACD: 'MACD',
-  BOLLINGER: 'Bollinger',
-  SUPERTREND: 'Supertrend',
-  SUPPORT_RESISTANCE: 'S/R',
-  QFL: 'QFL',
-  PARABOLIC_SAR: 'Parabolic SAR',
-  MARKET_STRUCTURE: 'Market structure',
+// RSI — pane series, one param. Each instance claims its own pane so
+// two RSIs on different periods don't stomp on each other's scale.
+const _RSI_PLUGIN = {
+  type: 'RSI',
+  displayName: 'RSI',
+  defaultColor: '#5b8dee',
+  paneType: 'pane',
+  params: [
+    { key: 'period', label: 'Period', type: 'int', default: 14, min: 2, max: 200 },
+  ],
+  labelTemplate: (p) => `RSI(${p.period})`,
+  createSeries({ chart, LWC, inst, paneIdx }) {
+    return [chart.addSeries(LWC.LineSeries, {
+      color: inst.color, lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+    }, paneIdx)];
+  },
+  render({ inst, candles }) {
+    if (inst._series[0]) inst._series[0].setData(calcRSILine(candles, inst.params.period));
+    return null;
+  },
 };
+
+// MACD — histogram + MACD-line + signal-line in its own pane. Three
+// ints on the instance; inst.color drives the MACD line, the signal
+// keeps the classic amber so the two are visually distinguishable.
+const _MACD_PLUGIN = {
+  type: 'MACD',
+  displayName: 'MACD',
+  defaultColor: '#5b8dee',
+  paneType: 'pane',
+  params: [
+    { key: 'fast',   label: 'Fast',   type: 'int', default: 12, min: 1 },
+    { key: 'slow',   label: 'Slow',   type: 'int', default: 26, min: 1 },
+    { key: 'signal', label: 'Signal', type: 'int', default: 9,  min: 1 },
+  ],
+  labelTemplate: (p) => `MACD(${p.fast},${p.slow},${p.signal})`,
+  createSeries({ chart, LWC, inst, paneIdx }) {
+    return [
+      chart.addSeries(LWC.HistogramSeries, { color: _cssVar('--muted', '#888') }, paneIdx),
+      chart.addSeries(LWC.LineSeries, { color: inst.color, lineWidth: 1 }, paneIdx),
+      chart.addSeries(LWC.LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 }, paneIdx),
+    ];
+  },
+  render({ inst, candles }) {
+    const m = calcMACDLines(candles, inst.params.fast, inst.params.slow, inst.params.signal);
+    if (inst._series[0]) inst._series[0].setData(m.histogram);
+    if (inst._series[1]) inst._series[1].setData(m.macd);
+    if (inst._series[2]) inst._series[2].setData(m.signal);
+    return null;
+  },
+};
+
+// Bollinger — three overlay lines (upper/middle/lower). inst.color
+// drives upper + lower; middle stays muted so the envelope is readable.
+const _BOLLINGER_PLUGIN = {
+  type: 'BOLLINGER',
+  displayName: 'Bollinger',
+  defaultColor: '#5b8dee',
+  paneType: 'overlay',
+  params: [
+    { key: 'period',     label: 'Period',      type: 'int',   default: 20, min: 2 },
+    { key: 'multiplier', label: 'Stddev mult', type: 'float', default: 2.0, min: 0.1, step: 0.1 },
+  ],
+  labelTemplate: (p) => `BB(${p.period},${p.multiplier})`,
+  createSeries({ chart, LWC, inst }) {
+    const common = { lineWidth: 1, priceLineVisible: false, lastValueVisible: false };
+    return [
+      chart.addSeries(LWC.LineSeries, Object.assign({ color: inst.color }, common)),
+      chart.addSeries(LWC.LineSeries, Object.assign({ color: _cssVar('--muted', '#888') }, common)),
+      chart.addSeries(LWC.LineSeries, Object.assign({ color: inst.color }, common)),
+    ];
+  },
+  render({ inst, candles }) {
+    const bb = calcBollingerLines(candles, inst.params.period, inst.params.multiplier);
+    if (inst._series[0]) inst._series[0].setData(bb.upper);
+    if (inst._series[1]) inst._series[1].setData(bb.middle);
+    if (inst._series[2]) inst._series[2].setData(bb.lower);
+    return null;
+  },
+};
+
+// Supertrend — two overlay lines (bull leg uses inst.color, bear stays
+// red). ATR period + multiplier are the two knobs.
+const _SUPERTREND_PLUGIN = {
+  type: 'SUPERTREND',
+  displayName: 'Supertrend',
+  defaultColor: '#26a69a',
+  paneType: 'overlay',
+  params: [
+    { key: 'atr_period', label: 'ATR period', type: 'int',   default: 10, min: 1 },
+    { key: 'multiplier', label: 'Multiplier', type: 'float', default: 3.0, min: 0.1, step: 0.1 },
+  ],
+  labelTemplate: (p) => `ST(${p.atr_period},${p.multiplier})`,
+  createSeries({ chart, LWC, inst }) {
+    const common = { lineWidth: 2, priceLineVisible: false, lastValueVisible: false };
+    return [
+      chart.addSeries(LWC.LineSeries, Object.assign({ color: inst.color }, common)),
+      chart.addSeries(LWC.LineSeries, Object.assign({ color: _cssVar('--red', '#ef5350') }, common)),
+    ];
+  },
+  render({ inst, candles }) {
+    const st = calcSupertrendLines(candles, inst.params.atr_period, inst.params.multiplier);
+    if (inst._series[0]) inst._series[0].setData(st.bull);
+    if (inst._series[1]) inst._series[1].setData(st.bear);
+    return null;
+  },
+};
+
+// Support/Resistance — dynamic per-segment lines. createSeries is a
+// no-op; render clears inst._series and rebuilds per segment. R and S
+// share the instance color but differ in line style so an operator
+// can tell them apart without two color-pickers per instance.
+const _SR_PLUGIN = {
+  type: 'SUPPORT_RESISTANCE',
+  displayName: 'S/R',
+  defaultColor: '#e53935',
+  paneType: 'overlay',
+  params: [
+    { key: 'left_bars',        label: 'Left bars',     type: 'int',   default: 15, min: 1 },
+    { key: 'right_bars',       label: 'Right bars',    type: 'int',   default: 15, min: 1 },
+    { key: 'volume_threshold', label: 'Vol threshold', type: 'float', default: 0,  min: 0, step: 0.1 },
+    { key: 'min_touches',      label: 'Min touches',   type: 'int',   default: 1,  min: 1 },
+  ],
+  labelTemplate: (p) => `S/R(${p.left_bars},${p.right_bars})`,
+  createSeries() { return []; },
+  render({ inst, candles, chart, LWC }) {
+    _clearInstanceSeries(chart, inst);
+    const sr = calcSR(
+      candles, inst.params.left_bars, inst.params.right_bars,
+      inst.params.volume_threshold, inst.params.min_touches,
+    );
+    _addSegmentedLevelSeries(chart, LWC, inst, candles, sr.resSeries, inst.color, 0, 'R');
+    _addSegmentedLevelSeries(chart, LWC, inst, candles, sr.supSeries, inst.color, 2, 'S');
+    return null;
+  },
+};
+
+// QFL — dashed dynamic-segment base line. Single color from instance.
+const _QFL_PLUGIN = {
+  type: 'QFL',
+  displayName: 'QFL',
+  defaultColor: '#f050a0',
+  paneType: 'overlay',
+  params: [
+    { key: 'base_periods',   label: 'Base periods',  type: 'int',   default: 36, min: 1 },
+    { key: 'pump_periods',   label: 'Pump periods',  type: 'int',   default: 8,  min: 1 },
+    { key: 'pump_pct',       label: 'Pump %',        type: 'float', default: 3.0, min: 0, step: 0.1 },
+    { key: 'base_crack_pct', label: 'Base crack %',  type: 'float', default: 3.0, min: 0, step: 0.1 },
+  ],
+  labelTemplate: (p) => `QFL(${p.base_periods},${p.pump_periods})`,
+  createSeries() { return []; },
+  render({ inst, candles, chart, LWC }) {
+    _clearInstanceSeries(chart, inst);
+    const qfl = calcQFL(
+      candles, inst.params.base_periods, inst.params.pump_periods,
+      inst.params.pump_pct, inst.params.base_crack_pct,
+    );
+    _addSegmentedLevelSeries(chart, LWC, inst, candles, qfl.baseSeries, inst.color, 2, null);
+    return null;
+  },
+};
+
+// Parabolic SAR — dots per direction (via transparent line + marker
+// primitives) plus trend-flip arrow markers returned to the caller so
+// every instance's arrows merge into the candle-series marker set.
+const _PARABOLIC_SAR_PLUGIN = {
+  type: 'PARABOLIC_SAR',
+  displayName: 'Parabolic SAR',
+  defaultColor: '#3388bb',
+  paneType: 'overlay',
+  params: [
+    { key: 'initial_af', label: 'Initial AF', type: 'float', default: 0.02, min: 0.001, step: 0.005 },
+    { key: 'max_af',     label: 'Max AF',     type: 'float', default: 0.20, min: 0.01,  step: 0.01 },
+  ],
+  labelTemplate: (p) => `PSAR(${p.initial_af},${p.max_af})`,
+  createSeries() { return []; },
+  render({ inst, candles, chart, LWC }) {
+    _clearInstanceSeries(chart, inst);
+    const ps = calcParabolicSAR(candles, inst.params.initial_af, inst.params.max_af);
+    const bullData = [], bearData = [], markers = [];
+    for (let i = 0; i < candles.length; i++) {
+      if (ps.sarValues[i] === null) continue;
+      const t = candles[i].time, v = ps.sarValues[i];
+      if (ps.dirs[i] === 1) bullData.push({ time: t, value: v });
+      else                  bearData.push({ time: t, value: v });
+      if (i > 0 && ps.dirs[i] !== 0 && ps.dirs[i - 1] !== 0 && ps.dirs[i] !== ps.dirs[i - 1]) {
+        markers.push({
+          time: t,
+          position: ps.dirs[i] === 1 ? 'belowBar' : 'aboveBar',
+          shape: ps.dirs[i] === 1 ? 'arrowUp' : 'arrowDown',
+          color: ps.dirs[i] === 1 ? _cssVar('--accent', '#26a69a') : _cssVar('--red', '#ef5350'),
+          size: 1,
+        });
+      }
+    }
+    const addDots = (data, color) => {
+      if (!data.length) return;
+      const s = chart.addSeries(LWC.LineSeries, {
+        color: 'transparent', lineWidth: 0,
+        priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData(data);
+      const csm = LWC.createSeriesMarkers;
+      const dotMarkers = data.map((p) => ({
+        time: p.time, position: 'inBar', color, shape: 'circle', size: 1,
+      }));
+      if (csm) csm(s, dotMarkers);
+      else { try { s.setMarkers(dotMarkers); } catch (e) {} }
+      inst._series.push(s);
+    };
+    addDots(bullData, inst.color);
+    addDots(bearData, _cssVar('--amber', '#ffb347'));
+    return { markers };
+  },
+};
+
+// Market structure — pure swing-high/low markers, no series at all.
+// Instance color tints both the up + down arrows so two instances on
+// different lookbacks remain visually distinguishable.
+const _MARKET_STRUCTURE_PLUGIN = {
+  type: 'MARKET_STRUCTURE',
+  displayName: 'Market structure',
+  defaultColor: '#26a69a',
+  paneType: 'overlay',
+  params: [
+    { key: 'lookback', label: 'Lookback', type: 'int', default: 3, min: 1 },
+  ],
+  labelTemplate: (p) => `MS(${p.lookback})`,
+  createSeries() { return []; },
+  render({ inst, candles }) {
+    const ms = calcMarketStructureMarkers(candles, inst.params.lookback);
+    // Re-tint to the instance's color. calcMarketStructureMarkers
+    // returns hard-coded accent/red for up/down; we override the
+    // ``color`` field per marker so the operator's color-picker
+    // choice follows through.
+    for (const m of ms) m.color = inst.color;
+    return { markers: ms };
+  },
+};
+
+// Shared plugin utilities — hoisted to module scope so the plugin
+// objects above can use them without capturing a closure over the
+// per-panel factory.
+
+// Tear down every series attached to an instance. Price lines go
+// with their host series automatically, so this is enough for the
+// default destroy path and for dynamic-segment plugins that call it
+// from inside render before rebuilding.
+function _clearInstanceSeries(chart, inst) {
+  if (!chart || !inst || !Array.isArray(inst._series)) {
+    if (inst) inst._series = [];
+    return;
+  }
+  for (const s of inst._series) {
+    try { chart.removeSeries(s); } catch (e) {}
+  }
+  inst._series = [];
+}
+
+// Segmented-level renderer shared by S/R and QFL. Walks a per-bar
+// value-or-null series, groups consecutive equal values into flat
+// horizontal segments, and draws each segment as its own LineSeries.
+// The last segment (if ``labelStart`` is truthy) gets a price-axis
+// label so the operator can read the level without hovering.
+// ``lineStyle``: 0 = solid, 2 = dashed (LWC's LineStyle enum).
+function _addSegmentedLevelSeries(chart, LWC, inst, candles, series, color, lineStyle, labelStart) {
+  const segs = [];
+  let segStart = null, segVal = null;
+  for (let i = 0; i < candles.length; i++) {
+    if (series[i] === null) continue;
+    if (segVal === null) { segStart = i; segVal = series[i]; }
+    else if (series[i] !== segVal) {
+      segs.push({ start: segStart, end: i - 1, value: segVal });
+      segStart = i; segVal = series[i];
+    }
+  }
+  if (segVal !== null) segs.push({ start: segStart, end: candles.length - 1, value: segVal });
+  for (const seg of segs) {
+    const data = [];
+    for (let j = seg.start; j <= seg.end; j++) {
+      data.push({ time: candles[j].time, value: seg.value });
+    }
+    const s = chart.addSeries(LWC.LineSeries, {
+      color, lineWidth: 2, lineStyle,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    s.setData(data);
+    inst._series.push(s);
+    if (labelStart && seg.end === candles.length - 1) {
+      s.createPriceLine({
+        price: seg.value, color, lineWidth: 0, lineStyle: 0,
+        axisLabelVisible: true, title: labelStart,
+      });
+    }
+  }
+}
+
+const INDICATOR_PLUGINS = {
+  EMA: _EMA_PLUGIN,
+  RSI: _RSI_PLUGIN,
+  MACD: _MACD_PLUGIN,
+  BOLLINGER: _BOLLINGER_PLUGIN,
+  SUPERTREND: _SUPERTREND_PLUGIN,
+  SUPPORT_RESISTANCE: _SR_PLUGIN,
+  QFL: _QFL_PLUGIN,
+  PARABOLIC_SAR: _PARABOLIC_SAR_PLUGIN,
+  MARKET_STRUCTURE: _MARKET_STRUCTURE_PLUGIN,
+};
+
+// Registration hook for future plugins loaded from app.js / user code
+// without having to patch this file. Overrides a built-in type if a
+// collision happens; the indicator-manager modal picks the registry
+// up at open time so newly-registered plugins appear in the add-menu
+// without a refresh.
+function registerIndicatorPlugin(plugin) {
+  if (!plugin || typeof plugin !== 'object' || typeof plugin.type !== 'string') return;
+  INDICATOR_PLUGINS[plugin.type] = plugin;
+}
+
+// Pull param defaults into a fresh object. Safe to mutate by the
+// caller — each instance owns its own copy.
+function _defaultParamsFor(type) {
+  const plugin = INDICATOR_PLUGINS[type];
+  if (!plugin) return {};
+  const out = {};
+  for (const p of plugin.params) out[p.key] = p.default;
+  return out;
+}
+
+// Mint a new instance with defaults. The id uniquely names the
+// instance for state lookups + form-element ids; the uniqueness
+// scope is the single panel (two panels can share ids without
+// conflict). Suffix counts active instances of the same type plus
+// one so deletes-and-adds don't collide.
+function _createIndicatorInstance(type, existing, colorHint) {
+  const plugin = INDICATOR_PLUGINS[type];
+  if (!plugin) return null;
+  const siblings = (existing || []).filter((x) => x && x.type === type);
+  // Find smallest unused integer suffix instead of count+1 — after a
+  // delete + add, count+1 can collide with a surviving higher-suffix
+  // instance.
+  const used = new Set(siblings.map((s) => {
+    const m = /^[A-Z_]+_(\d+)$/.exec(String(s.id || ''));
+    return m ? Number(m[1]) : 0;
+  }));
+  let n = 1;
+  while (used.has(n)) n++;
+  return {
+    id: `${type}_${n}`,
+    type,
+    params: _defaultParamsFor(type),
+    color: colorHint || plugin.defaultColor,
+  };
+}
+
+// Convert whatever landed from disk into the in-memory instance
+// array. Three input shapes to tolerate:
+//   1. Legacy string array: ['EMA', 'RSI'] → one default instance
+//      per type, skipping unknown types.
+//   2. Mixed array (paranoia): ['EMA', {type:'RSI', ...}]
+//   3. New instance array: [{id, type, params, color}, ...]
+// Missing params fields re-seed from plugin defaults so adding a new
+// param to an existing plugin doesn't break old layouts.
+function _migrateIndicators(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      if (!INDICATOR_PLUGINS[item]) continue;
+      const inst = _createIndicatorInstance(item, out, null);
+      if (inst) out.push(inst);
+      continue;
+    }
+    if (!item || typeof item !== 'object') continue;
+    const type = String(item.type || '').toUpperCase();
+    const plugin = INDICATOR_PLUGINS[type];
+    if (!plugin) continue;
+    const params = Object.assign(_defaultParamsFor(type), item.params || {});
+    const id = typeof item.id === 'string' && item.id
+      ? item.id
+      : (_createIndicatorInstance(type, out, null) || { id: `${type}_1` }).id;
+    // Guarantee unique ids — duplicates would collide in the DOM
+    // form-element id space and confuse the manager modal.
+    let uid = id, bump = 2;
+    const taken = new Set(out.map((x) => x.id));
+    while (taken.has(uid)) { uid = `${id}_${bump++}`; }
+    out.push({
+      id: uid,
+      type,
+      params,
+      color: typeof item.color === 'string' && item.color ? item.color : plugin.defaultColor,
+    });
+  }
+  return out;
+}
 
 // Aligned with the backend _CHART_TIMEFRAMES whitelist in web/app.py —
 // 1m/5m are intentionally excluded because Reverto is DCA/swing, not a
@@ -590,45 +1032,26 @@ function _buildHeaderTfDropdown(state) {
   };
 }
 
-function _buildHeaderIndicatorsDropdown(state) {
-  const root = document.createElement('div');
-  root.className = 'panel-indicators-dropdown';
-  root.dataset.role = 'indicators-dropdown';
-  const trigger = document.createElement('button');
-  trigger.type = 'button';
-  trigger.className = 'dropdown-trigger';
+// PR: plugin-architecture — the multi-select dropdown is replaced by
+// a single button that opens the indicator-manager modal. The button
+// surfaces the instance count so operators see at a glance how many
+// indicators are live on the chart.
+function _buildHeaderIndicatorsBtn(state) {
+  const root = document.createElement('button');
+  root.type = 'button';
+  root.className = 'panel-indicators-btn';
+  root.dataset.role = 'indicators-btn';
+  root.setAttribute('aria-label', 'Manage indicators');
   const count = document.createElement('span');
   count.className = 'indicators-count';
   count.textContent = String(state.indicators.length);
   const label = document.createElement('span');
   label.className = 'indicators-label';
   label.textContent = 'Indicators';
-  const caret = document.createElement('span');
-  caret.className = 'dropdown-caret';
-  caret.textContent = '▾';
-  trigger.appendChild(count);
-  trigger.appendChild(label);
-  trigger.appendChild(caret);
-  const menu = document.createElement('div');
-  menu.className = 'dropdown-menu hidden';
-  menu.setAttribute('role', 'menu');
-  for (const t of PANEL_INDICATOR_TYPES) {
-    const row = document.createElement('label');
-    row.className = 'dropdown-checkbox';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.value = t;
-    cb.checked = state.indicators.includes(t);
-    const span = document.createElement('span');
-    span.textContent = PANEL_INDICATOR_LABELS[t] || t;
-    row.appendChild(cb);
-    row.appendChild(span);
-    menu.appendChild(row);
-  }
-  root.appendChild(trigger);
-  root.appendChild(menu);
+  root.appendChild(count);
+  root.appendChild(label);
   return {
-    root, trigger, menu,
+    root,
     updateCount(n) { count.textContent = String(n); },
   };
 }
@@ -669,28 +1092,6 @@ function _wireTfDropdown(dd, state, onPick) {
   });
 }
 
-function _wireIndicatorsDropdown(dd, state, onChange) {
-  dd.trigger.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    _toggleDropdown(state, dd);
-  });
-  // Multi-select: keep the menu open while the operator toggles
-  // several indicators. e.stopPropagation on the checkbox click
-  // prevents the document-level outside-click handler from closing
-  // the menu on its own label click.
-  dd.menu.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const cb = e.target.closest('input[type=checkbox]');
-    if (!cb) return;
-    const t = cb.value;
-    const idx = state.indicators.indexOf(t);
-    if (cb.checked && idx < 0) state.indicators.push(t);
-    else if (!cb.checked && idx >= 0) state.indicators.splice(idx, 1);
-    else return;
-    onChange();
-  });
-}
 
 // ── Info-sidebar helpers (PR 5a) ─────────────────────────────────────────
 
@@ -843,9 +1244,10 @@ function createPanelChart(container, config) {
   //     annotations under the virtual "workspace-panel-<id>" slug
   //     and to filter live state updates.
   //   config.pair / config.timeframe: initial chart state.
-  //   config.indicators: array of indicator type names from
-  //     PANEL_INDICATOR_TYPES — rendered on init and toggleable via
-  //     the settings popover.
+  //   config.indicators: array of indicator instances
+  //     ({id, type, params, color}) keyed by type in INDICATOR_PLUGINS.
+  //     Legacy string-array shape (['EMA', 'RSI']) is accepted and
+  //     migrated to instance form via _migrateIndicators.
   //   config.boundBotSlug / config.boundBotUserId: optional live
   //     bot-binding. boundBotUserId is required when boundBotSlug
   //     is set so closed-deal lookups hit the correct tenant row.
@@ -860,9 +1262,12 @@ function createPanelChart(container, config) {
     panelId: cfg.panelId,
     pair: _panelNormalizePair(cfg.pair || 'BTC/USD'),
     timeframe: _panelNormalizeTimeframe(cfg.timeframe || '1h'),
-    indicators: Array.isArray(cfg.indicators)
-      ? cfg.indicators.filter((i) => PANEL_INDICATOR_TYPES.includes(i))
-      : [],
+    // PR plugin-architecture: each entry is a full instance object
+    // ({id, type, params, color}), not a bare type string. Legacy
+    // string-array layouts are migrated on load via _migrateIndicators;
+    // getConfig() always emits the new shape so the layout_json self-
+    // heals on the next save.
+    indicators: _migrateIndicators(cfg.indicators),
     // PR 5b → timezone-cleanup: per-panel timezone for axis labels +
     // crosshair tooltip. Stored as an IANA name ('UTC', 'Europe/
     // Amsterdam', …) or the literal 'local' sentinel (use browser
@@ -883,7 +1288,6 @@ function createPanelChart(container, config) {
     _chart: null,
     _candleSeries: null,
     _candles: [],
-    _indicatorSeries: {}, // type -> { main: [series], paneSeries: [series] }
     _indicatorMarkers: [],
     _dealMarkers: [],
     _markersPrimitive: null,
@@ -933,9 +1337,10 @@ function createPanelChart(container, config) {
 
   // TF-dropdown — standalone control, builds its own menu lazily.
   const tfDropdown = _buildHeaderTfDropdown(state);
-  // Indicators-dropdown — multi-select checkbox list, count shown
-  // in the trigger label.
-  const indDropdown = _buildHeaderIndicatorsDropdown(state);
+  // Indicators-button — opens the plugin-architecture manager modal.
+  // Count in the button reflects live instance count and updates via
+  // ``indBtn.updateCount(n)`` whenever state.indicators mutates.
+  const indBtn = _buildHeaderIndicatorsBtn(state);
 
   const subtitle = document.createElement('span');
   subtitle.className = 'panel-subtitle';
@@ -1003,7 +1408,7 @@ function createPanelChart(container, config) {
 
   header.appendChild(titleWrap);
   header.appendChild(tfDropdown.root);
-  header.appendChild(indDropdown.root);
+  header.appendChild(indBtn.root);
   header.appendChild(headerRight);
 
   const body = document.createElement('div');
@@ -1057,11 +1462,13 @@ function createPanelChart(container, config) {
     await _loadCandles();
     if (state.onConfigChange) state.onConfigChange();
   });
-  _wireIndicatorsDropdown(indDropdown, state, () => {
-    _rebuildIndicatorSeries();
-    _renderIndicatorOverlays();
-    indDropdown.updateCount(state.indicators.length);
-    if (state.onConfigChange) state.onConfigChange();
+  // Indicators-button opens the plugin-architecture manager modal.
+  // The modal is built lazily so the DOM stays light until the
+  // operator actually clicks through.
+  indBtn.root.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    _openIndicatorsModal();
   });
 
   // Outside-click closes whichever header dropdown is currently open.
@@ -1276,6 +1683,244 @@ function createPanelChart(container, config) {
     if (state.onRemove) state.onRemove();
   });
 
+  // ── Indicator-manager modal ──────────────────────────────────────
+  // PR plugin-architecture: a full modal replacing the header's
+  // legacy multi-select dropdown. Lists live instances with edit +
+  // color + remove per row, and an add-select at the bottom sourced
+  // from INDICATOR_PLUGINS. Built lazily on first open so the panel
+  // DOM stays light. Re-rendered in place on every add/remove/edit
+  // so the modal's state matches state.indicators without
+  // full-DOM-replacement flicker.
+
+  // One modal node per panel, anchored on ``panel`` so it appears
+  // inside the grid cell. z-index is above the popover so stacking
+  // with open settings doesn't crash the UX.
+  const indModal = document.createElement('div');
+  indModal.className = 'panel-indicators-modal hidden';
+  indModal.innerHTML =
+    '<div class="panel-indicators-modal-backdrop"></div>'
+    + '<div class="panel-indicators-modal-dialog" role="dialog" aria-label="Indicators">'
+    +   '<div class="panel-indicators-modal-header">'
+    +     '<span class="panel-indicators-modal-title">Indicators</span>'
+    +     '<button type="button" class="panel-indicators-modal-close" aria-label="Close">×</button>'
+    +   '</div>'
+    +   '<div class="panel-indicators-modal-body">'
+    +     '<div class="panel-indicators-list" data-role="list"></div>'
+    +     '<div class="panel-indicators-empty hidden">No indicators yet — add one below.</div>'
+    +     '<div class="panel-indicators-add-row">'
+    +       '<select class="panel-indicators-add-select" data-role="add-select"></select>'
+    +       '<button type="button" class="hbtn hbtn-theme btn-accent" data-role="add-btn">+ Add</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+  panel.appendChild(indModal);
+
+  const indModalBackdrop = indModal.querySelector('.panel-indicators-modal-backdrop');
+  const indModalClose = indModal.querySelector('.panel-indicators-modal-close');
+  const indModalList = indModal.querySelector('[data-role="list"]');
+  const indModalEmpty = indModal.querySelector('.panel-indicators-empty');
+  const indModalAddSelect = indModal.querySelector('[data-role="add-select"]');
+  const indModalAddBtn = indModal.querySelector('[data-role="add-btn"]');
+
+  // Which instance is currently expanded for editing, by id. Null
+  // means no edit-form is shown. Tracking this lets the re-render
+  // preserve the expansion across param tweaks.
+  state._editingInstanceId = null;
+
+  function _closeIndicatorsModal() {
+    indModal.classList.add('hidden');
+    state._editingInstanceId = null;
+  }
+
+  // Input widget for one param schema row. Numeric inputs so the
+  // browser's spin buttons + validation handle range/step; the form
+  // submit reads inputs back at apply time, cast to Number.
+  function _buildParamInput(schema, currentValue) {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'panel-indicators-param-input';
+    input.dataset.key = schema.key;
+    input.dataset.paramType = schema.type;
+    if (schema.type === 'int') input.step = '1';
+    else input.step = String(schema.step || 'any');
+    if (schema.min != null) input.min = String(schema.min);
+    if (schema.max != null) input.max = String(schema.max);
+    input.value = String(currentValue != null ? currentValue : (schema.default != null ? schema.default : 0));
+    return input;
+  }
+
+  // Schema-driven edit form — renders one label/input row per
+  // plugin.params entry. Apply collects the values, coerces to
+  // numbers respecting the 'int' vs 'float' type, and delegates
+  // to api.updateIndicator which triggers a rebuild + save.
+  function _buildEditForm(inst) {
+    const plugin = INDICATOR_PLUGINS[inst.type];
+    if (!plugin) return null;
+    const form = document.createElement('div');
+    form.className = 'panel-indicators-edit-form';
+    for (const schema of plugin.params) {
+      const row = document.createElement('div');
+      row.className = 'panel-indicators-param-row';
+      const lbl = document.createElement('label');
+      lbl.className = 'panel-indicators-param-label';
+      lbl.textContent = schema.label;
+      row.appendChild(lbl);
+      row.appendChild(_buildParamInput(schema, inst.params[schema.key]));
+      form.appendChild(row);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'panel-indicators-edit-actions';
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'hbtn hbtn-theme btn-accent';
+    applyBtn.dataset.action = 'apply';
+    applyBtn.textContent = 'Apply';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'hbtn hbtn-theme';
+    closeBtn.dataset.action = 'cancel';
+    closeBtn.textContent = 'Close';
+    actions.appendChild(applyBtn);
+    actions.appendChild(closeBtn);
+    form.appendChild(actions);
+    applyBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const patch = { params: {} };
+      for (const inp of form.querySelectorAll('input[data-key]')) {
+        const key = inp.dataset.key;
+        const t = inp.dataset.paramType;
+        let v = Number(inp.value);
+        if (!Number.isFinite(v)) v = Number(plugin.params.find((p) => p.key === key).default);
+        if (t === 'int') v = Math.round(v);
+        patch.params[key] = v;
+      }
+      api.updateIndicator(inst.id, patch);
+      state._editingInstanceId = null;
+      _renderIndModal();
+    });
+    closeBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state._editingInstanceId = null;
+      _renderIndModal();
+    });
+    return form;
+  }
+
+  // Full modal re-render. Cheap — at most ~20 rows in practice — so
+  // any mutation (add/remove/color/edit) replays the full list
+  // rather than hunting for the single changed row.
+  function _renderIndModal() {
+    // Refresh add-select against the live registry so a late
+    // registerIndicatorPlugin call surfaces without reload.
+    indModalAddSelect.innerHTML = '';
+    const types = Object.keys(INDICATOR_PLUGINS);
+    for (const type of types) {
+      const p = INDICATOR_PLUGINS[type];
+      const opt = document.createElement('option');
+      opt.value = type;
+      opt.textContent = p.displayName || type;
+      indModalAddSelect.appendChild(opt);
+    }
+
+    indModalList.innerHTML = '';
+    if (!state.indicators.length) {
+      indModalEmpty.classList.remove('hidden');
+      return;
+    }
+    indModalEmpty.classList.add('hidden');
+    for (const inst of state.indicators) {
+      const plugin = INDICATOR_PLUGINS[inst.type];
+      if (!plugin) continue;
+      const row = document.createElement('div');
+      row.className = 'panel-indicators-row';
+      row.dataset.id = inst.id;
+
+      const main = document.createElement('div');
+      main.className = 'panel-indicators-row-main';
+
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.className = 'panel-indicators-row-color';
+      colorInput.value = inst.color || plugin.defaultColor;
+      colorInput.addEventListener('input', () => {
+        api.updateIndicator(inst.id, { color: colorInput.value });
+        // Relabel doesn't change — no full re-render needed; updating
+        // the color on the live chart is done by updateIndicator's
+        // rebuild path. Keep the modal open + the form expanded.
+      });
+      main.appendChild(colorInput);
+
+      const label = document.createElement('span');
+      label.className = 'panel-indicators-row-label';
+      label.textContent = plugin.labelTemplate(inst.params);
+      main.appendChild(label);
+
+      const actions = document.createElement('div');
+      actions.className = 'panel-indicators-row-actions';
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'panel-indicators-row-edit';
+      editBtn.textContent = state._editingInstanceId === inst.id ? 'Hide' : 'Edit';
+      editBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        state._editingInstanceId = state._editingInstanceId === inst.id ? null : inst.id;
+        _renderIndModal();
+      });
+      const removeRowBtn = document.createElement('button');
+      removeRowBtn.type = 'button';
+      removeRowBtn.className = 'panel-indicators-row-remove';
+      removeRowBtn.setAttribute('aria-label', 'Remove indicator');
+      removeRowBtn.textContent = '×';
+      removeRowBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        api.removeIndicator(inst.id);
+        if (state._editingInstanceId === inst.id) state._editingInstanceId = null;
+        _renderIndModal();
+      });
+      actions.appendChild(editBtn);
+      actions.appendChild(removeRowBtn);
+      main.appendChild(actions);
+
+      row.appendChild(main);
+      if (state._editingInstanceId === inst.id) {
+        const form = _buildEditForm(inst);
+        if (form) row.appendChild(form);
+      }
+      indModalList.appendChild(row);
+    }
+  }
+
+  function _openIndicatorsModal() {
+    _renderIndModal();
+    indModal.classList.remove('hidden');
+  }
+
+  indModalClose.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    _closeIndicatorsModal();
+  });
+  indModalBackdrop.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    _closeIndicatorsModal();
+  });
+  indModalAddBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const type = indModalAddSelect.value;
+    if (!type) return;
+    const newId = api.addIndicator(type);
+    // Auto-expand the newly added instance's edit form so the
+    // operator can immediately tweak params without hunting for it.
+    if (newId) state._editingInstanceId = newId;
+    _renderIndModal();
+  });
+
   // ── Header indicators ─────────────────────────────────────────────
   function _updateTitle() {
     // PR 5a: title is now just the pair. The TF moved to its own
@@ -1412,213 +2057,72 @@ function createPanelChart(container, config) {
     return true;
   }
 
+  // Plugin-architecture: destroy/rebuild/render iterate the instance
+  // array instead of switching on type. Each plugin manages its own
+  // series list via ``inst._series``; createSeries is called on
+  // rebuild, render is called on every data update. The two are
+  // split so dynamic-segment plugins (S/R, QFL, PSAR) can return []
+  // from createSeries and own the full add/remove cycle inside render.
   function _destroyIndicatorSeries() {
     if (!state._chart) return;
-    for (const typ of Object.keys(state._indicatorSeries)) {
-      const rec = state._indicatorSeries[typ];
-      if (!rec) continue;
-      for (const s of (rec.main || [])) {
-        try { state._chart.removeSeries(s); } catch (e) {}
-      }
-      for (const s of (rec.paneSeries || [])) {
-        try { state._chart.removeSeries(s); } catch (e) {}
+    for (const inst of state.indicators) {
+      const plugin = INDICATOR_PLUGINS[inst.type];
+      if (plugin && typeof plugin.destroy === 'function') {
+        try { plugin.destroy({ chart: state._chart, inst }); } catch (e) {}
+      } else {
+        _clearInstanceSeries(state._chart, inst);
       }
     }
-    state._indicatorSeries = {};
   }
 
   function _rebuildIndicatorSeries() {
     if (!state._chart) return;
     _destroyIndicatorSeries();
     const LWC = window.LightweightCharts;
-    // Pane allocation: RSI gets pane 1 if enabled, MACD the next one.
+    // Pane allocation: every paneType='pane' instance claims the next
+    // free pane index. Two RSIs therefore get two separate panes and
+    // don't stomp on each other's scale. Pane 0 is reserved for the
+    // candle series + overlay indicators.
     let nextPane = 1;
-    const panes = {};
-    if (state.indicators.includes('RSI')) panes.RSI = nextPane++;
-    if (state.indicators.includes('MACD')) panes.MACD = nextPane++;
-
-    for (const t of state.indicators) {
-      const rec = { main: [], paneSeries: [] };
-      if (t === 'BOLLINGER') {
-        rec.main.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1, priceLineVisible: false, lastValueVisible: false }));
-        rec.main.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--muted', '#888'), lineWidth: 1, priceLineVisible: false, lastValueVisible: false }));
-        rec.main.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1, priceLineVisible: false, lastValueVisible: false }));
-      } else if (t === 'SUPERTREND') {
-        rec.main.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--accent', '#26a69a'), lineWidth: 2, priceLineVisible: false, lastValueVisible: false }));
-        rec.main.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--red', '#ef5350'), lineWidth: 2, priceLineVisible: false, lastValueVisible: false }));
-      } else if (t === 'EMA') {
-        rec.main.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 2, priceLineVisible: false, lastValueVisible: false }));
-      } else if (t === 'RSI') {
-        const p = panes.RSI;
-        rec.paneSeries.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1, priceLineVisible: false, lastValueVisible: true }, p));
-      } else if (t === 'MACD') {
-        const p = panes.MACD;
-        rec.paneSeries.push(state._chart.addSeries(LWC.HistogramSeries, { color: _cssVar('--muted', '#888') }, p));
-        rec.paneSeries.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 }, p));
-        rec.paneSeries.push(state._chart.addSeries(LWC.LineSeries, { color: _cssVar('--amber', '#ffb347'), lineWidth: 1 }, p));
+    for (const inst of state.indicators) {
+      const plugin = INDICATOR_PLUGINS[inst.type];
+      if (!plugin) { inst._series = []; continue; }
+      const paneIdx = plugin.paneType === 'pane' ? nextPane++ : 0;
+      inst._assignedPane = paneIdx;
+      try {
+        inst._series = plugin.createSeries({
+          chart: state._chart, LWC, inst, paneIdx,
+        }) || [];
+      } catch (e) {
+        inst._series = [];
       }
-      // SUPPORT_RESISTANCE / QFL / PARABOLIC_SAR rebuild their series
-      // dynamically inside _renderIndicatorOverlays because the series
-      // count depends on the detected segments, not the config.
-      state._indicatorSeries[t] = rec;
     }
   }
 
   function _renderIndicatorOverlays() {
     if (!state._chart || !state._candleSeries || !state._candles.length) return;
     const candles = state._candles;
+    const LWC = window.LightweightCharts;
     const markers = [];
 
-    const has = (t) => state.indicators.includes(t);
-    const rec = (t) => state._indicatorSeries[t] || { main: [], paneSeries: [] };
-
-    if (has('EMA')) {
-      const d = PANEL_INDICATOR_DEFAULTS.EMA;
-      const r = rec('EMA');
-      if (r.main[0]) r.main[0].setData(calcEMALine(candles, d.period));
-    }
-    if (has('BOLLINGER')) {
-      const d = PANEL_INDICATOR_DEFAULTS.BOLLINGER;
-      const bb = calcBollingerLines(candles, d.period, d.multiplier);
-      const r = rec('BOLLINGER');
-      if (r.main[0]) r.main[0].setData(bb.upper);
-      if (r.main[1]) r.main[1].setData(bb.middle);
-      if (r.main[2]) r.main[2].setData(bb.lower);
-    }
-    if (has('SUPERTREND')) {
-      const d = PANEL_INDICATOR_DEFAULTS.SUPERTREND;
-      const st = calcSupertrendLines(candles, d.atr_period, d.multiplier);
-      const r = rec('SUPERTREND');
-      if (r.main[0]) r.main[0].setData(st.bull);
-      if (r.main[1]) r.main[1].setData(st.bear);
-    }
-    if (has('RSI')) {
-      const d = PANEL_INDICATOR_DEFAULTS.RSI;
-      const r = rec('RSI');
-      if (r.paneSeries[0]) r.paneSeries[0].setData(calcRSILine(candles, d.period));
-    }
-    if (has('MACD')) {
-      const d = PANEL_INDICATOR_DEFAULTS.MACD;
-      const m = calcMACDLines(candles, d.fast, d.slow, d.signal);
-      const r = rec('MACD');
-      if (r.paneSeries[0]) r.paneSeries[0].setData(m.histogram);
-      if (r.paneSeries[1]) r.paneSeries[1].setData(m.macd);
-      if (r.paneSeries[2]) r.paneSeries[2].setData(m.signal);
-    }
-    if (has('SUPPORT_RESISTANCE')) {
-      const d = PANEL_INDICATOR_DEFAULTS.SUPPORT_RESISTANCE;
-      const sr = calcSR(candles, d.left_bars, d.right_bars, d.volume_threshold, d.min_touches);
-      _renderSegmentedLevels(sr.resSeries, '#e53935', 'SUPPORT_RESISTANCE', 'R', 'R');
-      _renderSegmentedLevels(sr.supSeries, '#1e88e5', 'SUPPORT_RESISTANCE', 'S', 'S');
-    }
-    if (has('QFL')) {
-      const d = PANEL_INDICATOR_DEFAULTS.QFL;
-      const qfl = calcQFL(candles, d.base_periods, d.pump_periods, d.pump_pct, d.base_crack_pct);
-      _renderSegmentedLevels(qfl.baseSeries, '#f050a0', 'QFL', null, null);
-    }
-    if (has('PARABOLIC_SAR')) {
-      const d = PANEL_INDICATOR_DEFAULTS.PARABOLIC_SAR;
-      const ps = calcParabolicSAR(candles, d.initial_af, d.max_af);
-      const r = rec('PARABOLIC_SAR');
-      for (const s of (r.main || [])) {
-        try { state._chart.removeSeries(s); } catch (e) {}
-      }
-      r.main = [];
-      const bullData = [], bearData = [];
-      for (let i = 0; i < candles.length; i++) {
-        if (ps.sarValues[i] === null) continue;
-        const t = candles[i].time, v = ps.sarValues[i];
-        if (ps.dirs[i] === 1) { bullData.push({ time: t, value: v }); }
-        else                  { bearData.push({ time: t, value: v }); }
-        if (i > 0 && ps.dirs[i] !== 0 && ps.dirs[i - 1] !== 0 && ps.dirs[i] !== ps.dirs[i - 1]) {
-          markers.push({
-            time: t,
-            position: ps.dirs[i] === 1 ? 'belowBar' : 'aboveBar',
-            shape: ps.dirs[i] === 1 ? 'arrowUp' : 'arrowDown',
-            color: ps.dirs[i] === 1 ? '#26a69a' : '#ef5350',
-            size: 1,
-          });
-        }
-      }
-      const LWC = window.LightweightCharts;
-      const addSeriesWithDots = (data, color) => {
-        if (!data.length) return;
-        const s = state._chart.addSeries(LWC.LineSeries, {
-          color: 'transparent', lineWidth: 0,
-          priceLineVisible: false, lastValueVisible: false,
-          crosshairMarkerVisible: false,
+    for (const inst of state.indicators) {
+      const plugin = INDICATOR_PLUGINS[inst.type];
+      if (!plugin || !Array.isArray(inst._series)) continue;
+      let out = null;
+      try {
+        out = plugin.render({
+          inst, candles,
+          chart: state._chart,
+          LWC,
         });
-        s.setData(data);
-        const csm = LWC.createSeriesMarkers;
-        const dotMarkers = data.map((p) => ({ time: p.time, position: 'inBar', color, shape: 'circle', size: 1 }));
-        if (csm) csm(s, dotMarkers);
-        else { try { s.setMarkers(dotMarkers); } catch (e) {} }
-        r.main.push(s);
-      };
-      addSeriesWithDots(bullData, 'rgba(51, 136, 187, 0.6)');
-      addSeriesWithDots(bearData, 'rgba(253, 204, 2, 0.6)');
-      state._indicatorSeries.PARABOLIC_SAR = r;
-    }
-    if (has('MARKET_STRUCTURE')) {
-      const d = PANEL_INDICATOR_DEFAULTS.MARKET_STRUCTURE;
-      const ms = calcMarketStructureMarkers(candles, d.lookback);
-      for (const p of ms) markers.push(p);
+      } catch (e) { /* plugin render failure must not break neighbours */ }
+      if (out && Array.isArray(out.markers)) {
+        for (const m of out.markers) markers.push(m);
+      }
     }
 
     state._indicatorMarkers = markers;
     _setCombinedMarkers();
-  }
-
-  // Indicator buckets are keyed by type by default, but S/R needs two
-  // coexisting buckets (resistance + support) under the same indicator
-  // type. ``subKey`` is optional; when present, the actual bucket key
-  // becomes `${typeKey}__${subKey}` so each direction owns its own
-  // series list and the self-cleanup loop in _renderSegmentedLevels
-  // doesn't wipe the sibling direction's lines on re-render.
-  function _getIndicatorBucketKeys(typeKey) {
-    return Object.keys(state._indicatorSeries).filter(
-      (k) => k === typeKey || k.startsWith(typeKey + '__'),
-    );
-  }
-
-  function _renderSegmentedLevels(series, color, typeKey, subKey, labelStart) {
-    const candles = state._candles;
-    const LWC = window.LightweightCharts;
-    const bucketKey = subKey ? `${typeKey}__${subKey}` : typeKey;
-    const rec = state._indicatorSeries[bucketKey] || { main: [], paneSeries: [] };
-    for (const s of (rec.main || [])) {
-      try { state._chart.removeSeries(s); } catch (e) {}
-    }
-    rec.main = [];
-    const segs = [];
-    let segStart = null, segVal = null;
-    for (let i = 0; i < candles.length; i++) {
-      if (series[i] === null) continue;
-      if (segVal === null) { segStart = i; segVal = series[i]; }
-      else if (series[i] !== segVal) {
-        segs.push({ start: segStart, end: i - 1, value: segVal });
-        segStart = i; segVal = series[i];
-      }
-    }
-    if (segVal !== null) segs.push({ start: segStart, end: candles.length - 1, value: segVal });
-    for (const seg of segs) {
-      const data = [];
-      for (let j = seg.start; j <= seg.end; j++) data.push({ time: candles[j].time, value: seg.value });
-      const s = state._chart.addSeries(LWC.LineSeries, {
-        color, lineWidth: 2, lineStyle: typeKey === 'QFL' ? 2 : 0,
-        priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      s.setData(data);
-      rec.main.push(s);
-      if (labelStart && seg.end === candles.length - 1) {
-        s.createPriceLine({
-          price: seg.value, color, lineWidth: 0, lineStyle: 0,
-          axisLabelVisible: true, title: labelStart,
-        });
-      }
-    }
-    state._indicatorSeries[bucketKey] = rec;
   }
 
   function _setCombinedMarkers() {
@@ -2285,16 +2789,51 @@ function createPanelChart(container, config) {
       if (state.onConfigChange) state.onConfigChange();
     },
 
-    toggleIndicator(name, enabled) {
-      if (!PANEL_INDICATOR_TYPES.includes(name)) return;
-      const has = state.indicators.includes(name);
-      if (enabled && !has) state.indicators.push(name);
-      else if (!enabled && has) state.indicators = state.indicators.filter((x) => x !== name);
-      else return;
+    // Plugin-architecture handle API: add / remove / update instances
+    // by id. The modal calls these directly; external callers (app.js
+    // hasn't used the old toggleIndicator since PR 5a) can drive the
+    // panel programmatically without poking into state.
+    addIndicator(type, colorHint) {
+      const inst = _createIndicatorInstance(type, state.indicators, colorHint);
+      if (!inst) return null;
+      state.indicators.push(inst);
+      indBtn.updateCount(state.indicators.length);
       _rebuildIndicatorSeries();
       _renderIndicatorOverlays();
       if (state.onConfigChange) state.onConfigChange();
+      return inst.id;
     },
+
+    removeIndicator(id) {
+      const idx = state.indicators.findIndex((x) => x.id === id);
+      if (idx < 0) return false;
+      state.indicators.splice(idx, 1);
+      indBtn.updateCount(state.indicators.length);
+      _rebuildIndicatorSeries();
+      _renderIndicatorOverlays();
+      if (state.onConfigChange) state.onConfigChange();
+      return true;
+    },
+
+    updateIndicator(id, patch) {
+      const inst = state.indicators.find((x) => x.id === id);
+      if (!inst || !patch || typeof patch !== 'object') return false;
+      if (patch.params && typeof patch.params === 'object') {
+        inst.params = Object.assign({}, inst.params, patch.params);
+      }
+      if (typeof patch.color === 'string' && patch.color) {
+        inst.color = patch.color;
+      }
+      // Param or color changes affect the series-creation options
+      // (color on creation), so a full rebuild is needed rather than
+      // a render-only path. Cheap in practice — 9 plugins max.
+      _rebuildIndicatorSeries();
+      _renderIndicatorOverlays();
+      if (state.onConfigChange) state.onConfigChange();
+      return true;
+    },
+
+    getIndicators() { return state.indicators.slice(); },
 
     async setBinding(slug, userId) {
       return _applyBinding(slug, userId, /* silent */ false);
@@ -2335,7 +2874,17 @@ function createPanelChart(container, config) {
       return {
         pair: state.pair,
         timeframe: state.timeframe,
-        indicators: state.indicators.slice(),
+        // Instance array shape. Strip runtime-only fields (_series,
+        // _assignedPane) — they'd bloat layout_json and re-seed on
+        // next load anyway. Legacy string-array layouts are migrated
+        // on load; writes always produce the instance shape so a
+        // layout self-heals on first save.
+        indicators: state.indicators.map((inst) => ({
+          id: inst.id,
+          type: inst.type,
+          params: Object.assign({}, inst.params),
+          color: inst.color,
+        })),
         boundBotSlug: state.boundBotSlug,
         boundBotUserId: state.boundBotUserId,
         // ``timezone`` supersedes the legacy ``useUtc`` field from
@@ -2386,7 +2935,10 @@ function createPanelChart(container, config) {
       try { if (state._chart) state._chart.remove(); } catch (e) {}
       state._chart = null;
       state._candleSeries = null;
-      state._indicatorSeries = {};
+      // Clear per-instance series refs so any stray callbacks don't
+      // try to push data onto torn-down handles. The chart.remove()
+      // above already released the native resources.
+      for (const inst of state.indicators) { inst._series = []; }
       state._markersPrimitive = null;
       state._annotSvg = null;
       // Leave the panel DOM in place — the workspace grid owns the
@@ -2863,8 +3415,13 @@ window.RevertoChart = Object.assign(window.RevertoChart || {}, {
   applyThemeToAll: () => _applyThemeToAllPanels(),
   buildTimezoneFormatter,
   tfSeconds,
-  PANEL_INDICATOR_TYPES,
-  PANEL_INDICATOR_LABELS,
+  // Plugin architecture. Consumers read INDICATOR_PLUGINS to enumerate
+  // built-in + registered plugins; registerIndicatorPlugin lets app.js
+  // (or future user code) ship new indicators without touching this
+  // file. The indicator-manager modal reads the registry at open
+  // time so registrations propagate without a page reload.
+  INDICATOR_PLUGINS,
+  registerIndicatorPlugin,
   PANEL_TIMEFRAMES,
   CHART_TIMEZONES,
 });
