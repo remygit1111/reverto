@@ -72,8 +72,10 @@ Sprint 1 (five HIGHs, individually merged) + Sprint 2 (eleven MEDIUM/LOWs bundle
 | **r1-057** | LOW    | `fix/vps-0-sweep` (`core/circuit_breaker.py` wired into `PublicExchange`) | RESOLVED |
 | **r1-059** | LOW    | `fix/vps-0-sweep` (`_validate_config_completeness` in lifespan) | RESOLVED |
 | **r1-074** | MEDIUM | `fix/vps-0-sweep` (SHA-384 SRI on unpkg scripts) | RESOLVED |
+| **r1-037** | MEDIUM | `fix/vps-0-deploy-rollback` (maintenance-page HTML + runbook Caddy wiring) | RESOLVED |
+| **r1-038** | MEDIUM | `fix/vps-0-deploy-rollback` (`scripts/rollback.sh` + `make rollback` + runbook) | RESOLVED |
 
-Still open after VPS-0: r1-003, r1-005, r1-008, r1-009, r1-011, r1-013–r1-019, r1-021, r1-022, r1-024–r1-031, r1-033, r1-034, r1-036–r1-040, r1-044–r1-046, r1-050, r1-055, r1-060–r1-073, r1-076. Delta-findings r1.1-001 still open (Phase-C).
+Still open after VPS-0 deploy/rollback: r1-003, r1-005, r1-008, r1-009, r1-011, r1-013–r1-019, r1-021, r1-022, r1-024–r1-031, r1-033, r1-034, r1-036, r1-039, r1-040, r1-044–r1-046, r1-050, r1-055, r1-060–r1-073, r1-076. Delta-findings r1.1-001 still open (Phase-C).
 
 ---
 
@@ -737,6 +739,8 @@ No health check, no canary, no automatic rollback; operator does manual restart.
 3. Rollback: record pre-deploy commit SHA; `make deploy-rollback` checks out the SHA and restarts.
 
 **Phase.** G.
+
+**STATUS.** RESOLVED (r1-037) in `fix/vps-0-deploy-rollback` — static `web/static/maintenance.html` with auto-reload logic + runbook section documenting pre-VPS-3 (file present but unserved) and post-VPS-3 (Caddy error-handler serves it on 502/503/504) states. RESOLVED (r1-038) in the same branch — `scripts/rollback.sh` + `make rollback` target with schema-migration safety warning and plan-then-confirm flow. Canary (point 2 above) is still a future Phase-G item because it needs a second host (see r1-039).
 
 **Items verified clean in this domain:**
 

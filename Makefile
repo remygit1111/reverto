@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin deploy
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin deploy rollback
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -84,6 +84,15 @@ deploy:
 	@echo "    - Bij schema-migration prompts: zie docs/runbook.md"
 	@echo "      sectie 'Schema migrations' voor de opt-in flow"
 	@echo ""
+
+# ── Rollback — audit r1-038 ─────────────────────────────────────────────────
+# Scripted rollback of the production portal. Resets HEAD by N commits
+# (default 1) or to a specific SHA (ARGS="--to <sha>"), then restarts.
+# Warns on schema-migration commits; the operator confirms each
+# destructive step. See docs/runbook.md section "Rollback procedure"
+# for the full flow + safety notes.
+rollback:
+	@bash scripts/rollback.sh $(ARGS)
 
 # ── Logs volgen ───────────────────────────────────────────────────────────────
 log:
