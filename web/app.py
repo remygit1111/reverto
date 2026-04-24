@@ -621,6 +621,14 @@ class BotInfo:
             validated["running"]     = self.running
             validated["slug"]        = self.slug
             validated["config_file"] = self.config_file
+            # Audit r1-042: stamp the owning user so downstream
+            # aggregators (WS fan-out, cross-tenant summaries) have
+            # the identity inline rather than re-deriving it from
+            # registry state. Canonical keys ``bot_user_id`` +
+            # ``bot_slug`` avoid collision with any state-file field
+            # the engines might introduce later.
+            validated["bot_user_id"] = self.user_id
+            validated["bot_slug"]    = self.slug
             # YAML wins over state-file mode so that an operator-edited
             # YAML (paper→live or vice versa) surfaces immediately in
             # the UI instead of lagging behind the next tick's state
@@ -639,6 +647,11 @@ class BotInfo:
         return {
             "slug":                self.slug,
             "config_file":         self.config_file,
+            # Audit r1-042: stamp identity in the default-state path
+            # too so consumers see the same shape regardless of
+            # whether the state-file exists.
+            "bot_user_id":         self.user_id,
+            "bot_slug":            self.slug,
             "bot_name":            self.slug,
             "mode":                yaml_mode or "paper",
             "exchange":            "—",
@@ -1277,6 +1290,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"]        = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"]        = "no-referrer"
+        # HSTS — audit r1-075: instruct browsers to pin HTTPS for the
+        # portal host. Only emit on an actual HTTPS request so an
+        # operator running `make start` on http://localhost doesn't
+        # end up with the browser stuck in a forced-HTTPS state. The
+        # scheme check covers both direct TLS and the standard
+        # Forwarded headers that reverse proxies (Caddy, nginx)
+        # inject — Starlette's ``url.scheme`` reads the
+        # ``X-Forwarded-Proto`` header via its Trusted Host setup, so
+        # this works transparently behind a TLS-terminating proxy.
+        # max-age=31536000 (1 year) + includeSubDomains matches the
+        # industry-standard HSTS policy recommended by OWASP.
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
+            )
         return response
 
 
@@ -1332,10 +1360,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return RedirectResponse(url="/", status_code=303)
 
 
-# Rate limiter — beperkt brute force en DoS op control endpoints. Sleutel
-# per remote IP; in een setup achter een reverse proxy moet je X-Forwarded-For
-# parsing toevoegen via een eigen key_func.
-limiter = Limiter(key_func=get_remote_address)
+# Rate limiter — beperkt brute force en DoS op control endpoints.
+# Audit r1-004: the key function prefers the leftmost ``X-Forwarded-For``
+# entry when present so every client behind a reverse proxy (Caddy,
+# nginx, Cloudflare) gets its own bucket. Without this every request
+# reaching the portal would share the proxy's IP and rate-limits
+# effectively disappear.
+#
+# Trust model: the reverse proxy MUST overwrite X-Forwarded-For (not
+# append), otherwise a client can inject a fake leftmost entry and
+# sidestep the limiter. This is the default for Caddy's
+# ``reverse_proxy`` and nginx's ``proxy_set_header X-Forwarded-For
+# $remote_addr;`` pattern. Document in runbook.
+def _rate_limit_key_func(request: Request) -> str:
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        first = xff.split(",", 1)[0].strip()
+        if first:
+            return first
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_rate_limit_key_func)
 
 
 async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
@@ -1361,13 +1407,67 @@ except DatabaseMigrationError as _dbe:
 except Exception as _e:  # pragma: no cover - defensive
     logger.warning("init_db failed on portal startup: %s", _e)
 
+def _validate_config() -> None:
+    """Check critical env-vars at portal boot (audit r1-058).
+
+    Raises ``RuntimeError`` for missing *required* vars so uvicorn
+    fails fast and the operator sees a clear stderr message
+    instead of discovering the gap at first user-action. Logs a
+    ``WARNING`` for missing *recommended* vars (features that
+    degrade gracefully but should be flagged — live-mode bots
+    without exchange credentials, say).
+
+    Required:
+      * REVERTO_SECRET_KEY — session-cookie signing. The module-
+        import fallback generates an ephemeral key with a warning
+        for local dev, but in a real deploy an ephemeral key
+        invalidates every live session on the next restart. Hard
+        fail at boot is strictly better observability.
+
+    Recommended (warn only):
+      * REVERTO_API_KEY   — required for X-API-Key authentication
+      * BITGET_API_KEY    — required for live-mode Bitget bots
+      * BITGET_API_SECRET — required for live-mode Bitget bots
+    """
+    required = {
+        "REVERTO_SECRET_KEY": "required for session signing",
+    }
+    recommended = {
+        "REVERTO_API_KEY":   "required for API-key authentication",
+        "BITGET_API_KEY":    "required for live-mode Bitget bots",
+        "BITGET_API_SECRET": "required for live-mode Bitget bots",
+    }
+
+    missing_required = [
+        f"{k} ({desc})" for k, desc in required.items()
+        if not os.environ.get(k)
+    ]
+    if missing_required:
+        raise RuntimeError(
+            "Missing required env-vars: " + ", ".join(missing_required)
+            + ". Set them in .env (see .env.example) before starting the "
+            "portal.",
+        )
+
+    missing_recommended = [
+        f"{k} ({desc})" for k, desc in recommended.items()
+        if not os.environ.get(k)
+    ]
+    if missing_recommended:
+        logger.warning(
+            "Missing recommended env-vars: %s",
+            ", ".join(missing_recommended),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan handler.
 
-    Startup: spawn background tasks that tail bot logs and watch
-    state.json mtimes. References are stored so shutdown can cancel
-    them cleanly.
+    Startup: validate critical env-vars (audit r1-058) then spawn
+    background tasks that tail bot logs and watch state.json
+    mtimes. References are stored so shutdown can cancel them
+    cleanly.
 
     Shutdown: cancel background tasks and wait for them to return.
     Without this, uvicorn's graceful-shutdown path hangs waiting for
@@ -1375,6 +1475,7 @@ async def lifespan(app: FastAPI):
     is what caused the SIGKILL fallback in stop.sh to fire on every
     make restart.
     """
+    _validate_config()
     logger.info("=== Portal started ===")
 
     background_tasks: list[asyncio.Task] = [
@@ -2028,7 +2129,11 @@ async def ws_state(websocket: WebSocket):
         for bot in bots:
             try:
                 state = bot.read_state()
-            except Exception:
+            except Exception as e:
+                logger.debug(
+                    "ws_state: read_state failed for bot %s: %s",
+                    bot.slug, e,
+                )
                 continue
             snapshot.append(state)
             try:
@@ -2037,24 +2142,24 @@ async def ws_state(websocket: WebSocket):
                     "slug": bot.slug,
                     "data": state,
                 }))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("ws_state: initial send failed: %s", e)
         try:
             await websocket.send_text(json.dumps({
                 "type": "summary",
                 "data": _compute_summary(snapshot),
             }))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("ws_state: summary send failed: %s", e)
 
         # Keep the socket alive — broadcasts come from watch_state_files.
         while True:
             await asyncio.sleep(30)
             await websocket.send_text("__ping__")
     except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
+        pass  # Expected lifecycle — client disconnected cleanly.
+    except Exception as e:
+        logger.debug("ws_state: loop exited with %s", e)
     finally:
         await state_broadcaster.disconnect(websocket)
 
@@ -2110,8 +2215,10 @@ async def tail_logs():
                             )
                 elif size < prev:
                     last[slug] = size
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "tail_logs: scan failed for %s: %s", slug, e,
+                )
         await asyncio.sleep(1)
 
 

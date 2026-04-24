@@ -70,9 +70,14 @@ async def api_db_deals(
         deals = deal_store.get_deals(
             user_id=uid, bot_slug=bot_slug, status=status, limit=limit,
         )
+        # Audit r1-020: batch-fetch orders so N deals cost one
+        # query instead of N+1. Preserves the same response shape
+        # ({"deal": ..., "orders": [...]}) so the SPA + Active Deals
+        # page stay untouched.
+        deal_ids = [d["id"] for d in deals]
+        orders_by_deal = deal_store.get_orders_for_deal_ids(deal_ids, uid)
         return [
-            {"deal": d,
-             "orders": deal_store.get_deal_orders(d["id"], user_id=uid)}
+            {"deal": d, "orders": orders_by_deal.get(d["id"], [])}
             for d in deals
         ]
 

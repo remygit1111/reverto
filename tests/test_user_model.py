@@ -1,9 +1,9 @@
 """Tests for core/user.py.
 
-Phase 1 of the multi-tenant migration introduces the User dataclass +
-``get_default_user`` + ``get_user_by_id`` + ``get_user_by_username``.
-These tests pin the module contract so Phase 2 can replace the zero-
-I/O default with real session resolution without breaking call sites.
+Phase-3a wires session-based user resolution; the ``DEFAULT_USER``
+admin stub was removed in audit r1-051 once r1-001 closed the last
+API-key caller. These tests pin the User dataclass + DB-backed
+lookup contract so future Phase-3 work doesn't silently regress.
 """
 
 from __future__ import annotations
@@ -17,10 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import database  # noqa: E402
 from core.user import (  # noqa: E402
-    DEFAULT_USER,
     User,
     get_active_user_ids,
-    get_default_user,
     get_user_by_id,
     get_user_by_username,
 )
@@ -53,17 +51,6 @@ class TestUserDataclass:
         u = User(id=1, username="admin")
         with pytest.raises(Exception):  # FrozenInstanceError, but subclass of AttributeError
             u.id = 99  # type: ignore[misc]
-
-    def test_default_user_is_admin(self):
-        assert DEFAULT_USER.id == 1
-        assert DEFAULT_USER.username == "admin"
-        assert DEFAULT_USER.active is True
-
-    def test_get_default_user_returns_admin(self):
-        """Zero-I/O fast path — must NOT query the DB."""
-        u = get_default_user()
-        assert u.id == 1
-        assert u.username == "admin"
 
 
 # ── DB-backed lookups ──────────────────────────────────────────────────────

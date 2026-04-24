@@ -3,6 +3,12 @@ import sys, os, pytest
 from datetime import datetime, UTC
 from unittest.mock import MagicMock
 
+# Audit r1-058: the boot-time config validator requires
+# REVERTO_SECRET_KEY. Production sets it via .env; the test harness
+# seeds a placeholder so lifespan startup succeeds in TestClient.
+# setdefault so a test that explicitly sets its own value still wins.
+os.environ.setdefault("REVERTO_SECRET_KEY", "testkey-for-pytest-secret")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
