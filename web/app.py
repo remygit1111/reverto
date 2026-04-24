@@ -621,6 +621,14 @@ class BotInfo:
             validated["running"]     = self.running
             validated["slug"]        = self.slug
             validated["config_file"] = self.config_file
+            # Audit r1-042: stamp the owning user so downstream
+            # aggregators (WS fan-out, cross-tenant summaries) have
+            # the identity inline rather than re-deriving it from
+            # registry state. Canonical keys ``bot_user_id`` +
+            # ``bot_slug`` avoid collision with any state-file field
+            # the engines might introduce later.
+            validated["bot_user_id"] = self.user_id
+            validated["bot_slug"]    = self.slug
             # YAML wins over state-file mode so that an operator-edited
             # YAML (paper→live or vice versa) surfaces immediately in
             # the UI instead of lagging behind the next tick's state
@@ -639,6 +647,11 @@ class BotInfo:
         return {
             "slug":                self.slug,
             "config_file":         self.config_file,
+            # Audit r1-042: stamp identity in the default-state path
+            # too so consumers see the same shape regardless of
+            # whether the state-file exists.
+            "bot_user_id":         self.user_id,
+            "bot_slug":            self.slug,
             "bot_name":            self.slug,
             "mode":                yaml_mode or "paper",
             "exchange":            "—",
