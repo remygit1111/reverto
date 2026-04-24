@@ -186,6 +186,151 @@ make start
 De backup is een volwaardige SQLite-file; `sqlite3 <backup>.db
 'PRAGMA user_version'` laat zien op welke schema-versie 'ie zit.
 
+## Maintenance page during deploys
+
+The `web/static/maintenance.html` page is served by the reverse
+proxy (Caddy, to be configured at VPS-3 deploy time) whenever the
+portal backend returns 502/503/504. During a typical `make deploy`
++ `make restart` cycle the portal is unreachable for 5–15 seconds;
+Caddy serves this page in that window instead of a browser-level
+connection error.
+
+Audit r1-037 resolution: the static HTML + auto-reload logic live
+in the repo today. The reverse-proxy wiring is a VPS-3 step; the
+page is otherwise inert in the current single-host setup.
+
+### Pre-VPS-3 (current setup)
+
+The file is present in the repo but **not currently served** —
+there's no reverse proxy in front of the portal on the dev /
+thuis-server setup. Users during a restart see
+`ERR_CONNECTION_REFUSED` in their browser. That is acceptable for
+a single-operator host; the page's value lands post-VPS-3 with
+multi-user traffic.
+
+### Post-VPS-3 (target setup)
+
+Caddy config snippet (add to `/etc/caddy/Caddyfile` during VPS-3):
+
+```caddy
+reverto.bot {
+    reverse_proxy localhost:8080 {
+        health_uri /auth/status
+        health_interval 2s
+        health_timeout 1s
+    }
+
+    handle_errors {
+        @down expression int({http.error.status_code}) in [502,503,504]
+        handle @down {
+            rewrite * /maintenance.html
+            root * /home/bot/reverto/web/static
+            file_server
+        }
+    }
+}
+```
+
+The page polls `/auth/status` every 2 s and auto-reloads once the
+backend responds with anything that isn't a 502/503/504 — so users
+don't need to refresh manually when the portal comes back.
+
+### Updating the maintenance page
+
+Change `web/static/maintenance.html` in the repo, commit, and the
+next deploy picks it up. No special handling needed — Caddy
+serves whatever file is at that path.
+
+## Rollback procedure
+
+When a deploy causes a regression, use the rollback script
+(`scripts/rollback.sh`) to revert to a known-good state. Audit
+r1-038 resolution: the ad-hoc `git revert && make deploy` flow is
+replaced with a single scripted entry point that does safety
+checks for schema-migration commits + confirmation prompts.
+
+### Quick rollback (most common)
+
+From the production server:
+
+```bash
+cd ~/reverto
+make rollback
+```
+
+This rolls back **1 commit**, resets git HEAD, and restarts the
+portal. Bots keep running during the restart (only the portal
+process is affected). The script prints a full plan and waits
+for your `y` before doing anything destructive.
+
+### Rolling back further
+
+```bash
+make rollback ARGS=3              # Last 3 commits
+make rollback ARGS="--to abc123"  # To a specific SHA
+```
+
+### Schema-migration WARNING
+
+If any commit being rolled back touched `core/database.py`, the
+script halts and requires explicit confirmation. Schema migrations
+are forward-only in Reverto — the older code won't know how to
+read data written against a newer schema, so a naïve rollback
+leaves the DB + code out of sync.
+
+**If you get the migration warning, choose one:**
+
+- **Option A — Restore DB from backup (safest):**
+
+  ```bash
+  # 1. Stop the portal first
+  cd ~/reverto
+  make stop
+
+  # 2. Restore the pre-migration backup
+  cp logs/pre-migration-backup-YYYYMMDD-HHMMSS.db logs/reverto.db
+
+  # 3. Now the rollback is safe
+  make rollback
+  ```
+
+- **Option B — Fix forward (preferred for most cases):**
+
+  Instead of rolling back, write a new commit that addresses the
+  regression. Keeps schema + code aligned and leaves a cleaner
+  git history. Schema rollback is the exception, not the rule.
+
+### What rollback does NOT do
+
+- **Does NOT** touch bots — they keep running with their existing
+  subprocesses + state files.
+- **Does NOT** restore the DB from backup — see the schema-
+  migration section above.
+- **Does NOT** push to origin — the reset is local-only until
+  you explicitly `git push --force-with-lease origin main`. Only
+  push if you want other operators pulling the reverted state.
+- **Does NOT** notify users — the portal is briefly down during
+  restart; the maintenance-page will surface this post-VPS-3.
+
+### Reverse a rollback
+
+If you want to undo the rollback itself:
+
+```bash
+git reflog              # Find the previous HEAD
+git reset --hard <prev-sha>
+make restart
+```
+
+### Verify rollback success
+
+After every rollback:
+
+1. Open portal in browser — confirm UI loads.
+2. `tail -30 logs/portal.log` — confirm the portal started cleanly.
+3. `ps aux | grep main_paper` — confirm bots are still running.
+4. Test the specific flow that was broken pre-rollback.
+
 ## Database reset (multi-tenant migration)
 
 Voor de migratie van pre-MT (schema ≤ 2) naar v3 is een eenmalige
