@@ -199,6 +199,19 @@ class TestExchangeEndpointAcceptsPassphrase:
         stored = credentials.get_keys("kraken", user_id=admin.id)
         assert stored == {"api_key": "k", "api_secret": "K", "passphrase": ""}
 
+    def test_passphrase_over_max_length_rejected(self, tmp_store, admin_client):
+        # pd-006: Pydantic max_length on passphrase is 64. A 65-char
+        # paste must 422, not silently truncate.
+        r = admin_client.post(
+            "/api/exchanges/bitget/keys",
+            json={
+                "api_key": "ak",
+                "api_secret": "sc",
+                "passphrase": "p" * 65,
+            },
+        )
+        assert r.status_code == 422
+
 
 # ── Rotation preserves passphrase ─────────────────────────────────────────
 
