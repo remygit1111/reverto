@@ -176,6 +176,14 @@ def update_entry(
     values.append(entry_id)
     conn = get_db()
     with conn:
+        # Security note (pd-029): the f-string below is SAFE.
+        # ``fields`` only holds hardcoded column-assignment strings
+        # literals ("title = ?", "description = ?", "category = ?")
+        # assembled above from the if-branches. No user input ever
+        # lands in the SQL template; user values only bind to ?
+        # placeholders via the ``values`` list. Do NOT extend this
+        # builder with dynamic field names unless they pass an
+        # allowlist check first.
         cur = conn.execute(
             f"UPDATE changelog_entries SET {', '.join(fields)} WHERE id = ?",
             values,

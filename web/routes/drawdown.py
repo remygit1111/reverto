@@ -48,9 +48,17 @@ async def api_drawdown_reset(
 
     try:
         data = json.loads(state_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError):
+        # Audit pd-001: the state-file path and decoder errno land
+        # in the raw exception. Generic detail keeps the attacker
+        # blind; logger.exception preserves every detail operators
+        # need to triage.
+        logger.exception(
+            "drawdown state read failed user=%s slug=%s",
+            user.id, slug,
+        )
         raise HTTPException(
-            status_code=500, detail=f"State unreadable: {str(e)[:100]}",
+            status_code=500, detail="Failed to read bot state",
         )
 
     data["drawdown_guard"] = {

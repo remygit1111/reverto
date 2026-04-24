@@ -126,6 +126,23 @@ class TestDashboardStore:
         with pytest.raises(ValueError, match="not JSON-serialisable"):
             dashboard_store.put_layout(uid, payload)
 
+    def test_layout_name_rejects_invalid_chars(self):
+        """Audit pd-043 — defensive validation on layout names.
+        Space, slash, and traversal patterns must all raise so a
+        future code path that branches on the name string (cache
+        key, export file-path) can't be surprised."""
+        uid = _seed_user("pytest_ds_name_bad")
+        for bad in ("bad name", "bad/path", "../etc", "", "a" * 65):
+            with pytest.raises(ValueError, match="Invalid layout name"):
+                dashboard_store.put_layout(uid, {"v": 1}, name=bad)
+
+    def test_layout_name_accepts_safe_shapes(self):
+        """Alphanumeric + underscore + dash up to 64 chars passes."""
+        uid = _seed_user("pytest_ds_name_ok")
+        for good in ("default", "my_layout", "dash-style", "L1", "a" * 64):
+            dashboard_store.put_layout(uid, {"shape": good}, name=good)
+            assert dashboard_store.get_layout(uid, name=good) == {"shape": good}
+
     def test_get_layout_handles_corrupt_json(self):
         """If the stored JSON becomes corrupt (disk glitch, rogue
         edit) ``get_layout`` must surface ValueError so the route
