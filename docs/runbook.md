@@ -331,6 +331,144 @@ After every rollback:
 3. `ps aux | grep main_paper` — confirm bots are still running.
 4. Test the specific flow that was broken pre-rollback.
 
+## Backup and restore
+
+Reverto automates daily on-host backups of the SQLite database
+and the encrypted credentials tree. Audit r1-022 resolution.
+Off-host replication (rsync to a secondary machine, S3, etc.)
+is a VPS-follow-up, not in this procedure.
+
+### What gets backed up
+
+- `logs/reverto.db` — SQLite database (users, bots, deals,
+  orders, chart-annotations, backtest-runs).
+- `credentials/` — per-user encrypted `.enc` files.
+- `keys/` — per-user Fernet master keys (required to decrypt
+  the `.enc` files — losing these makes the backup useless).
+- `logs/.credentials.key` — legacy master key (pre-Phase-3a;
+  copied if still present on disk).
+- `logs/.auth.json` — legacy auth-state (same deal).
+
+NOT backed up (regenerable or tracked elsewhere):
+
+- Code itself — `git`.
+- Bot YAML configs (`config/bots/`) — also in git.
+- Bot state files (`logs/*/state.json`) — regenerated from DB.
+- Bot log files (`logs/*/*.log`) — operational history, large,
+  acceptable to lose.
+- `.venv/` — `pip install -r requirements.txt` reproduces.
+
+### Scheduling the daily backup
+
+On Reverto-Server (or post-VPS-3 on the Hetzner host):
+
+```bash
+crontab -e
+```
+
+Add:
+
+```
+# Reverto daily backup at 03:00 UTC
+0 3 * * * cd /home/bot/reverto && ./scripts/backup.sh >> \
+    logs/backup.log 2>&1
+```
+
+Cron runs the script as the `bot` user; permissions (600 files,
+700 dirs) are applied inside the script so the cron-environment
+UMASK doesn't matter.
+
+### Manual backup
+
+```bash
+cd ~/reverto
+make backup
+```
+
+Output: `backups/YYYY-MM-DD-HHMMSS/` with a `MANIFEST.txt`
+listing each file + its size + the host + the git HEAD.
+
+### Retention policy
+
+The script prunes older backups on every run:
+
+- **Daily backups** kept for 7 days.
+- **Weekly backups** (any snapshot whose date falls on a
+  Sunday) kept for 28 days.
+- **Monthly backups** (the 1st of each month) kept for 90 days.
+
+Everything outside those windows is removed. Pre-restore
+snapshots created by `scripts/restore.sh` live under
+`backups/pre-restore-<ts>/` and are **not** affected by the
+retention prune (they stay until you delete them manually).
+
+Steady-state disk footprint is ~100 MB × (7 + 4 + 3) ≈ 1.5 GB
+today; adjust `RETAIN_DAILY` / `RETAIN_WEEKLY` / `RETAIN_MONTHLY`
+at the top of `scripts/backup.sh` if a different cadence is
+desired.
+
+### Restore procedure
+
+Prerequisites: portal must be stopped (the script refuses to
+run against a live PID). Restoring under a live portal would
+let the engine commit a WAL frame on top of the restored DB.
+
+```bash
+cd ~/reverto
+make stop
+ls backups/                             # list available snapshots
+make restore BACKUP=backups/2026-04-24-030000
+```
+
+The script:
+
+1. Validates the backup directory (`reverto.db` must be present).
+2. Takes a **pre-restore snapshot** of current state so an
+   accidental restore is itself reversible.
+3. Prints the restore plan + MANIFEST and waits for a `y`.
+4. Restores the DB, credentials, keys, and any legacy files.
+5. Fixes permissions (0600 on sensitive files, 0700 on dirs).
+
+After the restore:
+
+```bash
+make start
+tail -20 logs/portal.log                # confirm clean startup
+```
+
+### Reversing a restore
+
+If the restore was a mistake, run it against the pre-restore
+snapshot the script saved:
+
+```bash
+ls backups/pre-restore-*                # find the snapshot
+make stop
+make restore BACKUP=backups/pre-restore-<ts>
+make start
+```
+
+### Testing restores (recommended monthly)
+
+A backup that hasn't been test-restored is a wish, not a
+backup. Once a month — or before any VPS migration — verify:
+
+1. Take a fresh backup: `make backup`.
+2. On Reverto-Dev (NOT production) copy the repo elsewhere,
+   drop a recent backup dir onto it, run `make restore`, start
+   the portal, confirm login + bot-list work.
+
+The pre-restore snapshot guarantees the test on Reverto-Dev
+can be undone.
+
+### Off-host backup (future)
+
+This PR covers on-host backups only. A Phase-2 follow-up adds
+an off-host replication path (rsync to a separate machine or
+an S3-compatible endpoint) so a full-host failure — disk
+corruption, ransomware, lost VPS — doesn't take the backups
+with it. Tracked on the VPS roadmap.
+
 ## Database reset (multi-tenant migration)
 
 Voor de migratie van pre-MT (schema ≤ 2) naar v3 is een eenmalige

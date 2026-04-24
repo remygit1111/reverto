@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin deploy rollback
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin deploy rollback backup restore
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -93,6 +93,22 @@ deploy:
 # for the full flow + safety notes.
 rollback:
 	@bash scripts/rollback.sh $(ARGS)
+
+# ── Backup + restore — audit r1-022 ─────────────────────────────────────────
+# `make backup` writes a timestamped snapshot to backups/<ts>/
+# (DB + credentials + keys). Intended for cron (daily at 03:00 UTC)
+# but also runnable ad-hoc. Retention: 7 days daily + 4 weeks
+# weekly + 3 months monthly. See docs/runbook.md section
+# "Backup and restore" for scheduling + off-host follow-ups.
+#
+# `make restore BACKUP=backups/<ts>` restores a specific snapshot.
+# Portal must be stopped first; script takes a pre-restore
+# snapshot of the current state before overwriting.
+backup:
+	@bash scripts/backup.sh
+
+restore:
+	@bash scripts/restore.sh $(BACKUP)
 
 # ── Logs volgen ───────────────────────────────────────────────────────────────
 log:
