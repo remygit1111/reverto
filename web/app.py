@@ -923,6 +923,69 @@ registry = BotRegistry()
 
 # ── Process control ───────────────────────────────────────────────────────────
 
+# Allowlist of env-vars safe to forward into bot subprocesses. See
+# ``_bot_subprocess_env`` for the full rationale; the set is kept
+# module-level so tests can reference it without duplicating the
+# membership list.
+_BOT_ENV_ALLOWLIST = frozenset({
+    # System / locale
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ",
+    # Python runtime
+    "PYTHONPATH", "PYTHONUNBUFFERED",
+    # Reverto process-level config (not secrets)
+    "REVERTO_LOG_LEVEL",
+})
+
+
+def _bot_subprocess_env(user_id: int) -> dict[str, str]:
+    """Build an explicit env dict for bot subprocesses (audit r1-023).
+
+    Previously ``start_bot`` / ``start_bot_dry_run`` passed
+    ``os.environ.copy()`` to ``subprocess.Popen``, which handed every
+    bot every env-var the portal process happened to hold —
+    ``TELEGRAM_BOT_TOKEN``, ``TELEGRAM_CHAT_ID``,
+    ``BITGET_PASSPHRASE``, ``REVERTO_API_KEY``, plus anything else in
+    the operator's .env. Post-multi-user seed that's a cross-tenant
+    credential leak: user A's bot inherits user B's tokens verbatim.
+
+    This helper restricts the subprocess env to:
+
+      1. A small allowlist of process-level config (PATH, locale,
+         Python runtime flags, ``REVERTO_LOG_LEVEL``) — see
+         ``_BOT_ENV_ALLOWLIST``.
+      2. Per-user scoping via ``REVERTO_BOT_USER_ID`` so the child
+         knows which tenant it runs for (not consumed today; kept as
+         a zero-cost breadcrumb for observability + future per-user
+         configuration).
+      3. ``PYTHONUNBUFFERED=1`` so state-log lines land on disk
+         without the portal's extra buffering.
+
+    Everything else — secrets included — is intentionally withheld.
+    Per-user credentials land in the subprocess via
+    ``core.credentials`` (encrypted, user-scoped) at load time, not
+    via env. If a future bot-code path needs a new non-secret env
+    var, add it to ``_BOT_ENV_ALLOWLIST`` after confirming it holds
+    no cross-tenant material.
+
+    Related: r1-012 moves ``BITGET_PASSPHRASE`` into the per-user
+    credentials payload, closing the last env-secret gap for live
+    mode.
+    """
+    env = {k: os.environ[k] for k in _BOT_ENV_ALLOWLIST if k in os.environ}
+    # Forced defaults — unbuffered stdio is mandatory for the log
+    # tailer to see bot output in near-real time, regardless of what
+    # the portal's own env looks like.
+    env["PYTHONUNBUFFERED"] = "1"
+    # Per-user breadcrumb. Not consumed by main_paper / main_live
+    # today (they take --user-id on the CLI) but a child that wants
+    # to self-identify without re-parsing argv can consult this.
+    env["REVERTO_BOT_USER_ID"] = str(user_id)
+    # Drop empty values — subprocess envs with "" entries are
+    # technically valid but noisy in `env | sort` when the operator
+    # debugs a stuck bot.
+    return {k: v for k, v in env.items() if v != ""}
+
+
 async def start_bot(user_id: int, slug: str) -> dict:
     bot = await registry.get(user_id, slug)
     if not bot:
@@ -939,8 +1002,13 @@ async def start_bot(user_id: int, slug: str) -> dict:
     try:
         paths.user_pid_dir(user_id)
 
-        # Use absolute path to main_paper.py and same venv Python as portal
-        env = os.environ.copy()
+        # Use absolute path to main_paper.py and same venv Python as portal.
+        # Env is built from an explicit allowlist (r1-023) — every
+        # entry must either be process-level config the child genuinely
+        # needs or the per-user scoping breadcrumb. Secrets are
+        # intentionally withheld; the bot loads them via
+        # core.credentials at runtime.
+        env = _bot_subprocess_env(user_id)
         env["PYTHONPATH"] = str(BASE_DIR)
 
         # Context manager closes the parent's FD after Popen duplicates it —
@@ -1102,7 +1170,10 @@ async def start_bot_dry_run(user_id: int, slug: str) -> dict:
     try:
         paths.user_pid_dir(user_id)
 
-        env = os.environ.copy()
+        # Same allowlist-only env as start_bot (r1-023). DRY_RUN is
+        # set explicitly below because this spawn path deliberately
+        # asks main_live.py to skip its input() confirmation.
+        env = _bot_subprocess_env(user_id)
         env["PYTHONPATH"] = str(BASE_DIR)
         # main_live.py prompts the operator on non-dry-run launches and
         # also respects DRY_RUN=1 as a bypass — set it explicitly so a
