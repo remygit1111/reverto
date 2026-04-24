@@ -10,6 +10,28 @@
 
 ---
 
+## Remediation status (post-VPS-1.5 polish)
+
+All 11 SHOULD-FIX items closed in `fix/vps-1.5-polish` (2026-04-24). The deploy-readiness verdict moves from **⚠️ APPROVED WITH CONDITIONS** to **✅ APPROVED FOR DEPLOY**. Individual finding STATUS lines below are marked `RESOLVED in fix/vps-1.5-polish`.
+
+| Finding | Branch | Status |
+|---|---|---|
+| pd-001 (OSError scrub) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-003 (HIBP after verify) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-005 (/api/chart cost-budget) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-006 (passphrase max_length) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-011 (Permissions-Policy) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-025 (API_KEY required) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-026 (LOG_LEVEL in .env.example) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-029 (changelog f-string comment) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-042 (logout CSRF doc) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-043 (layout name validation) | `fix/vps-1.5-polish` | RESOLVED |
+| pd-047 (ML pin) | `fix/vps-1.5-polish` | RESOLVED |
+
+MONITORING items (pd-002, pd-007, pd-009, pd-019, pd-027, pd-044) remain open — they're operational-observation-level, not gating.
+
+---
+
 ## Executive Summary
 
 Reverto's tree post-VPS-0 + VPS-1 + hotfix is **deploy-ready with narrow-scope caveats**. The 30 audit items closed across Sprint 1, Sprint 2, Sprint 3/3b, and the three VPS sweeps (0, 1, 1-hotfix) all verify coherent in current main — none have regressed. The public-exposure-specific scan across the 15 focus areas surfaced **no CRITICAL or HIGH findings**: there is no path-traversal, no SQL injection, no shell-injection surface, no unbounded data leak, no missing CSRF on mutating endpoints, no missing rate-limiter on any state-changing route. The weakest links are **operational**, not architectural: `_validate_config()` treats `REVERTO_API_KEY` as *recommended* rather than *required* so a mis-configured deploy will silently fall back to ephemeral keys; the `SecurityHeadersMiddleware` omits `Permissions-Policy`; and three routes leak raw `OSError` strings into 500-response `detail` fields. None are exploitable in a meaningful sense on a trusted-host single-operator VPS, but all are cheap to close before first DNS cutover.
@@ -18,26 +40,30 @@ Severity counts: **0 BLOCKER / 11 SHOULD-FIX / 6 MONITORING / 37 ACCEPTED** (out
 
 ## Deploy-Readiness Verdict
 
-⚠️ **APPROVED WITH CONDITIONS** — no hard blockers, but the 11 SHOULD-FIX items should land in a pre-deploy polish PR. The BLOCKER column is empty; the SHOULD-FIX column is a ~3 hour polish-sweep that meaningfully reduces operational surprise.
+✅ **APPROVED FOR DEPLOY** — all 11 SHOULD-FIX items from the initial audit closed in `fix/vps-1.5-polish`. Zero BLOCKER findings remain; zero SHOULD-FIX items remain. The 6 MONITORING items are operational-observation-level and do not gate the cutover.
 
-The conditions:
-1. Address at minimum **pd-025** (API-key startup validation) + **pd-011** (Permissions-Policy) + **pd-001** (OS-error scrubbing on 500s) before DNS cutover. These three are cheap and remove the most visible pre-deploy rough edges.
-2. Track the remaining SHOULD-FIX items in a post-deploy polish PR within 2 weeks.
-3. Monitor portal.log for 24 h after first TLS-cutover for unexpected error patterns.
+Earlier verdict (pre-polish) was **⚠️ APPROVED WITH CONDITIONS**; those conditions are now met:
+1. ✅ pd-025 (API-key startup validation) — RESOLVED.
+2. ✅ pd-011 (Permissions-Policy) — RESOLVED.
+3. ✅ pd-001 (OS-error scrubbing on 500s) — RESOLVED.
+4. ✅ All other SHOULD-FIX items — RESOLVED.
+5. ☐ Monitor portal.log for 24 h after first TLS-cutover for unexpected error patterns (operator gate, not code).
 
 ---
 
 ## Severity Summary
 
-| Severity | Count | Action |
-|----------|:-----:|--------|
-| **BLOCKER**   | **0** | Must fix before VPS-3 |
-| **SHOULD-FIX** | **11** | Strongly recommended; pre-deploy polish PR |
-| **MONITORING** | **6** | OK to deploy, watch post-launch |
-| **ACCEPTED**   | **37** | Verified correct or documented limitation |
-| **Total**      | **54** | |
+Post-polish (VPS-1.5):
 
-Category-level breakdown: the only SHOULD-FIX items that touch a security primitive (not hygiene) are **pd-011** (missing `Permissions-Policy`), **pd-001** (`OSError` in response `detail`), and **pd-003** (change-password network-call ordering). The other 8 SHOULD-FIX items are pure config-template / documentation hygiene.
+| Severity | Open | Resolved (polish) | Action |
+|----------|:----:|:-----:|--------|
+| **BLOCKER**   | **0** | 0 | Must fix before VPS-3 |
+| **SHOULD-FIX** | **0** | 11 | All closed in `fix/vps-1.5-polish` |
+| **MONITORING** | **6** | 0 | OK to deploy, watch post-launch |
+| **ACCEPTED**   | **37** | 0 | Verified correct or documented limitation |
+| **Total**      | **43 open** | **11** | |
+
+Pre-polish breakdown noted that the only security-primitive SHOULD-FIX items (as opposed to hygiene-level) were **pd-011** (missing `Permissions-Policy`), **pd-001** (`OSError` in response `detail`), and **pd-003** (change-password network-call ordering). All three are now resolved.
 
 ---
 
@@ -134,6 +160,8 @@ except OSError:
 
 **Category.** SHOULD-FIX.
 
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — three sites now `logger.exception(...)` + generic `HTTPException(detail=...)`.
+
 #### pd-002 — CSRF graceful-migration grants one-shot bypass on /auth/logout (MONITORING)
 
 **What.** The hotfix graceful-migration path ([web/app.py:1490-1501](web/app.py#L1490-L1501)) lets any authenticated request that lacks the CSRF cookie through once and mints a fresh cookie on the response. That applies to `/auth/logout` as well, since logout is not in `_CSRF_EXEMPT_PATHS`.
@@ -170,6 +198,8 @@ except OSError:
 **Remediation.** Two-line reorder: move the HIBP check block below the `verify_password` gate so it only runs when the current password is confirmed.
 
 **Category.** SHOULD-FIX.
+
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — HIBP call now runs only after the current-password verify succeeds; regression test asserts the HIBP mock does not fire on a wrong current-password.
 
 #### pd-004 — Session TTL fixed at 24 h with no refresh (ACCEPTED)
 
@@ -210,6 +240,8 @@ except OSError:
 
 **Category.** SHOULD-FIX.
 
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — option (b) implemented. `/api/chart` shares the existing `_candles_cost_budget(10000, 100/s)` keyed via `_rate_limit_key_func` (per-user when authenticated, IP fallback otherwise). Cache-hit path untouched so legit dashboard refresh load stays cheap.
+
 #### pd-006 — Passphrase max_length=512 overly permissive (SHOULD-FIX)
 
 **What.** `ExchangeKeysBody.passphrase = Field(min_length=1, max_length=512)` at [web/routes/exchanges.py:36-38](web/routes/exchanges.py#L36-L38). Bitget passphrases are user-chosen during API-key creation and are conventionally 10-20 chars.
@@ -219,6 +251,8 @@ except OSError:
 **Remediation.** Reduce to 64 (safe headroom). One-line change plus an inline comment.
 
 **Category.** SHOULD-FIX.
+
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — `max_length=64` plus Pydantic-422 regression test.
 
 #### pd-007 — Slug regex inconsistent across bot-lifecycle routes (MONITORING)
 
@@ -305,6 +339,8 @@ Plus a regression test line in `tests/test_security_headers.py`.
 
 **Category.** SHOULD-FIX.
 
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — `Permissions-Policy` header emits on every response with `camera=()` / `microphone=()` / `geolocation=()` / `payment=()` / `usb=()` / `bluetooth=()` / motion-sensors denied; regression test asserts presence + key directives.
+
 #### pd-012, pd-013, pd-014 — CSP/HSTS/X-Frame details (ACCEPTED)
 
 - `style-src 'unsafe-inline'` remains pending a full refactor of inline style attributes to CSS classes (r1-076 follow-up, documented at [web/app.py:1549-1555](web/app.py#L1549-L1555)).
@@ -388,6 +424,8 @@ All logging practices verify clean. Single-operator file-permission posture (064
 
 **Category.** SHOULD-FIX.
 
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — `REVERTO_API_KEY` moved to the `required` dict; missing-var now raises `RuntimeError` at startup with a clear message. Regression test asserts the RuntimeError fires.
+
 #### pd-026 — `.env.example` omits `REVERTO_LOG_LEVEL` (SHOULD-FIX)
 
 **What.** `REVERTO_LOG_LEVEL` is allowlisted for subprocesses at [web/app.py:1083](web/app.py#L1083) and honoured by `core/logging_setup.py`, but does not appear in `.env.example`. An operator copy-pasting the template has no hint that the knob exists.
@@ -400,6 +438,8 @@ All logging practices verify clean. Single-operator file-permission posture (064
 ```
 
 **Category.** SHOULD-FIX.
+
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — `REVERTO_LOG_LEVEL=` entry added to `.env.example`.
 
 #### pd-027 — `_validate_config_completeness` blind spot (MONITORING)
 
@@ -435,6 +475,8 @@ All logging practices verify clean. Single-operator file-permission posture (064
 **Remediation.** Three-line block-comment explaining the invariant: `fields` is hardcoded column-assignment strings; user data only lands in `values` via `?`.
 
 **Category.** SHOULD-FIX (documentation hygiene).
+
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — inline comment now documents the hardcoded-fields invariant and warns against extending the builder with user-supplied field names.
 
 #### pd-030, pd-031, pd-032 (ACCEPTED)
 
@@ -542,6 +584,8 @@ Plus ~20 GET endpoints at 30-120/min (read-side). `/api/candles` additionally ga
 
 **Category.** SHOULD-FIX.
 
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — chose a hybrid: logout stays non-exempt (graceful-migration still keeps pre-CSRF sessions working) but the exempt-paths comment now documents the decision + rationale so future maintainers don't guess.
+
 **CORS note.** No `CORSMiddleware` is installed. Same-origin-only is the default, which matches the threat model — the SPA and the API share an origin on reverto.bot. Confirmed clean.
 
 ---
@@ -566,6 +610,8 @@ Plus ~20 GET endpoints at 30-120/min (read-side). `/api/candles` additionally ga
 **Remediation.** Add `_LAYOUT_NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")` + validate at function entry. ~10 min fix.
 
 **Category.** SHOULD-FIX (defense-in-depth).
+
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — `_validate_layout_name` helper with regex `^[A-Za-z0-9_\-]{1,64}$` gates all three call-sites; unit tests cover reject + accept shapes.
 
 #### pd-044 — Orphaned `.tmp` files on crash (MONITORING)
 
@@ -601,6 +647,8 @@ Slug validation enforced at every FS-touch site: `_BOT_SLUG_RE` gates before `pa
 **Remediation.** Replace `>=` with `==` for commented ML block, pinning tested versions.
 
 **Category.** SHOULD-FIX.
+
+**STATUS.** RESOLVED in `fix/vps-1.5-polish` — ML block now pins `optuna==3.6.1`, `xgboost==2.1.3`, `lightgbm==4.5.0`, `scikit-learn==1.5.2`, `jupyter==1.1.1`, `matplotlib==3.9.2`, `seaborn==0.13.2`, `plotly==5.24.1`. `joblib` duplicate removed (already in core block).
 
 ---
 
@@ -647,21 +695,21 @@ Findings that extend or vary from prior audit items. Most `pd-NNN` findings are 
 
 **None.**
 
-### Strongly recommended (SHOULD-FIX) — ~3 hour pre-deploy polish PR
+### Strongly recommended (SHOULD-FIX) — landed in `fix/vps-1.5-polish`
 
-Recommended order:
+All 11 items resolved:
 
-1. **pd-025** — Elevate `REVERTO_API_KEY` to `required` in `_validate_config()`. Most operational-impact of the SHOULD-FIX set. ~15 min.
-2. **pd-011** — Add `Permissions-Policy` header + test. ~15 min.
-3. **pd-001** — Scrub `OSError` details from 500 responses in 3 sites. ~20 min.
-4. **pd-042** — Add `/auth/logout` to `_CSRF_EXEMPT_PATHS` (or docstring). ~10 min.
-5. **pd-003** — Reorder HIBP call after current-password verify. ~10 min.
-6. **pd-043** — Validate `dashboard_store` layout `name` param. ~15 min.
-7. **pd-006** — Reduce `ExchangeKeysBody.passphrase` max_length to 64. ~5 min.
-8. **pd-026** — Add `REVERTO_LOG_LEVEL` to `.env.example`. ~5 min.
-9. **pd-029** — Add safety comment to `changelog_store.update_entry` f-string. ~10 min.
-10. **pd-005** — Tighten `/api/chart` limit or attach IP-keyed CostBudget. ~30 min.
-11. **pd-047** — Pin ML-stack floating versions. ~10 min.
+1. ✅ **pd-025** — `REVERTO_API_KEY` elevated to required.
+2. ✅ **pd-011** — `Permissions-Policy` header added + test.
+3. ✅ **pd-001** — `OSError` details scrubbed from 500 responses in 3 sites.
+4. ✅ **pd-042** — `/auth/logout` CSRF posture documented (kept non-exempt).
+5. ✅ **pd-003** — HIBP call reordered after current-password verify.
+6. ✅ **pd-043** — `dashboard_store` layout `name` param validated.
+7. ✅ **pd-006** — `ExchangeKeysBody.passphrase` max_length reduced to 64.
+8. ✅ **pd-026** — `REVERTO_LOG_LEVEL` added to `.env.example`.
+9. ✅ **pd-029** — Safety comment added to `changelog_store.update_entry` f-string.
+10. ✅ **pd-005** — Cost-budget attached to `/api/chart` (shared with `/api/candles`).
+11. ✅ **pd-047** — ML-stack deps pinned to tested versions.
 
 ### Deploy + monitor (MONITORING)
 
@@ -687,8 +735,8 @@ See the 37 ACCEPTED findings across the 15 areas. Notable:
 
 Operational checklist for VPS-3 migration to `https://reverto.bot`:
 
-- [ ] **All BLOCKER items resolved** (trivially: there are none).
-- [ ] **Pre-deploy polish PR landed** with pd-025, pd-011, pd-001 at minimum.
+- [x] **All BLOCKER items resolved** (trivially: there are none).
+- [x] **Pre-deploy polish PR landed** — `fix/vps-1.5-polish` closed all 11 SHOULD-FIX items.
 - [ ] Caddy config prepared: reverse-proxy to `127.0.0.1:8080`, Let's Encrypt auto-TLS for `reverto.bot`.
 - [ ] `maintenance.html` placement verified in Caddy config (serve during portal restart).
 - [ ] Firewall: only 22 (SSH) + 80 + 443 open. UFW enabled + default-deny.
