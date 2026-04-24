@@ -164,10 +164,20 @@ _session_serializer = URLSafeTimedSerializer(_SECRET_KEY, salt=_SESSION_SALT)
 _CSRF_COOKIE = "reverto_csrf"
 _CSRF_HEADER = "X-CSRF-Token"
 _CSRF_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-# Paths that opt out of CSRF check — unauth-reachable endpoints
-# where the client has no way to know the token yet (login) or
-# where the request shape is purely read-like (logout just bumps
-# an epoch; missing token can't cause a meaningful side-effect).
+# Paths that opt out of CSRF check. Intentionally MINIMAL:
+#
+#   * /auth/login — caller has no session + no CSRF cookie yet.
+#     That endpoint issues the first CSRF cookie on success.
+#
+# Decisions about what stays NON-exempt (audit pd-042):
+#
+#   * /auth/logout stays under CSRF. Cross-site forced logout is
+#     low-severity (the victim is inconvenienced, no data loss or
+#     takeover), but defending it is cheap because the SPA already
+#     echoes the header on every mutating fetch. Legacy sessions
+#     without a CSRF cookie get one-shot granted + minted by the
+#     graceful-migration path in CSRFMiddleware, so users aren't
+#     locked out.
 _CSRF_EXEMPT_PATHS = frozenset({
     "/auth/login",
 })
