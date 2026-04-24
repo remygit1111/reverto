@@ -858,9 +858,56 @@ const INDICATOR_PLUGINS = {
 // collision happens; the indicator-manager modal picks the registry
 // up at open time so newly-registered plugins appear in the add-menu
 // without a refresh.
+//
+// Audit r1.1-005: validate the full plugin contract at registration
+// time so a missing field surfaces as a clear warning instead of a
+// cryptic TypeError deep inside render(). Return true/false so
+// callers can tell whether registration succeeded.
 function registerIndicatorPlugin(plugin) {
-  if (!plugin || typeof plugin !== 'object' || typeof plugin.type !== 'string') return;
+  if (!plugin || typeof plugin !== 'object') {
+    console.warn('registerIndicatorPlugin: expected a plugin object');
+    return false;
+  }
+  const required = [
+    'type', 'displayName', 'paneType', 'params', 'lines',
+    'labelTemplate', 'createSeries', 'render',
+  ];
+  const missing = required.filter((k) => !(k in plugin));
+  const tag = typeof plugin.type === 'string' ? plugin.type : '(no type)';
+  if (missing.length) {
+    console.warn(
+      `registerIndicatorPlugin: plugin ${tag} missing required fields: ${missing.join(', ')}`,
+    );
+    return false;
+  }
+  // Type-level checks for the fields most likely to trip up plugin
+  // authors. Everything else is duck-typed at render time.
+  if (typeof plugin.type !== 'string' || !plugin.type) {
+    console.warn('registerIndicatorPlugin: type must be a non-empty string');
+    return false;
+  }
+  if (!Array.isArray(plugin.params)) {
+    console.warn(`registerIndicatorPlugin: ${tag} params must be an array`);
+    return false;
+  }
+  if (!Array.isArray(plugin.lines)) {
+    console.warn(`registerIndicatorPlugin: ${tag} lines must be an array`);
+    return false;
+  }
+  if (typeof plugin.labelTemplate !== 'function') {
+    console.warn(`registerIndicatorPlugin: ${tag} labelTemplate must be a function`);
+    return false;
+  }
+  if (typeof plugin.createSeries !== 'function') {
+    console.warn(`registerIndicatorPlugin: ${tag} createSeries must be a function`);
+    return false;
+  }
+  if (typeof plugin.render !== 'function') {
+    console.warn(`registerIndicatorPlugin: ${tag} render must be a function`);
+    return false;
+  }
   INDICATOR_PLUGINS[plugin.type] = plugin;
+  return true;
 }
 
 // Pull param defaults into a fresh object. Safe to mutate by the
@@ -2377,49 +2424,62 @@ function createPanelChart(container, config) {
       candleSeries: state._candleSeries,
     };
     _activePanelCharts.add(state._themeRegistryEntry);
-    _rebuildIndicatorSeries();
-    if (typeof ResizeObserver !== 'undefined') {
-      state._resizeObs = new ResizeObserver((entries) => {
-        for (const e of entries) {
-          if (e.target === canvasHost && state._chart) {
-            const w = e.contentRect.width;
-            const h = e.contentRect.height || 200;
-            state._chart.applyOptions({ width: w, height: h });
-            _renderAnnotations();
-          } else if (e.target === panel) {
-            // PR 5a: responsive sidebar — hide below 400 px panel
-            // width. Toggling a class on ``panel`` lets the CSS own
-            // the hide-rule without coupling to every caller. Chart
-            // reclaims the full body width because ``.panel-chart-
-            // sidebar`` collapses to ``display: none``.
-            const narrow = e.contentRect.width < 400;
-            panel.classList.toggle('panel-chart-narrow', narrow);
-          }
-        }
-      });
-      state._resizeObs.observe(canvasHost);
-      state._resizeObs.observe(panel);
-    }
+    // Audit r1.1-006: anything that throws between the add above
+    // and the final ``return true`` below would otherwise leave
+    // state._themeRegistryEntry in _activePanelCharts forever —
+    // destroy() only runs via state.onRemove so a failed init
+    // doesn't clean up after itself. Catch, de-register, signal
+    // failure.
     try {
-      // Combined handler: render annotations on every range change
-      // (they're pixel-positioned, so any pan/zoom needs a redraw)
-      // + peek at the range to trigger scroll-to-load when the left
-      // edge nears the data's start. Wrapping in one subscribe call
-      // is cheaper than two separate ones and keeps the unsubscribe
-      // single-purpose on destroy.
-      state._rangeUnsub = state._chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-        _renderAnnotations();
-        if (!range || state._loadingMore || state._noMoreData) return;
-        // Left-edge buffer: trigger when the visible range's start
-        // is within 20 % of the loaded candles' left side. ``range.from``
-        // is a logical index into the series — can go negative when
-        // the user has scrolled past the oldest candle (empty space
-        // on the left), which still satisfies ``from < 20 %``.
-        const threshold = Math.max(1, state._candles.length * 0.20);
-        if (range.from < threshold) _maybeLoadMoreHistory();
-      });
-    } catch (e) {}
-    _installChartClickHandler();
+      _rebuildIndicatorSeries();
+      if (typeof ResizeObserver !== 'undefined') {
+        state._resizeObs = new ResizeObserver((entries) => {
+          for (const e of entries) {
+            if (e.target === canvasHost && state._chart) {
+              const w = e.contentRect.width;
+              const h = e.contentRect.height || 200;
+              state._chart.applyOptions({ width: w, height: h });
+              _renderAnnotations();
+            } else if (e.target === panel) {
+              // PR 5a: responsive sidebar — hide below 400 px panel
+              // width. Toggling a class on ``panel`` lets the CSS own
+              // the hide-rule without coupling to every caller. Chart
+              // reclaims the full body width because ``.panel-chart-
+              // sidebar`` collapses to ``display: none``.
+              const narrow = e.contentRect.width < 400;
+              panel.classList.toggle('panel-chart-narrow', narrow);
+            }
+          }
+        });
+        state._resizeObs.observe(canvasHost);
+        state._resizeObs.observe(panel);
+      }
+      try {
+        // Combined handler: render annotations on every range change
+        // (they're pixel-positioned, so any pan/zoom needs a redraw)
+        // + peek at the range to trigger scroll-to-load when the left
+        // edge nears the data's start. Wrapping in one subscribe call
+        // is cheaper than two separate ones and keeps the unsubscribe
+        // single-purpose on destroy.
+        state._rangeUnsub = state._chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+          _renderAnnotations();
+          if (!range || state._loadingMore || state._noMoreData) return;
+          // Left-edge buffer: trigger when the visible range's start
+          // is within 20 % of the loaded candles' left side. ``range.from``
+          // is a logical index into the series — can go negative when
+          // the user has scrolled past the oldest candle (empty space
+          // on the left), which still satisfies ``from < 20 %``.
+          const threshold = Math.max(1, state._candles.length * 0.20);
+          if (range.from < threshold) _maybeLoadMoreHistory();
+        });
+      } catch (e) {}
+      _installChartClickHandler();
+    } catch (initErr) {
+      _activePanelCharts.delete(state._themeRegistryEntry);
+      state._themeRegistryEntry = null;
+      console.error('chart_module: _initChart body threw:', initErr);
+      return false;
+    }
     return true;
   }
 
@@ -3830,6 +3890,14 @@ window.RevertoChart = Object.assign(window.RevertoChart || {}, {
   // helper once the main-chart migration lands (out of scope for
   // this PR).
   mergePriorHistory: _mergePriorHistory,
+  // Audit r1.1-004: callers in app.js wrap their raw localStorage
+  // reads through this normaliser so a corrupted value (hand-
+  // edited storage, downgrade from a future build that added a
+  // new IANA entry) collapses to 'local' before it lands in
+  // module-level state. Runtime was already safe via the formatter,
+  // but the dropdown UI needs a known-good value to highlight the
+  // right option.
+  normalizeChartTimezone: _normalizeChartTimezone,
   // Plugin architecture. Consumers read INDICATOR_PLUGINS to enumerate
   // built-in + registered plugins; registerIndicatorPlugin lets app.js
   // (or future user code) ship new indicators without touching this
