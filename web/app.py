@@ -1298,6 +1298,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # Workspace view pulls in. Without this entry the
             # panel grid loses its layout rules and panels render
             # as plain vertically-stacked divs.
+            # r1-076: 'unsafe-inline' on style-src stays by necessity
+            # for now — the SPA uses inline styles across chart
+            # tooltips, dynamic panel layouts, theme-switching, and
+            # several dashboards. Full removal needs a refactor of
+            # every inline style-attribute + <style> block into CSS
+            # classes; deferred to post-launch hardening (tracked
+            # in the audit report).
             "style-src 'self' 'unsafe-inline' https://unpkg.com; "
             "img-src 'self' data:; "
             # unpkg.com is allowed here so DevTools can fetch the
@@ -1306,10 +1313,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # developer-ergonomics: the browser emits CSP-violation
             # console noise for every missing .map otherwise. No
             # data-endpoint risk — the files are public static
-            # assets. r1-076 broader wildcard tightening (connect-
-            # src ws:/wss: → pinned portal-host) is scope-out for
-            # this PR.
-            "connect-src 'self' ws: wss: https://unpkg.com; "
+            # assets.
+            #
+            # r1-076 (VPS-1): ws:/wss: wildcards removed. All
+            # Reverto WebSocket endpoints (/ws/state, /ws/logs/*)
+            # are same-origin and are covered by 'self', which
+            # matches the request scheme (ws:// on http://,
+            # wss:// on https://). Browsers with partial SameSite
+            # implementations or subdomain-takeover scenarios no
+            # longer have an open WS channel to abuse.
+            "connect-src 'self' https://unpkg.com; "
             "frame-ancestors 'none'"
         )
         response.headers["X-Frame-Options"]        = "DENY"
