@@ -33,8 +33,13 @@ class ExchangeKeysBody(BaseModel):
     # wire — the handler validates per exchange-name so Bitget
     # without a passphrase 400s with a clear error instead of
     # silently writing an incomplete credential file.
+    #
+    # max_length tightened to 64 (pd-006): Bitget passphrases are
+    # user-chosen during API-key creation and are conventionally
+    # 10-32 chars. 64 is ample headroom without allowing a
+    # 500-char paste that's obviously a typo on the operator side.
     passphrase: Optional[str] = Field(
-        default=None, min_length=1, max_length=512,
+        default=None, min_length=1, max_length=64,
     )
 
 
