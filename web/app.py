@@ -4,6 +4,7 @@
 # Manages bot processes via start/stop API.
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -20,6 +21,7 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from config.config_loader import load_bot_config
 from config.models import BotConfig, Mode
@@ -1286,6 +1288,61 @@ async def restart_bot(user_id: int, slug: str) -> dict:
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 
+# ── Request-ID context (audit r1-034) ───────────────────────────────────────
+# contextvar so every logger call during a request's lifecycle can
+# include the same ID. Set by RequestIdMiddleware, read by the
+# ``_RequestIdFilter`` attached to the root logger. Default "-" means
+# "no request context" (background tasks, module-import, test
+# fixtures that don't go through the middleware).
+_request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "reverto_request_id", default="-",
+)
+
+
+def current_request_id() -> str:
+    """Accessor used by ``_audit`` (r1-031) and any other code that
+    wants to correlate records. Returns ``'-'`` outside a request."""
+    return _request_id_ctx.get()
+
+
+class _RequestIdFilter(logging.Filter):
+    """Injects ``record.request_id`` on every log record so the
+    formatter can include it. Filter-based attach instead of
+    ``logging.setLogRecordFactory`` so we don't stomp on unrelated
+    attributes a third-party library may also set."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_ctx.get()
+        return True
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Assign a 12-char request-id to every HTTP request. If the
+    caller sent ``X-Request-Id``, honour it so an upstream proxy /
+    tracing tool can stitch logs across service boundaries;
+    otherwise mint a fresh one from uuid4().hex[:12]. The id lands
+    back on the response as ``X-Request-Id`` for the client. Audit
+    r1-034.
+    """
+
+    async def dispatch(self, request, call_next):
+        raw = request.headers.get("X-Request-Id")
+        # Defensive: ignore header values outside the allowed shape
+        # so an attacker can't inject control characters into the
+        # log-line via a spoofed header.
+        if raw and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", raw):
+            req_id = raw
+        else:
+            req_id = uuid4().hex[:12]
+        token = _request_id_ctx.set(req_id)
+        try:
+            response = await call_next(request)
+        finally:
+            _request_id_ctx.reset(token)
+        response.headers["X-Request-Id"] = req_id
+        return response
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach standard hardening headers to every HTTP response."""
 
@@ -1605,15 +1662,29 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 # Middleware order (Starlette wraps last-added = outermost):
-#   add_middleware(AuthMiddleware)            → runs inner
-#   add_middleware(SecurityHeadersMiddleware) → runs outer
-# Request flow:  SecurityHeaders → Auth → route handler
-# Response flow: route handler   → Auth → SecurityHeaders
-# This lets 401/403 short-circuits from Auth still pass through
-# SecurityHeaders on the way out, so *every* response — including
-# authentication failures — carries CSP / X-Frame-Options / etc.
+#   add_middleware(AuthMiddleware)            → runs innermost
+#   add_middleware(SecurityHeadersMiddleware) → runs middle
+#   add_middleware(RequestIdMiddleware)       → runs outermost
+# Request flow:  RequestId → SecurityHeaders → Auth → route handler
+# Response flow: route handler → Auth → SecurityHeaders → RequestId
+# RequestId sits outermost so the X-Request-Id header lands on
+# *every* response (including auth 401/403 short-circuits) and so
+# the contextvar is populated before any middleware's log lines
+# reference it.
 app.add_middleware(AuthMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestIdMiddleware)
+
+# Attach the request-id filter to the root logger + every existing
+# handler so ``%(request_id)s`` in any formatter resolves to the
+# active request's id. Filter is safe to attach multiple times —
+# logging.Filter is checked with .addFilter's identity semantics,
+# but a fresh instance is cheap. We wire a new instance into each
+# handler to avoid any cross-filter state concern.
+_root_logger = logging.getLogger()
+_root_logger.addFilter(_RequestIdFilter())
+for _h in _root_logger.handlers:
+    _h.addFilter(_RequestIdFilter())
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
