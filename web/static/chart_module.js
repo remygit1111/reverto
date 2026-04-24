@@ -1184,6 +1184,32 @@ function _panelIsoToUnix(iso) {
   return Number.isFinite(t) ? Math.floor(t / 1000) : null;
 }
 
+// Merge prior pan-loaded history with a fresh candle batch. Audit
+// r1.1-003: the Workspace chart-panel's 30 s refresh timer used to
+// replace ``state._candles`` wholesale via setData(), wiping any
+// older candles the user had scrolled back to load. The main bot-
+// chart path (``app.js::fetchChartData``) already does this merge;
+// this helper is the factored-out version so both code paths share
+// the same logic and it's testable in isolation.
+//
+// Semantics:
+//   * Empty ``newCandles`` → return the prior unchanged (caller
+//     decides whether to no-op the render).
+//   * Empty ``prior`` → return newCandles as-is (initial load).
+//   * Both non-empty → keep prior rows whose ``time`` is strictly
+//     less than the newest batch's oldest ``time``, then concat.
+//     Overlap on a timestamp is resolved in favour of the fresh
+//     batch so a late fill / correction on that bar propagates.
+function _mergePriorHistory(prior, newCandles) {
+  if (!Array.isArray(newCandles) || newCandles.length === 0) {
+    return Array.isArray(prior) ? prior : [];
+  }
+  if (!Array.isArray(prior) || prior.length === 0) return newCandles;
+  const newOldest = newCandles[0].time;
+  const priorHistory = prior.filter((c) => c.time < newOldest);
+  return priorHistory.concat(newCandles);
+}
+
 function _panelSvg(name, attrs) {
   const el = document.createElementNS(PANEL_SVG_NS, name);
   if (attrs) {
@@ -2501,8 +2527,13 @@ function createPanelChart(container, config) {
       if (r.ok) candles = await r.json();
     } catch (e) { /* keep last render */ return; }
     if (!Array.isArray(candles) || !candles.length) return;
-    state._candles = candles;
-    state._candleSeries.setData(candles);
+    // Audit r1.1-003: merge prior pan-loaded history with the fresh
+    // batch BEFORE setData. Without the merge, the 30 s refresh
+    // timer wipes every scrolled-back candle the user paid a
+    // scroll-to-load round-trip for. Mirrors app.js::fetchChartData
+    // at :6034-6036.
+    state._candles = _mergePriorHistory(state._candles, candles);
+    state._candleSeries.setData(state._candles);
     _renderIndicatorOverlays();
     _renderDealOverlays();
     _loadAnnotations();
@@ -3792,6 +3823,13 @@ window.RevertoChart = Object.assign(window.RevertoChart || {}, {
   applyThemeToAll: () => _applyThemeToAllPanels(),
   buildTimezoneFormatter,
   tfSeconds,
+  // Audit r1.1-003: the merge-prior-history helper used by the
+  // Workspace chart-panel's refresh path. Exposed for testability
+  // — pure function, no side effects. app.js::fetchChartData
+  // inlines an equivalent fragment; both paths converge on this
+  // helper once the main-chart migration lands (out of scope for
+  // this PR).
+  mergePriorHistory: _mergePriorHistory,
   // Plugin architecture. Consumers read INDICATOR_PLUGINS to enumerate
   // built-in + registered plugins; registerIndicatorPlugin lets app.js
   // (or future user code) ship new indicators without touching this
