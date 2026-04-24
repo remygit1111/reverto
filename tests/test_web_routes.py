@@ -960,6 +960,95 @@ class TestInactiveUserRejected:
         assert r.json()["detail"] == "User not found"
 
 
+class TestApiKeyRespectsActive:
+    """Audit r1-001 (HIGH, carry-over of v27-01): the X-API-Key path
+    in ``_request_user`` previously returned a frozen ``DEFAULT_USER``
+    stub — bypassing ``user.active`` and, post-multi-user seed,
+    granting cross-tenant admin to any key-holder. Post-fix: the key
+    resolves to a fresh DB lookup of the admin row, gated on
+    ``active = 1``.
+
+    These tests are the regression guard for the five behaviours the
+    fix must preserve or start enforcing:
+      1. happy-path — active admin + valid key → 200
+      2. deactivated admin + valid key → 401
+      3. missing admin row + valid key → 401
+      4. fresh-lookup — role-change in DB surfaces in the next call
+      5. warning-log emitted on the deactivated path for observability
+    """
+
+    def _deactivate_admin(self):
+        from core.database import get_db
+        conn = get_db()
+        with conn:
+            conn.execute("UPDATE users SET active = 0 WHERE id = 1")
+
+    def _delete_admin(self):
+        from core.database import get_db
+        conn = get_db()
+        with conn:
+            conn.execute("DELETE FROM users WHERE id = 1")
+
+    def _set_admin_role(self, role: str):
+        from core.database import get_db
+        conn = get_db()
+        with conn:
+            conn.execute("UPDATE users SET role = ? WHERE id = 1", (role,))
+
+    def test_api_key_with_active_admin_succeeds(self):
+        # Happy-path: admin seeded by conftest, active=1 by default.
+        r = CLIENT.get("/api/bots", headers=AUTH)
+        assert r.status_code == 200
+        assert "bots" in r.json()
+
+    def test_api_key_with_deactivated_admin_returns_401(self):
+        # The exact hole r1-001 described: flipping active=0 used to
+        # leave the API-key path fully authenticated.
+        self._deactivate_admin()
+        r = CLIENT.get("/api/bots", headers=AUTH)
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Not authenticated"
+
+    def test_api_key_with_missing_admin_returns_401(self):
+        # Defensive: if the admin row is wiped entirely (DB corruption,
+        # fresh-install mid-flight), API-key traffic must fail closed
+        # instead of synthesising a stub admin.
+        self._delete_admin()
+        r = CLIENT.get("/api/bots", headers=AUTH)
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Not authenticated"
+
+    def test_api_key_gets_fresh_user_from_db(self):
+        # Mutating the admin's role mid-session must surface in the
+        # next API-key call — proves each request hits the DB rather
+        # than a cached stub. ``/api/emergency-stop`` is role-gated
+        # (admin-only) so a role-swap to ``user`` flips its response
+        # from 204 (success, no bots) to 403.
+        r_admin = CLIENT.post("/api/emergency-stop", headers=AUTH)
+        assert r_admin.status_code in (200, 204), r_admin.text
+
+        self._set_admin_role("user")
+        r_user = CLIENT.post("/api/emergency-stop", headers=AUTH)
+        assert r_user.status_code == 403
+
+    def test_warning_log_on_inactive_admin(self, caplog):
+        import logging
+        self._deactivate_admin()
+        with caplog.at_level(logging.WARNING, logger="web.app"):
+            r = CLIENT.get("/api/bots", headers=AUTH)
+        assert r.status_code == 401
+        # Warning should mention the auth path + the active flag so an
+        # operator grepping portal.log for "API-key" finds it.
+        matching = [
+            rec for rec in caplog.records
+            if "API-key" in rec.message and "active" in rec.message
+        ]
+        assert matching, (
+            "Expected a WARNING mentioning 'API-key' and 'active'; "
+            f"got records: {[r.message for r in caplog.records]}"
+        )
+
+
 class TestDbAnnotationsRoutes:
     """Regression coverage for the /api/db/annotations routes — a past
     report of a 404 on GET turned out to be a 401 from the auth
