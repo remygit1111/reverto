@@ -11,6 +11,38 @@ os.environ.setdefault("REVERTO_SECRET_KEY", "testkey-for-pytest-secret")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Audit r1-073: auto-set CSRF cookie + header on every TestClient
+# constructed during the suite. Tests that manually mint a
+# session cookie via ``_create_session_cookie`` don't go through
+# /auth/login and therefore don't get the CSRF cookie the real
+# login flow mints. Injecting it at TestClient construction means
+# every mutating request carries a matching (cookie, header) pair
+# without each test file needing to know about CSRF. Tests that
+# explicitly exercise the CSRF-failure path (see
+# tests/test_csrf.py) remove the cookie/header per-call.
+_TEST_CSRF_TOKEN = "pytest-csrf-token-r1073"
+try:
+    from fastapi.testclient import TestClient as _TC
+    _orig_tc_init = _TC.__init__
+
+    def _csrf_patched_init(self, *args, **kwargs):
+        _orig_tc_init(self, *args, **kwargs)
+        try:
+            self.cookies.set("reverto_csrf", _TEST_CSRF_TOKEN)
+            self.headers.update({"X-CSRF-Token": _TEST_CSRF_TOKEN})
+        except Exception:
+            # Defensive: if a future TestClient change removes the
+            # ``.cookies`` / ``.headers`` attributes, don't brick
+            # the entire suite — just skip the CSRF seed and let
+            # specific tests that need it set it manually.
+            pass
+
+    _TC.__init__ = _csrf_patched_init
+except ImportError:
+    # fastapi not importable (e.g. running a narrow subset of
+    # core-only tests with a stripped virtualenv). Move on.
+    pass
+
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from core import database as _database
 

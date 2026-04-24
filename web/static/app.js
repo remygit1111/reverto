@@ -49,6 +49,36 @@ function applyPersistedSettings() {
 }
 applyPersistedSettings();
 
+// ── CSRF token auto-inject (audit r1-073) ────────────────────────────────────
+// Reads the non-HttpOnly ``reverto_csrf`` cookie and echoes it on
+// every mutating fetch via the ``X-CSRF-Token`` header. The server
+// compares cookie + header; mismatch → 403. Same-origin JS can read
+// the cookie (that's the double-submit pattern) but a cross-origin
+// attacker can't, so they can't mint a matching header.
+function _getCsrfToken() {
+  const m = document.cookie.match(/(?:^|;\s*)reverto_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+(function _installCsrfFetchWrapper() {
+  const _origFetch = window.fetch;
+  const _mutating = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+  window.fetch = function (input, init = {}) {
+    const method = String((init && init.method) || 'GET').toUpperCase();
+    if (_mutating.has(method)) {
+      const token = _getCsrfToken();
+      if (token) {
+        const headers = new Headers(init.headers || {});
+        if (!headers.has('X-CSRF-Token')) {
+          headers.set('X-CSRF-Token', token);
+        }
+        init = Object.assign({}, init, { headers });
+      }
+    }
+    return _origFetch.call(this, input, init);
+  };
+})();
+
 // ── API Key management ────────────────────────────────────────────────────────
 // The portal now uses session-cookie auth for browser users. The API key is
 // kept around purely as an alternative for scripts and CLI tools that don't

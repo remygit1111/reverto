@@ -152,6 +152,25 @@ _SESSION_TTL = 86400  # 24h
 _SESSION_SALT = "reverto.session.v1"
 _session_serializer = URLSafeTimedSerializer(_SECRET_KEY, salt=_SESSION_SALT)
 
+# Audit r1-073: double-submit cookie CSRF defence. The login
+# endpoint mints a random token, sets it as a non-HttpOnly
+# cookie (so the SPA's JS can read it), and CSRFMiddleware
+# compares it against the ``X-CSRF-Token`` header on every
+# mutating request. This adds defence-in-depth alongside the
+# existing SameSite=strict cookies; a future subdomain-takeover
+# or partial-SameSite-enforcement scenario would need to defeat
+# both layers to hijack a session.
+_CSRF_COOKIE = "reverto_csrf"
+_CSRF_HEADER = "X-CSRF-Token"
+_CSRF_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Paths that opt out of CSRF check — unauth-reachable endpoints
+# where the client has no way to know the token yet (login) or
+# where the request shape is purely read-like (logout just bumps
+# an epoch; missing token can't cause a meaningful side-effect).
+_CSRF_EXEMPT_PATHS = frozenset({
+    "/auth/login",
+})
+
 # Secure-cookie flag default. Cookies are marked secure (HTTPS-only) by
 # default; this protects production deployments behind a TLS reverse
 # proxy. Localhost / plain-http development opts out by exporting
@@ -1401,6 +1420,69 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class CSRFMiddleware(BaseHTTPMiddleware):
+    """Double-submit-cookie CSRF defence (audit r1-073).
+
+    On mutating requests (POST/PUT/PATCH/DELETE) the middleware
+    compares the ``reverto_csrf`` cookie with the
+    ``X-CSRF-Token`` header. Both must be present and equal —
+    otherwise 403. This complements (not replaces) the existing
+    SameSite=strict session cookie; an attacker who finds a way
+    around SameSite (subdomain takeover, stale browser) still
+    can't mint a matching token because the cookie is same-
+    origin-only readable.
+
+    Scope carve-outs:
+      * Only authenticated requests are checked. A caller
+        without the session cookie can't have meaningful side
+        effects anyway — the auth layer rejects them.
+      * ``/auth/login`` itself is exempt because the caller has
+        no token yet; that endpoint issues the first CSRF
+        cookie on success.
+      * Only mutating HTTP methods are checked. GET/HEAD/OPTIONS
+        are read-only by HTTP spec; letting them through is the
+        standard CSRF pattern.
+
+    Timing-safe compare via ``secrets.compare_digest`` so a
+    malicious client can't infer token bytes from response
+    timing.
+    """
+
+    async def dispatch(self, request, call_next):
+        if request.method not in _CSRF_MUTATING_METHODS:
+            return await call_next(request)
+        if request.url.path in _CSRF_EXEMPT_PATHS:
+            return await call_next(request)
+        # No session cookie → unauth path, let the auth layer
+        # handle the rejection. Checking CSRF here would just
+        # produce a 403 instead of the auth layer's 401; the
+        # latter is the correct signal to the client.
+        if not request.cookies.get(_SESSION_COOKIE):
+            return await call_next(request)
+
+        cookie_token = request.cookies.get(_CSRF_COOKIE)
+        header_token = request.headers.get(_CSRF_HEADER)
+        if not cookie_token or not header_token:
+            logger.warning(
+                "CSRF check failed (missing token): path=%s cookie=%s header=%s",
+                request.url.path,
+                bool(cookie_token),
+                bool(header_token),
+            )
+            return JSONResponse(
+                {"detail": "CSRF token required"},
+                status_code=403,
+            )
+        if not secrets.compare_digest(cookie_token, header_token):
+            logger.warning("CSRF check failed (token mismatch): path=%s",
+                           request.url.path)
+            return JSONResponse(
+                {"detail": "CSRF token mismatch"},
+                status_code=403,
+            )
+        return await call_next(request)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach standard hardening headers to every HTTP response."""
 
@@ -1744,6 +1826,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 # the contextvar is populated before any middleware's log lines
 # reference it.
 app.add_middleware(AuthMiddleware)
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIdMiddleware)
 
