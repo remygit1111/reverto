@@ -255,8 +255,18 @@ async def api_deal_start(
     trigger = paths.bot_manual_trigger_path(user.id, slug)
     try:
         trigger.write_text("", encoding="utf-8")
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write trigger: {e}")
+    except OSError:
+        # Audit pd-001: scrub the raw OSError detail from the
+        # response — it leaks on-disk paths / mount-point info.
+        # Full detail lands in portal.log via logger.exception.
+        logger.exception(
+            "manual-deal trigger write failed user=%s slug=%s",
+            user.id, slug,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to write manual-deal trigger",
+        )
     _audit("bot_manual_deal", slug, actor, user_id=user.id)
     return {"ok": True}
 
@@ -461,8 +471,18 @@ async def get_bot_config(
         raise HTTPException(status_code=404, detail="Bot not found")
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as e:
-        raise HTTPException(status_code=500, detail=f"YAML parse error: {e}")
+    except yaml.YAMLError:
+        # Audit pd-001: YAML parser errors echo line/col numbers
+        # and sometimes the offending snippet — tame in principle
+        # but not worth leaking to a remote caller. Operator gets
+        # the full trace via logger.exception.
+        logger.exception(
+            "bot config YAML parse failed user=%s slug=%s",
+            user.id, slug,
+        )
+        raise HTTPException(
+            status_code=500, detail="Failed to parse bot config",
+        )
     return raw
 
 
