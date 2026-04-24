@@ -154,7 +154,7 @@ async def api_admin_changelog_create(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _audit("changelog_api_create", user.username, f"id={entry_id}")
+    _audit("changelog_api_create", user.username, f"id={entry_id}", user_id=user.id)
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
 
@@ -191,7 +191,7 @@ async def api_admin_changelog_update(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _audit("changelog_api_update", user.username, f"id={entry_id}")
+    _audit("changelog_api_update", user.username, f"id={entry_id}", user_id=user.id)
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
 
@@ -205,7 +205,7 @@ async def api_admin_changelog_publish(
 ):
     if not changelog_store.publish_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
-    _audit("changelog_api_publish", user.username, f"id={entry_id}")
+    _audit("changelog_api_publish", user.username, f"id={entry_id}", user_id=user.id)
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
 
@@ -219,7 +219,7 @@ async def api_admin_changelog_unpublish(
 ):
     if not changelog_store.unpublish_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
-    _audit("changelog_api_unpublish", user.username, f"id={entry_id}")
+    _audit("changelog_api_unpublish", user.username, f"id={entry_id}", user_id=user.id)
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
 
@@ -233,5 +233,5 @@ async def api_admin_changelog_delete(
 ):
     if not changelog_store.delete_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
-    _audit("changelog_api_delete", user.username, f"id={entry_id}")
+    _audit("changelog_api_delete", user.username, f"id={entry_id}", user_id=user.id)
     return JSONResponse(content=None, status_code=204)

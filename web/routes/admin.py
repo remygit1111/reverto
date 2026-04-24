@@ -128,7 +128,7 @@ async def api_emergency_stop(
             detail="Emergency stop requires admin role.",
         )
 
-    _audit("emergency_stop", "-", user.username)
+    _audit("emergency_stop", "-", user.username, user_id=user.id)
     logger.error("EMERGENCY STOP requested by %s", user.username)
 
     stopped: list[str] = []

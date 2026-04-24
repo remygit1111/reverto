@@ -139,6 +139,7 @@ async def admin_start_bot(
     _validate_slug(slug)
     _audit(
         "admin_bot_start", f"user={target_user_id}/{slug}", user.username,
+        user_id=user.id,
     )
     logger.warning(
         "[ADMIN ACTION] %s started bot user_id=%s slug=%s",
@@ -162,6 +163,7 @@ async def admin_start_bot_dry_run(
     _audit(
         "admin_bot_start_dry_run",
         f"user={target_user_id}/{slug}", user.username,
+        user_id=user.id,
     )
     logger.warning(
         "[ADMIN ACTION] %s started (dry-run) bot user_id=%s slug=%s",
@@ -184,6 +186,7 @@ async def admin_stop_bot(
     _validate_slug(slug)
     _audit(
         "admin_bot_stop", f"user={target_user_id}/{slug}", user.username,
+        user_id=user.id,
     )
     logger.warning(
         "[ADMIN ACTION] %s stopped bot user_id=%s slug=%s",
@@ -207,6 +210,7 @@ async def admin_restart_bot(
     _audit(
         "admin_bot_restart",
         f"user={target_user_id}/{slug}", user.username,
+        user_id=user.id,
     )
     logger.warning(
         "[ADMIN ACTION] %s restarted bot user_id=%s slug=%s",
@@ -301,7 +305,10 @@ async def _bulk_execute(
     still needs attention.
     """
     _validate_bulk_slugs(body.bots)
-    _audit(audit_action, f"count={len(body.bots)}", user.username)
+    _audit(
+        audit_action, f"count={len(body.bots)}", user.username,
+        user_id=user.id,
+    )
     logger.warning(
         "[ADMIN BULK] %s requested bulk-%s of %d bots",
         user.username, action_name, len(body.bots),

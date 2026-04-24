@@ -16,6 +16,7 @@ Example operator workflow:
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import sys
@@ -24,6 +25,28 @@ import sys
 _VALID_LEVELS: tuple[str, ...] = (
     "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL",
 )
+
+
+# ── Request-ID plumbing (audit r1-034) ─────────────────────────────────────
+# The contextvar + filter live here (not web/app.py) so main_web.py can
+# attach the filter to its handlers at boot — before any module-level
+# log lines are emitted. If the filter only attached later, every
+# handler whose formatter uses ``%(request_id)s`` would KeyError on
+# records emitted during startup.
+request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "reverto_request_id", default="-",
+)
+
+
+class RequestIdFilter(logging.Filter):
+    """Injects ``record.request_id`` on every log record so the
+    formatter can resolve ``%(request_id)s`` without KeyError.
+    Records emitted outside a request pick up the contextvar's
+    default ``"-"``."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_ctx.get()
+        return True
 
 
 def parse_log_level_env(
