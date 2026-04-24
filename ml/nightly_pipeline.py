@@ -355,7 +355,7 @@ def run_pipeline(user_id: int, bot_slug: str, db_path: str) -> dict:
         logger.warning("No deals found — pipeline skipped")
         results["skipped"] = True
         results["reason"] = "no_deals"
-        _persist_results(bot_slug, results)
+        _persist_results(user_id, bot_slug, results)
         return results
 
     # Candle loading + per-deal feature-store build. Each deal gets
@@ -375,13 +375,19 @@ def run_pipeline(user_id: int, bot_slug: str, db_path: str) -> dict:
     results["optimization"] = optimize_parameters(user_id, bot_slug, deals_df)
 
     results["finished_at"] = datetime.now().isoformat()
-    _persist_results(bot_slug, results)
+    _persist_results(user_id, bot_slug, results)
     return results
 
 
-def _persist_results(bot_slug: str, results: dict) -> Path:
-    """Write the pipeline summary to ml/results_{bot_slug}.json."""
-    out_path = Path(__file__).parent / f"results_{bot_slug}.json"
+def _persist_results(user_id: int, bot_slug: str, results: dict) -> Path:
+    """Write the pipeline summary to ``ml/<user_id>/results_<slug>.json``.
+
+    Audit r1-049: path is now per-user-scoped via
+    ``paths.user_ml_results_path``. Two tenants with the same slug
+    no longer overwrite each other's ML output.
+    """
+    from core import paths
+    out_path = paths.user_ml_results_path(user_id, bot_slug)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, default=str)
     logger.info("Pipeline complete. Results: %s", out_path)

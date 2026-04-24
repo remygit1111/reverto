@@ -32,6 +32,20 @@
 #     rotate and scopes the blast radius of a corrupt decrypt.
 #   - user_id arguments are required on every public function (the
 #     Phase-1 contract). Phase 2 now actually uses them.
+#
+# Known limitation — audit r1-010 (ACCEPTED):
+#   After ``get_keys`` decrypts, the plaintext credentials live in
+#   the calling engine's Python process heap for the lifetime of
+#   that engine. A core-dump or live memory-scraping attack on the
+#   host would expose them. Phase-C's signing-service design moves
+#   credential use out-of-process, which resolves this category of
+#   risk. Mitigations in place until Phase-C:
+#     * Single-host deploy → only one attack surface (no shared
+#       tenants on the same box).
+#     * Subprocess env-var leak is closed (r1-023 allowlist).
+#     * Fernet key files are 0600 under a 0700 dir.
+#   Accepted risk for single-operator on a trusted host. Revisit
+#   when VPS-deploy introduces new attacker profiles.
 
 import fcntl
 import json
