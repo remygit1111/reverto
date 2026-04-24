@@ -75,8 +75,16 @@ Sprint 1 (five HIGHs, individually merged) + Sprint 2 (eleven MEDIUM/LOWs bundle
 | **r1-037** | MEDIUM | `fix/vps-0-deploy-rollback` (maintenance-page HTML + runbook Caddy wiring) | RESOLVED |
 | **r1-038** | MEDIUM | `fix/vps-0-deploy-rollback` (`scripts/rollback.sh` + `make rollback` + runbook) | RESOLVED |
 | **r1-022** | MEDIUM | `fix/vps-0-backup` (daily `scripts/backup.sh` with 7/28/90-day retention + `scripts/restore.sh` + runbook) | RESOLVED (on-host; off-host replication is a Phase-2 follow-up) |
+| **r1-031** | MEDIUM | `fix/vps-1-hardening` (audit.log pipe + audit.jsonl dual-write; optional per-user split under logs/\<uid\>/audit.jsonl) | RESOLVED |
+| **r1-033** | MEDIUM | `fix/vps-1-hardening` (every bot-scoped Prom series gains `user_id` label; legacy callers → `unknown` bucket) | RESOLVED |
+| **r1-034** | MEDIUM | `fix/vps-1-hardening` (RequestIdMiddleware + `X-Request-Id` header + context-var + log-filter) | RESOLVED |
+| **r1-044** | MEDIUM | `fix/vps-1-hardening` (`_rate_limit_key_func` prefers `user:<id>` when session valid, falls back to IP) | RESOLVED |
+| **r1-045** | MEDIUM | `fix/vps-1-hardening` (`core/rate_budget.CostBudget` fronts `/api/candles` with cost-proportional debits) | RESOLVED |
+| **r1-068** | LOW    | `fix/vps-1-hardening` (ccxt thread-safety docstrings on BitgetExchange + PublicExchange) | RESOLVED (docs-only; safe patterns already in place) |
+| **r1-073** | MEDIUM | `fix/vps-1-hardening` (CSRFMiddleware double-submit cookie; login mints token; SPA fetch-wrap auto-inject) | RESOLVED |
+| **r1-076** | LOW    | `fix/vps-1-hardening` (CSP `connect-src` ws:/wss: wildcards removed; style-src `'unsafe-inline'` remains per-doc) | RESOLVED (partial — style-src refactor deferred) |
 
-Still open after VPS-0: r1-003, r1-005, r1-008, r1-009, r1-011, r1-013–r1-019, r1-021, r1-024–r1-031, r1-033, r1-034, r1-036, r1-039, r1-040, r1-044–r1-046, r1-050, r1-055, r1-060–r1-073, r1-076. Delta-findings r1.1-001 still open (Phase-C).
+Still open after VPS-1: r1-003, r1-005, r1-008, r1-009, r1-011, r1-013–r1-019, r1-021, r1-024–r1-030, r1-036, r1-039, r1-040, r1-046, r1-050, r1-055, r1-060–r1-067, r1-069–r1-072. Delta-findings r1.1-001 still open (Phase-C).
 
 ---
 
