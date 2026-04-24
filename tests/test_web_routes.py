@@ -447,18 +447,33 @@ class TestAuth:
         auth_client.cookies.set("reverto_session", token)
 
         try:
-            for i in range(10):
+            # Audit r1-043: the key_func is now per-user for VALID
+            # cookies + IP-fallback for invalid ones. The FIRST
+            # logout (valid cookie) bumps the epoch, invalidating
+            # the cookie; requests 2+ land in the IP-fallback
+            # bucket. The effective rate-limit therefore fires
+            # somewhere between the 11th and 21st attempt (1 uid-
+            # bucket hit + 10 ip-bucket hits = 11 successes, 12th
+            # is 429 on the ip-bucket). We loop up to 25 and
+            # assert that at least ONE attempt landed on 429
+            # inside the window — the exact cut-off is an
+            # implementation detail of which bucket caught the
+            # request.
+            statuses: list[int] = []
+            for _ in range(25):
                 r = auth_client.post("/auth/logout")
-                # Each of the first 10 must succeed (200) or, after
-                # the first logout bumps the epoch, silently
-                # idempotent (still 200 per the endpoint contract).
-                assert r.status_code == 200, (
-                    f"request {i+1}/10 unexpectedly got {r.status_code}"
-                )
-
-            # The 11th request in the same minute must be rate-limited.
-            r = auth_client.post("/auth/logout")
-            assert r.status_code == 429
+                statuses.append(r.status_code)
+            assert 429 in statuses, (
+                f"expected at least one 429 in 25 rapid logouts; "
+                f"got {statuses}"
+            )
+            # The run SHOULD see at least a handful of 200s before
+            # the 429 — rules out a false-positive where the bucket
+            # was already at cap on entry.
+            assert statuses.count(200) >= 10, (
+                f"expected >=10 successful logouts before 429; "
+                f"got {statuses}"
+            )
         finally:
             # Drain the consumed bucket so subsequent tests in the
             # same class / session don't inherit a full /auth/logout
@@ -467,6 +482,45 @@ class TestAuth:
                 webapp.limiter.reset()
             except Exception:
                 pass
+
+    def test_logout_rate_limit_key_is_per_user(self):
+        """Audit r1-043: a valid-cookie logout's rate-limit key is
+        scoped to the user id, not just the caller IP. Unit-test
+        the key function directly to pin the contract — IP-based
+        keying for invalid cookies (fallback) and uid-based keying
+        otherwise. Avoids the brittle ping-pong between the two
+        buckets that the class-level rate-limit test has to tolerate.
+        """
+        from types import SimpleNamespace
+        from core import user_store as _user_store
+        from web.routes.auth import _logout_rate_limit_key
+
+        # Valid cookie → uid-keyed
+        admin = _user_store.get_user_by_username("admin")
+        assert admin is not None
+        valid_cookie = webapp._create_session_cookie(admin)
+        req_valid = SimpleNamespace(
+            cookies={"reverto_session": valid_cookie},
+            client=SimpleNamespace(host="127.0.0.1"),
+        )
+        key_valid = _logout_rate_limit_key(req_valid)
+        assert key_valid == f"logout:uid:{admin.id}"
+
+        # No cookie → IP-keyed fallback
+        req_no_cookie = SimpleNamespace(
+            cookies={},
+            client=SimpleNamespace(host="10.20.30.40"),
+        )
+        key_no_cookie = _logout_rate_limit_key(req_no_cookie)
+        assert key_no_cookie == "logout:ip:10.20.30.40"
+
+        # Malformed cookie → IP-keyed fallback
+        req_garbage = SimpleNamespace(
+            cookies={"reverto_session": "garbage"},
+            client=SimpleNamespace(host="1.2.3.4"),
+        )
+        key_garbage = _logout_rate_limit_key(req_garbage)
+        assert key_garbage == "logout:ip:1.2.3.4"
 
 
 class TestPerUserSessionEpoch:

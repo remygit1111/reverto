@@ -243,13 +243,36 @@ async def auth_login(body: LoginBody, request: Request):
     return resp
 
 
+def _logout_rate_limit_key(request: Request) -> str:
+    """Audit r1-043: key the logout limiter on the caller's uid
+    when a valid cookie is present so one user can't swamp another's
+    bucket. Invalid / missing cookie falls back to the standard IP
+    key — which is still rate-limited but under a different bucket
+    from any authenticated logout traffic.
+    """
+    payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if payload:
+        uid = payload.get("uid")
+        if isinstance(uid, int) and uid > 0:
+            return f"logout:uid:{uid}"
+    # Fallback: same shape the shared limiter uses for unauthed
+    # traffic so log-line formatting stays consistent.
+    return f"logout:ip:{request.client.host if request.client else '-'}"
+
+
 @router.post("/auth/logout")
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", key_func=_logout_rate_limit_key)
 async def auth_logout(request: Request):
     """Bump the caller's session epoch so every browser holding this
     cookie is rejected on the next request, not just the one calling
     logout. Other users' sessions are unaffected (Phase-3a moved
-    epoch-tracking from a global counter to a per-user column)."""
+    epoch-tracking from a global counter to a per-user column).
+
+    Audit r1-043: rate-limit is keyed per-user via
+    ``_logout_rate_limit_key`` so a noisy client for user A can't
+    burn through user B's bucket. 10/minute × per-uid is still
+    conservative enough to cap bump_session_epoch write-pressure.
+    """
     # Best-effort: resolve the caller from their cookie so we bump the
     # right row. A missing / invalid cookie still returns 200 — logout
     # is idempotent from the client's perspective.
