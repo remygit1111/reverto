@@ -340,19 +340,6 @@ async def auth_change_password(
             status_code=400,
             detail=f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
         )
-    # HIBP Pwned-Passwords check (k-anonymity API — see
-    # core/password_breach.py for the protocol + fail-open rationale).
-    # Runs AFTER the cheap length-check but BEFORE the bcrypt
-    # current-password verify, so a new password that fails the length
-    # gate skips the network round-trip entirely.
-    if await is_password_pwned(body.new_password):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "This password has been found in data breaches "
-                "and is unsafe to use. Please choose a different password."
-            ),
-        )
     # Audit r1-006: cookie no longer carries ``u`` — resolve the
     # username from ``uid`` via the DB so we can feed it into
     # ``verify_password`` (which still takes the username as its
@@ -365,10 +352,29 @@ async def auth_change_password(
         db_user = user_store.get_user_by_id(uid)
         if db_user is not None:
             username = db_user.username
+    # Audit pd-003: current-password verify MUST run before the HIBP
+    # network round-trip. Otherwise an attacker with a valid session
+    # cookie (or a stale tab) could spray change-password requests
+    # with arbitrary current-password values and trigger outbound
+    # HTTPS to haveibeenpwned.com on every attempt — wasting egress
+    # + burning against the HIBP SLA. Gate the network call behind
+    # the cheap local check.
     user = user_store.verify_password(username, body.current_password)
     if user is None:
         await asyncio.sleep(0.1)
         raise HTTPException(status_code=401, detail="Current password is incorrect")
+    # HIBP Pwned-Passwords check (k-anonymity API — see
+    # core/password_breach.py for the protocol + fail-open rationale).
+    # Runs only after the current-password verify confirms the caller
+    # actually knows the existing credential.
+    if await is_password_pwned(body.new_password):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This password has been found in data breaches "
+                "and is unsafe to use. Please choose a different password."
+            ),
+        )
     if not user_store.set_password(user.id, body.new_password):
         raise HTTPException(status_code=500, detail="Failed to update password")
     # Bump this user's epoch so every existing cookie for them (incl.

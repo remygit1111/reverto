@@ -361,6 +361,34 @@ class TestAuth:
         )
         assert r.status_code == 401
 
+    def test_change_password_skips_hibp_when_current_wrong(
+        self, auth_client, monkeypatch,
+    ):
+        """Audit pd-003: HIBP must fire only AFTER current-password
+        verify succeeds. A bad current-password must 401 without
+        the network round-trip — otherwise a stale-tab spray
+        wastes bandwidth + burns against the HIBP SLA."""
+        call_count = {"n": 0}
+
+        async def _counted(_plaintext):
+            call_count["n"] += 1
+            return False
+
+        monkeypatch.setattr(
+            "web.routes.auth.is_password_pwned", _counted,
+        )
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={"current_password": "wrong", "new_password": "longenough12"},
+        )
+        assert r.status_code == 401
+        assert call_count["n"] == 0, (
+            "HIBP was called despite current-password failure — "
+            "reorder regression (pd-003)"
+        )
+
     def test_change_password_rejects_pwned_password(
         self, auth_client, monkeypatch,
     ):
