@@ -12,6 +12,7 @@ data/
 ml/model_store/
 ml/models/
 ml/results_*.json
+ml/[0-9]*/
 ml/candle_cache/
 notebooks/.ipynb_checkpoints/
 *.log
