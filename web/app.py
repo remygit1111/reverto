@@ -1730,7 +1730,7 @@ except Exception as _e:  # pragma: no cover - defensive
     logger.warning("init_db failed on portal startup: %s", _e)
 
 def _validate_config() -> None:
-    """Check critical env-vars at portal boot (audit r1-058).
+    """Check critical env-vars at portal boot (audit r1-058, pd-025).
 
     Raises ``RuntimeError`` for missing *required* vars so uvicorn
     fails fast and the operator sees a clear stderr message
@@ -1745,17 +1745,26 @@ def _validate_config() -> None:
         for local dev, but in a real deploy an ephemeral key
         invalidates every live session on the next restart. Hard
         fail at boot is strictly better observability.
+      * REVERTO_API_KEY — X-API-Key authentication (audit pd-025).
+        Same reasoning as SECRET_KEY: the module-import fallback
+        writes an ephemeral key to ``logs/.api_key_ephemeral`` and
+        deletes it at shutdown, so without this env var every
+        portal restart rotates the key and silently breaks CI /
+        backup scripts / integrations that cached the prior value.
+        Elevated from *recommended* to *required* so the deploy
+        fails fast rather than drifting.
 
     Recommended (warn only):
-      * REVERTO_API_KEY   — required for X-API-Key authentication
       * BITGET_API_KEY    — required for live-mode Bitget bots
       * BITGET_API_SECRET — required for live-mode Bitget bots
     """
     required = {
         "REVERTO_SECRET_KEY": "required for session signing",
+        "REVERTO_API_KEY":
+            "required for API-key authentication — prevents "
+            "ephemeral-key rotation on portal restart",
     }
     recommended = {
-        "REVERTO_API_KEY":   "required for API-key authentication",
         "BITGET_API_KEY":    "required for live-mode Bitget bots",
         "BITGET_API_SECRET": "required for live-mode Bitget bots",
     }
