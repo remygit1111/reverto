@@ -39,31 +39,41 @@ Foundation (Phase A) is where most work has already landed; everything after is 
 
 ---
 
-## Remediation status (post-Sprint 2)
+## Remediation status (post-VPS-0 sweep)
 
-Sprint 1 (five HIGHs, individually merged) + Sprint 2 (eleven MEDIUM/LOWs bundled) have closed the following findings. Detailed sections below also carry inline **STATUS.** markers.
+Sprint 1 (five HIGHs, individually merged) + Sprint 2 (eleven MEDIUM/LOWs bundled) + VPS-0 sweep (ten Phase-A hygiene items) have closed the following findings. Detailed sections below also carry inline **STATUS.** markers where they exist; short-entry findings (only in summary tables) are captured here.
 
-| Finding | Severity | Branch |
-|---|---|---|
-| r1-001 | HIGH | `fix/r1-001-api-key-respects-active` |
-| r1-002 | HIGH | `fix/r1-002-changelog-admin-role-gate` |
-| r1-012 | HIGH | `fix/r1-012-bitget-passphrase-per-user` |
-| r1-023 | HIGH | `fix/r1-023-subprocess-env-whitelist` |
-| r1-041 | HIGH | `fix/r1-041-state-mtimes-per-user` |
-| r1-004 | MEDIUM | `feat/sprint-2-audit-sweep` |
-| r1-007 | LOW    | `feat/sprint-2-audit-sweep` (bundled with r1-032) |
-| r1-020 | MEDIUM | `feat/sprint-2-audit-sweep` |
-| r1-032 | MEDIUM | `feat/sprint-2-audit-sweep` |
-| r1-042 | MEDIUM | `feat/sprint-2-audit-sweep` |
-| r1-051 | LOW    | `feat/sprint-2-audit-sweep` |
-| r1-052 | LOW    | `feat/sprint-2-audit-sweep` (already clean — no TODO-comments remain after v26-16; noted explicitly) |
-| r1-053 | MEDIUM | `feat/sprint-2-audit-sweep` (3 E2E tests; /api/bots listing deferred pending FS-sandbox fixture) |
-| r1-054 | LOW    | `feat/sprint-2-audit-sweep` |
-| r1-056 | MEDIUM | `feat/sprint-2-audit-sweep` |
-| r1-058 | MEDIUM | `feat/sprint-2-audit-sweep` |
-| r1-075 | LOW    | `feat/sprint-2-audit-sweep` |
+| Finding | Severity | Branch | Status |
+|---|---|---|---|
+| r1-001 | HIGH | `fix/r1-001-api-key-respects-active` | RESOLVED |
+| r1-002 | HIGH | `fix/r1-002-changelog-admin-role-gate` | RESOLVED |
+| r1-012 | HIGH | `fix/r1-012-bitget-passphrase-per-user` | RESOLVED |
+| r1-023 | HIGH | `fix/r1-023-subprocess-env-whitelist` | RESOLVED |
+| r1-041 | HIGH | `fix/r1-041-state-mtimes-per-user` | RESOLVED |
+| r1-004 | MEDIUM | `feat/sprint-2-audit-sweep` | RESOLVED |
+| r1-007 | LOW    | `feat/sprint-2-audit-sweep` (bundled with r1-032) | RESOLVED |
+| r1-020 | MEDIUM | `feat/sprint-2-audit-sweep` | RESOLVED |
+| r1-032 | MEDIUM | `feat/sprint-2-audit-sweep` | RESOLVED |
+| r1-042 | MEDIUM | `feat/sprint-2-audit-sweep` | RESOLVED |
+| r1-051 | LOW    | `feat/sprint-2-audit-sweep` | RESOLVED |
+| r1-052 | LOW    | `feat/sprint-2-audit-sweep` (already clean — no TODO-comments remain after v26-16) | RESOLVED |
+| r1-053 | MEDIUM | `feat/sprint-2-audit-sweep` (3 E2E tests; /api/bots listing deferred) | RESOLVED |
+| r1-054 | LOW    | `feat/sprint-2-audit-sweep` | RESOLVED |
+| r1-056 | MEDIUM | `feat/sprint-2-audit-sweep` | RESOLVED |
+| r1-058 | MEDIUM | `feat/sprint-2-audit-sweep` | RESOLVED |
+| r1-075 | LOW    | `feat/sprint-2-audit-sweep` | RESOLVED |
+| **r1-006** | LOW    | `fix/vps-0-sweep` (drop stale `u` field from cookie, resolve from uid) | RESOLVED |
+| **r1-010** | LOW    | `fix/vps-0-sweep` (docstring — Phase-C dependency) | ACCEPTED |
+| **r1-035** | LOW    | `fix/vps-0-sweep` (log API-key hint, not full value) | RESOLVED |
+| **r1-043** | LOW    | `fix/vps-0-sweep` (per-user logout rate-limit key) | RESOLVED |
+| **r1-047** | LOW    | verified clean post-v26-17; no bare `{"error":...}` responses remain | RESOLVED |
+| **r1-048** | LOW    | `fix/vps-0-sweep` (inline docstring + `openapi_url=None`) | ACCEPTED |
+| **r1-049** | MEDIUM | `fix/vps-0-sweep` (`paths.user_ml_results_path`, per-user folder) | RESOLVED |
+| **r1-057** | LOW    | `fix/vps-0-sweep` (`core/circuit_breaker.py` wired into `PublicExchange`) | RESOLVED |
+| **r1-059** | LOW    | `fix/vps-0-sweep` (`_validate_config_completeness` in lifespan) | RESOLVED |
+| **r1-074** | MEDIUM | `fix/vps-0-sweep` (SHA-384 SRI on unpkg scripts) | RESOLVED |
 
-Still open: r1-003, r1-005, r1-006, r1-008–r1-011, r1-013–r1-019, r1-021, r1-022, r1-024–r1-031, r1-033–r1-040, r1-043–r1-050, r1-055, r1-057, r1-059–r1-074, r1-076.
+Still open after VPS-0: r1-003, r1-005, r1-008, r1-009, r1-011, r1-013–r1-019, r1-021, r1-022, r1-024–r1-031, r1-033, r1-034, r1-036–r1-040, r1-044–r1-046, r1-050, r1-055, r1-060–r1-073, r1-076. Delta-findings r1.1-001 still open (Phase-C).
 
 ---
 
@@ -275,6 +285,8 @@ Two users with the same slug would overwrite each other's ML output.
 **Remediation.** Signature becomes `_persist_results(user_id: int, bot_slug: str, ...)` with filename `ml/<user_id>/results_{bot_slug}.json` using `core.paths.user_bots_dir(user_id).parent / "ml" / ...` or a new `paths.user_ml_results_path`. v26-18 already fixed the sibling `optimize_parameters` path — this is the symmetric output path.
 
 **Phase.** A/B.
+
+**STATUS.** RESOLVED in `fix/vps-0-sweep` (new `paths.user_ml_results_path(user_id, slug)`; `_persist_results` takes `user_id` as first arg and writes under `ml/<user_id>/results_<slug>.json`; regression test verifies two users with the same slug get separate files).
 
 #### r1-053 — No cross-tenant end-to-end route test (MEDIUM)
 
