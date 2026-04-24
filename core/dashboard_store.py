@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 
 from core.database import get_db
@@ -44,6 +45,29 @@ MAX_LAYOUT_SIZE_BYTES = 16 * 1024
 # UI can reuse it without magic strings.
 DEFAULT_LAYOUT_NAME = "default"
 
+# Layout-name shape (audit pd-043). SQL is parameterised so the
+# immediate injection risk is nil, but the name lands in log
+# lines + future code paths may branch on it (cache keys, file
+# paths if layouts ever gain an export feature). Keeping the
+# character set tight prevents accidental trust-boundary breaks.
+_LAYOUT_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+
+
+def _validate_layout_name(name: str) -> str:
+    """Normalise + regex-validate a layout name.
+
+    Returns the coerced-to-str value so callers can feed it
+    straight into the SQL bindings. Raises ``ValueError`` for a
+    bad shape so the route layer returns a clean 400.
+    """
+    s = str(name)
+    if not _LAYOUT_NAME_RE.match(s):
+        raise ValueError(
+            "Invalid layout name: must match "
+            f"{_LAYOUT_NAME_RE.pattern}",
+        )
+    return s
+
 
 def get_layout(
     user_id: int, name: str = DEFAULT_LAYOUT_NAME,
@@ -55,11 +79,12 @@ def get_layout(
     into an empty-state response so the frontend resets cleanly
     rather than crashing on a corrupt blob.
     """
+    name = _validate_layout_name(name)
     conn = get_db()
     row = conn.execute(
         "SELECT layout_json FROM dashboard_layouts "
         "WHERE user_id = ? AND name = ?",
-        (int(user_id), str(name)),
+        (int(user_id), name),
     ).fetchone()
     if row is None:
         return None
@@ -92,6 +117,7 @@ def put_layout(
     rerun a column DEFAULT on UPDATE, so we pass the timestamp
     explicitly in the conflict clause.
     """
+    name = _validate_layout_name(name)
     try:
         payload = json.dumps(layout, separators=(",", ":"))
     except (TypeError, ValueError) as e:
@@ -115,7 +141,7 @@ def put_layout(
                 layout_json = excluded.layout_json,
                 updated_at  = datetime('now')
             """,
-            (int(user_id), str(name), payload),
+            (int(user_id), name, payload),
         )
 
 
@@ -128,11 +154,12 @@ def delete_layout(
     layout existed. Exposed now for test cleanup + the future
     multi-layout UI; not yet wired to an endpoint in PR 1.
     """
+    name = _validate_layout_name(name)
     conn = get_db()
     with conn:
         cur = conn.execute(
             "DELETE FROM dashboard_layouts "
             "WHERE user_id = ? AND name = ?",
-            (int(user_id), str(name)),
+            (int(user_id), name),
         )
         return cur.rowcount > 0
