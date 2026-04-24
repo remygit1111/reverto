@@ -286,10 +286,18 @@ async def _close_deal_offline(
         current_price = await _fetch_current_price_for_close(
             bot_config.pair, exchange_name,
         )
-    except ValueError as e:
+    except ValueError:
+        # Audit r2-001 pattern: don't echo the upstream exception
+        # into a 503 response — ccxt ValueError messages can carry
+        # URL fragments or response-body snippets useful to an
+        # attacker fingerprinting the exchange wiring.
+        logger.exception(
+            "offline close — invalid ticker response for user=%s slug=%s",
+            user_id, slug,
+        )
         raise HTTPException(
             status_code=503,
-            detail=f"Exchange returned invalid ticker: {e}",
+            detail="Exchange returned invalid ticker response",
         )
     except Exception as e:
         logger.warning(
