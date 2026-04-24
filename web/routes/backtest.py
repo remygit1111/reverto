@@ -92,5 +92,5 @@ async def api_backtest_run_delete(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Run not found")
-    _audit("backtest_delete", str(run_id), actor)
+    _audit("backtest_delete", str(run_id), actor, user_id=user.id)
     return {"ok": True}

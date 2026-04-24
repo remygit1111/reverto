@@ -175,7 +175,7 @@ async def api_deal_edit(
 
     sentinel = paths.user_logs_dir(user.id) / f"{slug}.deal_edit_{deal_id}"
     sentinel.write_text(_json.dumps(settings), encoding="utf-8")
-    _audit("deal_edit", slug, actor)
+    _audit("deal_edit", slug, actor, user_id=user.id)
     return {"ok": True, "deal_id": deal_id}
 
 
@@ -380,7 +380,7 @@ async def _close_deal_offline(
             status_code=404,
             detail=result.get("error") or "Could not close deal",
         )
-    _audit(f"deal_{action}_offline", slug, actor)
+    _audit(f"deal_{action}_offline", slug, actor, user_id=user.id)
     return {
         "ok": True,
         "method": "direct",
@@ -435,7 +435,7 @@ async def api_deal_action(
             paths.user_logs_dir(user.id) / f"{slug}.deal_{action}_{deal_id}"
         )
         sentinel.write_text("", encoding="utf-8")
-        _audit(f"deal_{action}", slug, actor)
+        _audit(f"deal_{action}", slug, actor, user_id=user.id)
         return {
             "ok": True,
             "method": "sentinel",
@@ -522,7 +522,7 @@ async def api_db_annotations_delete_all(
     removed = await asyncio.to_thread(
         deal_store.delete_annotations_for, bot_slug, user.id, timeframe,
     )
-    _audit("annotations_clear", bot_slug, actor)
+    _audit("annotations_clear", bot_slug, actor, user_id=user.id)
     return {"ok": True, "removed": removed}
 
 

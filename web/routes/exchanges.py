@@ -77,7 +77,7 @@ async def save_exchange_keys(
         name, body.api_key, body.api_secret, user.id,
         passphrase=body.passphrase or "",
     )
-    _audit("exchange_keys_set", name, actor)
+    _audit("exchange_keys_set", name, actor, user_id=user.id)
     return {"ok": True, "exchange": name}
 
 
@@ -94,5 +94,5 @@ async def delete_exchange_keys(
     removed = credentials.delete_keys(name, user.id)
     if not removed:
         raise HTTPException(status_code=404, detail="No keys stored for exchange")
-    _audit("exchange_keys_delete", name, actor)
+    _audit("exchange_keys_delete", name, actor, user_id=user.id)
     return {"ok": True, "exchange": name}

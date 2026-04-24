@@ -205,10 +205,13 @@ async def auth_login(body: LoginBody, request: Request):
             new_count = _unknown_user_fail_bump(client_ip)
 
         if new_count > 0 and new_count % _ANOMALY_LOG_EVERY_N == 0:
+            # user_record is None for unknown usernames — keep the
+            # per-user split opt-out in that case (nothing to key by).
             _audit(
                 "suspicious_login_pattern",
                 body.username,
                 f"count={new_count}",
+                user_id=user_record.id if user_record is not None else None,
             )
 
         # Backoff uses the PRE-attempt count so the first failure
@@ -257,7 +260,7 @@ async def auth_login(body: LoginBody, request: Request):
         secure=_webapp._COOKIE_SECURE,
         path="/",
     )
-    _audit("auth_login", user.username, "-")
+    _audit("auth_login", user.username, "-", user_id=user.id)
     return resp
 
 
@@ -383,5 +386,5 @@ async def auth_change_password(
     # routing choice: forcing a fresh login after password-change is
     # the standard expectation.
     user_store.bump_session_epoch(user.id)
-    _audit("auth_change_password", username, "-")
+    _audit("auth_change_password", username, "-", user_id=user.id)
     return {"ok": True}
