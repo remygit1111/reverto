@@ -3147,6 +3147,23 @@ function createPanelChart(container, config) {
     removeIndicator(id) {
       const idx = state.indicators.findIndex((x) => x.id === id);
       if (idx < 0) return false;
+      // Clear this instance's LWC series BEFORE splicing it out of
+      // state. _destroyIndicatorSeries (called by
+      // _rebuildIndicatorSeries) iterates state.indicators and can't
+      // reach an instance that's already been removed — its series
+      // would otherwise orphan on the chart until the next full redraw
+      // (page refresh or timeframe switch). Mirror the same plugin.
+      // destroy() / _clearInstanceSeries fallback that the rebuild
+      // path applies per-instance.
+      const inst = state.indicators[idx];
+      if (state._chart && inst) {
+        const plugin = INDICATOR_PLUGINS[inst.type];
+        if (plugin && typeof plugin.destroy === 'function') {
+          try { plugin.destroy({ chart: state._chart, inst }); } catch (e) {}
+        } else {
+          _clearInstanceSeries(state._chart, inst);
+        }
+      }
       state.indicators.splice(idx, 1);
       indBtn.updateCount(state.indicators.length);
       _rebuildIndicatorSeries();
