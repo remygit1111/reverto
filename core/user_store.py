@@ -32,12 +32,43 @@ Security invariants:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Optional
 
 import bcrypt
 
 from core.database import get_db
+
+
+# Audit r1-032 + r1-007: usernames must be safe for the audit-log's
+# pipe-delimited format and for every UI / URL surface. Alphanumerics
+# plus underscore / hyphen / dot, 1-64 chars. Excludes whitespace,
+# control characters, and the literal pipe ``|`` the audit-log uses
+# as field separator — a pipe in a username would otherwise break
+# log parseability downstream. Every future user-creation path (a
+# ``/auth/register`` endpoint, admin-provisioning CLI, etc.) must
+# call ``validate_username`` before INSERT.
+_USERNAME_RE = re.compile(r"[A-Za-z0-9_\-\.]{1,64}")
+
+
+def validate_username(username: str) -> None:
+    """Raise ``ValueError`` for usernames that don't match the
+    safe-char allowlist. No return value on success (by convention,
+    validators in this module raise vs. return).
+
+    Accepted: ``[A-Za-z0-9_-.]{1,64}``. Rejected: whitespace,
+    control chars, the audit-log pipe delimiter, most punctuation.
+    Uses ``re.fullmatch`` so a trailing newline (Python's default
+    ``$`` matches before ``\\n``) can't sneak a control character
+    past the allowlist.
+    """
+    if not isinstance(username, str) or not _USERNAME_RE.fullmatch(username):
+        raise ValueError(
+            "Invalid username: must be 1-64 chars, "
+            "alphanumeric + underscore / hyphen / dot only "
+            "(audit r1-032 + r1-007).",
+        )
 from core.user import (  # re-exports for one-stop import
     User,
     get_admin_user_ids,
