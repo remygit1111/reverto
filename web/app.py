@@ -111,13 +111,19 @@ if not _API_KEY:
             _EPHEMERAL_API_KEY_FILE,
         )
     except OSError as e:
-        # Last-resort fallback: if we genuinely can't write the file
-        # the operator still needs the key, so log it. Should never
-        # hit in practice — logs/ is writable on every supported host.
+        # Last-resort fallback: can't persist the key file. Audit
+        # r1-035: log only a short SHA hint — never the full key
+        # itself — so a log-shipping pipeline post-VPS can't leak
+        # the auth secret. The operator's recovery path is: set
+        # REVERTO_API_KEY=<their choice> in .env, restart; the
+        # ephemeral key is inherently short-lived and clients using
+        # it would have to re-auth anyway.
+        hint = hashlib.sha256(_API_KEY.encode("utf-8")).hexdigest()[:8]
         logger.error(
             "REVERTO_API_KEY not set and could not write %s (%s). "
-            "Ephemeral key (will be lost on restart): %s",
-            _EPHEMERAL_API_KEY_FILE, e, _API_KEY,
+            "Ephemeral key in use (hint=%s); set REVERTO_API_KEY "
+            "in .env and restart to recover a stable key.",
+            _EPHEMERAL_API_KEY_FILE, e, hint,
         )
 
 
@@ -232,10 +238,16 @@ def _create_session_cookie(user: User) -> str:
     ``_create_session_cookie("admin")`` aanriepen moeten de admin-User
     zelf ophalen via ``user_store.get_user_by_username`` (of een
     test-helper daaromheen).
+
+    Audit r1-006: pre-fix payload also carried a ``"u": username``
+    field left over from Phase-1. Every read-path resolves the
+    User from ``uid`` now (via ``user_store.get_user_by_id``), so
+    the string-username was dead payload. Dropped; pre-fix cookies
+    with both ``u`` and ``uid`` still validate because the reader
+    only requires ``uid``.
     """
     return _session_serializer.dumps({
         "uid": user.id,
-        "u": user.username,
         "iat": int(time.time()),
         "ep": user_store.get_session_epoch(user.id),
     })
@@ -246,7 +258,7 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
 
     Validation order:
       1. itsdangerous signature + TTL
-      2. payload shape (dict, has 'uid' and 'u')
+      2. payload shape (dict, has 'uid')
       3. per-user session_epoch match against DB
 
     Any failure returns None — callers translate that to 401.
@@ -263,7 +275,11 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
         # broken cookie escape as a 500 from the auth gate.
         logger.debug("session cookie parse failed: %s", e)
         return None
-    if not isinstance(data, dict) or not data.get("u"):
+    # Audit r1-006: validation gate switched from ``data.get("u")``
+    # (pre-fix username string) to ``data.get("uid")`` (the int that
+    # every downstream read-path actually uses).
+    uid = data.get("uid")
+    if not isinstance(data, dict) or not isinstance(uid, int) or uid <= 0:
         return None
     # Per-user epoch check — reject every cookie whose embedded epoch
     # doesn't match the current DB value for the user. Logout / pw-
@@ -329,8 +345,17 @@ def _request_actor(request: Request) -> str:
     itself is gone.
     """
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
-    if payload and payload.get("u"):
-        return f"session:{payload['u']}"
+    if payload:
+        # Audit r1-006: cookie no longer carries ``u`` (username) —
+        # resolve from uid so the audit log still reads as
+        # ``session:<username>`` rather than a bare numeric id.
+        # Miss (user deleted between request-start and here) falls
+        # through to the ``-`` branch so audit lines don't crash.
+        uid = payload.get("uid")
+        if isinstance(uid, int) and uid > 0:
+            u = user_store.get_user_by_id(uid)
+            if u is not None:
+                return f"session:{u.username}"
     # Header-only — query-string fallback removed, see AuthMiddleware.
     provided = request.headers.get("X-API-Key")
     if provided and secrets.compare_digest(provided, _API_KEY):
@@ -1460,6 +1485,50 @@ def _validate_config() -> None:
         )
 
 
+def _validate_config_completeness() -> None:
+    """Warn the operator if ``.env.example`` lists an env-var that
+    isn't set in the running process. Catches drift between the
+    template and the actual ``.env`` (audit r1-059).
+
+    Runs after ``_validate_config`` in lifespan startup. Best-effort:
+    missing template file = silent no-op (development workflow may
+    not ship one). ``_VALIDATE_CONFIG_SUPPRESS_EXAMPLE_CHECK=1``
+    skips the check entirely, for the rare CI where a .env.example
+    is intentionally a superset (e.g. testing a feature that isn't
+    merged yet).
+    """
+    if os.environ.get("_VALIDATE_CONFIG_SUPPRESS_EXAMPLE_CHECK") == "1":
+        return
+    example_path = BASE_DIR / ".env.example"
+    if not example_path.exists():
+        return
+    example_vars: set[str] = set()
+    try:
+        for line in example_path.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                # Guard against inline comments that include '=' —
+                # an env-var name must match the standard shell
+                # identifier shape.
+                if key and key.replace("_", "").isalnum():
+                    example_vars.add(key)
+    except OSError as e:
+        logger.debug("_validate_config_completeness: %s read failed: %s",
+                     example_path, e)
+        return
+    missing = sorted(v for v in example_vars if not os.environ.get(v))
+    if missing:
+        logger.warning(
+            "Env-vars listed in .env.example but not set in the "
+            "running environment: %s. Update your .env from "
+            ".env.example if these are needed (audit r1-059).",
+            ", ".join(missing),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan handler.
@@ -1476,6 +1545,7 @@ async def lifespan(app: FastAPI):
     make restart.
     """
     _validate_config()
+    _validate_config_completeness()
     logger.info("=== Portal started ===")
 
     background_tasks: list[asyncio.Task] = [
@@ -1507,7 +1577,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Reverto Portal", docs_url=None, redoc_url=None,
+    title="Reverto Portal",
+    # Audit r1-048 (ACCEPTED): Swagger UI + ReDoc + the raw
+    # ``/openapi.json`` are all disabled. Reverto is a single-
+    # operator platform today; exposing the spec would leak
+    # internal route semantics (payload shapes, auth patterns,
+    # admin-gated endpoints) without a user benefit. Defense-in-
+    # depth: ``openapi_url=None`` too so the JSON spec isn't
+    # reachable even if Starlette's defaults ever change.
+    # Revisit if an external integration partner ever needs it.
+    docs_url=None, redoc_url=None, openapi_url=None,
     lifespan=lifespan,
 )
 app.state.limiter = limiter

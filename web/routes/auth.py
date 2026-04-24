@@ -243,13 +243,36 @@ async def auth_login(body: LoginBody, request: Request):
     return resp
 
 
+def _logout_rate_limit_key(request: Request) -> str:
+    """Audit r1-043: key the logout limiter on the caller's uid
+    when a valid cookie is present so one user can't swamp another's
+    bucket. Invalid / missing cookie falls back to the standard IP
+    key — which is still rate-limited but under a different bucket
+    from any authenticated logout traffic.
+    """
+    payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    if payload:
+        uid = payload.get("uid")
+        if isinstance(uid, int) and uid > 0:
+            return f"logout:uid:{uid}"
+    # Fallback: same shape the shared limiter uses for unauthed
+    # traffic so log-line formatting stays consistent.
+    return f"logout:ip:{request.client.host if request.client else '-'}"
+
+
 @router.post("/auth/logout")
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", key_func=_logout_rate_limit_key)
 async def auth_logout(request: Request):
     """Bump the caller's session epoch so every browser holding this
     cookie is rejected on the next request, not just the one calling
     logout. Other users' sessions are unaffected (Phase-3a moved
-    epoch-tracking from a global counter to a per-user column)."""
+    epoch-tracking from a global counter to a per-user column).
+
+    Audit r1-043: rate-limit is keyed per-user via
+    ``_logout_rate_limit_key`` so a noisy client for user A can't
+    burn through user B's bucket. 10/minute × per-uid is still
+    conservative enough to cap bump_session_epoch write-pressure.
+    """
     # Best-effort: resolve the caller from their cookie so we bump the
     # right row. A missing / invalid cookie still returns 200 — logout
     # is idempotent from the client's perspective.
@@ -277,9 +300,18 @@ async def auth_status(request: Request):
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
     if payload:
         uid = payload.get("uid")
+        username = None
+        # Audit r1-006: cookie no longer carries a username field —
+        # resolve from ``uid`` instead. Missing user falls through
+        # to ``username=None`` so the SPA's avatar-initial renders
+        # its placeholder instead of crashing.
+        if isinstance(uid, int) and uid > 0:
+            u = user_store.get_user_by_id(uid)
+            if u is not None:
+                username = u.username
         return {
             "authenticated": True,
-            "username": payload.get("u"),
+            "username": username,
             "user_id": int(uid) if isinstance(uid, int) else None,
         }
     return {"authenticated": False, "username": None, "user_id": None}
@@ -310,7 +342,18 @@ async def auth_change_password(
                 "and is unsafe to use. Please choose a different password."
             ),
         )
-    username = session.get("u", "")
+    # Audit r1-006: cookie no longer carries ``u`` — resolve the
+    # username from ``uid`` via the DB so we can feed it into
+    # ``verify_password`` (which still takes the username as its
+    # lookup key). Missing-user case can't actually fire here because
+    # _require_session already validated uid + active, but an empty-
+    # string fallback keeps verify_password's failure path clean.
+    uid = session.get("uid")
+    username = ""
+    if isinstance(uid, int) and uid > 0:
+        db_user = user_store.get_user_by_id(uid)
+        if db_user is not None:
+            username = db_user.username
     user = user_store.verify_password(username, body.current_password)
     if user is None:
         await asyncio.sleep(0.1)

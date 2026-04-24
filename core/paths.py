@@ -143,6 +143,16 @@ def user_fernet_key_path(user_id: int) -> Path:
     return BASE_DIR / "keys" / f"{user_id}.key"
 
 
+def user_ml_results_path(user_id: int, slug: str) -> Path:
+    """``ml/<user_id>/results_<slug>.json`` — ML nightly-pipeline
+    output, scoped per-user. Audit r1-049: pre-fix the file landed
+    in ``ml/results_<slug>.json`` (no user folder), so two tenants
+    with the same bot-slug would overwrite each other's ML output.
+    """
+    parent = _ensure_dir(BASE_DIR / "ml" / str(user_id))
+    return parent / f"results_{slug}.json"
+
+
 def exchange_creds_path(user_id: int, exchange: str) -> Path:
     """``credentials/<user_id>/<exchange>.enc`` — encrypted payload for
     one exchange belonging to one user."""
