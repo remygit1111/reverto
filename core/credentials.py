@@ -97,17 +97,32 @@ def get_fernet(user_id: int) -> Fernet:
 
 def save_keys(
     exchange: str, api_key: str, api_secret: str, user_id: int,
+    *,
+    passphrase: str = "",
 ) -> None:
-    """Versleutel en schrijf een api_key + api_secret paar voor
-    ``(user_id, exchange)`` naar ``credentials/<user_id>/<exchange>.enc``.
+    """Versleutel en schrijf een api_key + api_secret (+ optional
+    passphrase) voor ``(user_id, exchange)`` naar
+    ``credentials/<user_id>/<exchange>.enc``.
 
     Atomic write via .tmp → os.replace so a crash mid-write never
     leaves a half-encrypted file.
+
+    Audit r1-012: the passphrase field carries Bitget's third
+    credential piece (user-chosen at API-key creation time). Kept
+    optional on the signature because non-Bitget exchanges (Kraken
+    today) don't use a passphrase. Empty string means "no passphrase
+    stored" — get_keys then returns ``passphrase=""`` and the
+    consumer-facing helper ``get_bitget_passphrase`` falls through
+    to its env-var migration path.
     """
     f = _user_fernet(user_id)
-    payload = json.dumps(
-        {"api_key": api_key, "api_secret": api_secret},
-    ).encode("utf-8")
+    payload_dict: dict[str, str] = {
+        "api_key": api_key,
+        "api_secret": api_secret,
+    }
+    if passphrase:
+        payload_dict["passphrase"] = passphrase
+    payload = json.dumps(payload_dict).encode("utf-8")
     blob = f.encrypt(payload)
 
     dst = exchange_creds_path(user_id, exchange)
@@ -122,12 +137,18 @@ def save_keys(
 
 
 def get_keys(exchange: str, user_id: int) -> Optional[dict]:
-    """Decrypt en retourneer ``{'api_key', 'api_secret'}`` voor
-    ``(user_id, exchange)``, of None als het bestand ontbreekt of
-    niet decrypteerbaar is onder de huidige user-key.
+    """Decrypt en retourneer ``{'api_key', 'api_secret', 'passphrase'}``
+    voor ``(user_id, exchange)``, of None als het bestand ontbreekt
+    of niet decrypteerbaar is onder de huidige user-key.
 
     Geen exceptie naar boven — het aanroep-pad (engine boot, portal
     list) moet blijven werken als één paar credentials corrupt blijkt.
+
+    Audit r1-012: ``passphrase`` is always present in the returned
+    dict (empty string when not stored) so callers can treat the
+    shape uniformly. Legacy .enc files written before the field
+    existed decrypt into a dict without ``passphrase`` — we backfill
+    with "" so the shape is stable.
     """
     path = exchange_creds_path(user_id, exchange)
     if not path.exists():
@@ -149,7 +170,52 @@ def get_keys(exchange: str, user_id: int) -> Optional[dict]:
     return {
         "api_key":    data.get("api_key", ""),
         "api_secret": data.get("api_secret", ""),
+        "passphrase": data.get("passphrase", ""),
     }
+
+
+def get_bitget_passphrase(user_id: int) -> str:
+    """Return the Bitget passphrase for ``user_id``, preferring the
+    per-user credentials store over the legacy process-wide env-var.
+
+    Audit r1-012 migration path:
+
+      1. If ``get_keys("bitget", user_id)`` returned a non-empty
+         ``passphrase`` field, use that.
+      2. Otherwise fall back to ``BITGET_PASSPHRASE`` from the env
+         (pre-r1-012 layout) and emit a deprecation warning so the
+         operator sees the migration signal exactly once per
+         bot-start.
+      3. If neither source yields a passphrase, raise ``ValueError``
+         — the caller (``_authenticated_exchange`` in ``main_live``)
+         treats that as "refuse to boot live" and returns None.
+
+    This helper is intentionally Bitget-specific. Kraken et al.
+    don't use passphrases and the dispatch stays explicit rather
+    than hiding exchange-specific knowledge behind a generic
+    ``get_passphrase(exchange, user_id)``. A second exchange that
+    needs a passphrase would get its own helper or a parameterised
+    version; mid-migration that's more churn than it's worth.
+    """
+    stored = get_keys("bitget", user_id=user_id)
+    if stored and stored.get("passphrase"):
+        return stored["passphrase"]
+    legacy = os.environ.get("BITGET_PASSPHRASE", "")
+    if legacy:
+        logger.warning(
+            "BITGET_PASSPHRASE loaded from env-var for user=%d — "
+            "deprecated (audit r1-012). Re-save Bitget credentials "
+            "via /api/exchanges/bitget/keys to move the passphrase "
+            "into the encrypted credentials store.",
+            user_id,
+        )
+        return legacy
+    raise ValueError(
+        f"No Bitget passphrase available for user={user_id}: "
+        "credentials-store has no passphrase field and "
+        "BITGET_PASSPHRASE env-var is unset. Save credentials via "
+        "POST /api/exchanges/bitget/keys with a passphrase field."
+    )
 
 
 def has_keys(exchange: str, user_id: int) -> bool:

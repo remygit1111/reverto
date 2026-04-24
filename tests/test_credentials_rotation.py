@@ -37,9 +37,15 @@ class TestRotateFernetKey:
         creds.save_keys("bitget", "api_abc", "secret_xyz", user_id=1)
         creds.save_keys("kraken", "k_api", "k_secret", user_id=1)
 
-        # Sanity: before rotate.
+        # Sanity: before rotate. get_keys returns a stable shape
+        # including ``passphrase`` (empty here — no Bitget passphrase
+        # was saved) — see audit r1-012 for the schema extension.
         before = creds.get_keys("bitget", user_id=1)
-        assert before == {"api_key": "api_abc", "api_secret": "secret_xyz"}
+        assert before == {
+            "api_key": "api_abc",
+            "api_secret": "secret_xyz",
+            "passphrase": "",
+        }
 
         old_key_bytes = key.read_bytes()
         creds.rotate_fernet_key(user_id=1)
@@ -49,10 +55,14 @@ class TestRotateFernetKey:
 
         # Plaintext survives the round-trip.
         assert creds.get_keys("bitget", user_id=1) == {
-            "api_key": "api_abc", "api_secret": "secret_xyz",
+            "api_key": "api_abc",
+            "api_secret": "secret_xyz",
+            "passphrase": "",
         }
         assert creds.get_keys("kraken", user_id=1) == {
-            "api_key": "k_api", "api_secret": "k_secret",
+            "api_key": "k_api",
+            "api_secret": "k_secret",
+            "passphrase": "",
         }
 
     def test_backup_file_created(self, routed_store):
@@ -110,5 +120,5 @@ class TestRotateFernetKey:
         assert paths.exchange_creds_path(2, "bitget").read_bytes() == u2_enc_before
         # And user 2's plaintext still decrypts.
         assert creds.get_keys("bitget", user_id=2) == {
-            "api_key": "a2", "api_secret": "s2",
+            "api_key": "a2", "api_secret": "s2", "passphrase": "",
         }
