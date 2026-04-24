@@ -164,10 +164,20 @@ _session_serializer = URLSafeTimedSerializer(_SECRET_KEY, salt=_SESSION_SALT)
 _CSRF_COOKIE = "reverto_csrf"
 _CSRF_HEADER = "X-CSRF-Token"
 _CSRF_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-# Paths that opt out of CSRF check — unauth-reachable endpoints
-# where the client has no way to know the token yet (login) or
-# where the request shape is purely read-like (logout just bumps
-# an epoch; missing token can't cause a meaningful side-effect).
+# Paths that opt out of CSRF check. Intentionally MINIMAL:
+#
+#   * /auth/login — caller has no session + no CSRF cookie yet.
+#     That endpoint issues the first CSRF cookie on success.
+#
+# Decisions about what stays NON-exempt (audit pd-042):
+#
+#   * /auth/logout stays under CSRF. Cross-site forced logout is
+#     low-severity (the victim is inconvenienced, no data loss or
+#     takeover), but defending it is cheap because the SPA already
+#     echoes the header on every mutating fetch. Legacy sessions
+#     without a CSRF cookie get one-shot granted + minted by the
+#     graceful-migration path in CSRFMiddleware, so users aren't
+#     locked out.
 _CSRF_EXEMPT_PATHS = frozenset({
     "/auth/login",
 })
@@ -1576,6 +1586,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"]        = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"]        = "no-referrer"
+        # Permissions-Policy (audit pd-011) — opt out of every
+        # browser sensor / device API. Reverto is a trading portal:
+        # it has no legit use for camera / microphone / geolocation
+        # / payment / usb / sensors. Denying them here means an XSS
+        # or compromised third-party script can't prompt the user
+        # for those permissions either. Empty allowlist `=()` is
+        # the "deny-all-origins" syntax.
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), "
+            "payment=(), usb=(), bluetooth=(), "
+            "accelerometer=(), gyroscope=(), magnetometer=()"
+        )
         # HSTS — audit r1-075: instruct browsers to pin HTTPS for the
         # portal host. Only emit on an actual HTTPS request so an
         # operator running `make start` on http://localhost doesn't
@@ -1708,7 +1730,7 @@ except Exception as _e:  # pragma: no cover - defensive
     logger.warning("init_db failed on portal startup: %s", _e)
 
 def _validate_config() -> None:
-    """Check critical env-vars at portal boot (audit r1-058).
+    """Check critical env-vars at portal boot (audit r1-058, pd-025).
 
     Raises ``RuntimeError`` for missing *required* vars so uvicorn
     fails fast and the operator sees a clear stderr message
@@ -1723,17 +1745,26 @@ def _validate_config() -> None:
         for local dev, but in a real deploy an ephemeral key
         invalidates every live session on the next restart. Hard
         fail at boot is strictly better observability.
+      * REVERTO_API_KEY — X-API-Key authentication (audit pd-025).
+        Same reasoning as SECRET_KEY: the module-import fallback
+        writes an ephemeral key to ``logs/.api_key_ephemeral`` and
+        deletes it at shutdown, so without this env var every
+        portal restart rotates the key and silently breaks CI /
+        backup scripts / integrations that cached the prior value.
+        Elevated from *recommended* to *required* so the deploy
+        fails fast rather than drifting.
 
     Recommended (warn only):
-      * REVERTO_API_KEY   — required for X-API-Key authentication
       * BITGET_API_KEY    — required for live-mode Bitget bots
       * BITGET_API_SECRET — required for live-mode Bitget bots
     """
     required = {
         "REVERTO_SECRET_KEY": "required for session signing",
+        "REVERTO_API_KEY":
+            "required for API-key authentication — prevents "
+            "ephemeral-key rotation on portal restart",
     }
     recommended = {
-        "REVERTO_API_KEY":   "required for API-key authentication",
         "BITGET_API_KEY":    "required for live-mode Bitget bots",
         "BITGET_API_SECRET": "required for live-mode Bitget bots",
     }
