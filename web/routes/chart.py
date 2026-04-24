@@ -45,6 +45,7 @@ from web.app import (
     _normalize_chart_pair,
     _parse_iso_utc,
     _price_lock,
+    _rate_limit_key_func,
     _request_user,
     _ticker_cache,
     _TICKER_CACHE_MAX,
@@ -54,11 +55,17 @@ from web.app import (
     registry,
 )
 
-# Audit r1-045: cost-based budget fronting /api/candles. The flat
-# 20/min slowapi limiter treats a 100-candle call the same as a
-# 5000-candle one; this bucket charges the request proportional
-# to its ``limit`` parameter. Default tuning (10k budget, 100/s
-# refill) = sustained 100 candles/sec + up to 10k burst when idle.
+# Audit r1-045 + pd-005: cost-based budget fronting both
+# /api/candles AND /api/chart. The flat slowapi limiters treat a
+# 100-candle call the same as a 5000-candle one; this bucket
+# charges the request proportional to its ``limit`` parameter.
+# Default tuning (10k budget, 100/s refill) = sustained 100
+# candles/sec + up to 10k burst when idle.
+#
+# Sharing one budget between the two endpoints prevents an
+# attacker from using one to bypass the other's throttle. For a
+# legit SPA user the 60s chart cache (_CHART_CACHE_TTL) keeps
+# typical dashboard refresh load well under the refill rate.
 _candles_cost_budget = CostBudget(
     budget=10000, refill_per_second=100,
 )
@@ -228,6 +235,23 @@ async def api_chart(
                 _chart_cache.move_to_end(key)
                 return cached[1]
             _chart_cache.pop(key, None)
+
+    # Cost-based throttle (audit pd-005). Only debits when we're
+    # about to actually hit the upstream exchange — cache hits
+    # above returned early so they don't contribute to load.
+    # Keyed via ``_rate_limit_key_func`` so authenticated users
+    # get a per-user budget and anon traffic shares an IP bucket.
+    # Shared with /api/candles so neither endpoint is a loophole
+    # around the other's throttle.
+    budget_key = _rate_limit_key_func(request)
+    if not _candles_cost_budget.consume(budget_key, limit):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Chart budget exhausted — wait a moment or use a "
+                "smaller ``limit``. The budget refills continuously."
+            ),
+        )
 
     try:
         from exchanges.public_exchange import PublicExchange

@@ -409,3 +409,91 @@ class TestTickerEndpoint:
         r = session.get("/api/ticker/BTCUSDT")
         assert r.status_code == 200
         assert r.json()["pair"] == "BTC/USDT"
+
+
+# ── /api/chart cost-budget (audit pd-005) ──────────────────────────────────
+
+
+class TestChartCostBudget:
+    """The /api/chart endpoint shares the /api/candles CostBudget so
+    neither endpoint is a loophole around the other's throttle.
+    Large ``limit`` values debit proportionally; cache hits skip the
+    debit entirely."""
+
+    @pytest.fixture
+    def _patched_ohlcv(self, monkeypatch):
+        """Force PublicExchange.get_ohlcv to return a fixed payload so
+        the tests don't actually reach out to Bitget."""
+        from exchanges import public_exchange
+
+        def _fake_get_ohlcv(self, pair, timeframe, limit):
+            # Return ``limit`` fake candles so the response body
+            # reflects the requested size.
+            return [
+                [1_700_000_000_000 + i * 60_000, 1.0, 1.0, 1.0, 1.0, 0.0]
+                for i in range(limit)
+            ]
+        monkeypatch.setattr(
+            public_exchange.PublicExchange, "get_ohlcv", _fake_get_ohlcv,
+        )
+
+    def test_chart_consumes_budget_on_miss(self, session, _patched_ohlcv):
+        """A fresh chart call debits the budget by ``limit`` points.
+        The budget state is observable via ``peek()`` on whichever
+        key the request was keyed under (IP fallback for the anon
+        TestClient)."""
+        from web.routes import chart as chart_routes
+        chart_routes._candles_cost_budget.reset()
+        chart_routes._chart_cache.clear()
+
+        r = session.get("/api/chart/BTC-USDT/15m?limit=123")
+        assert r.status_code == 200
+        # Authenticated caller is keyed on user:<id>. The admin row
+        # seeded by conftest has id=1, so the bucket key is "user:1".
+        budget = chart_routes._candles_cost_budget
+        drained_somewhere = any(
+            budget.peek(k) < budget.budget for k in budget._state
+        )
+        assert drained_somewhere, (
+            "budget state untouched — chart endpoint didn't consume"
+        )
+
+    def test_chart_rejects_when_budget_exhausted(
+        self, session, _patched_ohlcv,
+    ):
+        """Drain the bucket and verify the next call 429s with the
+        chart-specific detail message."""
+        from web.routes import chart as chart_routes
+        chart_routes._candles_cost_budget.reset()
+        chart_routes._chart_cache.clear()
+
+        # Pre-drain the bucket for the admin user's key. Admin id is
+        # 1 (conftest seed), so _rate_limit_key_func returns
+        # "user:1" when the session cookie resolves.
+        chart_routes._candles_cost_budget.consume("user:1", 10000)
+
+        r = session.get("/api/chart/BTC-USDT/15m?limit=400")
+        assert r.status_code == 429
+        assert "budget" in r.json()["detail"].lower()
+
+    def test_chart_cache_hit_skips_budget(
+        self, session, _patched_ohlcv,
+    ):
+        """A second identical chart request should be served from
+        cache without touching the budget. Prime once, drain the
+        budget, then request again — the cached response must still
+        return 200."""
+        from web.routes import chart as chart_routes
+        chart_routes._candles_cost_budget.reset()
+        chart_routes._chart_cache.clear()
+
+        r1 = session.get("/api/chart/BTC-USDT/15m?limit=200")
+        assert r1.status_code == 200
+
+        # Drain the user's budget.
+        chart_routes._candles_cost_budget.consume("user:1", 10000)
+
+        r2 = session.get("/api/chart/BTC-USDT/15m?limit=200")
+        assert r2.status_code == 200, (
+            "cache hit should bypass the exhausted budget"
+        )
