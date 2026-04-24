@@ -232,10 +232,16 @@ def _create_session_cookie(user: User) -> str:
     ``_create_session_cookie("admin")`` aanriepen moeten de admin-User
     zelf ophalen via ``user_store.get_user_by_username`` (of een
     test-helper daaromheen).
+
+    Audit r1-006: pre-fix payload also carried a ``"u": username``
+    field left over from Phase-1. Every read-path resolves the
+    User from ``uid`` now (via ``user_store.get_user_by_id``), so
+    the string-username was dead payload. Dropped; pre-fix cookies
+    with both ``u`` and ``uid`` still validate because the reader
+    only requires ``uid``.
     """
     return _session_serializer.dumps({
         "uid": user.id,
-        "u": user.username,
         "iat": int(time.time()),
         "ep": user_store.get_session_epoch(user.id),
     })
@@ -246,7 +252,7 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
 
     Validation order:
       1. itsdangerous signature + TTL
-      2. payload shape (dict, has 'uid' and 'u')
+      2. payload shape (dict, has 'uid')
       3. per-user session_epoch match against DB
 
     Any failure returns None — callers translate that to 401.
@@ -263,7 +269,11 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
         # broken cookie escape as a 500 from the auth gate.
         logger.debug("session cookie parse failed: %s", e)
         return None
-    if not isinstance(data, dict) or not data.get("u"):
+    # Audit r1-006: validation gate switched from ``data.get("u")``
+    # (pre-fix username string) to ``data.get("uid")`` (the int that
+    # every downstream read-path actually uses).
+    uid = data.get("uid")
+    if not isinstance(data, dict) or not isinstance(uid, int) or uid <= 0:
         return None
     # Per-user epoch check — reject every cookie whose embedded epoch
     # doesn't match the current DB value for the user. Logout / pw-
@@ -329,8 +339,17 @@ def _request_actor(request: Request) -> str:
     itself is gone.
     """
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
-    if payload and payload.get("u"):
-        return f"session:{payload['u']}"
+    if payload:
+        # Audit r1-006: cookie no longer carries ``u`` (username) —
+        # resolve from uid so the audit log still reads as
+        # ``session:<username>`` rather than a bare numeric id.
+        # Miss (user deleted between request-start and here) falls
+        # through to the ``-`` branch so audit lines don't crash.
+        uid = payload.get("uid")
+        if isinstance(uid, int) and uid > 0:
+            u = user_store.get_user_by_id(uid)
+            if u is not None:
+                return f"session:{u.username}"
     # Header-only — query-string fallback removed, see AuthMiddleware.
     provided = request.headers.get("X-API-Key")
     if provided and secrets.compare_digest(provided, _API_KEY):

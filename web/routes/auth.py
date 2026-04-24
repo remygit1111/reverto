@@ -277,9 +277,18 @@ async def auth_status(request: Request):
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
     if payload:
         uid = payload.get("uid")
+        username = None
+        # Audit r1-006: cookie no longer carries a username field —
+        # resolve from ``uid`` instead. Missing user falls through
+        # to ``username=None`` so the SPA's avatar-initial renders
+        # its placeholder instead of crashing.
+        if isinstance(uid, int) and uid > 0:
+            u = user_store.get_user_by_id(uid)
+            if u is not None:
+                username = u.username
         return {
             "authenticated": True,
-            "username": payload.get("u"),
+            "username": username,
             "user_id": int(uid) if isinstance(uid, int) else None,
         }
     return {"authenticated": False, "username": None, "user_id": None}
@@ -310,7 +319,18 @@ async def auth_change_password(
                 "and is unsafe to use. Please choose a different password."
             ),
         )
-    username = session.get("u", "")
+    # Audit r1-006: cookie no longer carries ``u`` — resolve the
+    # username from ``uid`` via the DB so we can feed it into
+    # ``verify_password`` (which still takes the username as its
+    # lookup key). Missing-user case can't actually fire here because
+    # _require_session already validated uid + active, but an empty-
+    # string fallback keeps verify_password's failure path clean.
+    uid = session.get("uid")
+    username = ""
+    if isinstance(uid, int) and uid > 0:
+        db_user = user_store.get_user_by_id(uid)
+        if db_user is not None:
+            username = db_user.username
     user = user_store.verify_password(username, body.current_password)
     if user is None:
         await asyncio.sleep(0.1)
