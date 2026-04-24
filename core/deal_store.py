@@ -415,6 +415,42 @@ def get_deal_orders(deal_id: str, user_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_orders_for_deal_ids(
+    deal_ids: list[str], user_id: int,
+) -> dict[str, list[dict]]:
+    """Batch-fetch orders for multiple deals in ONE query.
+
+    Replaces the N+1 pattern where ``/api/db/deals`` called
+    ``get_deal_orders`` once per deal (audit r1-020). For N deals
+    that was N+1 round-trips; this helper does one IN-list query
+    and groups in Python. Returns ``{deal_id: [orders...]}`` with
+    empty lists for ids that had no orders so callers can iterate
+    without a KeyError guard.
+
+    Scoped by ``user_id`` as a second line of defence — matches
+    the per-deal helper's hygiene so a caller that passed foreign
+    deal_ids gets back an empty list rather than another tenant's
+    orders.
+    """
+    if not deal_ids:
+        return {}
+    conn = get_db()
+    placeholders = ",".join("?" * len(deal_ids))
+    rows = conn.execute(
+        f"SELECT * FROM orders "
+        f"WHERE deal_id IN ({placeholders}) AND user_id = ? "
+        f"ORDER BY deal_id, order_number ASC",
+        [*deal_ids, user_id],
+    ).fetchall()
+    result: dict[str, list[dict]] = {did: [] for did in deal_ids}
+    for r in rows:
+        d = dict(r)
+        did = d.get("deal_id")
+        if did in result:
+            result[did].append(d)
+    return result
+
+
 def get_all_deals(user_id: int, limit: int = 500) -> list[dict]:
     """Shortcut for get_deals(user_id, None, None, limit)."""
     return get_deals(user_id, None, None, limit)

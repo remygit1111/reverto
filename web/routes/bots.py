@@ -538,8 +538,8 @@ def _reverto_version() -> str:
             sha = result.stdout.strip()
             if sha:
                 return sha
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("_reverto_version: git sha lookup failed: %s", e)
     return "unknown"
 
 

@@ -703,8 +703,11 @@ class PaperEngine:
                     equity = self._current_equity_btc(price)
                     dd_pct = max(0.0, (peak - equity) / peak * 100)
                     _m.set_drawdown_pct(slug, dd_pct)
-            except Exception:
-                pass
+            except Exception as _metrics_err:
+                # Metrics are best-effort — missing web/metrics module
+                # or registry errors must never break a tick. Debug-log
+                # so operators can find the failure if they dig.
+                logger.debug("tick metrics update failed: %s", _metrics_err)
 
             # Successful tick completed — end any transient-error streak
             # and clear the persistent-notify latch so a future streak
@@ -730,8 +733,10 @@ class PaperEngine:
                 # a bounded-cardinality label so Prometheus doesn't grow
                 # a time-series per exception subclass.
                 _m.record_tick_error(self._bot_slug or "unknown", e)
-            except Exception:
-                pass
+            except Exception as _metrics_err:
+                logger.debug(
+                    "record_tick_error failed: %s", _metrics_err,
+                )
 
             # Classify once so every downstream consumer (log line,
             # Telegram notification, future metrics tag) reads the same
@@ -780,8 +785,10 @@ class PaperEngine:
             if _tick_ctx is not None:
                 try:
                     _tick_ctx.__exit__(None, None, None)
-                except Exception:
-                    pass
+                except Exception as _ctx_err:
+                    logger.debug(
+                        "tick timer context exit failed: %s", _ctx_err,
+                    )
 
     # ------------------------------------------------------------------
     # Schedule transition detection
