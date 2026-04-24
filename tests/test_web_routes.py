@@ -1018,6 +1018,22 @@ class TestApiKeyRespectsActive:
         assert r.status_code == 401
         assert r.json()["detail"] == "Not authenticated"
 
+    def test_api_key_auth_path_isolated_from_cookie(self):
+        """Audit r1-054: explicit regression-guard that the API-key
+        path rejects on active=0 *even when no cookie is present*.
+        The sibling tests already exercise this condition, but this
+        one pins it without relying on test-client cookie state —
+        the TestClient is built fresh, cookies are explicitly
+        cleared, and only the X-API-Key header is sent. Ensures
+        Sprint-1's r1-001 fix stays tested in isolation from the
+        cookie-auth path even if fixtures drift."""
+        self._deactivate_admin()
+        isolated = TestClient(webapp.app)
+        isolated.cookies.clear()
+        r = isolated.get("/api/bots", headers=AUTH)
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Not authenticated"
+
     def test_api_key_gets_fresh_user_from_db(self):
         # Mutating the admin's role mid-session must surface in the
         # next API-key call — proves each request hits the DB rather
