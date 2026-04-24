@@ -1479,6 +1479,50 @@ def _validate_config() -> None:
         )
 
 
+def _validate_config_completeness() -> None:
+    """Warn the operator if ``.env.example`` lists an env-var that
+    isn't set in the running process. Catches drift between the
+    template and the actual ``.env`` (audit r1-059).
+
+    Runs after ``_validate_config`` in lifespan startup. Best-effort:
+    missing template file = silent no-op (development workflow may
+    not ship one). ``_VALIDATE_CONFIG_SUPPRESS_EXAMPLE_CHECK=1``
+    skips the check entirely, for the rare CI where a .env.example
+    is intentionally a superset (e.g. testing a feature that isn't
+    merged yet).
+    """
+    if os.environ.get("_VALIDATE_CONFIG_SUPPRESS_EXAMPLE_CHECK") == "1":
+        return
+    example_path = BASE_DIR / ".env.example"
+    if not example_path.exists():
+        return
+    example_vars: set[str] = set()
+    try:
+        for line in example_path.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                # Guard against inline comments that include '=' —
+                # an env-var name must match the standard shell
+                # identifier shape.
+                if key and key.replace("_", "").isalnum():
+                    example_vars.add(key)
+    except OSError as e:
+        logger.debug("_validate_config_completeness: %s read failed: %s",
+                     example_path, e)
+        return
+    missing = sorted(v for v in example_vars if not os.environ.get(v))
+    if missing:
+        logger.warning(
+            "Env-vars listed in .env.example but not set in the "
+            "running environment: %s. Update your .env from "
+            ".env.example if these are needed (audit r1-059).",
+            ", ".join(missing),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan handler.
@@ -1495,6 +1539,7 @@ async def lifespan(app: FastAPI):
     make restart.
     """
     _validate_config()
+    _validate_config_completeness()
     logger.info("=== Portal started ===")
 
     background_tasks: list[asyncio.Task] = [
