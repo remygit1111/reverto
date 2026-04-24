@@ -22,18 +22,29 @@ from web import app as webapp  # noqa: E402
 
 def test_validate_config_raises_on_missing_secret_key(monkeypatch):
     monkeypatch.delenv("REVERTO_SECRET_KEY", raising=False)
+    monkeypatch.setenv("REVERTO_API_KEY", "x")
     with pytest.raises(RuntimeError, match="REVERTO_SECRET_KEY"):
+        _validate_config()
+
+
+def test_validate_config_raises_on_missing_api_key(monkeypatch):
+    """Audit pd-025: REVERTO_API_KEY elevated from recommended to
+    required. Missing-var must raise so a mis-configured deploy
+    can't silently drift onto ephemeral keys."""
+    monkeypatch.setenv("REVERTO_SECRET_KEY", "test")
+    monkeypatch.delenv("REVERTO_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="REVERTO_API_KEY"):
         _validate_config()
 
 
 def test_validate_config_warns_on_missing_recommended(monkeypatch, caplog):
     monkeypatch.setenv("REVERTO_SECRET_KEY", "test")
-    for var in ("REVERTO_API_KEY", "BITGET_API_KEY", "BITGET_API_SECRET"):
+    monkeypatch.setenv("REVERTO_API_KEY", "test")
+    for var in ("BITGET_API_KEY", "BITGET_API_SECRET"):
         monkeypatch.delenv(var, raising=False)
     with caplog.at_level(logging.WARNING, logger="web.app"):
         _validate_config()
     warnings = " ".join(rec.message for rec in caplog.records)
-    assert "REVERTO_API_KEY" in warnings
     assert "BITGET_API_KEY" in warnings
     assert "BITGET_API_SECRET" in warnings
 
