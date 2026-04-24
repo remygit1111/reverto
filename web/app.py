@@ -1507,7 +1507,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Reverto Portal", docs_url=None, redoc_url=None,
+    title="Reverto Portal",
+    # Audit r1-048 (ACCEPTED): Swagger UI + ReDoc + the raw
+    # ``/openapi.json`` are all disabled. Reverto is a single-
+    # operator platform today; exposing the spec would leak
+    # internal route semantics (payload shapes, auth patterns,
+    # admin-gated endpoints) without a user benefit. Defense-in-
+    # depth: ``openapi_url=None`` too so the JSON spec isn't
+    # reachable even if Starlette's defaults ever change.
+    # Revisit if an external integration partner ever needs it.
+    docs_url=None, redoc_url=None, openapi_url=None,
     lifespan=lifespan,
 )
 app.state.limiter = limiter
