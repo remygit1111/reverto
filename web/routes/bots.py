@@ -634,8 +634,20 @@ async def duplicate_bot(
 
     try:
         raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as e:
-        raise HTTPException(status_code=500, detail=f"Source YAML parse error: {e}")
+    except yaml.YAMLError:
+        # Audit r2-001: mirror the pd-001 scrub pattern. YAMLError
+        # __str__ embeds line/column/snippet of the offending source
+        # — leaking that via HTTPException detail on a public endpoint
+        # fingerprints on-disk layout. Full trace goes to portal.log
+        # via logger.exception; client gets a generic 500.
+        logger.exception(
+            "bot duplicate source YAML parse failed user=%s source=%s target=%s",
+            user.id, slug, new_slug,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to parse source bot config for duplication",
+        )
 
     # Keep the source layout: _bot_yaml_path files are all wrapped in
     # {"bot": {...}} by create_bot/update_bot_config, so the duplicate
