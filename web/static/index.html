@@ -4,6 +4,27 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reverto — Bitcoin bots</title>
+
+<!-- Anti-flash gate. Body stays hidden until app.js's DOMContentLoaded
+     handler completes the /auth/status check and the correct view
+     (SPA chrome OR login screen) is in place. Without this gate, an
+     unauthenticated reload of /overview shows the real protected UI
+     for ~50-200ms before JavaScript redirects to /login.
+
+     The 3-second inline-script fallback reveals the body even if
+     app.js fails to parse, fails to load, or hangs — a network glitch
+     can never leave the page permanently blank. Inline + early so it
+     fires before app.js needs to be downloaded + parsed. -->
+<style>
+  body { visibility: hidden; }
+  body.auth-checked { visibility: visible; }
+</style>
+<script>
+  setTimeout(function () {
+    document.body && document.body.classList.add('auth-checked');
+  }, 3000);
+</script>
+
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -1549,6 +1570,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=201"></script>
+<script src="/static/app.js?v=202"></script>
 </body>
 </html>
