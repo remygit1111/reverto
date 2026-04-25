@@ -8185,6 +8185,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const authed = await checkAuthStatus();
   if (!authed) {
     _handle401();
+    // Anti-flash gate (paired with the visibility:hidden rule in
+    // index.html): reveal body AFTER _handle401() has stripped the
+    // protected chrome and shown the login view. Doing it before
+    // would re-introduce the flash we're trying to prevent.
+    document.body.classList.add('auth-checked');
     return;
   }
   // Authed — make sure the chrome is visible (a previous _handle401
@@ -8197,6 +8202,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // confirms user_id=1. Running this before the SPA renders avoids
   // a flash of the Admin tab on a regular user's reload.
   applyAdminVisibility();
+
+  // Anti-flash gate: reveal body once the chrome + admin-visibility
+  // are correct for this user. Idempotent — if the 3s safety
+  // timeout in index.html already added the class, this is a no-op.
+  document.body.classList.add('auth-checked');
 
   refreshProfileInitial();
 
