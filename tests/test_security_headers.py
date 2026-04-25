@@ -70,6 +70,46 @@ def test_csp_still_allows_self_and_unpkg():
     assert "https://unpkg.com" in csp
 
 
+def test_server_header_stripped_by_middleware():
+    """Audit r3-003 (defense-in-depth) — SecurityHeadersMiddleware
+    deletes any ``Server`` header that reaches it. TestClient bypasses
+    uvicorn's H11 serialisation, so this only validates the
+    middleware-side belt-and-braces guard. The PRIMARY fix lives in
+    ``uvicorn.Config(server_header=False)`` — see the next test.
+    """
+    client = TestClient(app)
+    r = client.get("/health")
+    # Case-insensitive header-name view (Starlette/uvicorn casing
+    # varies across versions).
+    header_names_lower = {k.lower() for k in r.headers.keys()}
+    assert "server" not in header_names_lower, (
+        f"Server header should be stripped by middleware; got: "
+        f"{[k for k in r.headers.keys() if k.lower() == 'server']}"
+    )
+
+
+def test_uvicorn_config_suppresses_server_header():
+    """Audit r3-003 (primary fix) — uvicorn's ``Server: uvicorn``
+    response header is injected at the H11 protocol layer, AFTER any
+    Starlette middleware. The only place to suppress it is the
+    ``uvicorn.Config(...)`` call. This test introspects the source
+    of ``run_portal`` to assert ``server_header=False`` is passed —
+    a future regression that drops the kwarg gets caught at CI time
+    rather than discovered via ``curl -I https://reverto.bot/`` post-
+    deploy.
+    """
+    import inspect
+    from web import app as webapp
+
+    source = inspect.getsource(webapp.run_portal)
+    assert "server_header=False" in source, (
+        "uvicorn.Config(...) must include server_header=False to "
+        "suppress the 'Server: uvicorn' fingerprint at the protocol "
+        "layer. Middleware-side strip is defense-in-depth only and "
+        "doesn't run before uvicorn's H11 serialisation."
+    )
+
+
 def test_permissions_policy_header_present():
     """Audit pd-011 — Permissions-Policy must deny every browser
     sensor / device API. A trading portal has no legit use for

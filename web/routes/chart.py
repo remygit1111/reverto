@@ -159,9 +159,19 @@ async def api_ticker(
             raw = await asyncio.to_thread(
                 _bitget_client.fetch_ticker, normalized.replace("/", ""),
             )
-    except Exception as e:
+    except Exception:
+        # Audit r3-001: don't echo the ccxt exception detail. Mirrors
+        # the pd-001 / r2-001 template — full trace via logger.exception
+        # for operators, generic detail for the wire. ccxt error strings
+        # can carry URL fragments, response-body snippets, or exchange-
+        # internal codes; on a public domain those are unnecessary
+        # fingerprinting surface.
+        logger.exception(
+            "ticker fetch failed for pair=%s",
+            normalized,
+        )
         raise HTTPException(
-            status_code=502, detail=f"ticker fetch failed: {str(e)[:200]}",
+            status_code=502, detail="ticker fetch failed",
         )
 
     # ccxt's ticker dict has ``last``/``close`` for the mark price,
@@ -259,8 +269,15 @@ async def api_chart(
         raw = await asyncio.to_thread(
             client.get_ohlcv, normalized, timeframe, limit,
         )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Exchange error: {str(e)[:200]}")
+    except Exception:
+        # Audit r3-001: scrub upstream exception detail from the wire.
+        logger.exception(
+            "chart ohlcv fetch failed pair=%s tf=%s limit=%s",
+            normalized, timeframe, limit,
+        )
+        raise HTTPException(
+            status_code=502, detail="Exchange unavailable",
+        )
 
     payload = [
         {
@@ -368,8 +385,15 @@ async def api_candles(
         raw = await webapp._fetch_ohlcv_range(
             client, normalized, timeframe, start_ms, end_ms,
         )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Exchange error: {str(e)[:200]}")
+    except Exception:
+        # Audit r3-001: scrub upstream exception detail from the wire.
+        logger.exception(
+            "candles range fetch failed pair=%s tf=%s span=%sms",
+            normalized, timeframe, end_ms - start_ms,
+        )
+        raise HTTPException(
+            status_code=502, detail="Exchange unavailable",
+        )
 
     payload = [
         {
