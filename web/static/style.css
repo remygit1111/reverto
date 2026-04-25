@@ -1571,7 +1571,7 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .chart-no-more-data .no-more-icon { color: var(--red); flex-shrink: 0; }
 
 /* Header context subtext — breadcrumb "Reverto › SLUG" on bot-detail,
-   tagline ("Bitcoin bots. Done seriously.") elsewhere. */
+   tagline ("Built for Bitcoin.") elsewhere. */
 .hdr-sep {
   color: var(--muted);
   margin: 0 4px;
