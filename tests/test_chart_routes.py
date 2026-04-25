@@ -497,3 +497,97 @@ class TestChartCostBudget:
         assert r2.status_code == 200, (
             "cache hit should bypass the exhausted budget"
         )
+
+
+# ── r3-001: chart routes must not leak ccxt exception detail in 5XX bodies ──
+
+
+_LEAK_SENTINEL = "BITGET_INTERNAL_ERROR_PYTEST_R3_001_SENTINEL"
+
+
+class TestChartExceptionScrub:
+    """Audit r3-001 — three sites in chart.py used
+    ``f"...: {str(e)[:200]}"`` in 5XX HTTPException details, leaking
+    ccxt error strings (URL fragments, response-body snippets,
+    exchange-internal codes) onto the public domain. The fixes mirror
+    the pd-001 / r2-001 template (logger.exception + generic detail).
+
+    Each test mocks the upstream call to raise an exception carrying a
+    recognisable sentinel string, drives the endpoint, and asserts:
+      * 5XX response (the failure path triggered)
+      * sentinel NOT in response body (scrub effective)
+      * generic detail message present
+    """
+
+    def test_ticker_endpoint_does_not_leak_exception_detail(
+        self, session, monkeypatch,
+    ):
+        """``/api/ticker/{pair}`` — chart.py:163 site (ticker fetch)."""
+        from web.routes import chart as chart_routes
+        chart_routes._ticker_cache.clear()
+
+        def _boom(*a, **kw):
+            raise RuntimeError(_LEAK_SENTINEL)
+
+        # Replace fetch_ticker on the shared bitget client.
+        monkeypatch.setattr(webapp._bitget_client, "fetch_ticker", _boom)
+
+        r = session.get("/api/ticker/BTCUSDT")
+        assert r.status_code == 502
+        body = r.text
+        assert _LEAK_SENTINEL not in body, (
+            f"ticker exception sentinel leaked into 502 body: {body!r}"
+        )
+        # Generic detail still informative.
+        assert "ticker fetch failed" in r.json()["detail"].lower()
+
+    def test_chart_endpoint_does_not_leak_exception_detail(
+        self, session, monkeypatch,
+    ):
+        """``/api/chart/{pair}/{timeframe}`` — chart.py:266 site
+        (cache-miss → PublicExchange.get_ohlcv)."""
+        from web.routes import chart as chart_routes
+        from exchanges import public_exchange
+        chart_routes._chart_cache.clear()
+        chart_routes._candles_cost_budget.reset()
+
+        def _boom(self, pair, timeframe, limit):
+            raise RuntimeError(_LEAK_SENTINEL)
+
+        monkeypatch.setattr(
+            public_exchange.PublicExchange, "get_ohlcv", _boom,
+        )
+
+        r = session.get("/api/chart/BTC-USDT/15m?limit=200")
+        assert r.status_code == 502
+        body = r.text
+        assert _LEAK_SENTINEL not in body, (
+            f"chart exception sentinel leaked into 502 body: {body!r}"
+        )
+        assert "exchange unavailable" in r.json()["detail"].lower()
+
+    def test_candles_endpoint_does_not_leak_exception_detail(
+        self, session, monkeypatch,
+    ):
+        """``/api/candles/{pair}/{timeframe}`` — chart.py:382 site
+        (paginated OHLCV range fetch via webapp._fetch_ohlcv_range)."""
+        from web.routes import chart as chart_routes
+        chart_routes._candles_cache.clear()
+        chart_routes._candles_cost_budget.reset()
+
+        async def _boom(*a, **kw):
+            raise RuntimeError(_LEAK_SENTINEL)
+
+        monkeypatch.setattr(webapp, "_fetch_ohlcv_range", _boom)
+
+        r = session.get(
+            "/api/candles/BTC-USDT/1h"
+            "?start=2026-01-01T00:00:00Z&end=2026-01-02T00:00:00Z"
+            "&limit=200",
+        )
+        assert r.status_code == 502
+        body = r.text
+        assert _LEAK_SENTINEL not in body, (
+            f"candles exception sentinel leaked into 502 body: {body!r}"
+        )
+        assert "exchange unavailable" in r.json()["detail"].lower()

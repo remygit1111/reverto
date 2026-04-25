@@ -1613,6 +1613,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains"
             )
+        # Audit r3-003 (defense-in-depth): the **primary** fix for
+        # the uvicorn ``Server`` fingerprint is ``server_header=False``
+        # in ``uvicorn.Config(...)`` — uvicorn injects the header at
+        # the H11 protocol layer, AFTER Starlette's middleware chain,
+        # so the only effective place to suppress it is the config
+        # call. This middleware-side delete is a belt-and-braces
+        # guard against a future reverse-proxy or upstream that might
+        # inject ``Server`` into the response. Starlette's
+        # MutableHeaders raises on `del` if the key is absent, so
+        # gate on membership (case-insensitive lookup).
+        if "server" in response.headers:
+            del response.headers["server"]
         return response
 
 
@@ -2707,6 +2719,14 @@ def run_portal(host="0.0.0.0", port=8080):
         # ceiling, so uvicorn will never linger longer than the shell
         # wrapper allows.
         timeout_graceful_shutdown=5,
+        # Audit r3-003: suppress the ``Server: uvicorn`` response
+        # header at the protocol layer. uvicorn injects this header
+        # in its H11 serialisation (AFTER Starlette's middleware
+        # chain), so a `del response.headers["server"]` in
+        # SecurityHeadersMiddleware would have no effect. The
+        # ``server_header=False`` kwarg is the only place that
+        # actually keeps the fingerprint off the wire.
+        server_header=False,
     )
     server = uvicorn.Server(config)
     server.run()
