@@ -2075,7 +2075,7 @@ function _resetHeaderForTopLevel() {
   teardownChartTab();
   teardownWizardChart();
   if (ws) { ws.close(); ws = null; }
-  $('hdr-context').textContent = 'Bitcoin bots. Done seriously.';
+  $('hdr-context').textContent = 'Built for Bitcoin.';
   $('hdr-context').classList.remove('clickable');
   $('hdr-context').onclick = null;
   $('hdr-pill').classList.add('hidden');
