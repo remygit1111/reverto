@@ -121,11 +121,41 @@ find "${BACKUP_DIR}" -type d -exec chmod 700 {} \;
 # ──────────────────────────────────────────────────────────────
 
 MANIFEST="${BACKUP_DIR}/MANIFEST.txt"
+
+# Audit r3-008: stamp the SQLite schema version into the manifest.
+# Mirrors the CLI + Python-stdlib fallback pattern used for the DB
+# .backup itself (lines 64-81 above) so the manifest stays populated
+# regardless of which code-path produced the snapshot. Probes the
+# BACKUP_DB (just-copied snapshot) rather than the source DB so the
+# manifest reflects exactly what landed in the backup. Falls back to
+# "unknown" if both paths fail — the manifest must never error out
+# and abort the backup itself.
+SCHEMA_VERSION_VALUE="unknown"
+if command -v sqlite3 >/dev/null 2>&1; then
+    SCHEMA_VERSION_VALUE=$(sqlite3 "${BACKUP_DB}" 'PRAGMA user_version;' 2>/dev/null || echo "unknown")
+else
+    # Same Python resolution as the DB-backup fallback above: prefer
+    # the project's venv, then the system python3.
+    _SCHEMA_PY=".venv/bin/python3"
+    if [ ! -x "${_SCHEMA_PY}" ]; then
+        _SCHEMA_PY=$(command -v python3 || true)
+    fi
+    if [ -n "${_SCHEMA_PY}" ] && [ -x "${_SCHEMA_PY}" ]; then
+        SCHEMA_VERSION_VALUE=$("${_SCHEMA_PY}" -c "
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+print(c.execute('PRAGMA user_version').fetchone()[0])
+c.close()
+" "${BACKUP_DB}" 2>/dev/null || echo "unknown")
+    fi
+fi
+
 {
     echo "Reverto backup"
     echo "Created: ${TIMESTAMP} UTC"
     echo "Host: $(hostname)"
     echo "Git HEAD: $(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+    echo "Schema version: ${SCHEMA_VERSION_VALUE}"
     echo "Files:"
     find "${BACKUP_DIR}" -type f -not -name MANIFEST.txt \
         -printf "  %p (%s bytes)\n" | sort
