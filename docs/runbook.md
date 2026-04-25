@@ -358,6 +358,80 @@ NOT backed up (regenerable or tracked elsewhere):
   acceptable to lose.
 - `.venv/` — `pip install -r requirements.txt` reproduces.
 
+### Credentials in backups — what to expect
+
+A common point of confusion on a freshly-deployed VPS: the first
+few daily backups contain **empty** `credentials/` and `keys/`
+directories. **This is correct behaviour, not a bug.** What you
+should see at each lifecycle stage:
+
+**Stage 1 — fresh VPS, no exchange credentials saved yet.** The
+`credentials/<user_id>/` and `keys/` directories may exist (the
+portal lazily creates `credentials/<user_id>/` whenever any code
+path in `core.credentials` queries it, including the
+`/api/exchanges` listing endpoint that the SPA hits on first load),
+but they're empty — no `.enc` files, no `.key` files. Your backup
+will faithfully copy these empty directories. Audit r3-010 captured
+this — operators were briefly confused, runbook now clarifies.
+
+**Stage 2 — you've saved Bitget or Kraken credentials via
+`/api/exchanges/{name}/keys`.** First save also generates the
+per-user Fernet master key. Your next daily backup contains:
+
+- `credentials/<user_id>/bitget.enc` — Fernet-encrypted JSON blob
+  carrying api_key + api_secret + (Bitget only) passphrase.
+- `credentials/<user_id>/kraken.enc` — same shape, no passphrase.
+- `keys/<user_id>.key` — per-user Fernet master key (0600). **You
+  cannot decrypt the `.enc` files without this** — losing the
+  matching key file makes the backup unusable.
+
+The `.enc` extension signals "encrypted blob"; never `.json` (which
+would imply plaintext). If you see a plaintext `.json` under
+`credentials/`, that's a bug — file an issue.
+
+**Stage 3 — you've rotated the Fernet key (security ops, audit
+trail, or post-incident).** `rotate_fernet_key(user_id)` writes a
+backup of the previous key alongside the new one:
+
+- `keys/<user_id>.key` — current key.
+- `keys/<user_id>.key.bak.YYYYMMDDHHMMSS` — previous key, kept by
+  the rotation routine for recovery from a half-completed rotation.
+  These accumulate; cleanup is operator-driven (older than 7 days
+  is safe to remove on a healthy install — search `rotate_fernet_key`
+  in `core/credentials.py` for the contract).
+
+Your backup includes ALL of `keys/`, including the `.bak.*` history.
+
+**Verify your current backup contents:**
+
+```bash
+# Pick the most recent backup
+LATEST=$(ls -t ~/reverto/backups/ | grep -E "^20[0-9]{2}-" | head -1)
+
+# Inspect its contents and the manifest
+ls -la ~/reverto/backups/${LATEST}/
+cat ~/reverto/backups/${LATEST}/MANIFEST.txt
+ls -la ~/reverto/backups/${LATEST}/credentials/ 2>/dev/null \
+    || echo "(credentials/ not in this backup — fresh-VPS expected)"
+ls -la ~/reverto/backups/${LATEST}/keys/ 2>/dev/null \
+    || echo "(keys/ not in this backup — fresh-VPS expected)"
+```
+
+The `credentials/` and `keys/` directories are skipped entirely
+when they don't exist on the source filesystem (see `backup.sh:88,
+96`); the backup directory simply lacks them. They appear once
+the portal has materialised the `credentials/<user_id>/` path
+(typically the first time a logged-in user opens the Exchanges
+page) or once you save a credential.
+
+**Restore-time implication.** Restoring an old backup taken before
+you saved any credentials yields an empty `credentials/` tree
+post-restore. If you want post-backup-time credentials back, you'll
+re-save them via the portal UI — the encryption key (`keys/<uid>.key`)
+restored from the backup is necessary anyway, since freshly-saved
+creds are encrypted under the per-user key that the running code
+loads from disk.
+
 ### Scheduling the daily backup
 
 On Reverto-Server (or post-VPS-3 on the Hetzner host):
@@ -386,7 +460,10 @@ make backup
 ```
 
 Output: `backups/YYYY-MM-DD-HHMMSS/` with a `MANIFEST.txt`
-listing each file + its size + the host + the git HEAD.
+listing each file + its size, the host, the git HEAD, and the
+SQLite schema version (audit r3-008). The schema-version line
+surfaces during `make restore` so you can spot a forward/backward
+schema gap before confirming the restore.
 
 ### Retention policy
 
