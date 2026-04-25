@@ -10,9 +10,9 @@
 
 ---
 
-## Remediation status (post-`fix/r3-001-chart-scrub-and-server-header`)
+## Remediation status (post-`fix/r3-001-chart-scrub-and-server-header` + `tweak/r3-007-r3-008-monitoring-batch-1`)
 
-All five PRA-v3 SHOULD-FIX items closed:
+All 5 SHOULD-FIX + 2 of 7 MONITORING items closed (5 MONITORING items remain — all observational, not gating):
 
 | ID | Severity | Resolution |
 |----|----------|------------|
@@ -21,6 +21,8 @@ All five PRA-v3 SHOULD-FIX items closed:
 | **r3-003** | MEDIUM | RESOLVED in `fix/r3-001-chart-scrub-and-server-header` — `uvicorn.Config(server_header=False)` is the **primary** fix (uvicorn injects the `Server` header at the H11 protocol layer, AFTER Starlette middleware runs). `SecurityHeadersMiddleware` also `del`s the header as defense-in-depth in case a future reverse proxy injects it. Two regression tests cover both layers. |
 | **r3-004** | LOW | RESOLVED via operator-action 2026-04-25 — `usermod -a -G bot caddy && systemctl restart caddy`. Verified by operator: `sudo -u caddy ls -l /home/bot/reverto/web/static/maintenance.html` returns clean listing. No code-change required. |
 | **r3-005** | MEDIUM | RESOLVED via operator-verification 2026-04-25 — `curl -sI https://reverto.bot/ \| grep -i strict-transport-security` returned `max-age=31536000; includeSubDomains`. Caddy correctly forwards `X-Forwarded-Proto`; uvicorn's default `proxy_headers=True` honours it. No explicit `uvicorn.Config` change needed for HSTS. |
+| **r3-007** | LOW | RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` — four new tests in `tests/test_secret_redaction.py` exercise the four `TelegramNotifier.send()` failure branches (HTTP non-200, `httpx.TimeoutException`, `httpx.RequestError`, generic `Exception`) with sentinel-bearing tokens + chat IDs. Each test passes a token-embedding error message into `httpx.post` and asserts no record in caplog contains the sentinel. Validates that the existing v26-09 discipline holds. Deliberate-leak sanity-check confirmed all 4 tests catch a regression. |
+| **r3-008** | LOW | RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` — `scripts/backup.sh` now stamps `Schema version: <int>` into MANIFEST.txt by probing `PRAGMA user_version` on the just-written backup DB. Mirrors the existing CLI/Python-stdlib fallback pattern; on failure of both paths the value is `unknown` so the manifest never aborts the backup. New `tests/test_backup_manifest.py` runs the script end-to-end against a fixture DB seeded with a known version and parses the resulting MANIFEST. Surfaces in `scripts/restore.sh`'s plan-display step (line 84 already echoes the manifest). |
 
 **Diagnostic sweep at PR time:** the broadened regex was run against `web/`, `core/`, `paper/`, `live/`, `exchanges/` after the chart.py scrubs landed — **0 hits**. The class-of-issue is closed across the entire backend, not just the named sites.
 
@@ -307,8 +309,8 @@ Operator confirmed fail2ban runs on the sshd jail. **No Reverto-specific jail.**
 7 items:
 
 - **r3-006** — Verify first backup cron fire + retention prune cycles. Operator action over 30 days post-cutover.
-- **r3-007** — Add Telegram-token redaction precautionary tests. ~15 min when convenient.
-- **r3-008** — Add `PRAGMA user_version` to MANIFEST. ~30 sec.
+- ✅ **r3-007** — RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` (4 redaction tests added).
+- ✅ **r3-008** — RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` (`Schema version:` line + 2 tests).
 - **r3-009** — HSTS preload submission decision in 6+ months.
 - **r3-010** — Runbook clarification: credentials/ backup timing.
 - **r3-011** — WebSocket Origin header validation pre-Phase-B.

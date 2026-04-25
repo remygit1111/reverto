@@ -179,3 +179,144 @@ def test_bitget_passphrase_not_logged_on_env_fallback(
         assert fake_pass not in record.getMessage(), (
             f"Passphrase leaked into log: {record.getMessage()!r}"
         )
+
+
+# ── r3-007: Telegram bot tokens never appear in logs ──────────────────────
+#
+# notifications/telegram.py already follows audit-v26-09 discipline: failure
+# paths log only ``status_code`` + body-length, never ``response.text`` or
+# the bot URL (which contains the token in the path). These tests pin that
+# discipline against future refactors. They drive each failure branch with
+# a sentinel-shaped Telegram token + chat_id and assert neither value
+# appears in any captured log record.
+#
+# Token shape: real Telegram bot tokens follow ``<int>:<alphanumeric_dashes>``
+# with the integer part being the bot's user ID. The sentinel below mirrors
+# that shape so a mistakenly-logged URL would surface a recognisable
+# substring; a generic ``str(token)`` interpolation anywhere in the failure
+# path would trip the assertion.
+
+
+_TG_TOKEN_SENTINEL = "1234567890:PYTEST_TG_TOKEN_SENTINEL_R3_007_AAA-BBB"
+_TG_CHAT_ID_SENTINEL = "9876543210"
+
+
+def _make_telegram_notifier(monkeypatch):
+    """Construct a TelegramNotifier with sentinel credentials.
+
+    Importing inside the helper keeps the test-collection phase from
+    pulling in httpx and friends just because this module is loaded —
+    matches the lazy-import pattern of the other tests in this file.
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", _TG_TOKEN_SENTINEL)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", _TG_CHAT_ID_SENTINEL)
+    from notifications.telegram import TelegramNotifier
+    return TelegramNotifier()
+
+
+def _assert_no_secret_in_caplog(caplog, *secrets):
+    """Helper — for each captured record, assert no ``secret`` substring
+    appears in either the raw message or the rendered (% expanded)
+    message. Some loggers use ``%s`` interpolation that is only resolved
+    when ``getMessage()`` is called, so check both."""
+    for record in caplog.records:
+        rendered = record.getMessage()
+        raw = record.msg if isinstance(record.msg, str) else str(record.msg)
+        for secret in secrets:
+            assert secret not in rendered, (
+                f"secret {secret!r} leaked into rendered log line: "
+                f"{rendered!r}"
+            )
+            assert secret not in raw, (
+                f"secret {secret!r} leaked into raw log msg: {raw!r}"
+            )
+
+
+def test_telegram_token_not_logged_on_http_error(monkeypatch, caplog):
+    """Failure path: HTTP returns a non-200 status. The discipline is
+    to log ``status_code`` + body-length only, never ``response.text``
+    (which can echo the request URL — and the URL embeds the token)."""
+    notifier = _make_telegram_notifier(monkeypatch)
+
+    class _FakeResponse:
+        status_code = 401
+        # Realistic Telegram error body: would include the token if echoed.
+        text = (
+            f'{{"ok":false,"error_code":401,"description":"Unauthorized: '
+            f'bot token {_TG_TOKEN_SENTINEL} is invalid"}}'
+        )
+
+    import notifications.telegram as tg_mod
+    monkeypatch.setattr(
+        tg_mod.httpx, "post", lambda *a, **kw: _FakeResponse(),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        notifier.send("hello")
+
+    _assert_no_secret_in_caplog(caplog, _TG_TOKEN_SENTINEL, _TG_CHAT_ID_SENTINEL)
+
+
+def test_telegram_token_not_logged_on_timeout(monkeypatch, caplog):
+    """Failure path: httpx raises ``TimeoutException``. Discipline is
+    to log ``"request timed out"`` only — never the request URL (which
+    contains the token)."""
+    notifier = _make_telegram_notifier(monkeypatch)
+
+    import httpx as _httpx
+    import notifications.telegram as tg_mod
+
+    def _boom(*a, **kw):
+        raise _httpx.TimeoutException("timed out")
+
+    monkeypatch.setattr(tg_mod.httpx, "post", _boom)
+
+    with caplog.at_level(logging.DEBUG):
+        notifier.send("hello")
+
+    _assert_no_secret_in_caplog(caplog, _TG_TOKEN_SENTINEL, _TG_CHAT_ID_SENTINEL)
+
+
+def test_telegram_token_not_logged_on_network_error(monkeypatch, caplog):
+    """Failure path: httpx raises ``RequestError``. Discipline is to
+    log ``"network error"`` only — never the URL or the exception
+    string itself (which a typical RequestError might include)."""
+    notifier = _make_telegram_notifier(monkeypatch)
+
+    import httpx as _httpx
+    import notifications.telegram as tg_mod
+
+    def _boom(*a, **kw):
+        # Construct with a message that embeds the token, simulating a
+        # worst-case underlying-exception text.
+        raise _httpx.RequestError(
+            f"DNS lookup failed for api.telegram.org/bot{_TG_TOKEN_SENTINEL}",
+        )
+
+    monkeypatch.setattr(tg_mod.httpx, "post", _boom)
+
+    with caplog.at_level(logging.DEBUG):
+        notifier.send("hello")
+
+    _assert_no_secret_in_caplog(caplog, _TG_TOKEN_SENTINEL, _TG_CHAT_ID_SENTINEL)
+
+
+def test_telegram_token_not_logged_on_unexpected_exception(monkeypatch, caplog):
+    """Failure path: a non-httpx exception (e.g. a ``ValueError`` from
+    JSON encoding). Discipline is to log ``type(e).__name__`` only —
+    never ``str(e)`` (which could embed the token)."""
+    notifier = _make_telegram_notifier(monkeypatch)
+    import notifications.telegram as tg_mod
+
+    def _boom(*a, **kw):
+        # ValueError carrying the token in its message — a realistic
+        # worst case if some upstream tried to format the URL into the
+        # error description.
+        raise ValueError(f"bad URL: bot{_TG_TOKEN_SENTINEL}")
+
+    monkeypatch.setattr(tg_mod.httpx, "post", _boom)
+
+    with caplog.at_level(logging.DEBUG):
+        notifier.send("hello")
+
+    _assert_no_secret_in_caplog(caplog, _TG_TOKEN_SENTINEL, _TG_CHAT_ID_SENTINEL)
