@@ -23,6 +23,7 @@ All 5 SHOULD-FIX + 2 of 7 MONITORING items closed (5 MONITORING items remain —
 | **r3-005** | MEDIUM | RESOLVED via operator-verification 2026-04-25 — `curl -sI https://reverto.bot/ \| grep -i strict-transport-security` returned `max-age=31536000; includeSubDomains`. Caddy correctly forwards `X-Forwarded-Proto`; uvicorn's default `proxy_headers=True` honours it. No explicit `uvicorn.Config` change needed for HSTS. |
 | **r3-007** | LOW | RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` — four new tests in `tests/test_secret_redaction.py` exercise the four `TelegramNotifier.send()` failure branches (HTTP non-200, `httpx.TimeoutException`, `httpx.RequestError`, generic `Exception`) with sentinel-bearing tokens + chat IDs. Each test passes a token-embedding error message into `httpx.post` and asserts no record in caplog contains the sentinel. Validates that the existing v26-09 discipline holds. Deliberate-leak sanity-check confirmed all 4 tests catch a regression. |
 | **r3-008** | LOW | RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` — `scripts/backup.sh` now stamps `Schema version: <int>` into MANIFEST.txt by probing `PRAGMA user_version` on the just-written backup DB. Mirrors the existing CLI/Python-stdlib fallback pattern; on failure of both paths the value is `unknown` so the manifest never aborts the backup. New `tests/test_backup_manifest.py` runs the script end-to-end against a fixture DB seeded with a known version and parses the resulting MANIFEST. Surfaces in `scripts/restore.sh`'s plan-display step (line 84 already echoes the manifest). |
+| **r3-010** | INFO | RESOLVED in `docs/r3-010-credentials-backup-clarification` — `docs/runbook.md` Backup-and-restore section gains a new "Credentials in backups — what to expect" subsection covering three lifecycle stages (fresh VPS / credentials saved / Fernet-rotated), the actual `.enc` filename structure (`credentials/<user_id>/<exchange>.enc`, NOT `.json`), the per-user Fernet key path (`keys/<user_id>.key`), and rotation-backup files (`<user_id>.key.bak.YYYYMMDDHHMMSS`). Includes operator-runnable verification snippet. Adjacent fix: the existing `make backup` output description was updated to mention the new `Schema version:` MANIFEST line (was stale post-r3-008). |
 
 **Diagnostic sweep at PR time:** the broadened regex was run against `web/`, `core/`, `paper/`, `live/`, `exchanges/` after the chart.py scrubs landed — **0 hits**. The class-of-issue is closed across the entire backend, not just the named sites.
 
@@ -312,7 +313,7 @@ Operator confirmed fail2ban runs on the sshd jail. **No Reverto-specific jail.**
 - ✅ **r3-007** — RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` (4 redaction tests added).
 - ✅ **r3-008** — RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` (`Schema version:` line + 2 tests).
 - **r3-009** — HSTS preload submission decision in 6+ months.
-- **r3-010** — Runbook clarification: credentials/ backup timing.
+- ✅ **r3-010** — RESOLVED in `docs/r3-010-credentials-backup-clarification` (runbook subsection added; adjacent Schema-version line update in same PR).
 - **r3-011** — WebSocket Origin header validation pre-Phase-B.
 - **r3-013** — Continue baseline scanner-traffic monitoring; alert on 5XX patterns.
 
