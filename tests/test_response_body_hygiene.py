@@ -33,7 +33,7 @@ os.environ.setdefault("REVERTO_API_KEY", "testkey-for-pytest")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-# Match ``HTTPException(...status_code=5XX...detail=f"...{<excname>[...]}...")``
+# Match ``HTTPException(...status_code=5XX...detail=f"...{...<excname>...}...")``
 # where <excname> is exactly one of the conventional exception variable
 # names used in Reverto's route-layer except-clauses, AND the status
 # code is 5XX (server error).
@@ -45,6 +45,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ``invalid timestamp: {e}`` on a user-supplied ISO string). Scoping
 # the check to 5XX keeps the guard aligned with the actual threat
 # model and avoids false positives on validation UX.
+#
+# Match-shape (audit r3-002): the exception name must appear as a
+# **standalone word** (``\b...\b``) ANYWHERE inside the f-string
+# interpolation braces. The original pattern required the brace to
+# OPEN with the name (``\{(?:e|...)``), which missed function-wrapped
+# variants like ``{str(e)[:200]}`` and ``{repr(exc)}`` — three sites
+# in chart.py slipped past that pattern. Word-boundary matching keeps
+# the false-positive surface tight: ``{user_id}``, ``{slug}``,
+# ``{e_count}``, ``{count_e}`` all do NOT contain the names as
+# standalone tokens so they don't match.
+#
+# Format-spec (`:fmt`) and conversion-flag (`!s`/`!r`/`!a`) are
+# implicitly accommodated by the open-ended interpolation match.
 #
 # DOTALL + non-greedy ``.*?`` stops at the first ``)``, which lets
 # the pattern span multi-line HTTPException(...) calls.
@@ -58,10 +71,8 @@ _HTTP_EXCEPTION_LEAK_RE = re.compile(
     r'[^)]*?'                              # everything else in the call
     r'detail\s*=\s*'                       # detail=
     r'f"[^"]*'                             # opening of f-string
-    r'\{(?:' + _NAME_ALT + r')'            # {<exception-name>
-    r'(?:[!][sra])?'                       # optional conversion !s / !r / !a
-    r'(?::[^}"]*)?'                        # optional format spec
-    r'\}'                                  # }
+    r'\{[^}"]*?\b(?:' + _NAME_ALT + r')\b' # {...<exception-name>...}
+    r'[^}"]*?\}'                           # rest of interpolation + closing brace
     r'[^"]*"',                             # rest + closing "
     re.DOTALL,
 )
@@ -124,16 +135,57 @@ def test_regex_fires_on_known_bad_patterns():
     assert _HTTP_EXCEPTION_LEAK_RE.search(bad_503) is not None
 
 
+def test_regex_catches_function_wrapped_exceptions():
+    """Audit r3-002: the original regex required the f-string
+    interpolation to OPEN with an exception variable name —
+    ``\\{(?:e|err|exc|...)``. Three sites in web/routes/chart.py
+    used ``f"...{str(e)[:200]}"`` and slipped past, surfacing as
+    r3-001. The broadened regex matches the exception name as a
+    **standalone word anywhere** inside the interpolation braces,
+    so function-wrapped variants are caught.
+    """
+    cases = [
+        # The exact pattern that slipped past the original regex.
+        'raise HTTPException(status_code=502, detail=f"x: {str(e)[:200]}")',
+        # repr() / format() variants.
+        'raise HTTPException(500, detail=f"oops: {repr(exc)}")',
+        'raise HTTPException(502, detail=f"down: {format(err)}")',
+        # Conversion-flag combined with truncation.
+        'raise HTTPException(500, detail=f"err: {str(e)[:50]!r}")',
+        # Attribute access on the exception variable.
+        'raise HTTPException(503, detail=f"type: {e.__class__.__name__}")',
+    ]
+    for case in cases:
+        assert _HTTP_EXCEPTION_LEAK_RE.search(case) is not None, (
+            f"regex failed to catch function-wrapped exception leak: "
+            f"{case!r}"
+        )
+
+
 def test_regex_does_not_false_positive_on_safe_interpolations():
     """Interpolations of values that aren't exception-named should
     not trip the check. ``{new_slug}``, ``{user_id}``, ``{path}``
     etc. are safe — they're either known-sanitised or already
-    validated by Pydantic / regex upstream."""
+    validated by Pydantic / regex upstream.
+
+    Audit r3-002 broadened the regex to catch function-wrapped
+    variants. Word-boundary matching (``\\b``) keeps these
+    identifier-substring cases from false-positive.
+    """
     safe_cases = [
         'HTTPException(status_code=409, detail=f"Bot with slug \'{new_slug}\' already exists")',
         'HTTPException(500, detail=f"Path traversal attempt on {path}")',
         'HTTPException(status_code=503, detail=f"Unknown bot: {slug}")',
         'HTTPException(500, detail=f"count={count}")',
+        # Tricky cases: identifiers that contain an exception-name
+        # substring but are NOT exception variables. The broadened
+        # regex must not flag these via the ``\b`` word-boundaries.
+        'HTTPException(500, detail=f"user={user_id}")',           # contains 'er' substring
+        'HTTPException(503, detail=f"email={user.email}")',       # 'email' contains 'e'
+        'HTTPException(502, detail=f"prev={e_count} next={count_e}")',  # 'e_' / '_e' compound names
+        'HTTPException(500, detail=f"text={message}")',           # 'message' contains 'e'
+        'HTTPException(503, detail=f"format={timeframe}")',       # 'timeframe' contains 'e'
+        'HTTPException(500, detail=f"ext={extension}")',          # 'extension' starts with 'ex'
     ]
     for case in safe_cases:
         assert _HTTP_EXCEPTION_LEAK_RE.search(case) is None, (
