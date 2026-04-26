@@ -204,6 +204,65 @@ def test_bot_control_buttons_have_state_aware_logic():
     )
 
 
+def test_wizard_save_error_triggers_scrollintoview():
+    """``nbShowError`` (the central save-error renderer for the bot
+    wizard) must scroll the banner into view after revealing it.
+
+    Reason: the banner sits at the top of a long form. Operators who
+    Save from the bottom otherwise see no feedback that validation
+    failed, because the banner is off-screen above. ``scrollIntoView``
+    with ``behavior: 'smooth'`` handles the in-view case as a no-op,
+    so it is safe on every save attempt.
+    """
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    # Carve out nbShowError's body and assert the scroll lives there.
+    fn_start = js.index("function nbShowError(")
+    fn_end = js.index("\nfunction ", fn_start + 1)
+    fn_body = js[fn_start:fn_end]
+
+    assert "scrollIntoView" in fn_body, (
+        "nbShowError must call scrollIntoView after un-hiding the "
+        "error banner — operators at the bottom of the form would "
+        "otherwise miss the validation feedback"
+    )
+    assert "smooth" in fn_body, (
+        "the scroll should be smooth — abrupt jumps look like a bug"
+    )
+
+
+def test_wizard_review_placeholder_no_pydantic_traceback():
+    """The wizard's Review-step live preview falls back to
+    ``_nbRenderValidationError`` while the form is still incomplete.
+    The previous implementation interpolated the raw Pydantic error
+    string into the UI, leaking text like "validation error for
+    BotConfig … input_value='' … https://errors.pydantic.dev/…".
+
+    The placeholder must now be a friendly, generic message and the
+    raw cause must be funnelled through console.warn for debugging.
+    """
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    # Carve out _nbRenderValidationError's body.
+    fn_start = js.index("function _nbRenderValidationError(")
+    fn_end = js.index("\nfunction ", fn_start + 1)
+    fn_body = js[fn_start:fn_end]
+
+    # Old leaky pattern is gone.
+    assert "Config analysis unavailable" not in fn_body, (
+        "old pattern leaked the raw Pydantic message — must be "
+        "replaced with a generic friendly placeholder"
+    )
+    assert "${safeText(msg)}" not in fn_body, (
+        "msg must not be interpolated into the placeholder; it "
+        "belongs in console.warn for developer debugging only"
+    )
+
+    # New friendly placeholder + console-side debug funnel are in place.
+    assert "Fill in required fields" in fn_body
+    assert "console.warn" in fn_body
+
+
 def test_running_status_pill_decoupled_from_detail_controls():
     """The running-status pill used to live inside ``.detail-controls``
     next to Start/Stop/Restart. PR 4 moved it into the bot-identity
