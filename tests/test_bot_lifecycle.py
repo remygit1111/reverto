@@ -22,13 +22,23 @@ any of the three.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+
+def _run(coro):
+    """Bridge async test bodies into the synchronous pytest runner.
+    The codebase doesn't ship pytest-asyncio; this mirrors the pattern
+    in tests/test_lifespan.py, tests/test_broadcasters.py, etc.
+    """
+    return asyncio.run(coro)
 
 os.environ.setdefault("REVERTO_API_KEY", "testkey-for-pytest")
 os.environ.setdefault("REVERTO_SECRET_KEY", "testkey-for-pytest-secret")
@@ -349,3 +359,223 @@ def test_startup_reconcile_helper_exists():
         "during startup so silent-exit drift is corrected before "
         "the first API request"
     )
+
+
+# ─── Schema-version stamp + mismatch detection ───────────────────────────────
+
+def test_state_schema_version_constant_exists():
+    """``STATE_SCHEMA_VERSION`` must be a positive integer so the
+    portal-side mismatch detection has something concrete to compare
+    against. A future bump (when the schema gains another reconcile-
+    facing field) is one-line in paper_engine.py.
+    """
+    from paper.paper_engine import STATE_SCHEMA_VERSION
+
+    assert isinstance(STATE_SCHEMA_VERSION, int)
+    assert STATE_SCHEMA_VERSION >= 1
+
+
+def test_bot_state_includes_schema_version_stamp():
+    """The engine's ``_write_state`` must stamp ``state_schema_version``
+    in every snapshot — that is the on-disk signal the portal reads
+    for mismatch detection.
+    """
+    src = _PAPER_ENGINE.read_text(encoding="utf-8")
+
+    assert "STATE_SCHEMA_VERSION" in src
+    assert '"state_schema_version"' in src, (
+        "paper_engine._write_state must include state_schema_version "
+        "in the state-snapshot dict"
+    )
+
+
+def test_bot_state_model_accepts_schema_version_field():
+    """``BotStateModel`` validates the new field both with a value
+    and without — backwards compat for legacy state.json files.
+    """
+    from web.app import BotStateModel
+
+    m = BotStateModel(state_schema_version=2)
+    assert m.state_schema_version == 2
+
+    legacy = BotStateModel()
+    assert legacy.state_schema_version is None
+
+
+def test_mismatch_detection_when_no_version():
+    """Bot with ``running=true`` but no ``state_schema_version``
+    field is treated as legacy → needs restart so it picks up the
+    current code on next portal startup.
+    """
+    from web.app import _bot_needs_restart
+
+    state = {"running": True}
+    assert _bot_needs_restart(state, current_version=2) is True
+
+
+def test_mismatch_detection_when_version_match():
+    """Bot with the portal's current schema version must NOT be
+    restarted — that would cause unnecessary churn on every deploy
+    that doesn't bump the schema.
+    """
+    from web.app import _bot_needs_restart
+
+    state = {"running": True, "state_schema_version": 2}
+    assert _bot_needs_restart(state, current_version=2) is False
+
+
+def test_mismatch_detection_when_version_outdated():
+    """Bot stamping an older version than the portal currently runs
+    is on stale code → restart so the new engine code takes over.
+    """
+    from web.app import _bot_needs_restart
+
+    state = {"running": True, "state_schema_version": 1}
+    assert _bot_needs_restart(state, current_version=2) is True
+
+
+def test_mismatch_detection_skips_stopped_bots():
+    """A bot that is already stopped never needs a schema-mismatch
+    restart — silent-exit reconcile already handled it; the auto-
+    restart path is reserved for *running* bots on stale code.
+    """
+    from web.app import _bot_needs_restart
+
+    # Even if the version is wildly different, running=False short-
+    # circuits — never burn an auto-restart attempt on an already-
+    # stopped bot.
+    state = {"running": False, "state_schema_version": 1}
+    assert _bot_needs_restart(state, current_version=2) is False
+    state_no_version = {"running": False}
+    assert _bot_needs_restart(state_no_version, current_version=2) is False
+
+
+# ─── Bounded auto-restart budget ─────────────────────────────────────────────
+
+@pytest.fixture
+def _restart_history_clean():
+    """Reset the in-memory restart-history dict around each test so
+    one test's attempts do not bleed into another's budget.
+    """
+    from web import app as webapp
+
+    webapp._BOT_RESTART_HISTORY.clear()
+    yield webapp._BOT_RESTART_HISTORY
+    webapp._BOT_RESTART_HISTORY.clear()
+
+
+class _FakeBotForRestart:
+    """Minimal stand-in for ``BotInfo`` so the budget logic can be
+    exercised without spinning up a real subprocess. Only carries the
+    fields ``_attempt_bot_auto_restart`` actually reads.
+    """
+
+    def __init__(self, user_id: int, slug: str, state_file=None):
+        self.user_id = user_id
+        self.slug = slug
+        self.state_file = state_file
+
+
+def test_restart_budget_allows_three_attempts(_restart_history_clean, monkeypatch):
+    """First three attempts within the rolling window must all be
+    allowed through — the budget is "max 3 in a 5min window," not
+    "max 3 ever."
+    """
+    from web import app as webapp
+
+    calls = []
+
+    async def _fake_restart(user_id, slug):
+        calls.append((user_id, slug))
+        return {"ok": True, "message": "ok"}
+
+    monkeypatch.setattr(webapp, "restart_bot", _fake_restart)
+
+    bot = _FakeBotForRestart(1, "alpha")
+    for _ in range(webapp.RESTART_MAX_ATTEMPTS):
+        assert _run(webapp._attempt_bot_auto_restart(bot)) is True
+
+    assert len(calls) == webapp.RESTART_MAX_ATTEMPTS
+
+
+def test_restart_budget_blocks_fourth_attempt(_restart_history_clean, monkeypatch, tmp_path):
+    """The (RESTART_MAX_ATTEMPTS + 1)th attempt within the window
+    must be refused, log the give-up, and stamp
+    ``stopped_reason="restart_budget_exceeded"`` into state.json.
+    """
+    from web import app as webapp
+
+    async def _fake_restart(user_id, slug):
+        return {"ok": True}
+
+    monkeypatch.setattr(webapp, "restart_bot", _fake_restart)
+
+    state_file = tmp_path / "alpha.state.json"
+    state_file.write_text(json.dumps({"running": True}), encoding="utf-8")
+    bot = _FakeBotForRestart(1, "alpha", state_file=state_file)
+
+    # Burn the budget.
+    for _ in range(webapp.RESTART_MAX_ATTEMPTS):
+        assert _run(webapp._attempt_bot_auto_restart(bot)) is True
+
+    # 4th attempt must be refused.
+    assert _run(webapp._attempt_bot_auto_restart(bot)) is False
+
+    # state.json must now carry the give-up marker so an operator
+    # checking the file (or the UI in a future PR) can see why the
+    # portal stopped trying.
+    on_disk = json.loads(state_file.read_text(encoding="utf-8"))
+    assert on_disk["stopped_reason"] == "restart_budget_exceeded"
+    assert on_disk["stopped_at"] is not None
+
+
+def test_restart_budget_resets_after_window(_restart_history_clean, monkeypatch):
+    """Attempts older than ``RESTART_WINDOW_SECONDS`` must be pruned
+    so a bot that has been stable for a day starts with a fresh
+    budget after one new failure.
+    """
+    from web import app as webapp
+
+    async def _fake_restart(user_id, slug):
+        return {"ok": True}
+
+    monkeypatch.setattr(webapp, "restart_bot", _fake_restart)
+
+    # Pre-populate history with attempts older than the window.
+    bot = _FakeBotForRestart(1, "alpha")
+    key = (bot.user_id, bot.slug)
+    long_ago = time.time() - (webapp.RESTART_WINDOW_SECONDS + 60)
+    webapp._BOT_RESTART_HISTORY[key] = [long_ago, long_ago, long_ago]
+
+    # Despite three "old" attempts, the prune step strips them and
+    # this fresh attempt is allowed through.
+    assert _run(webapp._attempt_bot_auto_restart(bot)) is True
+    # And the history now carries only the new attempt.
+    assert len(webapp._BOT_RESTART_HISTORY[key]) == 1
+
+
+def test_restart_budget_per_bot_isolated(_restart_history_clean, monkeypatch):
+    """Budget keying is ``(user_id, slug)`` — exhausting bot A's
+    budget must NOT block bot B's first attempt.
+    """
+    from web import app as webapp
+
+    async def _fake_restart(user_id, slug):
+        return {"ok": True}
+
+    monkeypatch.setattr(webapp, "restart_bot", _fake_restart)
+
+    bot_a = _FakeBotForRestart(1, "alpha")
+    bot_b = _FakeBotForRestart(1, "beta")
+
+    # Exhaust alpha.
+    for _ in range(webapp.RESTART_MAX_ATTEMPTS):
+        _run(webapp._attempt_bot_auto_restart(bot_a))
+    assert _run(webapp._attempt_bot_auto_restart(bot_a)) is False
+
+    # Beta is unaffected.
+    assert _run(webapp._attempt_bot_auto_restart(bot_b)) is True
+
+    # And the per-bot keying really did partition the dict.
+    assert (1, "alpha") in webapp._BOT_RESTART_HISTORY
+    assert (1, "beta") in webapp._BOT_RESTART_HISTORY
