@@ -304,32 +304,53 @@ def test_dashboard_fetches_log_errors_not_silently_swallow():
     )
 
 
-def test_staleness_badge_present():
-    """The staleness-badge HTML element + CSS rules + JS update path
-    must all be wired so the dashboard can surface "stale Ns" /
-    "disconnected" without manual refresh.
+def test_combined_connection_indicator_present():
+    """The header connection indicator combines WS state and /api/bots
+    fetch staleness into a single dot+label (RHA-v1 rha-004 refined).
+    Earlier the dashboard had two separate indicators which could
+    show contradictory states ("live" dot next to "disconnected"
+    badge). This test pins the consolidated structure so a future
+    refactor that re-introduces a separate badge fails fast.
 
-    Closes RHA-v1 rha-004's structural half (the WS-pill is a
-    different signal — connection-level, not fetch-freshness).
+    Asserts:
+    - Single dot (#state-ws-dot) + single label (#state-ws-label).
+    - No standalone ``staleness-badge`` element / class anywhere.
+    - .live-dot CSS gains the new ``.stale`` and ``.disconnected``
+      modifiers (the existing ``.connected`` and default states are
+      unchanged).
+    - JS exposes ``_updateConnectionIndicator`` (the single source of
+      truth) and ``_startConnectionTimer`` (the 5s tick), and tracks
+      ``_wsConnected`` as the WS-side input.
     """
     html = _INDEX_HTML.read_text(encoding="utf-8")
     css = _STYLE_CSS.read_text(encoding="utf-8")
     js = _APP_JS.read_text(encoding="utf-8")
 
-    assert 'id="staleness-badge"' in html
-    assert 'class="staleness-badge' in html
+    # Single combined indicator, no separate staleness-badge.
+    assert 'id="state-ws-dot"' in html
+    assert 'id="state-ws-label"' in html
+    assert 'id="staleness-badge"' not in html, (
+        "the separate staleness-badge was rolled back in favour of a "
+        "single combined indicator (RHA-v1 rha-004 refined)"
+    )
+    assert "staleness-badge" not in css, (
+        "leftover .staleness-badge CSS from the rolled-back separate "
+        "indicator must be removed"
+    )
 
-    # CSS — base rule plus the two state modifiers must exist so a
-    # future refactor that drops one mode (e.g. removes the amber
-    # 'stale' state) regresses here.
-    assert ".staleness-badge" in css
-    assert ".staleness-badge.state-stale" in css
-    assert ".staleness-badge.state-disconnected" in css
+    # New live-dot state classes.
+    assert ".live-dot.stale" in css
+    assert ".live-dot.disconnected" in css
+    assert "@keyframes pulse-slow" in css
 
-    # JS — the update helper + ticker startup. Constants are checked
-    # in the next test.
-    assert "_updateStalenessBadge" in js
-    assert "_startStalenessTimer" in js
+    # JS — single update helper + WS-side input mirror.
+    assert "_updateConnectionIndicator" in js
+    assert "_startConnectionTimer" in js
+    assert "_wsConnected" in js
+    # Old function names must be gone so a half-finished migration
+    # cannot leave dead helpers calling each other.
+    assert "_updateStalenessBadge" not in js
+    assert "_startStalenessTimer" not in js
 
 
 def test_staleness_thresholds_defined():
