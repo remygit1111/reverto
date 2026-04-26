@@ -98,6 +98,14 @@ class BotStateModel(BaseModel):
     heartbeat_interval_sec:  Optional[int] = None
     stopped_at:              Optional[str] = None
     stopped_reason:          Optional[str] = None
+    # Schema-version stamp (PR: tweak/killmode-process-mismatch-detection).
+    # Engines stamp ``STATE_SCHEMA_VERSION`` on every tick so the
+    # portal-startup reconcile can spot bots running on stale code
+    # (e.g. surviving a portal-restart that didn't kill the cgroup).
+    # Optional+None default keeps legacy state.json files validating
+    # cleanly — the reconcile path treats None as "v1" (definitely
+    # different from the current version → restart).
+    state_schema_version:    Optional[int] = None
 
 
 # ── Lifecycle-stability tunables (PR: tweak/bot-lifecycle-stability) ──────────
@@ -141,6 +149,149 @@ def _heartbeat_is_stale(
         ts = ts.replace(tzinfo=timezone.utc)
     age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
     return age_sec > threshold_sec
+
+
+# ── Schema-version mismatch + bounded auto-restart ─────────────────────────────
+# (PR: tweak/killmode-process-mismatch-detection)
+#
+# The systemd unit now uses ``KillMode=process`` so bot subprocesses
+# survive a ``systemctl restart reverto`` (cgroup-cleanup no longer
+# sweeps them). The trade-off: a freshly-deployed portal may find bots
+# still running on the previous engine binary. We detect this via the
+# ``state_schema_version`` field stamped by ``paper_engine._write_state``
+# and auto-restart any bot whose stamp does not match the portal's
+# current view of ``STATE_SCHEMA_VERSION``.
+#
+# Auto-restart is bounded so a permanently-broken bot (e.g. crashes on
+# every start) cannot cause a restart-storm. The budget is in-memory
+# only — persisting it would block manual operator recovery after a
+# portal-restart.
+RESTART_MAX_ATTEMPTS = 3
+RESTART_WINDOW_SECONDS = 300  # 5 minutes
+
+# Per-(user_id, slug) attempt timestamps (epoch float). Pruned in-place
+# on every ``_attempt_bot_auto_restart`` call so the dict cannot grow
+# unbounded across many short-lived bots.
+_BOT_RESTART_HISTORY: dict[tuple[int, str], list[float]] = {}
+
+
+def _bot_needs_restart(state: dict, current_version: int) -> bool:
+    """Return True if a running bot should be auto-restarted because
+    its on-disk ``state_schema_version`` does not match the portal's.
+
+    Caller (startup-reconcile) is expected to have already routed
+    silent-exit cases through ``read_state``'s reconcile path, so this
+    helper only fires on bots that *are* alive but on stale code.
+    Decoupling the two checks keeps the budget consumed only by real
+    mismatch attempts — silent-exit paths never reach the restart
+    machinery.
+
+    Cases:
+      * state.running is False           → no restart (the bot is
+                                            already stopped).
+      * state_schema_version is None     → legacy bot from before this
+                                            field landed. Treated as a
+                                            mismatch so it picks up
+                                            current code on next portal
+                                            start.
+      * state_schema_version != current  → mismatch. Restart.
+      * state_schema_version == current  → coherent. No restart.
+    """
+    if not state.get("running"):
+        return False
+    on_disk = state.get("state_schema_version")
+    if on_disk is None:
+        return True
+    return on_disk != current_version
+
+
+def _persist_stopped_reason_field(state_file, reason: str) -> None:
+    """Write ``stopped_reason`` (and ``stopped_at``) into state.json
+    without touching ``running`` or any other field.
+
+    Used by the auto-restart budget-exceeded path: we want operators
+    to see *why* the portal stopped trying to restart the bot, but the
+    bot itself may still be alive (older code, but functional). Mutating
+    only the reason field keeps the rest of the state intact for the
+    next read.
+
+    Best-effort: any IOError is logged and swallowed.
+    """
+    if state_file is None:
+        return
+    try:
+        if state_file.exists():
+            data = json.loads(state_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        else:
+            data = {}
+        data["stopped_reason"] = reason
+        data["stopped_at"] = datetime.now(timezone.utc).isoformat()
+        tmp = state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(state_file)
+    except OSError as e:
+        logger.warning(
+            "Failed to persist stopped_reason=%r to %s: %s",
+            reason, state_file, e,
+        )
+
+
+async def _attempt_bot_auto_restart(bot) -> bool:
+    """Restart ``bot`` if within the per-bot attempt budget.
+
+    Returns True if the restart was issued (regardless of whether
+    ``restart_bot`` itself reported success — the caller logs based
+    on the returned dict if it cares); False if the budget was
+    exhausted or any exception was raised reaching ``restart_bot``.
+
+    The budget is per-(user_id, slug) and lives only in-process.
+    Restart-storm protection is therefore scoped to a single portal
+    lifetime; a fresh portal starts every bot's budget at zero.
+    """
+    key = (bot.user_id, bot.slug)
+    now = time.time()
+    history = _BOT_RESTART_HISTORY.get(key, [])
+    # Prune attempts outside the rolling window so a bot that has
+    # been stable for a day starts fresh after one new failure.
+    history = [t for t in history if now - t < RESTART_WINDOW_SECONDS]
+
+    if len(history) >= RESTART_MAX_ATTEMPTS:
+        logger.error(
+            "Bot %s/%s exceeded auto-restart budget (%d attempts in %ds) — "
+            "leaving stopped. Manual intervention required.",
+            bot.user_id, bot.slug,
+            RESTART_MAX_ATTEMPTS, RESTART_WINDOW_SECONDS,
+        )
+        # Surface the give-up via state.json so the UI (and the next
+        # read_state call) can see why the portal stopped trying.
+        _persist_stopped_reason_field(bot.state_file, "restart_budget_exceeded")
+        return False
+
+    history.append(now)
+    _BOT_RESTART_HISTORY[key] = history
+
+    try:
+        result = await restart_bot(bot.user_id, bot.slug)
+    except Exception as e:
+        logger.error(
+            "Bot %s/%s auto-restart raised: %s",
+            bot.user_id, bot.slug, e,
+        )
+        return False
+    if not result.get("ok"):
+        logger.warning(
+            "Bot %s/%s auto-restart returned failure: %s",
+            bot.user_id, bot.slug, result.get("error") or result,
+        )
+        return False
+    logger.info(
+        "Bot %s/%s auto-restarted (attempt %d/%d in window)",
+        bot.user_id, bot.slug, len(history), RESTART_MAX_ATTEMPTS,
+    )
+    return True
+
 
 # ── API key auth ──────────────────────────────────────────────────────────────
 # Read from REVERTO_API_KEY or auto-generate one. Generated keys NEVER
@@ -1995,6 +2146,12 @@ async def _reconcile_bot_states_on_startup() -> None:
     Best-effort: any per-bot exception is logged and skipped so one
     bad state file cannot block portal startup.
     """
+    # Lazy import — STATE_SCHEMA_VERSION lives next to the engine code
+    # whose schema it gates. Importing at module-load time would force
+    # paper.paper_engine into memory before the engines actually need
+    # it; deferring keeps lifespan startup as cheap as possible.
+    from paper.paper_engine import STATE_SCHEMA_VERSION
+
     try:
         bots = await registry.all()
     except Exception as e:
@@ -2003,19 +2160,36 @@ async def _reconcile_bot_states_on_startup() -> None:
     if not bots:
         return
     reconciled = 0
+    restarted = 0
     for bot in bots:
         try:
             state = bot.read_state()
             if state.get("stopped_reason") in ("silent_exit", "heartbeat_stale"):
                 reconciled += 1
+                # A bot that just got reconciled to "stopped" is
+                # already dead — the schema-mismatch path is for
+                # *running* bots on stale code. Skip the mismatch
+                # check here.
+                continue
+            if _bot_needs_restart(state, STATE_SCHEMA_VERSION):
+                logger.warning(
+                    "Bot %s/%s schema mismatch (running=v%s, "
+                    "portal=v%s) — auto-restart",
+                    bot.user_id, bot.slug,
+                    state.get("state_schema_version", "unknown"),
+                    STATE_SCHEMA_VERSION,
+                )
+                if await _attempt_bot_auto_restart(bot):
+                    restarted += 1
         except Exception as e:
             logger.warning(
                 "Startup reconcile failed for %s/%s: %s",
                 bot.user_id, bot.slug, e,
             )
     logger.info(
-        "Startup reconcile: walked %d bot(s), reconciled %d silent-exit",
-        len(bots), reconciled,
+        "Startup reconcile: walked %d bot(s), %d silent-exit reconciled, "
+        "%d schema-mismatch auto-restart",
+        len(bots), reconciled, restarted,
     )
 
 
