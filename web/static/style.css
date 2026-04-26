@@ -481,32 +481,25 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .live-dot.connected { background: var(--accent); animation: blink 1.4s infinite; }
 .live-dot.error     { background: var(--red); }
 
-/* Dashboard fetch-staleness badge (RHA-v1 rha-004). Sits next to the
-   .state-ws-indicator in the header; surfaces "stale Ns" or
-   "disconnected" copy when /api/bots fetches stop landing. The
-   live-dot keeps its independent WS-connected meaning so the operator
-   can distinguish "WS up but HTTP wedged" (badge visible, dot green)
-   from "WS down too" (badge visible, dot red). */
-.staleness-badge {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: .04em;
-  padding: 2px 8px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  white-space: nowrap;
-  text-transform: lowercase;
+/* Combined connection indicator state-classes (RHA-v1 rha-004 refined).
+   The header dot now takes the worst-case of WS-connection state and
+   /api/bots fetch staleness so the operator sees one coherent signal
+   instead of a contradictory pair. ``.stale`` and ``.disconnected``
+   are new modifiers; ``.connected`` (green + blink) and the default
+   muted state stay unchanged so other live-dot consumers (per-tab
+   log indicators) are not affected. */
+.live-dot.stale {
+  background: var(--amber);
+  animation: pulse-slow 2s ease-in-out infinite;
 }
-.staleness-badge.hidden { display: none; }
-.staleness-badge.state-stale {
-  background: rgba(255, 179, 71, .12);
-  border-color: var(--amber);
-  color: var(--amber);
+.live-dot.disconnected {
+  background: var(--red);
+  animation: none;
 }
-.staleness-badge.state-disconnected {
-  background: rgba(255, 77, 109, .12);
-  border-color: var(--red);
-  color: var(--red);
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
 }
 
 /* Header state-sync indicator — small dot + label sitting next to the
