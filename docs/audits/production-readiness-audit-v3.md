@@ -23,7 +23,9 @@ All 5 SHOULD-FIX + 2 of 7 MONITORING items closed (5 MONITORING items remain —
 | **r3-005** | MEDIUM | RESOLVED via operator-verification 2026-04-25 — `curl -sI https://reverto.bot/ \| grep -i strict-transport-security` returned `max-age=31536000; includeSubDomains`. Caddy correctly forwards `X-Forwarded-Proto`; uvicorn's default `proxy_headers=True` honours it. No explicit `uvicorn.Config` change needed for HSTS. |
 | **r3-007** | LOW | RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` — four new tests in `tests/test_secret_redaction.py` exercise the four `TelegramNotifier.send()` failure branches (HTTP non-200, `httpx.TimeoutException`, `httpx.RequestError`, generic `Exception`) with sentinel-bearing tokens + chat IDs. Each test passes a token-embedding error message into `httpx.post` and asserts no record in caplog contains the sentinel. Validates that the existing v26-09 discipline holds. Deliberate-leak sanity-check confirmed all 4 tests catch a regression. |
 | **r3-008** | LOW | RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` — `scripts/backup.sh` now stamps `Schema version: <int>` into MANIFEST.txt by probing `PRAGMA user_version` on the just-written backup DB. Mirrors the existing CLI/Python-stdlib fallback pattern; on failure of both paths the value is `unknown` so the manifest never aborts the backup. New `tests/test_backup_manifest.py` runs the script end-to-end against a fixture DB seeded with a known version and parses the resulting MANIFEST. Surfaces in `scripts/restore.sh`'s plan-display step (line 84 already echoes the manifest). |
+| **r3-006** | MEDIUM | RESOLVED via operator-verification 2026-04-26 — first cron fire (`0 3 * * *`) executed cleanly at 03:00 UTC. Backup tarball + MANIFEST.txt produced; daily retention bucket populated. Status flipped from MONITORING → RESOLVED on operator confirmation; the rolling 30-day retention-prune verification (5/7-day, weekly, monthly boundaries) continues organically and any regression would surface as a missing-snapshot finding in a future audit. |
 | **r3-010** | INFO | RESOLVED in `docs/r3-010-credentials-backup-clarification` — `docs/runbook.md` Backup-and-restore section gains a new "Credentials in backups — what to expect" subsection covering three lifecycle stages (fresh VPS / credentials saved / Fernet-rotated), the actual `.enc` filename structure (`credentials/<user_id>/<exchange>.enc`, NOT `.json`), the per-user Fernet key path (`keys/<user_id>.key`), and rotation-backup files (`<user_id>.key.bak.YYYYMMDDHHMMSS`). Includes operator-runnable verification snippet. Adjacent fix: the existing `make backup` output description was updated to mention the new `Schema version:` MANIFEST line (was stale post-r3-008). |
+| **r3-014** | MEDIUM | PARTIALLY RESOLVED in `tweak/bot-lifecycle-stability` — bot subprocesses already spawn with `start_new_session=True` (≡ `preexec_fn=os.setsid`) so process-group isolation has been in place since v22; the PR documents this explicitly (cgroup-cleanup is the systemd-side complement, but the subprocess-side prerequisite is correct). New: every state-write stamps `last_heartbeat` (synchronous, atomic via existing tmp+rename); `BotInfo.read_state` now reconciles silent-exit (state.running=true but PID dead OR heartbeat older than `HEARTBEAT_STALE_THRESHOLD_SEC=60`) by writing `running=false` + `stopped_reason` + `stopped_at` to disk; lifespan startup walks the registry and triggers reconcile for every bot before serving the first API request. 12 regression tests in `tests/test_bot_lifecycle.py`. **DEFERRED to PR B** (`soft-stop`): the 18-second graceful-shutdown delay (blocking call inside the engine's tick-loop sleep / indicator fetch) — separate scope. |
 
 **Diagnostic sweep at PR time:** the broadened regex was run against `web/`, `core/`, `paper/`, `live/`, `exchanges/` after the chart.py scrubs landed — **0 hits**. The class-of-issue is closed across the entire backend, not just the named sites.
 
@@ -214,7 +216,8 @@ Scripts present + correct (verified by code-read). Cron documented. Permissions 
 
 | ID | Severity | Finding | File:line | Category |
 |----|----------|---------|-----------|----------|
-| r3-006 | MEDIUM | Backup cron + restore procedure never operationally proven on production | scripts/backup.sh, scripts/restore.sh | MONITORING |
+| r3-006 | MEDIUM | Backup cron + restore procedure never operationally proven on production | scripts/backup.sh, scripts/restore.sh | RESOLVED (2026-04-26) |
+| r3-014 | MEDIUM | Bot lifecycle stability — subprocesses killed during portal-restart (cgroup-cleanup); silent-exit leaves state.json on `running:true`; graceful-shutdown delay (18+ s) | web/app.py, paper/paper_engine.py | PARTIALLY RESOLVED (`tweak/bot-lifecycle-stability`) |
 | r3-008 | LOW | Backup MANIFEST lacks schema-version stamp | scripts/backup.sh:123-133 | MONITORING |
 | r3-010 | INFO | Runbook ambiguous about credentials/ backup behaviour on fresh VPS | docs/runbook.md | MONITORING |
 
@@ -284,9 +287,24 @@ Filed as **r3-012** (INFO ACCEPTED — operator-side review required).
 
 Operator confirmed fail2ban runs on the sshd jail. **No Reverto-specific jail.** Recommendation: add a Reverto jail filtering on `audit.log` for `auth_login_failed` patterns at high rate from same IP — would defend against credential-spray after the in-app rate-limiter exhaustion. Not a finding (defence-in-depth ask, not a defect); listed in Recommendations.
 
-### Backup cron integrity (still unproven)
+### Backup cron integrity (RESOLVED — first fire verified 2026-04-26 03:00 UTC)
 
-`crontab -l` (operator-side) should show `0 3 * * * cd /home/bot/reverto && ./scripts/backup.sh >> logs/backup.log 2>&1`. First fire: tomorrow morning UTC. **Filed as r3-006**: monitor first run; verify daily/weekly/monthly retention boundaries.
+`crontab -l` (operator-side) shows `0 3 * * * cd /home/bot/reverto && ./scripts/backup.sh >> logs/backup.log 2>&1`. First fire: 2026-04-26 03:00 UTC — confirmed clean by operator on the morning of 2026-04-26. **r3-006 status flipped to RESOLVED in `tweak/bot-lifecycle-stability`** (one-line audit-doc update bundled with the lifecycle-stability work; see Remediation status block above). Retention-prune monitoring (5/7-day, weekly, monthly boundaries) continues organically — any future regression would surface as a missing-snapshot finding rather than blocking deploy.
+
+### Bot lifecycle stability (PARTIALLY RESOLVED — 2026-04-26)
+
+Three issues surfaced from the deploy-cycle log analysis that morning:
+
+1. **Bot subprocesses killed during portal-restart (cgroup-cleanup).** `systemctl restart reverto` left `Failed to kill control group … Invalid argument` + `left-over process … in control group` messages in journalctl. KillMode=mixed signals the main process and then SIGKILLs cgroup remainder; bots inherited the cgroup membership and were swept up.
+2. **Silent bot exit.** When PID 11617 died at 14:47:54 the bot-log's last line was a normal indicator print at 14:47:50 — no SIGTERM log, no traceback, no shutdown writeback. State.json kept `running: true` with a `updated_at` of 14:47:50; UI continued to show "RUNNING" indefinitely.
+3. **Graceful-shutdown delay (18+ s).** Earlier sample (PID 11343 at 13:57:55): bot logged `Bot stopped` synchronously but the OS process kept the slot until SIGKILL fallback at +18 s. A blocking call (likely indicator fetch or tick sleep) is not promptly cancellable from the SIGTERM handler.
+
+**STATUS in `tweak/bot-lifecycle-stability`:**
+- Issue 1 — process-group isolation already in place (`start_new_session=True` ≡ `os.setsid`); explicit comments added so future readers understand the equivalence and the cgroup-side complement (PR adds rationale, not behaviour). RESOLVED.
+- Issue 2 — heartbeat (`last_heartbeat`, `heartbeat_interval_sec`) stamped on every state-write; portal-side `_heartbeat_is_stale` + silent-exit reconcile in `BotInfo.read_state`; lifespan startup walks the registry and corrects any drift before serving traffic. Backwards compatible (legacy state.json with no heartbeat keeps PID-only liveness). RESOLVED.
+- Issue 3 — DEFERRED to PR B (`soft-stop`). The fix touches the engine tick-loop's blocking call structure (cancellable sleeps, indicator-fetch timeouts) which is best done alongside the soft-stop semantics PR rather than ad-hoc.
+
+Filed as **r3-014** for cross-reference. 12 regression tests in `tests/test_bot_lifecycle.py` cover the schema, helper, reconcile (PID-dead path, heartbeat-stale path, idempotency, no-op when state already says stopped), and lifespan-trigger.
 
 ---
 
@@ -309,7 +327,7 @@ Operator confirmed fail2ban runs on the sshd jail. **No Reverto-specific jail.**
 
 7 items:
 
-- **r3-006** — Verify first backup cron fire + retention prune cycles. Operator action over 30 days post-cutover.
+- ✅ **r3-006** — RESOLVED via operator-verification 2026-04-26 (first cron fire confirmed at 03:00 UTC). Retention-prune monitoring continues organically.
 - ✅ **r3-007** — RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` (4 redaction tests added).
 - ✅ **r3-008** — RESOLVED in `tweak/r3-007-r3-008-monitoring-batch-1` (`Schema version:` line + 2 tests).
 - **r3-009** — HSTS preload submission decision in 6+ months.
