@@ -28,7 +28,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=89">
+<link rel="stylesheet" href="/static/style.css?v=90">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -54,17 +54,23 @@
     </div>
   </div>
   <span class="uptime-chip" id="hdr-uptime"></span>
-  <span class="state-ws-indicator" title="State sync">
+  <!-- Combined connection indicator (RHA-v1 rha-004 refined). One dot
+       + one label that take worst-case of WS-connection state and
+       /api/bots fetch staleness. Earlier separate-badge implementation
+       could show a green "live" dot next to a red "disconnected" badge
+       which read as visually contradictory. Now a single state:
+         WS up + HTTP <30s     → .connected   "live"        (green, blink)
+         WS up + HTTP 30–90s   → .stale       "stale"       (amber, slow pulse)
+         WS up + HTTP >90s     → .disconnected "disconnected" (red, static)
+         WS down               → .disconnected "disconnected"
+         no fetch yet          → (default)    "connecting..." (muted)
+       The visual fidelity loss (operator can't tell WS-fail from
+       HTTP-staleness apart) is debug info available via the
+       [reverto] console.warn paper trail. -->
+  <span class="state-ws-indicator" title="Connection state (WS + dashboard fetch)">
     <span id="state-ws-dot" class="live-dot"></span>
-    <span id="state-ws-label" class="log-status-text">offline</span>
+    <span id="state-ws-label" class="log-status-text">connecting…</span>
   </span>
-  <!-- Dashboard-fetch staleness badge (RHA-v1 rha-004). Hidden when
-       the most recent /api/bots fetch landed within STALENESS_STALE_SEC
-       seconds; surfaces an amber "stale Ns" badge between 30s and 90s
-       and a red "disconnected" badge beyond. Driven by app.js's
-       _updateStalenessBadge ticker; the live-dot above keeps its
-       independent WS-connected meaning. -->
-  <span class="staleness-badge hidden" id="staleness-badge" role="status" aria-live="polite"></span>
   <button id="profile-btn" type="button" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">
     <span id="profile-initial">A</span>
   </button>
@@ -1601,6 +1607,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=209"></script>
+<script src="/static/app.js?v=210"></script>
 </body>
 </html>
