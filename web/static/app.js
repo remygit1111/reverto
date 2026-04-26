@@ -4848,11 +4848,15 @@ function openBot(slug, fromPop = false) {
   _chartPendingDeal = null;
 
   // Detail is a sub-view of Bots — keep the Bots tab active and
-  // show the bot slug as the page title above the detail sub-nav.
+  // surface the bot slug + meta in the detail-context-bar (above the
+  // sub-nav). Slug is shown immediately; meta is filled in by
+  // fetchDetail() once the API response arrives.
   _setActiveTab('nav-bots-btn');
   $('hdr-pill').classList.remove('hidden');
-  const _pt = $('bot-page-title');
-  if (_pt) _pt.textContent = slug;
+  const _name = $('bot-name-display');
+  if (_name) _name.textContent = slug;
+  const _meta = $('bot-meta-display');
+  if (_meta) _meta.textContent = '';
 
   // Explicit Dashboard tab selection — previously used the first
    // .detail-subnav .tab which, after Chart became the first tab, started
@@ -4929,6 +4933,24 @@ async function fetchDetail(slug) {
     if (b.current_price) $('hdr-price').textContent = fmtPrice(b.current_price);
     $('hdr-pair').textContent = b.pair || 'BTC/USD';
     $('hdr-uptime').textContent = b.uptime ? '⏱ ' + b.uptime : '';
+
+    // Detail-context-bar: prefer bot_name (operator-set) over slug
+    // for the prominent identity, and compose a compact meta string
+    // from whatever fields the state response surfaces. Each part is
+    // optional — missing fields are skipped so we never render a
+    // dangling separator like "Paper · ".
+    const _name = $('bot-name-display');
+    if (_name) _name.textContent = b.bot_name || slug;
+    const _meta = $('bot-meta-display');
+    if (_meta) {
+      const metaParts = [];
+      if (b.mode)     metaParts.push(b.mode.charAt(0).toUpperCase() + b.mode.slice(1));
+      if (b.pair)     metaParts.push(b.pair);
+      if (b.exchange && b.exchange !== '—') {
+        metaParts.push(b.exchange.charAt(0).toUpperCase() + b.exchange.slice(1));
+      }
+      _meta.textContent = metaParts.join(' · ');
+    }
 
     const pill = $('status-pill');
     $('status-text').textContent = b.running ? 'Running' : 'Stopped';
