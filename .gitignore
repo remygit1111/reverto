@@ -8,7 +8,14 @@ config/bots/*/
 logs/
 keys/
 credentials/
-data/
+# Generated/local content under data/ stays out of git, but the
+# audit-findings-tracker seed (PR feat/admin-findings-tracker) is
+# shipped in-repo so the lifespan bootstrap can find it on first
+# boot. Use ``data/*`` (not ``data/``) so the negation re-include
+# below actually applies — git refuses to descend into a
+# fully-ignored directory.
+data/*
+!data/findings_seed.yaml
 ml/model_store/
 ml/models/
 ml/results_*.json

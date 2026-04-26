@@ -2131,6 +2131,39 @@ def _validate_config_completeness() -> None:
         )
 
 
+def _maybe_seed_audit_findings() -> None:
+    """Run the audit-findings YAML seed on first boot only.
+
+    Idempotent: the seed importer's INSERT OR IGNORE means re-runs
+    are no-ops on already-present rows, but we additionally short-
+    circuit when the table is non-empty so a slow seed (~240 rows)
+    doesn't add measurable startup latency on every boot.
+
+    Best-effort: any error logs a warning and returns. The admin UI
+    is graceful in the empty-table case so a failed seed does not
+    block portal startup or any operator workflow.
+    """
+    try:
+        from core import audit_findings_store
+        if audit_findings_store.count_total() > 0:
+            return
+    except Exception as e:
+        logger.warning("Audit-findings seed: count check failed: %s", e)
+        return
+    try:
+        from scripts.seed_audit_findings import (
+            DEFAULT_SEED_PATH, import_seed, load_seed,
+        )
+        items = load_seed(DEFAULT_SEED_PATH)
+        inserted, _ = import_seed(items, quiet=True)
+        logger.info(
+            "Audit-findings seed: imported %d findings on first boot",
+            inserted,
+        )
+    except Exception as e:
+        logger.warning("Audit-findings seed failed: %s", e)
+
+
 async def _reconcile_bot_states_on_startup() -> None:
     """Walk every registered bot and force a ``read_state`` call.
 
@@ -2224,6 +2257,12 @@ async def lifespan(app: FastAPI):
     # say ``running: true`` — surface the correction now so the UI is
     # consistent the moment the portal starts serving requests.
     await _reconcile_bot_states_on_startup()
+    # First-boot seed of the audit-findings tracker. Idempotent: the
+    # importer skips rows that already exist, so a re-run on every
+    # restart is cheap and self-correcting if the seed file ever
+    # gains entries between deploys. Best-effort — a YAML parse
+    # error must not block portal startup.
+    _maybe_seed_audit_findings()
     logger.info("=== Portal started ===")
 
     background_tasks: list[asyncio.Task] = [
@@ -3026,6 +3065,7 @@ async def tail_logs():
 # same pattern.
 from web.routes import admin as _admin_routes  # noqa: E402
 from web.routes import admin_bots as _admin_bots_routes  # noqa: E402
+from web.routes import admin_findings as _admin_findings_routes  # noqa: E402
 from web.routes import auth as _auth_routes  # noqa: E402
 from web.routes import backtest as _backtest_routes  # noqa: E402
 from web.routes import bots as _bots_routes  # noqa: E402
@@ -3038,6 +3078,7 @@ from web.routes import exchanges as _exchanges_routes  # noqa: E402
 
 app.include_router(_admin_routes.router)
 app.include_router(_admin_bots_routes.router)
+app.include_router(_admin_findings_routes.router)
 app.include_router(_auth_routes.router)
 app.include_router(_backtest_routes.router)
 app.include_router(_bots_routes.router)

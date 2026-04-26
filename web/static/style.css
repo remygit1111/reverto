@@ -1692,6 +1692,194 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .chart-no-more-data.hidden { display: none; }
 .chart-no-more-data .no-more-icon { color: var(--red); flex-shrink: 0; }
 
+/* ── Audit findings tracker (admin) ────────────────────────────────────────
+   Admin-only dashboard for the audit_findings table. Visual vocabulary
+   reuses the changelog admin layout: cl-admin-header for title row,
+   card.card-no-pad for the table wrapper, modal-overlay/modal-card for
+   the per-finding detail editor. Filter dropdowns use the existing
+   modal-input shape so they match the wizard form-row look. */
+.findings-stats {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .04em;
+}
+.findings-stats strong { color: var(--text); font-weight: 600; }
+.findings-filters {
+  display: flex;
+  gap: 14px;
+  margin: 12px 0 16px;
+  flex-wrap: wrap;
+}
+.findings-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.findings-filter select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  min-width: 140px;
+}
+
+.findings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.findings-table th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+.findings-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+.findings-table tbody tr { cursor: pointer; transition: background .12s; }
+.findings-table tbody tr:hover td { background: var(--surface2); }
+.findings-table .findings-id { color: var(--muted); white-space: nowrap; }
+.findings-table .findings-title-cell { color: var(--text); }
+
+.severity-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .06em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.severity-badge.sev-CRITICAL,
+.severity-badge.sev-HIGH {
+  background: rgba(255, 77, 109, .12);
+  border-color: var(--red);
+  color: var(--red);
+}
+.severity-badge.sev-MEDIUM {
+  background: rgba(255, 179, 71, .12);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.severity-badge.sev-LOW,
+.severity-badge.sev-INFO {
+  background: var(--surface2);
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+.status-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .06em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+.status-badge.st-resolved {
+  background: rgba(0, 212, 170, .12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.status-badge.st-open {
+  background: rgba(255, 77, 109, .12);
+  border-color: var(--red);
+  color: var(--red);
+}
+.status-badge.st-in_progress {
+  background: rgba(255, 179, 71, .12);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.status-badge.st-accepted,
+.status-badge.st-deferred {
+  background: var(--surface2);
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+/* Finding detail / edit modal */
+.finding-detail-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.finding-detail-title {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+.finding-detail-description {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: var(--surface2);
+  padding: 10px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  margin-bottom: 16px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.finding-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.finding-edit-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.finding-edit-label select,
+.finding-edit-label input,
+.finding-edit-label textarea {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.finding-edit-label textarea { resize: vertical; min-height: 90px; }
+
 /* Responsive helpers */
 .btn-label { display: inline; }
 
