@@ -99,29 +99,80 @@ def test_legacy_breadcrumb_and_page_title_removed():
     assert "bot-page-title" not in js
 
 
-def test_detail_context_bar_present():
-    """The bot detail page must render bot identity (name + meta) and
-    the sub-nav inside a single ``.detail-context-bar`` strip.
-    Asserts the structural pieces exist so a refactor that splits them
-    apart again — re-introducing the floating-h1 problem — fails fast.
+def test_legacy_detail_context_bar_removed():
+    """The merged-strip experiment from PR 3 (``.detail-context-bar``
+    wrapping bot identity AND the sub-nav into one row) was rolled
+    back in PR 4 — name and sub-nav fought for visual weight in the
+    same strip. The identity now lives in its own ``.bot-identity``
+    block and the sub-nav is back to a standalone strip.
+
+    Class-of-issue regression: any future change that re-introduces
+    ``.detail-context-bar`` (or its child helpers) is caught here.
+    """
+    html = _INDEX_HTML.read_text(encoding="utf-8")
+    css = _STYLE_CSS.read_text(encoding="utf-8")
+
+    assert 'class="detail-context-bar"' not in html
+    assert 'class="detail-bot-info"' not in html
+    assert 'class="detail-bot-name"' not in html
+    assert 'class="detail-bot-meta"' not in html
+    assert 'class="detail-context-divider"' not in html
+    assert ".detail-context-bar" not in css
+    assert ".detail-bot-info" not in css
+    assert ".detail-bot-name" not in css
+    assert ".detail-bot-meta" not in css
+    assert ".detail-context-divider" not in css
+
+
+def test_bot_identity_block_present():
+    """The bot detail view must render a ``.bot-identity`` block with
+    three populated children: a prominent ``#bot-name-display``
+    heading, a ``#bot-identity-status`` pill, and a muted
+    ``#bot-meta-display`` line. Asserts the structural pieces exist so
+    a refactor that re-merges them with the sub-nav (PR 3 pattern) or
+    splits them apart again (PR 1/2 patterns) fails fast.
     """
     html = _INDEX_HTML.read_text(encoding="utf-8")
     css = _STYLE_CSS.read_text(encoding="utf-8")
     js = _APP_JS.read_text(encoding="utf-8")
 
-    # Wrapper + the two textual sinks openBot()/fetchDetail() write to.
-    assert 'class="detail-context-bar"' in html
+    # Wrapper + the three sinks openBot()/fetchDetail() write to.
+    assert 'class="bot-identity"' in html
     assert 'id="bot-name-display"' in html
+    assert 'id="bot-identity-status"' in html
     assert 'id="bot-meta-display"' in html
 
-    # CSS for the bar and its children must exist (so removing the
-    # styling ratchets a CSS-rule-removal review, not a silent
-    # un-styling regression).
-    assert ".detail-context-bar" in css
-    assert ".detail-bot-name" in css
-    assert ".detail-bot-meta" in css
+    # CSS for the block and its children must exist.
+    assert ".bot-identity" in css
+    assert ".bot-identity-name" in css
+    assert ".bot-identity-meta" in css
 
-    # JS must populate both elements — name from slug/bot_name, meta
-    # composed from b.mode / b.pair / b.exchange.
+    # JS must populate all three — name from slug/bot_name, meta
+    # composed from b.mode / b.pair / b.exchange, and the running
+    # status pill toggling between RUNNING and STOPPED.
     assert "bot-name-display" in js
     assert "bot-meta-display" in js
+    assert "bot-identity-status" in js
+
+
+def test_running_status_pill_decoupled_from_detail_controls():
+    """The running-status pill used to live inside ``.detail-controls``
+    next to Start/Stop/Restart. PR 4 moved it into the bot-identity
+    block so the status reads as part of the identity, not part of the
+    action row. The CSS selector therefore must NOT scope the pill to
+    ``.detail-controls`` — that descendant rule would silently strip
+    the styling at the new location.
+
+    The legacy ``#d-running-status`` ID is also gone (the pill now
+    lives at ``#bot-identity-status``); the JS render target moved
+    accordingly.
+    """
+    html = _INDEX_HTML.read_text(encoding="utf-8")
+    css = _STYLE_CSS.read_text(encoding="utf-8")
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    assert 'id="d-running-status"' not in html
+    assert "d-running-status" not in js
+    assert ".detail-controls .running-status" not in css
+    # The general .running-status rule must remain (de-scoped form).
+    assert ".running-status" in css
