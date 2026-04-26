@@ -40,6 +40,22 @@ _dict_to_deal = dict_to_deal
 # instance.
 HEARTBEAT_INTERVAL_SEC = 10
 
+# State schema version — bumped whenever state.json gains a field that
+# the portal-side reconciliation reads. Stamped by ``_write_state`` on
+# every tick so the portal can detect a bot still running on stale code
+# (e.g. surviving a portal-restart with the old engine binary loaded).
+# A mismatch on portal startup triggers a bounded auto-restart through
+# ``_attempt_bot_auto_restart`` in web.app.
+#
+# Version history
+# ---------------
+# v1 — pre-heartbeat (no last_heartbeat, no stopped_reason). Anything
+#      without a state_schema_version field is treated as v1.
+# v2 — adds last_heartbeat / heartbeat_interval_sec / stopped_at /
+#      stopped_reason (PR: tweak/bot-lifecycle-stability). This stamp
+#      itself lands in PR: tweak/killmode-process-mismatch-detection.
+STATE_SCHEMA_VERSION = 2
+
 logger = logging.getLogger(__name__)
 
 # Deal IDs produced by PaperState.new_deal_id() follow YYYYMMDDHHMM-RRRR
@@ -441,6 +457,10 @@ class PaperEngine:
             # is "I was alive at this instant."
             "last_heartbeat":         datetime.now(UTC).isoformat(),
             "heartbeat_interval_sec": int(self.poll_interval),
+            # Schema-version stamp: lets the portal detect a bot
+            # surviving on stale code after a deploy. Portal startup
+            # reconcile auto-restarts mismatched bots within budget.
+            "state_schema_version":   STATE_SCHEMA_VERSION,
             "open_deals": [
                 deal_to_dict(d, price)
                 for d in open_deals_snap.values()

@@ -1111,3 +1111,114 @@ Nightly cron (recommended):
 Restore: stop portal + bots, untar into a fresh clone, start portal.
 Credential rotation: restore `.credentials.key.bak` if the rotation
 itself is what you're rolling back.
+
+## Bot lifecycle — KillMode rationale
+
+The `reverto.service` systemd unit uses `KillMode=process` (not the
+systemd default `mixed`). This decouples the portal lifecycle from
+the bot subprocess lifecycle:
+
+- `systemctl restart reverto` does **not** kill bot subprocesses —
+  they continue running on the previously-loaded engine code.
+- `systemctl stop reverto` likewise leaves bots running. Use the UI
+  (or the `/api/bots/<slug>/stop` endpoint) to stop a bot intentionally.
+- The systemd unit only kills the main uvicorn process; nothing in
+  the portal's cgroup is mass-SIGKILLed.
+
+### Why
+
+Two reasons:
+
+1. **Stability.** Earlier deploys with `KillMode=mixed` left
+   `Failed to kill control group … Invalid argument` warnings in
+   `journalctl` and routinely lost bot subprocesses on every portal
+   restart — including bots in mid-deal with open positions. Surviving
+   the restart preserves trading state.
+2. **Operator control.** Code deploys that don't touch the bot engine
+   should never disturb running bots. With `KillMode=process` the
+   operator decides when to roll bots forward, not the deploy script.
+
+### When to manually restart bots
+
+Restart bots after PRs that change:
+
+- `paper/` (engine, state schema, close handler)
+- `exchanges/` (public + private exchange wrappers)
+- `strategies/` (indicator engine, ladder builder)
+- `core/` paths / IDs / clock-monitor — anything imported by the bot
+  process at start-up
+- A `STATE_SCHEMA_VERSION` bump (in `paper/paper_engine.py`)
+- Major config-shape changes that bots cache at start-up
+
+Restarts on configuration changes for a single bot are still
+operator-issued via the UI's Restart button (or `POST
+/api/bots/<slug>/restart`).
+
+### When auto-restart fires
+
+Portal startup walks every registered bot and reads its state.json.
+A bot whose `state_schema_version` does not match the portal's
+`STATE_SCHEMA_VERSION` (or whose state file lacks the field, marking
+it as legacy code) is auto-restarted via the same `restart_bot()`
+path the UI uses.
+
+Auto-restart is bounded:
+
+- **Budget:** 3 attempts per `(user_id, slug)` per 5-minute rolling
+  window. Tracked in-memory only — a portal-restart wipes the budget
+  and re-grants three fresh attempts on the next startup.
+- **Exhausted budget:** the 4th attempt logs an `ERROR` line and
+  writes `stopped_reason="restart_budget_exceeded"` into state.json.
+  The portal then leaves the bot alone; operator must investigate.
+- **Window resets:** attempts older than 5 minutes are pruned on
+  each new attempt, so a bot that has been stable for a day starts
+  with a fresh budget.
+
+### Service-file change procedure
+
+```bash
+sudo cp /etc/systemd/system/reverto.service \
+        /etc/systemd/system/reverto.service.bak.$(date +%Y%m%d-%H%M%S)
+sudo sed -i 's/^KillMode=mixed$/KillMode=process/' \
+        /etc/systemd/system/reverto.service
+sudo systemctl daemon-reload
+sudo grep KillMode /etc/systemd/system/reverto.service
+# Expect: KillMode=process
+```
+
+`daemon-reload` re-parses the unit but does not restart anything;
+the change takes effect on the next `systemctl restart reverto`.
+
+### Verification post-deploy
+
+```bash
+# Schema-version stamp lands within one heartbeat (~10s).
+sleep 15
+jq '.state_schema_version' ~/reverto/logs/1/<slug>.state.json
+# Expect: 2 (or whatever paper.paper_engine.STATE_SCHEMA_VERSION
+# currently reports).
+
+# Survival across portal-restart.
+BOT_PID=$(cat ~/reverto/logs/1/pids/<slug>.pid)
+sudo systemctl restart reverto
+sleep 15
+ps -p $BOT_PID && echo "Bot survived" || echo "Bot was killed"
+# Expect: "Bot survived" — same PID still alive.
+```
+
+### Rollback
+
+If `KillMode=process` causes operational issues (very unlikely — the
+default for most production services):
+
+```bash
+sudo cp /etc/systemd/system/reverto.service.bak.<timestamp> \
+        /etc/systemd/system/reverto.service
+sudo systemctl daemon-reload
+sudo systemctl restart reverto
+```
+
+The rollback restores the prior `KillMode=mixed` behaviour. Bots
+will again be killed on every portal restart; the heartbeat-side
+silent-exit reconcile (`tweak/bot-lifecycle-stability`) keeps the UI
+honest about which bots are actually running.
