@@ -481,6 +481,34 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .live-dot.connected { background: var(--accent); animation: blink 1.4s infinite; }
 .live-dot.error     { background: var(--red); }
 
+/* Dashboard fetch-staleness badge (RHA-v1 rha-004). Sits next to the
+   .state-ws-indicator in the header; surfaces "stale Ns" or
+   "disconnected" copy when /api/bots fetches stop landing. The
+   live-dot keeps its independent WS-connected meaning so the operator
+   can distinguish "WS up but HTTP wedged" (badge visible, dot green)
+   from "WS down too" (badge visible, dot red). */
+.staleness-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  text-transform: lowercase;
+}
+.staleness-badge.hidden { display: none; }
+.staleness-badge.state-stale {
+  background: rgba(255, 179, 71, .12);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.staleness-badge.state-disconnected {
+  background: rgba(255, 77, 109, .12);
+  border-color: var(--red);
+  color: var(--red);
+}
+
 /* Header state-sync indicator — small dot + label sitting next to the
    uptime chip. Keeps the same visual language as the per-tab live
    indicators in the log/overview widgets. */
@@ -570,6 +598,29 @@ tr:hover td { background: rgba(128,128,128,.04); }
   overflow: hidden;
   transition: border-color .15s;
   cursor: pointer;
+}
+
+/* Initial-fetch skeleton (RHA-v1 rha-005). Two flavours:
+   - ``.bot-card-skeleton`` is its own placeholder card matching a
+     real .bot-card's outer dimensions so the layout doesn't shift
+     when fetchOverview lands and renderBotGrid replaces the entire
+     bot-grid innerHTML.
+   - ``.stat-grid.skeleton-on-init .card`` pulses the real stat
+     cards in place — no extra markup, just an animation hint until
+     fetchDetail lands. ``_markFetchSuccess`` strips the
+     ``skeleton-on-init`` class so subsequent 30s polls don't
+     re-pulse.
+   ``skel-pulse`` is the same keyframe the chart-skeleton uses
+   (style.css:2244), so the design vocabulary is shared. */
+.bot-card-skeleton {
+  height: 132px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  animation: skel-pulse 2.4s ease-in-out infinite;
+}
+.stat-grid.skeleton-on-init .card {
+  animation: skel-pulse 2.4s ease-in-out infinite;
 }
 .bot-card:hover { border-color: var(--accent); }
 .bot-card.menu-open {

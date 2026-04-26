@@ -600,6 +600,84 @@ let detailInterval = null;
 let overviewInterval = null;
 let _priceInterval = null;
 
+// Dashboard fetch staleness tracking (RHA-v1 rha-004 + rha-005). The
+// portal-side WS-state pill (#state-ws-dot) tracks the websocket
+// connection — distinct from "the last HTTP fetch landed cleanly."
+// Heavy network blips can leave the WS connected (auto-reconnect) but
+// /api/bots responses delayed, and the operator should see *that*
+// distinction. ``_lastFetchSuccessAt`` is the epoch ms of the most
+// recent fetch that produced a render-able response; null until the
+// first one lands. ``_initialFetchDone`` distinguishes "first ever
+// fetch" (skeleton state visible) from "refresh tick" (skeleton must
+// not flash again on every poll).
+let _lastFetchSuccessAt = null;
+let _initialFetchDone = false;
+let _stalenessTimer = null;
+
+// Staleness thresholds (seconds). Picked to give the WS push channel
+// time to recover from a hiccup without flashing a warning, while a
+// real disconnect surfaces well before the next 30s overview-poll
+// cycle even fires.
+const STALENESS_STALE_SEC = 30;
+const STALENESS_DISCONNECTED_SEC = 90;
+const STALENESS_TICK_MS = 5000;
+
+function _markFetchSuccess() {
+  _lastFetchSuccessAt = Date.now();
+  _initialFetchDone = true;
+  // Strip the skeleton-on-init class so the pulse animation stops
+  // and (for the bot-grid case) renderBotGrid's innerHTML rewrite
+  // is not visually preceded by a flash of pulsing placeholders on
+  // the next 30s poll cycle. The bot-card-skeleton elements
+  // themselves are removed by that rewrite; the stat-grid keeps its
+  // real card content and just loses the pulse.
+  document.querySelectorAll('.skeleton-on-init').forEach((el) => {
+    el.classList.remove('skeleton-on-init');
+  });
+}
+
+function _getFetchStalenessMs() {
+  if (_lastFetchSuccessAt === null) return null;
+  return Date.now() - _lastFetchSuccessAt;
+}
+
+function _updateStalenessBadge() {
+  const badge = document.getElementById('staleness-badge');
+  if (!badge) return;
+  // While the user is on the login screen, the dashboard chrome is
+  // hidden — suppress the badge entirely so it does not flash on
+  // logout/login transitions.
+  if (document.body.classList.contains('is-login')) {
+    badge.className = 'staleness-badge hidden';
+    return;
+  }
+  const stalenessMs = _getFetchStalenessMs();
+  if (stalenessMs === null) {
+    // No fetch has ever succeeded — render as connecting. The login
+    // path gates this until auth lands so this only fires post-auth.
+    badge.className = 'staleness-badge state-disconnected';
+    badge.textContent = 'connecting…';
+    return;
+  }
+  const stalenessSec = Math.round(stalenessMs / 1000);
+  if (stalenessSec < STALENESS_STALE_SEC) {
+    badge.className = 'staleness-badge hidden';
+    return;
+  }
+  if (stalenessSec < STALENESS_DISCONNECTED_SEC) {
+    badge.className = 'staleness-badge state-stale';
+    badge.textContent = `stale ${stalenessSec}s`;
+    return;
+  }
+  badge.className = 'staleness-badge state-disconnected';
+  badge.textContent = 'disconnected';
+}
+
+function _startStalenessTimer() {
+  if (_stalenessTimer !== null) return;
+  _stalenessTimer = setInterval(_updateStalenessBadge, STALENESS_TICK_MS);
+}
+
 // /ws/state — bot-state push channel. The dashboard used to poll
 // /api/bots every 5s; now we poll every 30s as a safety net and let
 // the WS push handle realtime updates.
@@ -761,9 +839,22 @@ async function fetchOverview() {
   try {
     const r = await fetch('/api/bots');
     if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) {
+      // 4xx/5xx are not 'success' for staleness purposes — surface in
+      // the console so a developer can tell the difference between a
+      // wedged backend (5xx) and a network blip (catch-branch below).
+      console.warn('[reverto] fetchOverview non-OK status:', r.status);
+      return;
+    }
     const d = await r.json();
     renderOverview(d);
-  } catch (e) {}
+    _markFetchSuccess();
+  } catch (e) {
+    // Network failure / parse error — RHA-v1 rha-004. Logging here
+    // (not every empty catch in app.js) so the staleness badge in
+    // the header has a paper trail in DevTools.
+    console.warn('[reverto] fetchOverview failed:', e);
+  }
 }
 
 function renderOverview(d) {
@@ -5099,7 +5190,15 @@ async function fetchDetail(slug) {
 
     $('log-title').textContent = slug + '.log';
 
-  } catch (e) {}
+    _markFetchSuccess();
+  } catch (e) {
+    // RHA-v1 rha-004 — surface fetchDetail failures in DevTools so
+    // the staleness badge has a corresponding log line. The 401 path
+    // above already routes through _handle401 and returns early, so
+    // anything reaching this catch is genuinely a network or parse
+    // failure.
+    console.warn('[reverto] fetchDetail failed:', e);
+  }
 }
 
 // ── Performance stats ────────────────────────────────────────────────────────
@@ -8327,6 +8426,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.body.classList.add('auth-checked');
 
   refreshProfileInitial();
+
+  // Start the staleness ticker so the header badge surfaces fetch-
+  // freshness even if the user lands on a tab whose ``go*`` handler
+  // hasn't fired yet (e.g. a deep-link). Fires every 5s; cheap.
+  _startStalenessTimer();
 
   // No more first-visit API key prompt — session cookie auth covers
   // the SPA. The API key is still settable via Profile → API Key for

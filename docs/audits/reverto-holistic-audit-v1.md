@@ -148,8 +148,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 
 | ID | Severity | Finding | File:line |
 |----|----------|---------|-----------|
-| rha-004 | MEDIUM | Dashboard fetch handlers swallow errors silently | `web/static/app.js:760-767` |
-| rha-005 | MEDIUM | No loading indicator on initial dashboard fetches | `web/static/app.js:760, 4937` |
+| rha-004 | MEDIUM | Dashboard fetch handlers swallow errors silently | `web/static/app.js:760-767` — **RESOLVED** in `tweak/dashboard-resilience` |
+| rha-005 | MEDIUM | No loading indicator on initial dashboard fetches | `web/static/app.js:760, 4937` — **RESOLVED** in `tweak/dashboard-resilience` |
 
 #### rha-004 — `fetchOverview`/`fetchDetail` swallow network errors silently (MEDIUM)
 
@@ -165,6 +165,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 
 **Category:** Operational visibility. Cross-references PRA-v3 area 13 (observability) where Reverto already does well at the backend log layer; this is the frontend gap.
 
+**STATUS.** RESOLVED in `tweak/dashboard-resilience` — `fetchOverview` + `fetchDetail` now route catch-branches through `console.warn('[reverto] …')` and a header staleness-badge (`#staleness-badge`, hidden in <30s, amber `state-stale` 30-90s, red `state-disconnected` >90s) is driven by `_updateStalenessBadge` running on a 5s tick. `_markFetchSuccess` stamps the timestamp on every successful render path. The existing `.live-dot` keeps its independent WS-connected meaning — the badge surfaces fetch-freshness, the dot surfaces WS connection. 4 regression tests in `tests/test_frontend_assets.py`.
+
 #### rha-005 — No loading indicator on initial dashboard fetches (MEDIUM)
 
 **What.** When a freshly-loaded portal hits `fetchOverview` on auth-success, the operator sees the chrome (header + nav) and an empty page-body for the duration of the round-trip. There is no skeleton, no spinner, no "Loading…" placeholder. On a fast connection this is invisible; on a slow connection (or a wedged backend) it looks like a broken page.
@@ -174,6 +176,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 **Impact.** Operator confidence in the platform during slow events. Closely tied to rha-004 — the silent-failure mode looks identical to the slow-fetch mode, so the operator cannot distinguish.
 
 **Remediation.** Add a skeleton or spinner state on the bot-grid and stat-cards while the first fetch is in flight. The codebase already has skeleton patterns for charts (`chart-skeleton`, `chart-loading-spinner`); reuse the design vocabulary.
+
+**STATUS.** RESOLVED in `tweak/dashboard-resilience` — bot-grid renders three `.bot-card-skeleton` placeholders on initial load (matching `.bot-card` outer dimensions so no layout shift), and the bot-detail stat-grid pulses its existing card placeholders via `.stat-grid.skeleton-on-init .card { animation: skel-pulse … }`. Both reuse the existing `skel-pulse` keyframe from chart-skeleton. `_markFetchSuccess` strips the `skeleton-on-init` class on first successful render so subsequent 30s polls do not re-flash the pulse — verified by the `_initialFetchDone` flag. 1 regression test in `tests/test_frontend_assets.py`.
 
 ### Area UX2 — Modal & focus management
 
