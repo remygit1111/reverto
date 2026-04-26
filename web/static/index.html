@@ -28,7 +28,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=85">
+<link rel="stylesheet" href="/static/style.css?v=86">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -1185,21 +1185,26 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-detail" class="page">
 
-  <!-- Page title — bot slug rendered above the detail sub-nav.
-       Replaces the earlier breadcrumb experiment; the top-nav highlight
-       and detail sub-nav already convey hierarchy. -->
-  <h1 class="page-title" id="bot-page-title"></h1>
-
-  <!-- Sub-nav — the dedicated back button was removed; the operator
-       leaves the detail view via the main nav (Bots tab) or the
-       browser back button, which is wired through the History API. -->
-  <div class="detail-subnav">
-    <button class="tab active" data-dtab="dashboard">Dashboard</button>
-    <button class="tab" data-dtab="chart">Chart</button>
-    <button class="tab" data-dtab="deals">Deals</button>
-    <button class="tab" data-dtab="backtest">Backtest</button>
-    <button class="tab" data-dtab="config">Config</button>
-    <button class="tab" data-dtab="log">Log</button>
+  <!-- Detail context bar — bot identity (name + mode · pair) and the
+       sub-nav are merged into one strip so the page identity reads
+       as a single unit instead of a naked h1 floating above the nav.
+       The dedicated back button was removed earlier; operators leave
+       via the main nav (Bots tab) or the browser back button, which
+       is wired through the History API. -->
+  <div class="detail-context-bar">
+    <div class="detail-bot-info">
+      <span class="detail-bot-name" id="bot-name-display"></span>
+      <span class="detail-bot-meta" id="bot-meta-display"></span>
+    </div>
+    <div class="detail-context-divider" aria-hidden="true"></div>
+    <nav class="detail-subnav">
+      <button class="tab active" data-dtab="dashboard">Dashboard</button>
+      <button class="tab" data-dtab="chart">Chart</button>
+      <button class="tab" data-dtab="deals">Deals</button>
+      <button class="tab" data-dtab="backtest">Backtest</button>
+      <button class="tab" data-dtab="config">Config</button>
+      <button class="tab" data-dtab="log">Log</button>
+    </nav>
   </div>
 
   <!-- Chart tab -->
@@ -1575,6 +1580,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=204"></script>
+<script src="/static/app.js?v=205"></script>
 </body>
 </html>
