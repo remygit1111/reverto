@@ -2075,9 +2075,14 @@ function _resetHeaderForTopLevel() {
   teardownChartTab();
   teardownWizardChart();
   if (ws) { ws.close(); ws = null; }
-  $('hdr-context').textContent = 'Built for Bitcoin.';
-  $('hdr-context').classList.remove('clickable');
-  $('hdr-context').onclick = null;
+  // Tagline in the header is static now ("Built for Bitcoin.") — the
+  // breadcrumb lives in the page-content area, so hide it on top-level
+  // views.
+  const _bc = $('page-breadcrumb');
+  if (_bc) {
+    _bc.innerHTML = '';
+    _bc.classList.add('hidden');
+  }
   $('hdr-pill').classList.add('hidden');
   $('hdr-uptime').textContent = '';
 }
@@ -4851,14 +4856,18 @@ function openBot(slug, fromPop = false) {
   _chartPendingDeal = null;
 
   // Detail is a sub-view of Bots — keep the Bots tab active and
-  // surface the slug in the header subtext as "Reverto › SLUG".
-  // The breadcrumb uses the bare product name (not the full tagline)
-  // so the slug stays readable at normal header widths.
+  // surface the slug in the page-breadcrumb as "Reverto › SLUG".
+  // Breadcrumb lives in the page-content area so the header tagline
+  // stays visible.
   _setActiveTab('nav-bots-btn');
   $('hdr-pill').classList.remove('hidden');
-  $('hdr-context').innerHTML =
-    'Reverto <span class="hdr-sep">›</span> ' +
-    '<span class="hdr-slug">' + safeText(slug.toUpperCase()) + '</span>';
+  const _bc = $('page-breadcrumb');
+  if (_bc) {
+    _bc.innerHTML =
+      'Reverto <span class="hdr-sep">›</span> ' +
+      '<span class="hdr-slug">' + safeText(slug.toUpperCase()) + '</span>';
+    _bc.classList.remove('hidden');
+  }
 
   // Explicit Dashboard tab selection — previously used the first
    // .detail-subnav .tab which, after Chart became the first tab, started
@@ -8175,6 +8184,20 @@ function setupEventListeners() {
     const t = e.target.closest('[data-nb-remove]');
     if (t) { nbRemoveIndicator(null, parseInt(t.dataset.nbRemove, 10)); }
   });
+
+  // Number-input scroll-blocker: when a wheel event lands on a
+  // <input type="number"> that is NOT focused, block the browser's
+  // wheel-changes-value default and let the page scroll instead.
+  // Focused number-inputs keep the native wheel-step behaviour
+  // intact for operators who deliberately use it.
+  document.addEventListener('wheel', (e) => {
+    const t = e.target;
+    if (t && t.matches && t.matches('input[type="number"]') &&
+        document.activeElement !== t) {
+      e.preventDefault();
+      window.scrollBy(0, e.deltaY);
+    }
+  }, { passive: false });
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

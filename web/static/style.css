@@ -1570,8 +1570,17 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .chart-no-more-data.hidden { display: none; }
 .chart-no-more-data .no-more-icon { color: var(--red); flex-shrink: 0; }
 
-/* Header context subtext — breadcrumb "Reverto › SLUG" on bot-detail,
-   tagline ("Built for Bitcoin.") elsewhere. */
+/* Page breadcrumb — "Reverto › SLUG" rendered in the page-content area
+   (above the detail sub-nav). Tagline lives permanently in the header. */
+.page-breadcrumb {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+.page-breadcrumb.hidden { display: none; }
 .hdr-sep {
   color: var(--muted);
   margin: 0 4px;

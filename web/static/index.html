@@ -28,7 +28,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=83">
+<link rel="stylesheet" href="/static/style.css?v=84">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -864,8 +864,8 @@
               <option value="kraken">Kraken</option>
             </select>
             <span id="nb-exchange-hint" class="form-hint">
-              Exchange waar deze bot op draait. Credentials koppelen via
-              Exchanges → Add Keys (alleen nodig voor live mode).
+              Exchange this bot runs on. Connect credentials via
+              Exchanges → Add Keys (only required for live mode).
             </span>
           </div>
           <div class="form-row">
@@ -874,8 +874,8 @@
                    required aria-required="true"
                    aria-describedby="nb-pair-hint">
             <span id="nb-pair-hint" class="form-hint">
-              Formaat <code>BASE/QUOTE</code>. Momenteel officieel
-              getest met <code>BTC/USD</code> inverse perp.
+              Format <code>BASE/QUOTE</code>. Currently officially
+              tested with <code>BTC/USD</code> inverse perp.
             </span>
           </div>
           <div class="form-row">
@@ -887,8 +887,8 @@
               <option value="live" disabled title="Requires API keys">Live (requires API keys)</option>
             </select>
             <span id="nb-mode-hint" class="form-hint">
-              Paper simuleert fills lokaal; live plaatst echte orders
-              (alleen beschikbaar na Phase 3 activatie via main_live.py).
+              Paper simulates fills locally; live places real orders
+              (only available after Phase 3 activation via main_live.py).
             </span>
           </div>
           <div class="form-row">
@@ -900,8 +900,8 @@
               <option value="short" disabled title="Not yet supported">Short (not yet supported)</option>
             </select>
             <span id="nb-direction-hint" class="form-hint">
-              Long opent buy-side posities bij entry-signaal; short opent
-              sell-side (nog niet ondersteund).
+              Long opens buy-side positions on entry signal; short opens
+              sell-side (not yet supported).
             </span>
           </div>
           <div class="form-row">
@@ -915,8 +915,8 @@
               <option value="1d">1d</option>
             </select>
             <span id="nb-timeframe-hint" class="form-hint">
-              Candle-grootte waarop entry-indicatoren draaien. Korter =
-              meer signalen + meer ruis.
+              Candle size that entry indicators run on. Shorter =
+              more signals + more noise.
             </span>
           </div>
           <div class="form-row form-row-wide">
@@ -987,8 +987,8 @@
                    type="number" step="0.1" min="0" value="3.0"
                    aria-describedby="nb-tp-pct-hint">
             <span id="nb-tp-pct-hint" class="form-hint">
-              Winst-percentage (vanaf gemiddelde entry) waarbij de deal
-              gesloten wordt.
+              Profit percentage (from average entry) at which the deal
+              is closed.
             </span>
           </div>
           <div class="form-row" id="nb-tp-min-row">
@@ -997,8 +997,8 @@
                    placeholder="optional"
                    aria-describedby="nb-tp-min-pct-hint">
             <span id="nb-tp-min-pct-hint" class="form-hint">
-              Optioneel — indicator-based TP vuurt pas als de deal
-              minstens dit percentage in winst staat.
+              Optional — indicator-based TP only fires once the deal
+              is at least this percentage in profit.
             </span>
           </div>
           <div class="form-row form-row-wide">
@@ -1033,8 +1033,8 @@
               <option value="trailing">Trailing</option>
             </select>
             <span id="nb-sl-type-hint" class="form-hint">
-              Fixed: SL ten opzichte van entry. Trailing: SL trekt mee met
-              piek-prijs.
+              Fixed: SL relative to entry. Trailing: SL follows the
+              peak price.
             </span>
           </div>
           <div class="form-row">
@@ -1043,7 +1043,7 @@
                    type="number" step="0.1" min="0" value="5.0"
                    aria-describedby="nb-sl-pct-hint">
             <span id="nb-sl-pct-hint" class="form-hint">
-              Verlies-percentage waarbij de deal gesloten wordt. Respecteert
+              Loss percentage at which the deal is closed. Respects the
               liquidation guard buffer.
             </span>
           </div>
@@ -1075,7 +1075,7 @@
                    type="number" min="0" max="49" value="4"
                    aria-describedby="nb-dca-max-hint">
             <span id="nb-dca-max-hint" class="form-hint">
-              Aantal DCA-orders ná de base order. 0 zet DCA uit. Max 49.
+              Number of DCA orders after the base order. 0 disables DCA. Max 49.
             </span>
           </div>
           <div class="form-row">
@@ -1084,8 +1084,8 @@
                    type="number" step="0.0001" min="0" value="0.001"
                    aria-describedby="nb-dca-size-hint">
             <span id="nb-dca-size-hint" class="form-hint">
-              Grootte van de eerste DCA-order (volgende orders worden met
-              de volume-multiplier geschaald).
+              Size of the first DCA order (subsequent orders are scaled
+              by the volume multiplier).
             </span>
           </div>
           <div class="form-row">
@@ -1094,8 +1094,8 @@
                    type="number" step="0.1" min="0" value="2.5"
                    aria-describedby="nb-dca-spacing-hint">
             <span id="nb-dca-spacing-hint" class="form-hint">
-              Prijs-afstand tussen elke DCA — 2.5 = volgende order bij 2.5%
-              onder de vorige.
+              Price distance between each DCA — 2.5 = next order at 2.5%
+              below the previous one.
             </span>
           </div>
           <div class="form-row">
@@ -1104,9 +1104,9 @@
                    type="number" step="0.1" min="0.1" value="1.0"
                    aria-describedby="nb-dca-volume-hint">
             <span id="nb-dca-volume-hint" class="form-hint">
-              Size-multiplier per volgende DCA. 1.0 = gelijk, 2.0 = elke
-              DCA verdubbelt. Geometric growth wordt door LiveEngine
-              preflight gecapped.
+              Size multiplier per subsequent DCA. 1.0 = equal, 2.0 = each
+              DCA doubles. Geometric growth is capped by LiveEngine
+              preflight.
             </span>
           </div>
           <div class="form-row">
@@ -1184,6 +1184,10 @@
 <!-- VIEW: Bot detail (sub-view of Bots tab)                                   -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-detail" class="page">
+
+  <!-- Breadcrumb sits above the page content (was previously rendered
+       in the header subtext slot, which displaced the tagline). -->
+  <div id="page-breadcrumb" class="page-breadcrumb hidden" aria-label="Breadcrumb"></div>
 
   <!-- Sub-nav — the dedicated back button was removed; the operator
        leaves the detail view via the main nav (Bots tab) or the
@@ -1570,6 +1574,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=202"></script>
+<script src="/static/app.js?v=203"></script>
 </body>
 </html>
