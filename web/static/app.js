@@ -3702,6 +3702,14 @@ function nbShowError(msg) {
     el.textContent = msg;
   }
   el.classList.remove('hidden');
+  // The banner sits at the top of the wizard form; when an operator
+  // hits Save from the bottom of a long form they would otherwise see
+  // no feedback. Auto-scroll the banner into the viewport so the
+  // failure is unmissable. Native scrollIntoView is a no-op when the
+  // element is already in view, so this is safe to call every time.
+  if (typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 }
 function nbHideError() {
   $('nb-error').classList.add('hidden');
@@ -4679,10 +4687,20 @@ function _nbRenderValidation(data) {
 }
 
 function _nbRenderValidationError(msg) {
+  // Live config-preview is best-effort while the operator is still
+  // filling out the wizard, so an early-stage Pydantic failure (name
+  // empty, base order < min, etc.) is the expected case — not a user-
+  // facing error. Show a friendly placeholder and keep the raw cause
+  // in the console for debugging. Avoids leaking text like
+  // "validation error for BotConfig … type=value_error, input_value=''
+  //  https://errors.pydantic.dev/…" into the UI.
+  if (msg) {
+    try { console.warn('[wizard] config preview unavailable:', msg); } catch (e) {}
+  }
   const profileEl = $('nb-review-profile');
   if (profileEl) {
     profileEl.innerHTML =
-      `<div class="review-summary-placeholder muted">Config analysis unavailable: ${safeText(msg)}</div>`;
+      '<div class="review-summary-placeholder muted">Fill in required fields to see config preview.</div>';
   }
   const warnEl = $('nb-review-warnings');
   if (warnEl) warnEl.classList.add('hidden');
