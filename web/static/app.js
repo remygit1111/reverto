@@ -4838,6 +4838,62 @@ async function nbSubmit() {
 
 // ── Bot detail ────────────────────────────────────────────────────────────────
 
+// Maps the derived bot lifecycle state ('running' / 'stopped' / 'error'
+// / 'unknown') to the {disabled, title} treatment for each of the three
+// detail-page action buttons. The shape is data-driven so adding a
+// future state (e.g. the 'stopped_with_deals' that lands with the
+// soft-stop PR) is one entry, no branching rewrites.
+//
+// 'error' is wired through structurally even though the current API
+// response does not yet surface an error field — the day a backend
+// signal lands ("crashed" / "preflight_failed") the JS just resolves
+// to this entry without further changes here.
+//
+// 'unknown' is what we render before fetchDetail() lands, so a stale
+// state from the previously-open bot does not flash.
+const _BOT_BUTTON_STATE_RULES = {
+  running: {
+    start:   { disabled: true,  title: 'Bot is already running' },
+    stop:    { disabled: false, title: '' },
+    restart: { disabled: false, title: '' },
+  },
+  stopped: {
+    start:   { disabled: false, title: '' },
+    stop:    { disabled: true,  title: 'Bot is already stopped' },
+    restart: { disabled: true,  title: 'Cannot restart a stopped bot — use Start instead' },
+  },
+  error: {
+    start:   { disabled: false, title: '' },
+    stop:    { disabled: true,  title: 'Bot is in error state — use Start or Restart to recover' },
+    restart: { disabled: false, title: '' },
+  },
+  unknown: {
+    start:   { disabled: false, title: '' },
+    stop:    { disabled: false, title: '' },
+    restart: { disabled: false, title: '' },
+  },
+};
+
+function updateBotControlButtons(state) {
+  const rule = _BOT_BUTTON_STATE_RULES[state] || _BOT_BUTTON_STATE_RULES.unknown;
+  const targets = {
+    start:   $('d-btn-start'),
+    stop:    $('d-btn-stop'),
+    restart: $('d-btn-restart'),
+  };
+  for (const key of Object.keys(targets)) {
+    const btn = targets[key];
+    if (!btn) continue;
+    const r = rule[key];
+    btn.disabled = r.disabled;
+    if (r.title) {
+      btn.setAttribute('title', r.title);
+    } else {
+      btn.removeAttribute('title');
+    }
+  }
+}
+
 function openBot(slug, fromPop = false) {
   clearInterval(overviewInterval);
   overviewInterval = null;
@@ -4863,6 +4919,9 @@ function openBot(slug, fromPop = false) {
     _bis.textContent = '—';
     _bis.className = 'running-status';
   }
+  // Reset action-button state so a stale enabled/disabled set from the
+  // previously-open bot does not linger before fetchDetail() lands.
+  updateBotControlButtons('unknown');
 
   // Explicit Dashboard tab selection — previously used the first
    // .detail-subnav .tab which, after Chart became the first tab, started
@@ -4970,9 +5029,11 @@ async function fetchDetail(slug) {
       rs.textContent = b.running ? 'RUNNING' : 'STOPPED';
       rs.className = 'running-status ' + (b.running ? 'running' : 'stopped');
     }
-    const sb = $('d-btn-start');   if (sb) sb.disabled = !!b.running;
-    const xb = $('d-btn-stop');    if (xb) xb.disabled = !b.running;
-    const rb = $('d-btn-restart'); if (rb) rb.disabled = !b.running;
+    // Action-button state is driven by the derived bot-state. Today
+    // the API only surfaces b.running (boolean), so the resolution is
+    // running ↔ stopped; the helper accepts 'error' too for the day a
+    // backend error-signal lands without needing a refactor here.
+    updateBotControlButtons(b.running ? 'running' : 'stopped');
     // Manual deal button — only visible when bot is running AND has
     // no open deals. Mirrors the engine's refusal to open a second deal.
     // The previous `b.open_deals_count || ...` fallback silently flipped
