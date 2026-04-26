@@ -86,6 +86,61 @@ class BotStateModel(BaseModel):
     updated_at:          Optional[str] = None
     fees_paid_btc:       float = 0.0
     indicators:          dict  = Field(default_factory=dict)
+    # Lifecycle-stability fields (PR: tweak/bot-lifecycle-stability).
+    # last_heartbeat is stamped on every engine tick so the portal can
+    # distinguish a live bot from a silent-exit (process gone but
+    # state.json frozen on running=true). heartbeat_interval_sec lets
+    # the staleness threshold scale with the engine's poll cadence.
+    # stopped_at + stopped_reason are written by the portal's silent-
+    # exit reconcile path; bots that exit gracefully via mark_stopped()
+    # leave them None.
+    last_heartbeat:          Optional[str] = None
+    heartbeat_interval_sec:  Optional[int] = None
+    stopped_at:              Optional[str] = None
+    stopped_reason:          Optional[str] = None
+
+
+# ── Lifecycle-stability tunables (PR: tweak/bot-lifecycle-stability) ──────────
+
+# Threshold for declaring a bot's heartbeat stale. Set to 6× the
+# engine's tick cadence (10s) so a single missed write — common during
+# a slow indicator fetch — does not flip the bot to "stopped" in the
+# UI. A real silent-exit (cgroup kill, crash without atexit) blows past
+# this in 60s and gets reconciled.
+HEARTBEAT_STALE_THRESHOLD_SEC = 60
+
+
+def _heartbeat_is_stale(
+    state_dict: dict,
+    threshold_sec: int = HEARTBEAT_STALE_THRESHOLD_SEC,
+) -> bool:
+    """Return True if ``last_heartbeat`` is older than ``threshold_sec``.
+
+    Backwards-compat: state files written by pre-heartbeat builds have
+    no ``last_heartbeat`` field. Returns False (NOT stale) so the
+    PID-only liveness path keeps governing those bots — flipping all
+    legacy state files to "stopped" on first read after upgrade would
+    be a self-inflicted incident.
+    """
+    last_hb = state_dict.get("last_heartbeat")
+    if not isinstance(last_hb, str) or not last_hb:
+        return False
+    try:
+        # ``datetime.fromisoformat`` accepts the ISO 8601 form
+        # ``2026-04-26T12:47:50.129933+00:00`` produced by the engine.
+        ts = datetime.fromisoformat(last_hb)
+    except ValueError:
+        # Garbled timestamp — refuse to reconcile based on a value we
+        # cannot trust. Log and let the PID-only check govern.
+        logger.warning(
+            "Unparseable last_heartbeat in state file: %r — falling "
+            "back to PID-only liveness", last_hb,
+        )
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+    return age_sec > threshold_sec
 
 # ── API key auth ──────────────────────────────────────────────────────────────
 # Read from REVERTO_API_KEY or auto-generate one. Generated keys NEVER
@@ -734,6 +789,52 @@ class BotInfo:
         mode = inner.get("mode")
         return mode.lower() if isinstance(mode, str) else ""
 
+    def _persist_silent_exit_reconcile(self, raw_state: dict, reason: str) -> None:
+        """Write back the corrected lifecycle fields after a silent-exit.
+
+        Called from ``read_state`` when on-disk ``running=true`` but the
+        process is gone (or its heartbeat is stale). Mutates a copy of
+        ``raw_state`` to mark the bot as stopped and writes back via
+        the same atomic tmp+rename pattern the engine itself uses.
+
+        Idempotent: if a future call hits the same path the on-disk
+        ``running`` is already False, so the caller's gate
+        (``raw.get("running") is True``) skips this method entirely.
+
+        Best-effort: any IOError is logged and swallowed. The validated
+        dict returned to the caller still reflects the corrected state
+        in-memory, so the API response is correct even if the disk
+        write transiently fails (it just means the next read will
+        repeat the reconcile until the disk write succeeds).
+        """
+        if self.state_file is None:
+            return
+        try:
+            stopped_at = datetime.now(timezone.utc).isoformat()
+            patched = dict(raw_state)
+            patched["running"] = False
+            patched["current_price"] = 0.0
+            patched["stopped_at"] = stopped_at
+            patched["stopped_reason"] = reason
+            tmp = self.state_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(patched, indent=2), encoding="utf-8")
+            tmp.replace(self.state_file)
+            # Mirror the field on raw_state so the caller's
+            # ``raw.get("stopped_at")`` lookup returns the value we
+            # just persisted.
+            raw_state["stopped_at"] = stopped_at
+            raw_state["stopped_reason"] = reason
+            logger.warning(
+                "Silent-exit reconcile: bot %s (user %d) marked stopped "
+                "(reason=%s) — state.json corrected on disk",
+                self.slug, self.user_id, reason,
+            )
+        except OSError as e:
+            logger.warning(
+                "Silent-exit reconcile failed to persist for %s: %s",
+                self.slug, e,
+            )
+
     def read_state(self) -> dict:
         yaml_mode = self._resolve_yaml_mode()
         try:
@@ -762,7 +863,27 @@ class BotInfo:
 
             raw = json.loads(raw_bytes.decode("utf-8"))
             validated = BotStateModel.model_validate(raw).model_dump()
-            validated["running"]     = self.running
+            # Lifecycle-stability: silent-exit reconciliation. Truth =
+            # PID liveness AND fresh heartbeat; on-disk ``running``
+            # may be stale if the bot died without running its atexit
+            # hook (cgroup SIGKILL, OOM, etc.) or if the engine is
+            # hung past HEARTBEAT_STALE_THRESHOLD_SEC. Reconcile the
+            # state file so the next read converges without re-running
+            # this branch — idempotent because the second read sees
+            # ``running=False`` on disk and skips reconciliation.
+            on_disk_running = raw.get("running") is True
+            pid_alive = self.running
+            heartbeat_stale = _heartbeat_is_stale(raw)
+            if on_disk_running and (not pid_alive or heartbeat_stale):
+                reason = "silent_exit" if not pid_alive else "heartbeat_stale"
+                self._persist_silent_exit_reconcile(raw, reason)
+                validated["running"] = False
+                validated["stopped_reason"] = reason
+                # ``stopped_at`` mirrors what _persist_silent_exit_reconcile
+                # wrote so the API response matches what's now on disk.
+                validated["stopped_at"] = raw.get("stopped_at")
+            else:
+                validated["running"] = pid_alive
             validated["slug"]        = self.slug
             validated["config_file"] = self.config_file
             # Audit r1-042: stamp the owning user so downstream
@@ -1170,6 +1291,15 @@ async def start_bot(user_id: int, slug: str) -> dict:
 
         # Context manager closes the parent's FD after Popen duplicates it —
         # the child process keeps its own handle, no FD leak in the portal.
+        # ``start_new_session=True`` is the modern Python equivalent of
+        # ``preexec_fn=os.setsid`` — it calls ``setsid()`` in the child
+        # before exec, putting the bot in its own process-group (PGID =
+        # bot PID). That breaks the systemd cgroup-cleanup chain on a
+        # portal-restart so the bot subprocess is not auto-killed when
+        # the portal unit stops (KillMode=mixed only signals the main
+        # process; cgroup-side SIGKILL still arrives but the bot's own
+        # PGID lets us ratchet detection + state-correction via the
+        # heartbeat path below).
         with open(bot.log_file, "a") as log_out:
             proc = subprocess.Popen(
                 [PYTHON_BIN, str(BASE_DIR / "main_paper.py"),
@@ -1178,7 +1308,7 @@ async def start_bot(user_id: int, slug: str) -> dict:
                 stdout=log_out,
                 stderr=log_out,
                 env=env,
-                start_new_session=True
+                start_new_session=True,  # ≡ preexec_fn=os.setsid
             )
         logger.info(f"Bot {slug} started (PID {proc.pid})")
 
@@ -1337,6 +1467,9 @@ async def start_bot_dry_run(user_id: int, slug: str) -> dict:
         # non-TTY portal subprocess never hangs on input().
         env["DRY_RUN"] = "1"
 
+        # ``start_new_session=True`` ≡ ``preexec_fn=os.setsid`` — see the
+        # commentary on ``start_bot`` for the full rationale. Identical
+        # PGID-isolation argument applies to live-mode dry-run subprocs.
         with open(bot.log_file, "a") as log_out:
             proc = subprocess.Popen(
                 [PYTHON_BIN, str(BASE_DIR / "main_live.py"),
@@ -1345,7 +1478,7 @@ async def start_bot_dry_run(user_id: int, slug: str) -> dict:
                 stdout=log_out,
                 stderr=log_out,
                 env=env,
-                start_new_session=True,
+                start_new_session=True,  # ≡ preexec_fn=os.setsid
             )
         logger.info(f"Bot {slug} started in DRY-RUN (PID {proc.pid})")
 
@@ -1847,6 +1980,45 @@ def _validate_config_completeness() -> None:
         )
 
 
+async def _reconcile_bot_states_on_startup() -> None:
+    """Walk every registered bot and force a ``read_state`` call.
+
+    ``BotInfo.read_state`` already performs the silent-exit reconcile
+    (state.running=true but PID dead OR heartbeat stale → write
+    running=false on disk) — calling it once per bot at startup
+    flushes any drift left by the previous portal invocation before
+    the first API request lands. Without this, a bot whose subprocess
+    was killed by the prior cgroup-cleanup would still show as
+    "RUNNING" until an operator opened its detail page (which
+    triggers read_state via /api/bots/<slug>).
+
+    Best-effort: any per-bot exception is logged and skipped so one
+    bad state file cannot block portal startup.
+    """
+    try:
+        bots = await registry.all()
+    except Exception as e:
+        logger.warning("Startup reconcile: registry.all() failed: %s", e)
+        return
+    if not bots:
+        return
+    reconciled = 0
+    for bot in bots:
+        try:
+            state = bot.read_state()
+            if state.get("stopped_reason") in ("silent_exit", "heartbeat_stale"):
+                reconciled += 1
+        except Exception as e:
+            logger.warning(
+                "Startup reconcile failed for %s/%s: %s",
+                bot.user_id, bot.slug, e,
+            )
+    logger.info(
+        "Startup reconcile: walked %d bot(s), reconciled %d silent-exit",
+        len(bots), reconciled,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan handler.
@@ -1872,6 +2044,12 @@ async def lifespan(app: FastAPI):
         BASE_DIR / "logs",
         BASE_DIR / "credentials",
     )
+    # Lifecycle-stability: reconcile every bot's on-disk state with
+    # PID + heartbeat truth at startup. If the previous portal
+    # invocation (or its bots) crashed silently, state.json may still
+    # say ``running: true`` — surface the correction now so the UI is
+    # consistent the moment the portal starts serving requests.
+    await _reconcile_bot_states_on_startup()
     logger.info("=== Portal started ===")
 
     background_tasks: list[asyncio.Task] = [

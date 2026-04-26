@@ -32,6 +32,14 @@ from core.ids import DEAL_ID_RE
 _deal_to_dict = deal_to_dict
 _dict_to_deal = dict_to_deal
 
+# Heartbeat cadence — every state-write stamps ``last_heartbeat`` so the
+# portal can detect a silent exit (process gone but state.json still
+# says ``running: true``). The actual write cadence equals the engine's
+# poll_interval; this constant exposes that to consumers (state schema,
+# portal staleness threshold) without re-deriving it from each engine
+# instance.
+HEARTBEAT_INTERVAL_SEC = 10
+
 logger = logging.getLogger(__name__)
 
 # Deal IDs produced by PaperState.new_deal_id() follow YYYYMMDDHHMM-RRRR
@@ -424,6 +432,15 @@ class PaperEngine:
             "fees_paid_btc":       round(self._fees_paid_btc, 10),
             "started_at":          self._started_at.isoformat() if self._started_at else None,
             "updated_at":          datetime.now(UTC).isoformat(),
+            # Heartbeat: stamped synchronously every tick so the portal
+            # can distinguish a live bot from one that exited silently
+            # (e.g. SIGKILL by cgroup-cleanup left state.json frozen on
+            # ``running: true``). Same value as ``updated_at`` today —
+            # kept as a separate field because the semantics differ:
+            # ``updated_at`` is "last state write," ``last_heartbeat``
+            # is "I was alive at this instant."
+            "last_heartbeat":         datetime.now(UTC).isoformat(),
+            "heartbeat_interval_sec": int(self.poll_interval),
             "open_deals": [
                 deal_to_dict(d, price)
                 for d in open_deals_snap.values()
