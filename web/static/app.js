@@ -600,19 +600,30 @@ let detailInterval = null;
 let overviewInterval = null;
 let _priceInterval = null;
 
-// Dashboard fetch staleness tracking (RHA-v1 rha-004 + rha-005). The
-// portal-side WS-state pill (#state-ws-dot) tracks the websocket
-// connection — distinct from "the last HTTP fetch landed cleanly."
-// Heavy network blips can leave the WS connected (auto-reconnect) but
-// /api/bots responses delayed, and the operator should see *that*
-// distinction. ``_lastFetchSuccessAt`` is the epoch ms of the most
-// recent fetch that produced a render-able response; null until the
-// first one lands. ``_initialFetchDone`` distinguishes "first ever
-// fetch" (skeleton state visible) from "refresh tick" (skeleton must
-// not flash again on every poll).
+// Combined connection indicator (RHA-v1 rha-004 refined). Earlier the
+// dashboard had two visual signals — the existing WS .live-dot AND a
+// separate staleness-badge — which could read as visually
+// contradictory ("live disconnected"). Now a single dot+label takes
+// the worst-case of:
+//   * ``_wsConnected``     — set true on /ws/state onopen, false on
+//                            onclose / onerror / disconnectStateWS.
+//                            Updated via _stateWsConnected().
+//   * fetch staleness      — derived from ``_lastFetchSuccessAt``,
+//                            stamped by _markFetchSuccess() in the
+//                            success path of every /api/bots HTTP
+//                            fetch (overview + detail).
+//
+// ``_initialFetchDone`` distinguishes "first ever fetch" (skeleton
+// state visible) from "refresh tick" (skeleton must not flash again
+// on every poll).
 let _lastFetchSuccessAt = null;
 let _initialFetchDone = false;
-let _stalenessTimer = null;
+let _connectionTimer = null;
+// Mirror of the WS open/close state so the indicator helper does not
+// have to peek at the WebSocket's readyState (which sits at
+// CONNECTING/OPEN/CLOSING/CLOSED — finer-grained than we need and
+// race-prone during reconnects). _stateWsConnected() owns this var.
+let _wsConnected = false;
 
 // Staleness thresholds (seconds). Picked to give the WS push channel
 // time to recover from a hiccup without flashing a warning, while a
@@ -634,6 +645,10 @@ function _markFetchSuccess() {
   document.querySelectorAll('.skeleton-on-init').forEach((el) => {
     el.classList.remove('skeleton-on-init');
   });
+  // Push the indicator straight to "live" instead of waiting up to
+  // 5s for the next tick. _stateWsConnected handles the WS-side push
+  // analogously.
+  _updateConnectionIndicator();
 }
 
 function _getFetchStalenessMs() {
@@ -641,41 +656,56 @@ function _getFetchStalenessMs() {
   return Date.now() - _lastFetchSuccessAt;
 }
 
-function _updateStalenessBadge() {
-  const badge = document.getElementById('staleness-badge');
-  if (!badge) return;
-  // While the user is on the login screen, the dashboard chrome is
-  // hidden — suppress the badge entirely so it does not flash on
-  // logout/login transitions.
+function _updateConnectionIndicator() {
+  const dot = document.getElementById('state-ws-dot');
+  const lbl = document.getElementById('state-ws-label');
+  if (!dot || !lbl) return;
+  // Suppress on the login screen so the indicator does not flash
+  // during logout/login transitions when the dashboard chrome is
+  // hidden anyway.
   if (document.body.classList.contains('is-login')) {
-    badge.className = 'staleness-badge hidden';
+    dot.className = 'live-dot';
+    lbl.textContent = '';
     return;
   }
+  // Derive worst-case state. WS-down beats every HTTP state because
+  // the WS is the realtime push channel — without it the operator is
+  // stuck on 30s polling at best.
   const stalenessMs = _getFetchStalenessMs();
+  let cls, text;
   if (stalenessMs === null) {
-    // No fetch has ever succeeded — render as connecting. The login
-    // path gates this until auth lands so this only fires post-auth.
-    badge.className = 'staleness-badge state-disconnected';
-    badge.textContent = 'connecting…';
-    return;
+    // No fetch has ever succeeded. WS state is irrelevant in this
+    // bootstrap window — show the operator that we are still
+    // dialling rather than implying a fault.
+    cls = '';
+    text = 'connecting…';
+  } else if (!_wsConnected) {
+    cls = 'disconnected';
+    text = 'disconnected';
+  } else {
+    const stalenessSec = Math.round(stalenessMs / 1000);
+    if (stalenessSec >= STALENESS_DISCONNECTED_SEC) {
+      cls = 'disconnected';
+      text = 'disconnected';
+    } else if (stalenessSec >= STALENESS_STALE_SEC) {
+      cls = 'stale';
+      text = 'stale';
+    } else {
+      cls = 'connected';
+      text = 'live';
+    }
   }
-  const stalenessSec = Math.round(stalenessMs / 1000);
-  if (stalenessSec < STALENESS_STALE_SEC) {
-    badge.className = 'staleness-badge hidden';
-    return;
-  }
-  if (stalenessSec < STALENESS_DISCONNECTED_SEC) {
-    badge.className = 'staleness-badge state-stale';
-    badge.textContent = `stale ${stalenessSec}s`;
-    return;
-  }
-  badge.className = 'staleness-badge state-disconnected';
-  badge.textContent = 'disconnected';
+  dot.className = cls ? `live-dot ${cls}` : 'live-dot';
+  lbl.textContent = text;
+  // Strip the legacy label-ok / label-err classes the old
+  // _stateWsConnected used to set; we no longer paint the label
+  // text-colour separately from the dot-state.
+  lbl.classList.remove('label-ok', 'label-err');
 }
 
-function _startStalenessTimer() {
-  if (_stalenessTimer !== null) return;
-  _stalenessTimer = setInterval(_updateStalenessBadge, STALENESS_TICK_MS);
+function _startConnectionTimer() {
+  if (_connectionTimer !== null) return;
+  _connectionTimer = setInterval(_updateConnectionIndicator, STALENESS_TICK_MS);
 }
 
 // /ws/state — bot-state push channel. The dashboard used to poll
@@ -685,20 +715,14 @@ let _stateWs = null;
 let _stateWsReconnectTimer = null;
 
 function _stateWsConnected(connected) {
-  // Reuse the existing .live-dot/.connected/.error convention from
-  // the log streaming widgets. The indicator is optional — if index.html
-  // doesn't expose #state-ws-dot we silently no-op.
-  const dot = document.getElementById('state-ws-dot');
-  if (dot) {
-    dot.classList.toggle('connected', !!connected);
-    dot.classList.toggle('error', !connected);
-  }
-  const lbl = document.getElementById('state-ws-label');
-  if (lbl) {
-    lbl.textContent = connected ? 'live' : 'reconnecting...';
-    lbl.classList.toggle('label-ok', !!connected);
-    lbl.classList.toggle('label-err', !connected);
-  }
+  // Update the WS-side input to the combined indicator and let the
+  // single helper paint the dot + label. The legacy direct DOM-mutate
+  // path was replaced because it could not see the HTTP-staleness
+  // signal and so produced visually contradictory states (green
+  // "live" dot + red "disconnected" badge) when the WS reconnected
+  // cleanly but /api/bots fetches were still failing.
+  _wsConnected = !!connected;
+  _updateConnectionIndicator();
 }
 
 function connectStateWS() {
@@ -8427,10 +8451,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   refreshProfileInitial();
 
-  // Start the staleness ticker so the header badge surfaces fetch-
-  // freshness even if the user lands on a tab whose ``go*`` handler
-  // hasn't fired yet (e.g. a deep-link). Fires every 5s; cheap.
-  _startStalenessTimer();
+  // Start the connection ticker so the header indicator stays
+  // truthful between WS state-changes and HTTP fetch successes.
+  // Fires every 5s; cheap.
+  _startConnectionTimer();
 
   // No more first-visit API key prompt — session cookie auth covers
   // the SPA. The API key is still settable via Profile → API Key for

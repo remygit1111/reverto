@@ -148,7 +148,7 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 
 | ID | Severity | Finding | File:line |
 |----|----------|---------|-----------|
-| rha-004 | MEDIUM | Dashboard fetch handlers swallow errors silently | `web/static/app.js:760-767` — **RESOLVED** in `tweak/dashboard-resilience` |
+| rha-004 | MEDIUM | Dashboard fetch handlers swallow errors silently | `web/static/app.js:760-767` — **RESOLVED** in `tweak/dashboard-resilience`; **REFINED** in `tweak/combined-connection-indicator` |
 | rha-005 | MEDIUM | No loading indicator on initial dashboard fetches | `web/static/app.js:760, 4937` — **RESOLVED** in `tweak/dashboard-resilience` |
 
 #### rha-004 — `fetchOverview`/`fetchDetail` swallow network errors silently (MEDIUM)
@@ -166,6 +166,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 **Category:** Operational visibility. Cross-references PRA-v3 area 13 (observability) where Reverto already does well at the backend log layer; this is the frontend gap.
 
 **STATUS.** RESOLVED in `tweak/dashboard-resilience` — `fetchOverview` + `fetchDetail` now route catch-branches through `console.warn('[reverto] …')` and a header staleness-badge (`#staleness-badge`, hidden in <30s, amber `state-stale` 30-90s, red `state-disconnected` >90s) is driven by `_updateStalenessBadge` running on a 5s tick. `_markFetchSuccess` stamps the timestamp on every successful render path. The existing `.live-dot` keeps its independent WS-connected meaning — the badge surfaces fetch-freshness, the dot surfaces WS connection. 4 regression tests in `tests/test_frontend_assets.py`.
+
+**REFINED** in `tweak/combined-connection-indicator` — operator feedback after deploy noted that the live-dot and staleness-badge could read as visually contradictory ("green live dot next to red disconnected badge" when WS was up but HTTP wedged). Now a single dot+label takes the worst-case of both signals: `WS-up + HTTP <30s → "live"` (green, blink), `WS-up + HTTP 30-90s → "stale"` (amber, slow pulse), `WS-up + HTTP >90s → "disconnected"` (red, static), `WS-down + any → "disconnected"`. Trade-off: an operator can no longer visually distinguish a WS-failure from an HTTP-staleness; that distinction is debug info now, available via the `[reverto]` `console.warn` paper trail in DevTools. The standalone staleness-badge element + CSS rules + `_updateStalenessBadge` helper are removed in this PR; `_updateConnectionIndicator` + `_startConnectionTimer` replace them. Test coverage stays at 4 frontend tests in `tests/test_frontend_assets.py` (one renamed + content-rewritten to `test_combined_connection_indicator_present`).
 
 #### rha-005 — No loading indicator on initial dashboard fetches (MEDIUM)
 
