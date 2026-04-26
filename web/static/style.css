@@ -703,53 +703,54 @@ tr:hover td { background: rgba(128,128,128,.04); }
    keep their own 20px padding so actual content still breathes. */
 #view-detail { padding: 0; }
 
-/* Detail context bar — wraps the bot identity (name + meta) and the
-   sub-nav into one strip. Background, border, and 20px gutter live on
-   the bar; .detail-subnav is naked inside (its tabs supply their own
-   horizontal padding). */
-.detail-context-bar {
+.detail-subnav {
   display: flex;
-  align-items: center;
-  gap: 16px;
   padding: 0 20px;
   background: var(--surface2);
   border-bottom: 1px solid var(--border);
 }
 
-.detail-bot-info {
+/* Bot identity block — bot name (prominent), status pill aligned
+   right, muted meta beneath. Sits between the sub-nav and the dtab
+   content so it shows on every detail tab. Padding mirrors the 20px
+   horizontal gutter used elsewhere; bottom padding is small because
+   .detail-content already adds its own 20px top breathing room. */
+.bot-identity {
+  padding: 16px 20px 8px;
+}
+
+.bot-identity-header {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.detail-bot-name {
+.bot-identity-name {
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: 24px;
   font-weight: 500;
+  line-height: 1.2;
   color: var(--text);
+  margin: 0;
+  /* Long slugs / display names should not overflow into the status
+     pill — shrink and ellipsize instead. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
 }
 
-.detail-bot-meta {
+.bot-identity-meta {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   letter-spacing: .04em;
+  margin-top: 4px;
   white-space: nowrap;
-}
-
-.detail-context-divider {
-  width: 1px;
-  height: 18px;
-  background: var(--border);
-  flex-shrink: 0;
-}
-
-.detail-subnav {
-  display: flex;
-  flex: 1;
-  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .detail-content { padding: 20px; }
@@ -1678,11 +1679,12 @@ tr:hover td { background: rgba(128,128,128,.04); }
   table { font-size: 11px; }
   th, td { padding: 6px 8px; }
 
-  /* Detail context bar — tighten the gutter on mobile and let the
-     sub-nav tabs scroll horizontally if they overflow. The bot-info
-     block keeps flex-shrink:0 so the name + meta stay legible. */
-  .detail-context-bar { padding: 0 10px; gap: 10px; }
-  .detail-subnav { overflow-x: auto; }
+  /* Detail sub-nav — tighter gutter, tabs scroll horizontally if they
+     overflow the viewport. */
+  .detail-subnav { padding: 0 10px; overflow-x: auto; }
+  /* Bot identity — tighter gutter, tighter typography on mobile. */
+  .bot-identity { padding: 12px 10px 6px; }
+  .bot-identity-name { font-size: 20px; }
   .detail-content { padding: 12px 10px; }
   .dtab-content { padding: 12px 10px; }
   .log-wrap-detail { height: calc(100vh - 170px); }
@@ -1998,7 +2000,10 @@ table thead th.sorted .col-sort-arrow {
   margin-bottom: 12px;
   flex-wrap: wrap;
 }
-.detail-controls .running-status {
+/* Running-status pill — was previously scoped to .detail-controls,
+   but now lives in the bot-identity block (PR 4). De-scoped so the
+   pill can live anywhere; the visual treatment is unchanged. */
+.running-status {
   font-family: var(--mono);
   font-size: 12px;
   padding: 4px 10px;
@@ -2008,12 +2013,13 @@ table thead th.sorted .col-sort-arrow {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: .08em;
+  flex-shrink: 0;
 }
-.detail-controls .running-status.running {
+.running-status.running {
   color: var(--accent);
   border-color: var(--accent);
 }
-.detail-controls .running-status.stopped {
+.running-status.stopped {
   color: var(--red);
   border-color: var(--red);
 }
