@@ -2075,14 +2075,6 @@ function _resetHeaderForTopLevel() {
   teardownChartTab();
   teardownWizardChart();
   if (ws) { ws.close(); ws = null; }
-  // Tagline in the header is static now ("Built for Bitcoin.") — the
-  // breadcrumb lives in the page-content area, so hide it on top-level
-  // views.
-  const _bc = $('page-breadcrumb');
-  if (_bc) {
-    _bc.innerHTML = '';
-    _bc.classList.add('hidden');
-  }
   $('hdr-pill').classList.add('hidden');
   $('hdr-uptime').textContent = '';
 }
@@ -4856,18 +4848,11 @@ function openBot(slug, fromPop = false) {
   _chartPendingDeal = null;
 
   // Detail is a sub-view of Bots — keep the Bots tab active and
-  // surface the slug in the page-breadcrumb as "Reverto › SLUG".
-  // Breadcrumb lives in the page-content area so the header tagline
-  // stays visible.
+  // show the bot slug as the page title above the detail sub-nav.
   _setActiveTab('nav-bots-btn');
   $('hdr-pill').classList.remove('hidden');
-  const _bc = $('page-breadcrumb');
-  if (_bc) {
-    _bc.innerHTML =
-      'Reverto <span class="hdr-sep">›</span> ' +
-      '<span class="hdr-slug">' + safeText(slug.toUpperCase()) + '</span>';
-    _bc.classList.remove('hidden');
-  }
+  const _pt = $('bot-page-title');
+  if (_pt) _pt.textContent = slug;
 
   // Explicit Dashboard tab selection — previously used the first
    // .detail-subnav .tab which, after Chart became the first tab, started

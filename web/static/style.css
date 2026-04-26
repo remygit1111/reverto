@@ -1570,25 +1570,13 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .chart-no-more-data.hidden { display: none; }
 .chart-no-more-data .no-more-icon { color: var(--red); flex-shrink: 0; }
 
-/* Page breadcrumb — "Reverto › SLUG" rendered in the page-content area
-   (above the detail sub-nav). Tagline lives permanently in the header. */
-.page-breadcrumb {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--muted);
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  margin-bottom: 14px;
-}
-.page-breadcrumb.hidden { display: none; }
-.hdr-sep {
-  color: var(--muted);
-  margin: 0 4px;
-}
-.hdr-slug {
-  color: var(--accent);
-  font-weight: 600;
-  letter-spacing: .08em;
+/* Bot detail page title — slug rendered above the detail sub-nav.
+   Replaces the earlier breadcrumb; tagline lives in the header. */
+.page-title {
+  font-size: 24px;
+  font-weight: 500;
+  margin: 0 0 12px 0;
+  color: var(--text);
 }
 
 /* Responsive helpers */
