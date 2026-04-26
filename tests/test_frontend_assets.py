@@ -155,6 +155,55 @@ def test_bot_identity_block_present():
     assert "bot-identity-status" in js
 
 
+def test_bot_control_buttons_have_state_aware_logic():
+    """Action buttons (Start/Stop/Restart) on the bot-detail page must
+    render enabled/disabled based on the derived bot lifecycle state,
+    with hover-tooltips on disabled buttons explaining the no-op.
+
+    Asserted shape:
+    - Helper function ``updateBotControlButtons`` exists.
+    - The helper handles at least the 'running' / 'stopped' / 'error'
+      / 'unknown' states (extensible — soft-stop PR will add a
+      'stopped_with_deals' entry, structurally easy).
+    - Disabled-state hint copy is present so a refactor that drops
+      the explanation regresses here.
+    - The CSS ``.hbtn:disabled`` rule keeps ``cursor: not-allowed``
+      and ``opacity`` so disabled buttons read as non-interactive,
+      and does NOT use ``pointer-events: none`` (which would suppress
+      the native title-tooltip on hover).
+    """
+    js = _APP_JS.read_text(encoding="utf-8")
+    css = _STYLE_CSS.read_text(encoding="utf-8")
+
+    # Helper exists and is wired up.
+    assert "updateBotControlButtons" in js
+    # Each documented state has a branch.
+    assert "running" in js
+    assert "stopped" in js
+    assert "error" in js
+    assert "unknown" in js
+    # Tooltip hints (verbatim copy) — guard against silent removals.
+    assert "Bot is already running" in js
+    assert "Bot is already stopped" in js
+    assert "Cannot restart a stopped bot" in js
+    assert "Bot is in error state" in js
+
+    # CSS: disabled state must mute the button without disabling
+    # pointer events (otherwise the title-tooltip never fires).
+    assert ".hbtn:disabled" in css
+    assert "cursor: not-allowed" in css
+    # The bt-pagination rule uses pointer-events: none; the action-
+    # button rule must not — assert the disabled hbtn rule does NOT
+    # carry that property within its block.
+    hbtn_disabled_block_start = css.index(".hbtn:disabled")
+    hbtn_disabled_block_end = css.index("}", hbtn_disabled_block_start)
+    hbtn_disabled_block = css[hbtn_disabled_block_start:hbtn_disabled_block_end]
+    assert "pointer-events: none" not in hbtn_disabled_block, (
+        "disabled hbtn must keep pointer-events on so the native "
+        "title-tooltip fires on hover"
+    )
+
+
 def test_running_status_pill_decoupled_from_detail_controls():
     """The running-status pill used to live inside ``.detail-controls``
     next to Start/Stop/Restart. PR 4 moved it into the bot-identity

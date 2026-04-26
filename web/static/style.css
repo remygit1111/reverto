@@ -241,6 +241,41 @@ body.is-login #hdr-context {
   color: var(--accent);
 }
 
+/* Disabled state for hbtn action buttons (Start/Stop/Restart on the
+   bot-detail page). Matches the existing form-disabled convention
+   (opacity + not-allowed). Pointer-events stay on so the native
+   title-tooltip still fires on hover — this is why we don't use
+   ``pointer-events: none`` like the bt-pagination rule does.
+
+   The :hover overrides re-assert the base modifier colours so the
+   .hbtn-theme:hover accent-tint cannot light up a disabled button.
+   Each modifier (theme / btn-accent / btn-danger) gets its own
+   reassertion because there's no shared "base" colour token. */
+.hbtn:disabled,
+.hbtn[disabled] {
+  opacity: .5;
+  cursor: not-allowed;
+}
+.hbtn:disabled:hover,
+.hbtn[disabled]:hover {
+  background: none;
+}
+.hbtn-theme:disabled:hover,
+.hbtn-theme[disabled]:hover {
+  border-color: var(--border);
+  color: var(--muted);
+}
+.hbtn-theme.btn-accent:disabled:hover,
+.hbtn-theme.btn-accent[disabled]:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.hbtn-theme.btn-danger:disabled:hover,
+.hbtn-theme.btn-danger[disabled]:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
 /* ── Navigation tabs ────────────────────────────────────────────────────────── */
 nav {
   display: flex;
