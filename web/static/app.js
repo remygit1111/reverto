@@ -4848,15 +4848,21 @@ function openBot(slug, fromPop = false) {
   _chartPendingDeal = null;
 
   // Detail is a sub-view of Bots — keep the Bots tab active and
-  // surface the bot slug + meta in the detail-context-bar (above the
-  // sub-nav). Slug is shown immediately; meta is filled in by
-  // fetchDetail() once the API response arrives.
+  // surface the bot slug in the bot-identity block. Slug is shown
+  // immediately; meta + status are filled in by fetchDetail() once
+  // the API response arrives. Reset all three so a stale value from
+  // the previously-open bot doesn't flash before the fetch lands.
   _setActiveTab('nav-bots-btn');
   $('hdr-pill').classList.remove('hidden');
   const _name = $('bot-name-display');
   if (_name) _name.textContent = slug;
   const _meta = $('bot-meta-display');
   if (_meta) _meta.textContent = '';
+  const _bis = $('bot-identity-status');
+  if (_bis) {
+    _bis.textContent = '—';
+    _bis.className = 'running-status';
+  }
 
   // Explicit Dashboard tab selection — previously used the first
    // .detail-subnav .tab which, after Chart became the first tab, started
@@ -4956,7 +4962,10 @@ async function fetchDetail(slug) {
     $('status-text').textContent = b.running ? 'Running' : 'Stopped';
     pill.className = 'pill ' + (b.running ? 'running' : 'stopped');
 
-    const rs = $('d-running-status');
+    // Status pill lives in the bot-identity block (PR 4). The class
+    // vocabulary is unchanged so the existing .running-status CSS
+    // applies; only the DOM target moved out of .detail-controls.
+    const rs = $('bot-identity-status');
     if (rs) {
       rs.textContent = b.running ? 'RUNNING' : 'STOPPED';
       rs.className = 'running-status ' + (b.running ? 'running' : 'stopped');
