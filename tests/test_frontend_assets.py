@@ -19,7 +19,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-_APP_JS = Path(__file__).resolve().parent.parent / "web" / "static" / "app.js"
+_STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
+_APP_JS = _STATIC / "app.js"
+_INDEX_HTML = _STATIC / "index.html"
+_STYLE_CSS = _STATIC / "style.css"
 
 
 def test_number_input_wheel_event_blocked_when_unfocused():
@@ -58,3 +61,36 @@ def test_number_input_wheel_event_blocked_when_unfocused():
         "wheel handler must register with { passive: false } — "
         "preventDefault() is a no-op on passive listeners"
     )
+
+
+def test_page_breadcrumb_removed():
+    """The page-breadcrumb experiment was rolled back: the bot detail
+    view now renders the slug as a plain page-title above the detail
+    sub-nav. Top-nav highlight + sub-nav already convey hierarchy, so
+    the breadcrumb added no navigation value and visually floated
+    between two nav strips.
+
+    Class-of-issue regression: a future change that re-introduces
+    ``#page-breadcrumb`` (or the orphaned ``.hdr-sep`` / ``.hdr-slug``
+    helpers it used to render with) gets caught here. The
+    ``.cl-breadcrumb`` selector for admin sub-page back-links is a
+    different element and intentionally stays.
+    """
+    html = _INDEX_HTML.read_text(encoding="utf-8")
+    css = _STYLE_CSS.read_text(encoding="utf-8")
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    assert 'id="page-breadcrumb"' not in html
+    assert 'class="page-breadcrumb' not in html
+    assert ".page-breadcrumb" not in css
+    assert ".hdr-sep" not in css
+    assert ".hdr-slug" not in css
+    assert "page-breadcrumb" not in js
+    assert "hdr-slug" not in js
+    assert "hdr-sep" not in js
+
+    # The replacement page-title must exist so openBot() has a sink
+    # for the slug.
+    assert 'id="bot-page-title"' in html
+    assert ".page-title" in css
+    assert "bot-page-title" in js

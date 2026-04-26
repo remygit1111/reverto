@@ -28,7 +28,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=84">
+<link rel="stylesheet" href="/static/style.css?v=85">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -1185,9 +1185,10 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-detail" class="page">
 
-  <!-- Breadcrumb sits above the page content (was previously rendered
-       in the header subtext slot, which displaced the tagline). -->
-  <div id="page-breadcrumb" class="page-breadcrumb hidden" aria-label="Breadcrumb"></div>
+  <!-- Page title — bot slug rendered above the detail sub-nav.
+       Replaces the earlier breadcrumb experiment; the top-nav highlight
+       and detail sub-nav already convey hierarchy. -->
+  <h1 class="page-title" id="bot-page-title"></h1>
 
   <!-- Sub-nav — the dedicated back button was removed; the operator
        leaves the detail view via the main nav (Bots tab) or the
@@ -1574,6 +1575,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=203"></script>
+<script src="/static/app.js?v=204"></script>
 </body>
 </html>
