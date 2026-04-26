@@ -703,11 +703,53 @@ tr:hover td { background: rgba(128,128,128,.04); }
    keep their own 20px padding so actual content still breathes. */
 #view-detail { padding: 0; }
 
-.detail-subnav {
+/* Detail context bar — wraps the bot identity (name + meta) and the
+   sub-nav into one strip. Background, border, and 20px gutter live on
+   the bar; .detail-subnav is naked inside (its tabs supply their own
+   horizontal padding). */
+.detail-context-bar {
   display: flex;
+  align-items: center;
+  gap: 16px;
   padding: 0 20px;
   background: var(--surface2);
   border-bottom: 1px solid var(--border);
+}
+
+.detail-bot-info {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.detail-bot-name {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.detail-bot-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+
+.detail-context-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.detail-subnav {
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 
 .detail-content { padding: 20px; }
@@ -1570,15 +1612,6 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .chart-no-more-data.hidden { display: none; }
 .chart-no-more-data .no-more-icon { color: var(--red); flex-shrink: 0; }
 
-/* Bot detail page title — slug rendered above the detail sub-nav.
-   Replaces the earlier breadcrumb; tagline lives in the header. */
-.page-title {
-  font-size: 24px;
-  font-weight: 500;
-  margin: 0 0 12px 0;
-  color: var(--text);
-}
-
 /* Responsive helpers */
 .btn-label { display: inline; }
 
@@ -1645,8 +1678,11 @@ tr:hover td { background: rgba(128,128,128,.04); }
   table { font-size: 11px; }
   th, td { padding: 6px 8px; }
 
-  /* Detail sub-nav — tabs scroll horizontally if needed */
-  .detail-subnav { padding: 0 10px; overflow-x: auto; }
+  /* Detail context bar — tighten the gutter on mobile and let the
+     sub-nav tabs scroll horizontally if they overflow. The bot-info
+     block keeps flex-shrink:0 so the name + meta stay legible. */
+  .detail-context-bar { padding: 0 10px; gap: 10px; }
+  .detail-subnav { overflow-x: auto; }
   .detail-content { padding: 12px 10px; }
   .dtab-content { padding: 12px 10px; }
   .log-wrap-detail { height: calc(100vh - 170px); }
