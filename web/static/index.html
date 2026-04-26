@@ -28,7 +28,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=86">
+<link rel="stylesheet" href="/static/style.css?v=87">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -1185,26 +1185,30 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-detail" class="page">
 
-  <!-- Detail context bar — bot identity (name + mode · pair) and the
-       sub-nav are merged into one strip so the page identity reads
-       as a single unit instead of a naked h1 floating above the nav.
-       The dedicated back button was removed earlier; operators leave
-       via the main nav (Bots tab) or the browser back button, which
-       is wired through the History API. -->
-  <div class="detail-context-bar">
-    <div class="detail-bot-info">
-      <span class="detail-bot-name" id="bot-name-display"></span>
-      <span class="detail-bot-meta" id="bot-meta-display"></span>
+  <!-- Sub-nav strip — restored to standalone after iterating on
+       breadcrumb / page-title / merged context-bar. Operators leave
+       the detail view via the main nav (Bots tab) or the browser
+       back button, which is wired through the History API. -->
+  <nav class="detail-subnav">
+    <button class="tab active" data-dtab="dashboard">Dashboard</button>
+    <button class="tab" data-dtab="chart">Chart</button>
+    <button class="tab" data-dtab="deals">Deals</button>
+    <button class="tab" data-dtab="backtest">Backtest</button>
+    <button class="tab" data-dtab="config">Config</button>
+    <button class="tab" data-dtab="log">Log</button>
+  </nav>
+
+  <!-- Bot identity block — bot name (prominent), status pill aligned
+       right, and a muted meta line beneath. Visible on every dtab so
+       the operator always sees which bot they are inside. The status
+       pill lives here instead of next to the action buttons so the
+       identity reads as one block. -->
+  <div class="bot-identity">
+    <div class="bot-identity-header">
+      <h1 class="bot-identity-name" id="bot-name-display"></h1>
+      <span class="running-status" id="bot-identity-status">—</span>
     </div>
-    <div class="detail-context-divider" aria-hidden="true"></div>
-    <nav class="detail-subnav">
-      <button class="tab active" data-dtab="dashboard">Dashboard</button>
-      <button class="tab" data-dtab="chart">Chart</button>
-      <button class="tab" data-dtab="deals">Deals</button>
-      <button class="tab" data-dtab="backtest">Backtest</button>
-      <button class="tab" data-dtab="config">Config</button>
-      <button class="tab" data-dtab="log">Log</button>
-    </nav>
+    <div class="bot-identity-meta" id="bot-meta-display"></div>
   </div>
 
   <!-- Chart tab -->
@@ -1290,7 +1294,6 @@
       <button class="hbtn hbtn-theme btn-danger" id="d-btn-stop">■ Stop</button>
       <button class="hbtn hbtn-theme" id="d-btn-restart">↺ Restart</button>
       <button class="hbtn hbtn-theme btn-accent hidden" id="d-btn-manual-deal" type="button">▶ Start Deal</button>
-      <span class="running-status" id="d-running-status">—</span>
     </div>
     <div class="stat-grid stat-grid-mb">
       <div class="card">
@@ -1580,6 +1583,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=205"></script>
+<script src="/static/app.js?v=206"></script>
 </body>
 </html>
