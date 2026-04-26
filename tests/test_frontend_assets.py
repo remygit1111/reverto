@@ -263,6 +263,120 @@ def test_wizard_review_placeholder_no_pydantic_traceback():
     assert "console.warn" in fn_body
 
 
+def test_dashboard_fetches_log_errors_not_silently_swallow():
+    """``fetchOverview`` and ``fetchDetail`` are the dashboard's hot-
+    path readers. RHA-v1 rha-004 found both wrapped in
+    ``catch (e) {}`` so any network/parse failure left the UI showing
+    stale data with no DevTools breadcrumb. Both must now route
+    failures through ``console.warn`` so the staleness-badge in the
+    header has a paper trail an operator can correlate with.
+
+    Other ``catch (e) {}`` blocks elsewhere in app.js (logout
+    cleanup, WS teardown, localStorage probes) are intentional and
+    out of scope for this assertion — we scope the check to the two
+    named functions only.
+    """
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    overview_start = js.index("async function fetchOverview(")
+    # Function body ends at the first ``\n}\n`` after the open. Using
+    # ``\nfunction `` to bound the slice would over-shoot into the
+    # next renderOverview() body and pick up unrelated catch blocks.
+    overview_end = js.index("\n}\n", overview_start)
+    overview_body = js[overview_start:overview_end]
+    assert "console.warn" in overview_body, (
+        "fetchOverview must console.warn on failure paths so the "
+        "staleness badge in the header has a corresponding DevTools "
+        "log line"
+    )
+    assert "catch (e) {}" not in overview_body, (
+        "fetchOverview must not silently swallow errors (RHA-v1 rha-004)"
+    )
+
+    detail_start = js.index("async function fetchDetail(")
+    detail_end = js.index("\n}\n", detail_start)
+    detail_body = js[detail_start:detail_end]
+    assert "console.warn" in detail_body, (
+        "fetchDetail must console.warn on failure paths"
+    )
+    assert "catch (e) {}" not in detail_body, (
+        "fetchDetail must not silently swallow errors (RHA-v1 rha-004)"
+    )
+
+
+def test_staleness_badge_present():
+    """The staleness-badge HTML element + CSS rules + JS update path
+    must all be wired so the dashboard can surface "stale Ns" /
+    "disconnected" without manual refresh.
+
+    Closes RHA-v1 rha-004's structural half (the WS-pill is a
+    different signal — connection-level, not fetch-freshness).
+    """
+    html = _INDEX_HTML.read_text(encoding="utf-8")
+    css = _STYLE_CSS.read_text(encoding="utf-8")
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    assert 'id="staleness-badge"' in html
+    assert 'class="staleness-badge' in html
+
+    # CSS — base rule plus the two state modifiers must exist so a
+    # future refactor that drops one mode (e.g. removes the amber
+    # 'stale' state) regresses here.
+    assert ".staleness-badge" in css
+    assert ".staleness-badge.state-stale" in css
+    assert ".staleness-badge.state-disconnected" in css
+
+    # JS — the update helper + ticker startup. Constants are checked
+    # in the next test.
+    assert "_updateStalenessBadge" in js
+    assert "_startStalenessTimer" in js
+
+
+def test_staleness_thresholds_defined():
+    """The 30s / 90s thresholds and 5s tick interval must exist as
+    named constants so they're discoverable from a single grep and
+    so a future tuning PR doesn't leave magic numbers scattered
+    through the code.
+    """
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    assert "STALENESS_STALE_SEC" in js
+    assert "STALENESS_DISCONNECTED_SEC" in js
+    assert "STALENESS_TICK_MS" in js
+    # The values themselves — keep these aligned with RHA-v1's spec
+    # (30s stale / 90s disconnected). A future operator-tuning PR
+    # is welcome to bump them, but the test ratchets the current
+    # contract so the change is intentional.
+    assert "STALENESS_STALE_SEC = 30" in js
+    assert "STALENESS_DISCONNECTED_SEC = 90" in js
+
+
+def test_initial_load_skeleton_present():
+    """RHA-v1 rha-005 — the bot-grid + dashboard stat-grid must show
+    skeleton placeholders on initial page-load so a slow first
+    fetch does not look like a wedged backend. The skeleton cards
+    must be marked with ``skeleton-on-init`` so JS can strip the
+    class on first ``_markFetchSuccess``; ``skeleton-on-init`` must
+    NOT appear on the bot-grid / stat-grid in any state where it
+    persists across refresh polls (caught structurally — the JS
+    helper strips, the CSS only animates while the class is
+    present).
+    """
+    html = _INDEX_HTML.read_text(encoding="utf-8")
+    css = _STYLE_CSS.read_text(encoding="utf-8")
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    assert "bot-card-skeleton" in html
+    assert "skeleton-on-init" in html
+    # CSS hooks for the two skeleton flavours.
+    assert ".bot-card-skeleton" in css
+    assert ".stat-grid.skeleton-on-init .card" in css
+    # JS strips the class on success so the pulse stops on the next
+    # poll cycle without flicker.
+    assert "_markFetchSuccess" in js
+    assert "skeleton-on-init" in js
+
+
 def test_running_status_pill_decoupled_from_detail_controls():
     """The running-status pill used to live inside ``.detail-controls``
     next to Start/Stop/Restart. PR 4 moved it into the bot-identity

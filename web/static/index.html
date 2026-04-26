@@ -28,7 +28,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=88">
+<link rel="stylesheet" href="/static/style.css?v=89">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -58,6 +58,13 @@
     <span id="state-ws-dot" class="live-dot"></span>
     <span id="state-ws-label" class="log-status-text">offline</span>
   </span>
+  <!-- Dashboard-fetch staleness badge (RHA-v1 rha-004). Hidden when
+       the most recent /api/bots fetch landed within STALENESS_STALE_SEC
+       seconds; surfaces an amber "stale Ns" badge between 30s and 90s
+       and a red "disconnected" badge beyond. Driven by app.js's
+       _updateStalenessBadge ticker; the live-dot above keeps its
+       independent WS-connected meaning. -->
+  <span class="staleness-badge hidden" id="staleness-badge" role="status" aria-live="polite"></span>
   <button id="profile-btn" type="button" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">
     <span id="profile-initial">A</span>
   </button>
@@ -524,7 +531,15 @@
     <button class="btn-primary" id="new-bot-btn">＋ New Bot</button>
   </div>
   <div class="bot-grid" id="bot-grid">
-    <div class="empty-config-msg">Loading bots...</div>
+    <!-- Initial-load skeleton (RHA-v1 rha-005). Three grey cards pulse
+         until fetchOverview lands; renderBotGrid then replaces the
+         entire bot-grid contents with real cards (or the empty-state
+         message if the bot list is empty). The skeleton-on-init class
+         is also hidden globally once any fetch succeeds, so a slow
+         first fetch followed by a faster one cannot re-show this. -->
+    <div class="bot-card-skeleton skeleton-on-init"></div>
+    <div class="bot-card-skeleton skeleton-on-init"></div>
+    <div class="bot-card-skeleton skeleton-on-init"></div>
   </div>
 </div>
 
@@ -1295,7 +1310,10 @@
       <button class="hbtn hbtn-theme" id="d-btn-restart">↺ Restart</button>
       <button class="hbtn hbtn-theme btn-accent hidden" id="d-btn-manual-deal" type="button">▶ Start Deal</button>
     </div>
-    <div class="stat-grid stat-grid-mb">
+    <!-- skeleton-on-init pulses the stat-cards on first load until
+         fetchDetail lands and _markFetchSuccess strips the class.
+         Subsequent 5s polls leave this alone, so no flicker. -->
+    <div class="stat-grid stat-grid-mb skeleton-on-init">
       <div class="card">
         <div class="card-label">Price</div>
         <div class="card-value" id="d-price">—</div>
@@ -1583,6 +1601,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=208"></script>
+<script src="/static/app.js?v=209"></script>
 </body>
 </html>
