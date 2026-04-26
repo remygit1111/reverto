@@ -1,0 +1,2439 @@
+# Audit + pentest findings seed for the admin findings tracker.
+#
+# Sourced from eight markdown documents under docs/audits/ and
+# docs/pentests/. Each YAML entry mirrors the AuditFinding row
+# shape in core.audit_findings_store.
+#
+# Status mapping rules (applied during extraction):
+#   * "RESOLVED in <commit/branch>"  → status: resolved + ref filled
+#   * "ACCEPTED"                      → status: accepted
+#   * "DEFERRED" / "out of scope"     → status: deferred
+#   * "MONITORING"                    → status: in_progress
+#   * "PARTIALLY RESOLVED"            → status: in_progress
+#   * No marker but in fixed-list     → status: resolved
+#   * Unclear                         → status: open + notes flag
+#
+# This seed is the *initial* state. Operator edits flow through the
+# admin UI and are not echoed back here — re-running the seed never
+# overwrites status / notes / resolution_ref on existing rows.
+#
+# Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
+# pt-v1=39, pt-v2=24. Total: 240.
+
+findings:
+
+# ── saas-readiness-v1-report (r1-001 … r1-076) ───────────────────────────────
+
+- finding_id: r1-001
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: resolved
+  title: API-key fallback returns hardcoded admin stub, bypassing active check
+  description: |
+    The _request_user function returned a hardcoded DEFAULT_USER with role=admin when an X-API-Key matched, bypassing the active-check and granting cross-tenant admin access to any holder of the shared key.
+  resolution_ref: fix/r1-001-api-key-respects-active
+  notes: ""
+
+- finding_id: r1-002
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: resolved
+  title: Changelog admin gate uses user.id literal instead of role
+  description: |
+    _require_admin_user checked user.id != 1 instead of user.role != admin, causing inconsistency with other admin gates and locking out a second seeded admin.
+  resolution_ref: fix/r1-002-changelog-admin-role-gate
+  notes: ""
+
+- finding_id: r1-003
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: Single shared REVERTO_API_KEY with no rotation or per-user concept
+  description: |
+    Every script and admin automation shares one process-wide REVERTO_API_KEY env var with no rotation flow that does not require portal restart. Multi-tenant SaaS needs per-tenant keys.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-004
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: Rate-limiter keyed on IP without X-Forwarded-For parsing
+  description: |
+    The rate-limiter used get_remote_address without trusting X-Forwarded-For. Behind a proxy, all tenants shared one bucket. Custom key_func now parses XFF from trusted proxies.
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: r1-005
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: No TOTP or 2FA layer
+  description: |
+    Security-model.md Part 3.3 requires TOTP between password verification and cookie minting. Current auth_login sets the cookie directly after bcrypt success.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-006
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: Cookie payload carries stale unused username field
+  description: |
+    The session cookie included a username field unused for auth decisions and redundant with the uid already in the payload.
+  resolution_ref: fix/vps-0-sweep
+  notes: ""
+
+- finding_id: r1-007
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: LoginBody.username has no character-class restriction
+  description: |
+    Username field accepted arbitrary characters. Could break delimited audit-log formats if pipe characters were allowed.
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: r1-008
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: Single-host blast radius - Fernet key and ciphertext on one machine
+  description: |
+    Exchange API credentials are encrypted with Fernet at rest, but the Fernet key and ciphertext both live on the same host. A server compromise grants access to all encrypted exchange credentials.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-009
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: No CredentialProvider abstraction interface
+  description: |
+    Phase A deliverable from security-model.md. save_keys/get_keys are bare functions without an abstract interface that would allow Phase-C to substitute a SigningServiceCredentialProvider.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-010
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: accepted
+  title: Credential secrets live in process heap during engine lifetime
+  description: |
+    Decrypted exchange credentials remain in Python process memory for the engine's lifetime. Complete remediation couples with Phase-C service separation.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-011
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: open
+  title: No exchange-key rotation flow exists
+  description: |
+    Fernet-key rotation is implemented for re-wrapping ciphertext, but there is no flow for rotating actual exchange API credentials (pause bots, test new key, verify, kill old).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-012
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: resolved
+  title: BITGET_PASSPHRASE read from process-wide env-var, not per-user
+  description: |
+    The Bitget passphrase was read from a single env-var, which would fail for multi-tenant live-mode. Now stored per-user in the encrypted credentials payload.
+  resolution_ref: fix/r1-012-bitget-passphrase-per-user
+  notes: ""
+
+- finding_id: r1-013
+  source_doc: saas-readiness-v1-report
+  severity: CRITICAL
+  status: open
+  title: No signing-service exists - all exchange secrets and trade-signing in main-app
+  description: |
+    Security-model.md specifies a three-component architecture (web/signer/watchdog), but only the main app exists. The signer component, holding all Fernet keys and signing orders, is missing.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-014
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: open
+  title: LiveEngine._place_market_order NotImplementedError - core path unimplemented
+  description: |
+    Live order placement raises NotImplementedError as a Phase-3 blocker. Real orders cannot be placed, only dry-run trading is possible.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-015
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: open
+  title: OrderReconciler.fetch_order branch commented out - no real fill reconciliation
+  description: |
+    Order reconciliation polling is commented out pending Phase-3, so silent fills would cause duplicate DCA placements.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-016
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: No mTLS between components - no CA infrastructure documented
+  description: |
+    Service-to-service authentication and encryption between web/signer/watchdog has no design or infrastructure (no CA, no cert pinning, no mTLS).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-017
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: open
+  title: SQLite instead of Postgres blocks multi-host and multi-writer deployments
+  description: |
+    SQLite WAL supports concurrent readers but only one writer. Multi-host deploys cannot share the DB, and 100+ tenant bots saturate the single-writer.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-018
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: Destructive migrations pattern still used - no Alembic
+  description: |
+    Schema migrations v3 and v4 use drop-and-recreate. No Alembic. Phase-C will replace with additive reversible migrations.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-019
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: _write_lock in deal_store serializes all writes across threads
+  description: |
+    Module-level threading.Lock serializes every DB write. Under 100+ bots with per-tick DCA commits this becomes a bottleneck once Postgres is deployed.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-020
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: N+1 query pattern in /api/db/deals and Active Deals list
+  description: |
+    Endpoint fetched deals then called get_deal_orders for each, producing N+1 queries. With limit=1000 this was 1001 queries.
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: r1-021
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: Index on deals.status verified to exist
+  description: |
+    Initially thought missing but verified the index already exists in the schema.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-022
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: No backup retention automation beyond documented cron sample
+  description: |
+    Backups documented as cron sample but no retention policy or automated cleanup was implemented. Now has 7/28/90-day tiers.
+  resolution_ref: fix/vps-0-backup
+  notes: ""
+
+- finding_id: r1-023
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: resolved
+  title: Bot subprocess spawned with os.environ.copy() leaks all env-vars
+  description: |
+    Every bot subprocess inherited the portal's entire environment including BITGET_PASSPHRASE, TELEGRAM tokens, REVERTO_API_KEY across all tenants. Now whitelisted to a minimal set.
+  resolution_ref: fix/r1-023-subprocess-env-whitelist
+  notes: ""
+
+- finding_id: r1-024
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: open
+  title: BotRegistry uses asyncio.Lock - single-process only, multi-worker races
+  description: |
+    BotRegistry holds bot lifecycle state in process-local asyncio.Lock. Under uvicorn --workers 4, each worker has independent registry, allowing same-bot double-start races.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-025
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: open
+  title: StateBroadcaster and LogBroadcaster in-memory - multi-worker broadcast breaks
+  description: |
+    WebSocket clients held in process-local memory. With multi-worker setup, watch_state_files on worker 2 broadcasts updates that worker 1's clients never receive.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-026
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: SlowAPI Limiter in-memory defeats multi-worker rate-limiting
+  description: |
+    Each uvicorn worker has independent token buckets. Attacker can hit 5 reqs/min on each worker, bypassing per-endpoint limits. Requires Redis backend.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-027
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: Module-level _bitget_client and _price_lock create single choke-point
+  description: |
+    /api/price uses module-level ccxt client and lock, serializing all price fetches. Heavy dashboard polling queues behind it.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-028
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: LRU _chart_cache and _candles_cache are in-process
+  description: |
+    Chart and candles caches live in process memory, not shared across workers. Each worker maintains independent caches, duplicating memory.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-029
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: No central Bitget rate-budget across bots
+  description: |
+    Each bot's ccxt client rate-limits independently. With 100 tenants x 3 bots, distributed rate-limiting causes cascading failures.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-030
+  source_doc: saas-readiness-v1-report
+  severity: INFO
+  status: open
+  title: State file I/O via local filesystem - NFS/shared-storage unsupported
+  description: |
+    Bot state persistence uses local file I/O through advisory locks. Shared network storage or multi-host deployments would require distributed locking.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-031
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: Audit log is single cross-user file without per-user segregation or JSON
+  description: |
+    audit.log was pipe-delimited plaintext lacking user_id, IP, request-id, result fields. Phase A required structured JSON.
+  resolution_ref: fix/vps-1-hardening
+  notes: ""
+
+- finding_id: r1-032
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: Pipe-delimited audit format breaks if username contains pipe character
+  description: |
+    The _audit function used pipe as delimiter. Future signups with | in usernames would break column layout silently.
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: r1-033
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: Prometheus metrics lack user_id label for multi-tenant visibility
+  description: |
+    Metrics labeled only on bot_slug and mode. Two users with identical slug names produced indistinguishable metrics.
+  resolution_ref: fix/vps-1-hardening
+  notes: ""
+
+- finding_id: r1-034
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: No trace-IDs for cross-service correlation
+  description: |
+    No request-id or trace-id plumbing exists for correlating logs across service boundaries when the signing-service is deployed.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-035
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: OSError fallback in API-key bootstrap logs the full key
+  description: |
+    When REVERTO_API_KEY read failed, the error handler logged the full key value instead of a hint. Now logs only sha256-hint.
+  resolution_ref: fix/vps-0-sweep
+  notes: ""
+
+- finding_id: r1-036
+  source_doc: saas-readiness-v1-report
+  severity: INFO
+  status: open
+  title: TickerError.message truncation could leak URL with key tails
+  description: |
+    Error message truncation could accidentally leak fragments of URLs that contain API key tails.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-037
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: make deploy is naked git pull with no zero-downtime or health checks
+  description: |
+    The deploy target just pulled code with no health check, canary, rollback, or staged deployment.
+  resolution_ref: fix/vps-0-deploy-rollback
+  notes: ""
+
+- finding_id: r1-038
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: No scripted rollback procedure for code deployments
+  description: |
+    Rollback was documented as git checkout by hand, not scripted. No automated reversal to previous SHA.
+  resolution_ref: fix/vps-0-deploy-rollback
+  notes: ""
+
+- finding_id: r1-039
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: Single host assumed - no HA or failover plan
+  description: |
+    Current deployment is single-host. No load balancing, failover, or HA infrastructure.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-040
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: No staging environment defined beyond Reverto-Dev workstation
+  description: |
+    Only Reverto-Dev (workstation) and production exist. No cloud-based staging tier.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-041
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: resolved
+  title: _state_mtimes dict keyed on slug only - cross-user collisions possible
+  description: |
+    The watch_state_files mtime cache was keyed on bot.slug alone. Two users with the same slug would cross-contaminate the WS broadcast scheduler.
+  resolution_ref: fix/r1-041-state-mtimes-per-user
+  notes: ""
+
+- finding_id: r1-042
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: BotInfo.read_state falls back to paper mode default without stamping user
+  description: |
+    Default fallback to paper mode could occur without recording which user owns the bot, losing traceability.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-043
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: /auth/logout rate-limit at 10/min but bump_session_epoch unprotected
+  description: |
+    Logout was rate-limited but a user could spam bump_session_epoch via repeated password changes.
+  resolution_ref: fix/vps-0-sweep
+  notes: ""
+
+- finding_id: r1-044
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: Per-user and per-exchange rate-limits not enforced
+  description: |
+    Phase A prescribed three-dimensional rate-limiting (per-IP/user/exchange). Only per-IP existed; now per-user added.
+  resolution_ref: fix/vps-1-hardening
+  notes: ""
+
+- finding_id: r1-045
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: /api/candles expensive endpoint lacks cost-based throttling
+  description: |
+    /api/candles was rate-limited at 20/min globally but had no cost-proportional debits, allowing abuse via large candle requests.
+  resolution_ref: fix/vps-1-hardening
+  notes: ""
+
+- finding_id: r1-046
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: No API versioning prefix - deprecation path undefined
+  description: |
+    Routes use /api/bots without /v1/ prefix. Once tenants integrate via API, breaking changes have no deprecation path.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-047
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: Error JSON shape inconsistent - some use detail, some use error
+  description: |
+    API error responses used different field names (detail vs error) inconsistently.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-048
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: accepted
+  title: No OpenAPI spec exposed - docs_url=None in FastAPI init
+  description: |
+    FastAPI's automatic OpenAPI docs are disabled. No /docs endpoint for client API discovery. Intentional for single-operator portal.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-049
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: ML _persist_results not user-scoped - two users overwrite each other
+  description: |
+    ML pipeline wrote to results_{slug}.json without user_id, so two users with the same slug overwrote each other.
+  resolution_ref: fix/vps-0-sweep
+  notes: ""
+
+- finding_id: r1-050
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: web/app.py at 2000+ lines - too many concerns in one file
+  description: |
+    The main app file hosts middleware, lifespan, broadcasters, registry, helpers, auth, and business logic. Should be split into focused modules.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-051
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: DEFAULT_USER stub still exported from core.user
+  description: |
+    The DEFAULT_USER hardcoded stub remained exported after Phase-3a even though only r1-001 used it.
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: r1-052
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: Dangling TODO(phase-3b) comments in broadcaster helpers
+  description: |
+    Phase-3b transition comments remained after work completed, creating clutter.
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: r1-053
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: No cross-tenant end-to-end route test driving two users
+  description: |
+    No test drove routes end-to-end as two users to verify isolation. Phase-3a was correct but unproven by tests.
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: r1-054
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: No regression test for API-key with deactivated admin
+  description: |
+    No test verifies deactivated admins are refused on the API-key path, which would catch r1-001 regressions.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-055
+  source_doc: saas-readiness-v1-report
+  severity: HIGH
+  status: open
+  title: Whole trade-signing and credential surface lives in main-app
+  description: |
+    The entire credential decryption, scope-whitelisting, cap-enforcement, and order-placement surface still lives in main-app. Category-level finding requiring whole-tree refactor.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-056
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: Several except Exception pass swallow errors silently
+  description: |
+    WebSocket disconnect handlers had bare exception handlers silently swallowing unexpected exceptions.
+  resolution_ref: fix/vps-0-sweep
+  notes: ""
+
+- finding_id: r1-057
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: No circuit-breaker around Bitget calls - per-bot rate-limiting independent
+  description: |
+    Each bot's ccxt client rate-limited independently without a circuit-breaker to prevent cascading Bitget API failures.
+  resolution_ref: fix/vps-0-sweep
+  notes: ""
+
+- finding_id: r1-058
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: No startup validation of required environment variables
+  description: |
+    Missing env vars (BITGET_PASSPHRASE, TELEGRAM tokens) were only detected on first use, not at portal startup.
+  resolution_ref: fix/vps-0-sweep
+  notes: ""
+
+- finding_id: r1-059
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: .env.example not cross-validated against .env on boot
+  description: |
+    .env.example is comprehensive but not auto-validated against actual .env at startup to warn of missing optional config.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-060
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: Requirements pinned by version, not by hash
+  description: |
+    Dependencies pinned by ==X.Y.Z but not by hash. A compromised maintainer on PyPI could push backdoored patch under the same version.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-061
+  source_doc: saas-readiness-v1-report
+  severity: INFO
+  status: open
+  title: Transitive deps non-blocking in CI - knowingly loose
+  description: |
+    CI does not enforce transitive dependency checks, allowing loose indirect dependencies. Documented as intentional.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-062
+  source_doc: saas-readiness-v1-report
+  severity: INFO
+  status: open
+  title: ccxt upgrade cadence still manual - not automated
+  description: |
+    ccxt library upgrades are manual. No automated dependency update checks or scheduled upgrade runs.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-063
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: No mypy config or pyproject.toml - only ruff type checking
+  description: |
+    Type checking limited to ruff E/F/W. No mypy configuration to catch type errors in helpers.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-064
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: Type-hints coverage inconsistent - routes typed, helpers less so
+  description: |
+    Route handlers are well-typed via Pydantic + FastAPI Depends, but helper functions in web/app.py have inconsistent type annotation coverage.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-065
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: Circular import pattern via bottom-of-file include is fragile
+  description: |
+    The circular import pattern between web/app.py and web/routes/*.py works but is fragile and could break easily.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-066
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: web/app.py overloaded with too many concerns
+  description: |
+    web/app.py hosts auth, middleware, broadcasters, registry, lifecycle, WS handlers, lifespan, audit logging, caching, and business logic. Should be split.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-067
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: watch_state_files blocks serially on bot.read_state I/O
+  description: |
+    The state-file watcher loop calls bot.read_state() serially without asyncio.to_thread, blocking the event loop.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-068
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: Bitget ccxt clients not thread-safe - documented without global check
+  description: |
+    ccxt Bitget clients have thread-safety caveats documented but no global runtime check enforces safe patterns.
+  resolution_ref: fix/vps-1-hardening
+  notes: ""
+
+- finding_id: r1-069
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: No Alembic or migration tool - destructive drop pattern used
+  description: |
+    Database migrations use bespoke drop-and-recreate. No Alembic or versioned reversible tooling.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-070
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: No per-migration unit test - happy-path coverage only
+  description: |
+    Migration tests cover happy-path init but not actual schema-version transitions. No test for v3 to v4 to v5 upgrade paths.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-071
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: open
+  title: LiveEngine inherits Paper wholesale - real path unexercised
+  description: |
+    LiveEngine(PaperEngine) means 99% identical, but actual live order path is NotImplementedError. Paper is the exercised authority for parity.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-072
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: open
+  title: Parity tests exist but no nightly automation
+  description: |
+    scripts/parity_compare.py compares paper/live but runs manually, not in CI. No automated alert on parity drift.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1-073
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: CSRF defense relies solely on SameSite=strict - no token-based depth
+  description: |
+    CSRF used only SameSite=strict cookie attribute without token-based defense-in-depth.
+  resolution_ref: fix/vps-1-hardening
+  notes: ""
+
+- finding_id: r1-074
+  source_doc: saas-readiness-v1-report
+  severity: MEDIUM
+  status: resolved
+  title: Third-party CDN script without SRI - lightweight-charts unprotected
+  description: |
+    The lightweight-charts library was loaded from unpkg without Subresource Integrity hashes.
+  resolution_ref: fix/vps-0-sweep
+  notes: ""
+
+- finding_id: r1-075
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: No HSTS header emitted by portal itself
+  description: |
+    Portal did not emit Strict-Transport-Security to enforce HTTPS-only on clients.
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: r1-076
+  source_doc: saas-readiness-v1-report
+  severity: LOW
+  status: resolved
+  title: CSP style-src has unsafe-inline and connect-src has ws wss wildcards
+  description: |
+    CSP allowed inline styles and broad WebSocket connections. style-src unsafe-inline remains pending refactor; ws/wss wildcards narrowed.
+  resolution_ref: fix/vps-1-hardening
+  notes: ""
+
+# ── saas-readiness-v1.1-delta-report (r1.1-001 … r1.1-006) ────────────────────
+
+- finding_id: r1.1-001
+  source_doc: saas-readiness-v1.1-delta-report
+  severity: MEDIUM
+  status: open
+  title: _price_lock head-of-line blocking between /api/ticker and /api/price
+  description: |
+    Both endpoints hold _price_lock around ccxt.fetch_ticker calls, serialising every exchange call. Post-multi-user seed with 50+ concurrent clients, slow Bitget endpoints create 40s tail-latency queue. Defer to Phase C with r1-027.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r1.1-002
+  source_doc: saas-readiness-v1.1-delta-report
+  severity: LOW
+  status: resolved
+  title: Unvalidated pair path-param briefly pollutes ticker cache
+  description: |
+    /api/ticker/{pair} accepted any string. Unvalidated pairs could land in 10s cache. Now allowlist-gated.
+  resolution_ref: fix/sprint-3b-v1.1-sweep
+  notes: ""
+
+- finding_id: r1.1-003
+  source_doc: saas-readiness-v1.1-delta-report
+  severity: MEDIUM
+  status: resolved
+  title: Workspace chart-panel 30s refresh drops scroll-loaded history
+  description: |
+    Workspace chart-panel factory replaced wholesale on refresh, wiping user-scrolled history. User-visible regression from missing merge parity with main bot-chart.
+  resolution_ref: fix/r1.1-003-workspace-scroll-merge
+  notes: ""
+
+- finding_id: r1.1-004
+  source_doc: saas-readiness-v1.1-delta-report
+  severity: LOW
+  status: resolved
+  title: Timezone localStorage values bypass _normalizeChartTimezone
+  description: |
+    Helpers returned raw LS value without validation. Corrupted LS caused dropdown UI inconsistency though chart fell back to local correctly.
+  resolution_ref: fix/sprint-3b-v1.1-sweep
+  notes: ""
+
+- finding_id: r1.1-005
+  source_doc: saas-readiness-v1.1-delta-report
+  severity: LOW
+  status: resolved
+  title: registerIndicatorPlugin only validates type string, not full contract
+  description: |
+    registerIndicatorPlugin accepted under-specified plugins silently and crashed at render-time with cryptic TypeError. Now defensively validates required fields.
+  resolution_ref: fix/sprint-3b-v1.1-sweep
+  notes: ""
+
+- finding_id: r1.1-006
+  source_doc: saas-readiness-v1.1-delta-report
+  severity: INFO
+  status: resolved
+  title: _initChart failure leaves orphan in _activePanelCharts registry
+  description: |
+    _activePanelCharts.add happened before rest of init. Any throw between add and return left stale entry in set.
+  resolution_ref: fix/sprint-3b-v1.1-sweep
+  notes: ""
+
+# ── pre-deploy-audit-report (pd-001 … pd-054) ────────────────────────────────
+
+- finding_id: pd-001
+  source_doc: pre-deploy-audit-report
+  severity: HIGH
+  status: resolved
+  title: OSError details leaked into 500 response detail field
+  description: |
+    Three sites surfaced raw str(e) from I/O exceptions, revealing on-disk layout. Fixed by routing through logger.exception with generic detail.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-002
+  source_doc: pre-deploy-audit-report
+  severity: MEDIUM
+  status: in_progress
+  title: CSRF graceful-migration grants one-shot bypass on /auth/logout
+  description: |
+    Hotfix path lets unauthenticated request lacking CSRF cookie through once. Logout idempotent so no exploitation value, but operational concern. Migration window closes within session TTL.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-003
+  source_doc: pre-deploy-audit-report
+  severity: MEDIUM
+  status: resolved
+  title: HIBP network call fires before current-password verification
+  description: |
+    POST /api/auth/change-password ran HIBP k-anonymity lookup before verifying current-password. Bandwidth waste on metered VPS.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-004
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: accepted
+  title: Session TTL fixed at 24h with no refresh/sliding window
+  description: |
+    _SESSION_TTL = 86400 with no sliding-window renewal. Acceptable for single-operator 8-hour trading sessions.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-005
+  source_doc: pre-deploy-audit-report
+  severity: MEDIUM
+  status: resolved
+  title: /api/chart 500-candle ceiling lacks cost-budget on public IP path
+  description: |
+    /api/chart bounded limit but lacked cost-budget. Hostile IP could sustain 333 candles/sec via cache before slowapi engaged. Shared cost-budget now applied.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-006
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: resolved
+  title: ExchangeKeysBody.passphrase max_length=512 overly permissive
+  description: |
+    Passphrase accepted up to 512 chars; reduced to max_length=64 to match Bitget conventional 10-20 char passphrases.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-007
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: in_progress
+  title: Slug regex validated inconsistently across bot-lifecycle routes
+  description: |
+    /api/bots/{slug}/start-dry-run validates slug; others rely on registry returning None. Drift-risk for future refactors.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-008
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: accepted
+  title: Chart pair allowlist conservative with BTC/USD BTC/USDT only
+  description: |
+    Hardcoded allowlist prevents cache pollution. New pair requires code change. Intentional per r1.1-002 resolution.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-009
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: in_progress
+  title: Broad except Exception in chart routes loses type/message granularity
+  description: |
+    /api/price /api/ticker /api/chart catch Exception broadly. Truncation good but broad catch makes log-triage hard.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-010
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: No stack-trace leaks in error responses
+  description: |
+    Every route raises HTTPException. FastAPI default handler returns detail-only JSON without traceback.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-011
+  source_doc: pre-deploy-audit-report
+  severity: MEDIUM
+  status: resolved
+  title: Permissions-Policy header absent from security headers
+  description: |
+    SecurityHeadersMiddleware emitted CSP, HSTS, X-Frame-Options but no Permissions-Policy. Now denies sensor APIs explicitly.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-012
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: CSP style-src unsafe-inline documented for r1-076 follow-up
+  description: |
+    Remains pending full refactor of inline style attributes to CSS classes.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-013
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: HSTS omits preload directive intentionally
+  description: |
+    max-age=31536000; includeSubDomains correct. Preload omitted as not submitting to preload list.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-014
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Clickjacking defended at two layers via X-Frame-Options and CSP
+  description: |
+    X-Frame-Options DENY (legacy) + CSP frame-ancestors none (modern) both set correctly.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-015
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: StaticFiles path-traversal protection via os.path.commonpath is sound
+  description: |
+    Starlette mount includes explicit path-traversal guard.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-016
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: maintenance.html self-contained and harmless if served while up
+  description: |
+    Static HTML with auto-reload polling /auth/status. No harm if served during operation.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-017
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Directory listing disabled, Starlette default
+  description: |
+    StaticFiles serves explicit files only, no directory listing.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-018
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: index.html and favicon.ico served as explicit routes, auth-gated
+  description: |
+    Both served via explicit route handlers with appropriate auth gates.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-019
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: resolved
+  title: API-key hint regression test gap
+  description: |
+    web/app.py emits sha256-hint on ephemeral-key generation. No test asserted full-key absence. Now covered.
+  resolution_ref: fix/pre-deploy-final-polish
+  notes: ""
+
+- finding_id: pd-020
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: No emails or session cookies or passwords logged
+  description: |
+    Deep cross-tree grep confirms no secrets in logger calls.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-021
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Log rotation 5MB x 3 backups safe for VPS disk ceiling
+  description: |
+    Approximately 20MB per log file ceiling. Safe for single-operator VPS.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-022
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Audit event coverage comprehensive across lifecycle
+  description: |
+    Login, bot-lifecycle, exchange keys, changelog, emergency-stop, drawdown-reset all instrumented.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-023
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Log files mode 0644, appropriate for single-operator VPS
+  description: |
+    Single tenant sole user context. On multi-user host would require 0600.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-024
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: REVERTO_LOG_LEVEL=DEBUG does not leak payloads
+  description: |
+    No payloads logged at any verbosity level.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-025
+  source_doc: pre-deploy-audit-report
+  severity: HIGH
+  status: resolved
+  title: REVERTO_API_KEY not elevated to required in startup validation
+  description: |
+    _validate_config treated API_KEY as recommended (WARN) not required (RAISE). Operator omission caused ephemeral key changing on every restart.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-026
+  source_doc: pre-deploy-audit-report
+  severity: MEDIUM
+  status: resolved
+  title: .env.example omits REVERTO_LOG_LEVEL despite allowlisting
+  description: |
+    REVERTO_LOG_LEVEL allowlisted for subprocesses but missing from template, leaving operators unaware of the knob.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-027
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: resolved
+  title: _validate_config_completeness blind spot until pd-026 fixed
+  description: |
+    Completeness check could not warn on REVERTO_LOG_LEVEL because it was absent from the template. Auto-resolves with pd-026.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-028
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Ephemeral-key fail-soft by design for development
+  description: |
+    Module-import fallback generates ephemeral key with atexit cleanup. Dev-friendly single-session fallback.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-029
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: resolved
+  title: changelog_store.update_entry f-string SQL lacks inline safety comment
+  description: |
+    UPDATE statement via f-string with hardcoded column names. Pattern safe but unconventional. Inline docstring on invariant added.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-030
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: All user-owned SELECT UPDATE DELETE include WHERE user_id clause
+  description: |
+    Deep-read confirms belt-and-braces scoping on every user-owned row access.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-031
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: No user data interpolated into SQL templates
+  description: |
+    All values parameterized. Only hardcoded schema identifiers in f-strings.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-032
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Cross-tenant isolation test covers deal-list annotation-delete
+  description: |
+    tests/test_cross_tenant_isolation.py covers three E2E scenarios.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-033
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: ensure_secret_file_mode enforces 0600 on Fernet key writes
+  description: |
+    All Fernet key writes validated to 0600 permissions.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-034
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Bitget passphrase per-user store with legacy env-fallback and warning
+  description: |
+    Per-user store + env-fallback + deprecation WARNING per r1-012.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-035
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Backup includes credentials and keys with pre-restore snapshot
+  description: |
+    scripts/backup.sh captures credentials/ keys/ with 7/28/90-day retention.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-036
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Key rotation atomic under fcntl lock with crash-safe failure modes
+  description: |
+    Atomic via key-first then .enc-file writes. Crash leaves recoverable state with backup fallback.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-037
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Plaintext creds in engine heap documented Phase-C limitation
+  description: |
+    Known limitation per r1-010. Phase-C signing-service is the fix.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-038
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: All POST PUT PATCH DELETE endpoints carry limiter decorator
+  description: |
+    100% coverage verified via deep-read of web/routes/.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-039
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Per-user keying via _rate_limit_key_func returns user-id format
+  description: |
+    Authenticated users get user-prefixed key, IP fallback otherwise.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-040
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Cost-budget on /api/candles with 10000 budget and 100 refill per sec
+  description: |
+    CostBudget fronts /api/candles with cost = candle_limit per r1-045.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-041
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Auth endpoints rate-limited login change-password logout
+  description: |
+    Per-user keying on logout, IP fallback on login/change-password.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-042
+  source_doc: pre-deploy-audit-report
+  severity: MEDIUM
+  status: resolved
+  title: /auth/logout CSRF semantics ambiguous, not exempt but idempotent
+  description: |
+    /auth/logout in _PUBLIC_PATHS but not _CSRF_EXEMPT_PATHS. CSRF requirement was ambiguous; now exempt aligning with /auth/login.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-043
+  source_doc: pre-deploy-audit-report
+  severity: MEDIUM
+  status: resolved
+  title: Dashboard layout name parameter accepted without regex validation
+  description: |
+    dashboard_store helpers accepted name via str(name) without regex validation. SQL parameterized so no injection but missing defensive validation.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-044
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: resolved
+  title: Orphaned .tmp files on crash in credentials and logs directories
+  description: |
+    Atomic write-then-replace left orphaned .tmp files on ungraceful crash. Lifespan startup hook now scans and cleans.
+  resolution_ref: fix/pre-deploy-final-polish
+  notes: ""
+
+- finding_id: pd-045
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Slug regex enforced at every FS-touch site before Popen argv
+  description: |
+    _BOT_SLUG_RE gates before paths.bot_yaml_path and subprocess argv construction.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-046
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: User-dir isolation via int user_id with no traversal surface
+  description: |
+    User-dir parents derive from integer user_id only, never user-supplied string.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-047
+  source_doc: pre-deploy-audit-report
+  severity: LOW
+  status: resolved
+  title: Optional ML-stack deps use floating pins instead of equals
+  description: |
+    Commented-out optional deps used >= floating pins. When activated, build pulled arbitrary newer versions.
+  resolution_ref: fix/vps-1.5-polish
+  notes: ""
+
+- finding_id: pd-048
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Core deps pinned at recent stable versions
+  description: |
+    fastapi, starlette, pydantic v2, cryptography, ccxt all pinned to recent stable.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-049
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: CDN SRI and crossorigin on every unpkg asset per r1-074
+  description: |
+    integrity= and crossorigin=anonymous on all unpkg scripts and links.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-050
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: ccxt thread-safety documented with _price_lock serialization
+  description: |
+    Thread-safety docstrings on Bitget/Public exchanges. _price_lock asyncio.Lock serializes per r1-068.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-051
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: _BOT_ENV_ALLOWLIST minimal and correct, no secrets to subprocesses
+  description: |
+    Allowlist contains 7 non-secret vars only. No os.environ.copy().
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-052
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Popen argv is list with no shell=True, slugs regex-gated before argv
+  description: |
+    Safe subprocess spawning with all slug inputs validated before argv construction.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-053
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: PID TOCTOU window mitigated, target PID portal-controlled graceful
+  description: |
+    Micro-window exists but mitigated by portal control of target PID and SIGTERM graceful semantics.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pd-054
+  source_doc: pre-deploy-audit-report
+  severity: INFO
+  status: accepted
+  title: Backup restore rollback scripts use safe arg-handling and git guards
+  description: |
+    All scripts use safe argument handling. git rev-parse --verify guards SHA verification.
+  resolution_ref: null
+  notes: ""
+
+# ── saas-readiness-v2-report (r2-001 … r2-011) ───────────────────────────────
+
+- finding_id: r2-001
+  source_doc: saas-readiness-v2-report
+  severity: HIGH
+  status: resolved
+  title: YAML error detail leaks in bot-duplicate endpoint
+  description: |
+    web/routes/bots.py:638 raised HTTPException with yaml.YAMLError details (line/column/snippet) revealing file-layout. Class-of-issue regression test now prevents recurrence.
+  resolution_ref: fix/r2-001-yaml-scrub
+  notes: ""
+
+- finding_id: r2-002
+  source_doc: saas-readiness-v2-report
+  severity: HIGH
+  status: accepted
+  title: Kraken exchange lacks idempotency-by-clientOrderId like Bitget
+  description: |
+    KrakenExchange.place_market_order calls create_order directly with no idempotency. Confirmation-timeout retry becomes double-order. Bitget has idempotent pattern.
+  resolution_ref: null
+  notes: "ACCEPTED for VPS-3 paper-mode only; SHOULD-FIX before Phase 3 live-mode Kraken"
+
+- finding_id: r2-003
+  source_doc: saas-readiness-v2-report
+  severity: MEDIUM
+  status: in_progress
+  title: Verify HSTS emission behind Caddy reverse proxy before DNS cutover
+  description: |
+    Middleware emits HSTS only when scheme==https. Code comment claims Starlette reads X-Forwarded-Proto but no TrustedHostMiddleware installed. Post-cutover curl verification needed.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r2-004
+  source_doc: saas-readiness-v2-report
+  severity: MEDIUM
+  status: open
+  title: Rate-limit error handling inconsistent across exchange methods
+  description: |
+    BitgetExchange.cancel_order catches RateLimitError silently. place_market_order lets it propagate. Callers cannot assume consistent exception contract.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r2-005
+  source_doc: saas-readiness-v2-report
+  severity: MEDIUM
+  status: open
+  title: Circuit breaker treats permanent and transient errors identically
+  description: |
+    CircuitBreaker.record_failure increments on any exception. Permanent error trips breaker like transient timeout, blanket-blocking traffic for 60s.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r2-006
+  source_doc: saas-readiness-v2-report
+  severity: MEDIUM
+  status: in_progress
+  title: No per-connection rate-limit on WebSocket throughput
+  description: |
+    WS handlers have no @limiter (slowapi does not cover WS). Authenticated attacker can open many WS connections. Single-operator means self-DoS unrealistic.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r2-007
+  source_doc: saas-readiness-v2-report
+  severity: LOW
+  status: in_progress
+  title: POSIX atomic-rename assumption undocumented in StateIO
+  description: |
+    StateIO uses .tmp + Path.replace() pattern relying on POSIX atomic rename. NFS/SMB or non-POSIX filesystems may break atomicity.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r2-008
+  source_doc: saas-readiness-v2-report
+  severity: LOW
+  status: accepted
+  title: Manual-trigger sentinel micro-race window on unlink then open
+  description: |
+    _check_manual_trigger unlinks then opens. Microsecond-wide race; operator retry recovers.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r2-009
+  source_doc: saas-readiness-v2-report
+  severity: LOW
+  status: accepted
+  title: DB write-fail silent on prolonged outage, engine keeps running
+  description: |
+    Every deal_store call wrapped in try/except logs WARNING. Prolonged outage means engine ticks but ledger drifts. Deliberate resilience choice.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r2-010
+  source_doc: saas-readiness-v2-report
+  severity: LOW
+  status: in_progress
+  title: Exchange API-key format not validated at credential save
+  description: |
+    save_keys accepts any non-empty strings. Format errors only surface on first bot-start.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r2-011
+  source_doc: saas-readiness-v2-report
+  severity: LOW
+  status: in_progress
+  title: Backup MANIFEST lacks schema-version stamp
+  description: |
+    scripts/backup.sh writes MANIFEST.txt without DB schema version. Restoring older backup onto newer codebase has no pre-restore visibility into migration direction.
+  resolution_ref: null
+  notes: ""
+
+# ── production-readiness-audit-v3 (r3-001 … r3-015) ──────────────────────────
+
+- finding_id: r3-001
+  source_doc: production-readiness-audit-v3
+  severity: HIGH
+  status: resolved
+  title: ccxt exception detail leaks via str(e) in 5XX responses (3 sites)
+  description: |
+    Chart-route family wrapped ccxt exceptions in 502 response bodies. Same class as pd-001/r2-001, missed by prior regex due to function-call wrapping.
+  resolution_ref: fix/r3-001-chart-scrub-and-server-header
+  notes: ""
+
+- finding_id: r3-002
+  source_doc: production-readiness-audit-v3
+  severity: MEDIUM
+  status: resolved
+  title: Regression-test regex doesn't catch function-wrapped exceptions
+  description: |
+    Response-body-hygiene test missed str(e) patterns. Broadened from name-only to word-boundary anywhere inside interpolation.
+  resolution_ref: fix/r3-001-chart-scrub-and-server-header
+  notes: ""
+
+- finding_id: r3-003
+  source_doc: production-readiness-audit-v3
+  severity: MEDIUM
+  status: resolved
+  title: Server uvicorn header leaks app-server identity
+  description: |
+    FastAPI/uvicorn emitted Server header. Fixed via uvicorn.Config server_header=False plus middleware defense-in-depth del.
+  resolution_ref: fix/r3-001-chart-scrub-and-server-header
+  notes: ""
+
+- finding_id: r3-004
+  source_doc: production-readiness-audit-v3
+  severity: LOW
+  status: resolved
+  title: maintenance.html 403 in Caddy logs - /home/bot/ is mode 0750
+  description: |
+    Caddy user could not traverse operator home directory. Resolved via operator action: usermod -a -G bot caddy && systemctl restart caddy.
+  resolution_ref: null
+  notes: "Operator-side fix applied 2026-04-25"
+
+- finding_id: r3-005
+  source_doc: production-readiness-audit-v3
+  severity: MEDIUM
+  status: resolved
+  title: HSTS-behind-proxy delivery untested on production
+  description: |
+    HSTS works when uvicorn proxy_headers=True and Caddy forwards X-Forwarded-Proto, but contract was implicit. Operator verified via curl.
+  resolution_ref: null
+  notes: "Operator verification completed 2026-04-25"
+
+- finding_id: r3-006
+  source_doc: production-readiness-audit-v3
+  severity: MEDIUM
+  status: resolved
+  title: Backup cron and restore procedure never operationally proven
+  description: |
+    Scripts correct by code-read but first fire on production VPS had never executed. Resolved via operator confirmation 2026-04-26 03:00 UTC.
+  resolution_ref: null
+  notes: "Resolved via operator verification 2026-04-26"
+
+- finding_id: r3-007
+  source_doc: production-readiness-audit-v3
+  severity: LOW
+  status: resolved
+  title: Telegram tokens uncovered by secret redaction test suite
+  description: |
+    Tests covered API-key, session-cookie, passphrase but not Telegram tokens. Four new tests cover TelegramNotifier failure branches.
+  resolution_ref: tweak/r3-007-r3-008-monitoring-batch-1
+  notes: ""
+
+- finding_id: r3-008
+  source_doc: production-readiness-audit-v3
+  severity: LOW
+  status: resolved
+  title: Backup MANIFEST lacks schema-version stamp
+  description: |
+    Manifest did not record DB schema version for restore safety. Now stamps Schema version via PRAGMA user_version probe.
+  resolution_ref: tweak/r3-007-r3-008-monitoring-batch-1
+  notes: ""
+
+- finding_id: r3-009
+  source_doc: production-readiness-audit-v3
+  severity: LOW
+  status: in_progress
+  title: HSTS preload-list submission consideration deferred
+  description: |
+    Current HSTS posture is preload-ready but submission is one-way. Deferred to 6+ months out for operator consideration.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r3-010
+  source_doc: production-readiness-audit-v3
+  severity: INFO
+  status: resolved
+  title: Runbook ambiguous about credentials backup behaviour
+  description: |
+    Documentation was unclear about credentials in backups. Resolved by adding lifecycle-stages subsection to runbook.
+  resolution_ref: docs/r3-010-credentials-backup-clarification
+  notes: ""
+
+- finding_id: r3-011
+  source_doc: production-readiness-audit-v3
+  severity: LOW
+  status: deferred
+  title: WebSocket Origin header validation not implemented
+  description: |
+    Current topology protected by CSP connect-src and SameSite=strict, but explicit WS Origin validation would harden Phase-B.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r3-012
+  source_doc: production-readiness-audit-v3
+  severity: INFO
+  status: accepted
+  title: systemd unit and Caddyfile hardening not in repo
+  description: |
+    Both config files live on VPS and are outside repo scope. Operator-side review required for NoNewPrivileges, ProtectSystem, etc.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r3-013
+  source_doc: production-readiness-audit-v3
+  severity: INFO
+  status: accepted
+  title: Scanner traffic baseline established
+  description: |
+    Public exposure triggered automated scanner traffic. All probe responses return 404/401 correctly with no information leakage.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: r3-014
+  source_doc: production-readiness-audit-v3
+  severity: MEDIUM
+  status: resolved
+  title: Bot lifecycle stability - subprocess overleving and silent-exit detection
+  description: |
+    Three issues - bots killed during portal restart, silent exit leaving running=true, 18s graceful-shutdown delay. Issues 1 and 2 resolved via KillMode=process, heartbeat detection, bounded auto-restart.
+  resolution_ref: tweak/bot-lifecycle-stability
+  notes: "Issue 3 (r3-015) deferred to soft-stop PR"
+
+- finding_id: r3-015
+  source_doc: production-readiness-audit-v3
+  severity: MEDIUM
+  status: deferred
+  title: Bot graceful-shutdown delay (18+ seconds on SIGTERM)
+  description: |
+    Bot logs Bot stopped synchronously but OS process keeps slot until SIGKILL. Root cause is blocking call in engine tick-loop not promptly cancellable.
+  resolution_ref: null
+  notes: "Deferred to soft-stop PR"
+
+# ── reverto-holistic-audit-v1 (rha-001 … rha-015) ────────────────────────────
+
+- finding_id: rha-001
+  source_doc: reverto-holistic-audit-v1
+  severity: LOW
+  status: open
+  title: State-file .tmp collision between engine and portal reconcile
+  description: |
+    Both paper/state_io.py and web/app.py use the same state_file.with_suffix(".tmp") path. Concurrent writes can truncate each other before atomic replace. Self-healing on next read_state.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-002
+  source_doc: reverto-holistic-audit-v1
+  severity: INFO
+  status: open
+  title: Schema-version is read from disk without range validation
+  description: |
+    _bot_needs_restart accepts any integer from on-disk state_schema_version. Self-healing via fresh restart that writes correct STATE_SCHEMA_VERSION.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-003
+  source_doc: reverto-holistic-audit-v1
+  severity: INFO
+  status: open
+  title: _BOT_RESTART_HISTORY has no explicit growth ceiling
+  description: |
+    In-memory restart-history dict never actively prunes keys. Bounded in practice by registered bot count; not a DoS vector.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-004
+  source_doc: reverto-holistic-audit-v1
+  severity: MEDIUM
+  status: resolved
+  title: Dashboard fetch handlers swallow network errors silently
+  description: |
+    fetchOverview and fetchDetail wrapped bodies in try/catch with empty catch. Now route failures through console.warn with header staleness-badge.
+  resolution_ref: tweak/dashboard-resilience
+  notes: "Refined in tweak/combined-connection-indicator"
+
+- finding_id: rha-005
+  source_doc: reverto-holistic-audit-v1
+  severity: MEDIUM
+  status: resolved
+  title: No loading indicator on initial dashboard fetches
+  description: |
+    First dashboard load showed empty page-body for round-trip duration. Now skeleton placeholders for bot-grid and stat-cards.
+  resolution_ref: tweak/dashboard-resilience
+  notes: ""
+
+- finding_id: rha-006
+  source_doc: reverto-holistic-audit-v1
+  severity: LOW
+  status: open
+  title: Modal auto-focus inconsistent across modals
+  description: |
+    Only changelog admin-edit modal explicitly sets focus on first input. Other modals rely on browser default tab order. WCAG 2.4.3.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-007
+  source_doc: reverto-holistic-audit-v1
+  severity: LOW
+  status: open
+  title: Modal focus-trap not implemented
+  description: |
+    No JavaScript Tab-trap in modal-overlay. Keyboard user can Tab past last input into chrome behind. WCAG 2.4.3 Focus Order violation.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-008
+  source_doc: reverto-holistic-audit-v1
+  severity: LOW
+  status: open
+  title: Empty-state coverage inconsistent across tabs
+  description: |
+    Bot-grid and active-deals have empty-state messages. Closed-deals tab inside bot-detail renders nothing when empty.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-009
+  source_doc: reverto-holistic-audit-v1
+  severity: LOW
+  status: open
+  title: Five orphan CSS classes
+  description: |
+    style.css contains .amb, .btn-delete, .deal-trigger-badge, .active-deals-header, .bt-history-panel with zero references outside their definitions.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-010
+  source_doc: reverto-holistic-audit-v1
+  severity: LOW
+  status: open
+  title: fmtDateNL defined but never called
+  description: |
+    Dead JS function at app.js:549 has exactly one grep hit. No call sites; ~6 lines unused.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-011
+  source_doc: reverto-holistic-audit-v1
+  severity: INFO
+  status: accepted
+  title: README and runbook mix Dutch and English
+  description: |
+    Deliberate for single Dutch-native operator. Forward-looking concern for Phase-4 multi-tenant onboarding.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-012
+  source_doc: reverto-holistic-audit-v1
+  severity: INFO
+  status: open
+  title: README phase-claim contradiction
+  description: |
+    README:4 says Phase-1 live-trading scaffold. README:74 says make live refused until Phase 3. Both technically true but confusing.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-013
+  source_doc: reverto-holistic-audit-v1
+  severity: INFO
+  status: open
+  title: error state in _BOT_BUTTON_STATE_RULES is structural-only
+  description: |
+    Error branch documented for future extension but no API path surfaces b.error_state. Dead code by construction.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-014
+  source_doc: reverto-holistic-audit-v1
+  severity: INFO
+  status: open
+  title: _persist_silent_exit_reconcile semantically duplicates StateIO.mark_stopped
+  description: |
+    Both write running=false + current_price=0. Schema changes need both updated. Consolidate by extending mark_stopped(reason).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: rha-015
+  source_doc: reverto-holistic-audit-v1
+  severity: INFO
+  status: open
+  title: Dutch comment in requirements-ml.txt
+  description: |
+    Line 1 comment is in Dutch. Forward-looking concern at Phase-4 multi-tenant.
+  resolution_ref: null
+  notes: ""
+
+# ── production-pentest-v1 (pt-001 … pt-039) ──────────────────────────────────
+
+- finding_id: pt-001
+  source_doc: production-pentest-v1
+  severity: LOW
+  status: open
+  title: Subdomain enumeration via Cert Transparency logs
+  description: |
+    Let's Encrypt certs are public in CT logs. crt.sh reveals subdomains. Forgotten subdomains with weak auth break threat model.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-002
+  source_doc: production-pentest-v1
+  severity: LOW
+  status: open
+  title: Tech-stack inference from headers and response shapes
+  description: |
+    Server header and response shapes reveal framework. Post-r3-003 Server header stripped; still acceptable info leak.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-003
+  source_doc: production-pentest-v1
+  severity: LOW
+  status: accepted
+  title: Common-path fishing for FastAPI defaults
+  description: |
+    FastAPI auto-generates /openapi.json and /docs. Reverto has openapi_url=None per pd-048.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-004
+  source_doc: production-pentest-v1
+  severity: LOW
+  status: open
+  title: Verbose /metrics Prometheus scrape
+  description: |
+    Prometheus metrics endpoint leaks process count, memory, request counts, error rates. Should be network-gated by firewall.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-005
+  source_doc: production-pentest-v1
+  severity: LOW
+  status: open
+  title: TLS cipher-suite plus HSTS preload state
+  description: |
+    Weak TLS suites enable downgrade. Caddy + Let's Encrypt defaults are modern; depends on operator's ciphersuites.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-006
+  source_doc: production-pentest-v1
+  severity: LOW
+  status: accepted
+  title: Static asset enumeration / .map source recovery
+  description: |
+    Sourcemaps reveal source. Reverto unlikely to have webpack sourcemaps; directory listing default-off.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-007
+  source_doc: production-pentest-v1
+  severity: LOW
+  status: accepted
+  title: HTTP method abuse (TRACE/OPTIONS)
+  description: |
+    TRACE can echo for XST attacks. Modern frameworks reject TRACE by default.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-008
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: open
+  title: WebSocket endpoint discovery via SPA JS
+  description: |
+    WS endpoints discoverable from SPA JavaScript. Probing without auth yields close code 4401. Limited recon gain post-r1-073.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-009
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: Cookie-jar attribute misconfiguration
+  description: |
+    Session cookies have HttpOnly + Secure + SameSite=Strict. CSRF cookie intentionally lacks HttpOnly.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-010
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: CSP loose enough to permit XSS
+  description: |
+    CSP script-src 'self' + unpkg.com (strict). style-src has unsafe-inline (acknowledged limitation per r1-076).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-011
+  source_doc: production-pentest-v1
+  severity: HIGH
+  status: accepted
+  title: Default-credential bruteforce on /admin paths
+  description: |
+    Reverto has no /admin path; admin-role gates at /api/admin/ require session auth. Per-account brute-force protection bounds exploitability.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-012
+  source_doc: production-pentest-v1
+  severity: LOW
+  status: accepted
+  title: Robots.txt content review
+  description: |
+    robots.txt is User-agent * Disallow / per r3-013 - denies everything, no path-disclosure.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-013
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: Session-cookie replay across SECRET_KEY rotation
+  description: |
+    Stolen cookie usable until itsdangerous TTL (24h) or per-user epoch bumps or SECRET_KEY rotates. Three independent invalidation paths.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-014
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: CSRF double-submit-cookie bypass via cookie injection
+  description: |
+    Double-submit requires cookie-injection primitive. Login is only Set-Cookie issuer. Per-tenant SameSite=Strict blocks cross-site origination.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-015
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: API-key header smuggling via duplicate X-API-Key
+  description: |
+    Duplicate headers might bypass checks. Reverto uses compare_digest per pt-029.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-016
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: WebSocket Origin-header bypass via non-browser client
+  description: |
+    Reverto relies on session cookie + CSP connect-src, not Origin check. Cookie-holder already authorized.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-017
+  source_doc: production-pentest-v1
+  severity: HIGH
+  status: accepted
+  title: Cross-tenant slug guessing in /api/bots/{slug}
+  description: |
+    Reverto uses (user_id, slug) composite-key lookup consistently. Single-operator deploy makes this theoretical.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-018
+  source_doc: production-pentest-v1
+  severity: HIGH
+  status: accepted
+  title: Subprocess command injection via slug or user_id
+  description: |
+    Argv constructed as list with slug regex-gated and user_id integer-coerced. No shell=True.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-019
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: Telegram bot-token leak via httpx error path
+  description: |
+    Telegram URL contains token. Audit-v26-09 + r3-007 confirmed only status_code + body length logged, never URL. Four regression tests verify.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-020
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: in_progress
+  title: State corruption via crash-during-write window
+  description: |
+    Atomic write protects but engine does multiple writes per tick. Crash between related writes desynchronizes audit trail.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-021
+  source_doc: production-pentest-v1
+  severity: CRITICAL
+  status: accepted
+  title: YAML deserialisation RCE via yaml.load
+  description: |
+    Grep across codebase found zero yaml.load matches; all use yaml.safe_load. Refuted.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-022
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: Stored XSS via changelog/deal-note user input
+  description: |
+    Markdown renderers can emit raw HTML. CSP without unsafe-inline on script-src blocks inline scripts. core/markdown_render.py sanitises.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-023
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: deferred
+  title: WS frame-rate exhaustion
+  description: |
+    Authenticated user opens many concurrent WS connections, bounded by OS fd limit. Single-operator self-DoS risk; Phase B multi-tenant concern.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-024
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: Per-user rate-limit bypass via account-rotation
+  description: |
+    Reverto is single-operator with no public registration. Refuted for current state; Phase B requires account-creation rate-limit + IP-cap.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-025
+  source_doc: production-pentest-v1
+  severity: HIGH
+  status: open
+  title: XFF-spoof rate-limit bypass if Caddy appends instead of overwrites
+  description: |
+    Code comment states reverse proxy MUST overwrite X-Forwarded-For. Caddy v2 default APPENDS. Attacker prepends spoofed IP. Per-username brute-force protection partially mitigates.
+  resolution_ref: null
+  notes: "Mitigation needed in Caddyfile: 'header_up X-Forwarded-For {client_ip}'"
+
+- finding_id: pt-026
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: accepted
+  title: Subprocess argv confirmed safe (slug regex-gated)
+  description: |
+    Subprocess argv is list, no shell=True, slug regex-gated, user_id int-coerced. Command injection impossible.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-027
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: accepted
+  title: YAML safe_load everywhere - RCE impossible
+  description: |
+    Grep across all dirs found zero yaml.load matches. All loads via yaml.safe_load.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-028
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: accepted
+  title: ORDER BY uses hardcoded columns only
+  description: |
+    SQL injection via ORDER BY impossible. All 9 hits use hardcoded column names.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-029
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: accepted
+  title: All secret comparisons use secrets.compare_digest
+  description: |
+    API key, CSRF token, all use secrets.compare_digest. Bcrypt for passwords. Timing attacks impossible.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-030
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: accepted
+  title: Session-cookie epoch and signature invalidation are layered
+  description: |
+    Session verification validates signature + TTL + payload shape + per-user epoch. Any of four invalidates.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-031
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: accepted
+  title: WS server to client only - no inbound message channel
+  description: |
+    Grep found zero websocket.receive hits. WS handlers only send_text. No client-input validation surface.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-032
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: accepted
+  title: Class-of-issue regression test catches function-wrapped exceptions
+  description: |
+    Post-r3-002 test regex matches exception name as standalone word. Diagnostic sweep returned 0 hits.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-033
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: resolved
+  title: HSTS delivery confirmed via curl post-r3-005
+  description: |
+    Operator-side curl returned HSTS header with max-age=31536000 and includeSubDomains.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-034
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: resolved
+  title: Server header strip at uvicorn Config layer
+  description: |
+    Per r3-003, uvicorn.Config server_header=False is primary fix. Middleware del is defense-in-depth.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-035
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: resolved
+  title: Telegram redaction discipline plus 4 regression tests
+  description: |
+    Telegram logs only status_code + body length on error, never URL or response text.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-036
+  source_doc: production-pentest-v1
+  severity: INFO
+  status: resolved
+  title: MANIFEST schema-version stamp plus 2 regression tests
+  description: |
+    scripts/backup.sh probes PRAGMA user_version and stamps Schema version into MANIFEST.txt.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-037
+  source_doc: production-pentest-v1
+  severity: HIGH
+  status: open
+  title: Kraken lacks idempotency-by-userref
+  description: |
+    Bitget injects clientOrderId. Kraken calls create_order directly with no idempotency layer. Confirmation-timeout retry = double-order.
+  resolution_ref: null
+  notes: "Phase 3 blocker"
+
+- finding_id: pt-038
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: in_progress
+  title: Circuit-breaker treats permanent and transient errors identically
+  description: |
+    record_failure increments on any exception. Pair-allowlist gates web routes but internal _bitget_client unprotected.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-039
+  source_doc: production-pentest-v1
+  severity: MEDIUM
+  status: accepted
+  title: 24h session TTL with no sliding-window refresh
+  description: |
+    Stolen cookie exposure window is min(24h, logout, password-change, SECRET_KEY-rotation). For paper-only acceptable. Phase 3 may need 2-4h.
+  resolution_ref: null
+  notes: "Phase 3 decision point"
+
+# ── production-pentest-v2 (pt-040 … pt-063) ──────────────────────────────────
+
+- finding_id: pt-040
+  source_doc: production-pentest-v2
+  severity: MEDIUM
+  status: open
+  title: Slippage-window between tick-fetch and order-place
+  description: |
+    Single ticker at start of tick. Paper-mode fill price is snapshot price (zero slippage). Live-mode exchange fill at current price (real slippage 0.05-0.30%).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-041
+  source_doc: production-pentest-v2
+  severity: HIGH
+  status: open
+  title: TP/SL targets use linear-perpetual percentage math
+  description: |
+    Operator sets TP_pct expecting profit. Linear formula assumes linear perpetual. Inverse perpetual requires different math. Error grows with TP size.
+  resolution_ref: null
+  notes: "Phase-3 blocker: Operator's risk-management percentages must mean what they say"
+
+- finding_id: pt-042
+  source_doc: production-pentest-v2
+  severity: LOW
+  status: accepted
+  title: TP/SL boundary - fine for continuous mark
+  description: |
+    Boundary condition >= (not >) is correct for continuous mark prices. Comparison is correct.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-043
+  source_doc: production-pentest-v2
+  severity: HIGH
+  status: open
+  title: PnL formula uses linear, not inverse-perpetual math
+  description: |
+    calculate_pnl uses linear formula not inverse. Error 100% on 2x price move, 4.8% on 5% move. Paper-mode profitability != live-mode.
+  resolution_ref: null
+  notes: "Phase-3 blocker: Highest-confidence, highest-severity Phase-3 finding"
+
+- finding_id: pt-044
+  source_doc: production-pentest-v2
+  severity: LOW
+  status: resolved
+  title: DB-before-state ordering - crash gives recoverable state
+  description: |
+    _open_deal writes deal to DB first, then in-memory state, then order. Worst-case deal in DB without notification. Recovery via _load_state.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-045
+  source_doc: production-pentest-v2
+  severity: LOW
+  status: resolved
+  title: state.json lags DB - engine source-of-truth is DB
+  description: |
+    state.json is display cache, not engine state. On crash older than DB. Recovery reads DB primarily.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-046
+  source_doc: production-pentest-v2
+  severity: MEDIUM
+  status: resolved
+  title: Drawdown peak persisted in state.json - atomic-write OK
+  description: |
+    drawdown_guard.to_dict serializes peak. Atomic write protects half-write. Rollback to older backup resets peak - procedural risk.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-047
+  source_doc: production-pentest-v2
+  severity: INFO
+  status: accepted
+  title: _generate_client_order_id uses uuid4 - refutes chain-003
+  description: |
+    Returns reverto-{uuid.uuid4().hex[:16]}. 128-bit cryptographic randomness truncated to 64 bits. Order-suppression via predictable IDs impossible.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-048
+  source_doc: production-pentest-v2
+  severity: HIGH
+  status: open
+  title: Kraken lacks idempotency-by-userref (carry-forward of pt-037)
+  description: |
+    Kraken supports userref (32-bit int) for idempotency; not used. Confirmation-timeout retry = double-order in live.
+  resolution_ref: null
+  notes: "Phase-3 blocker: Must implement userref + retry-time fetch_open_orders cross-check"
+
+- finding_id: pt-049
+  source_doc: production-pentest-v2
+  severity: LOW
+  status: deferred
+  title: DST transition - spring-forward windows can vanish
+  description: |
+    During spring-forward, window at 02:30 never opens. During fall-back, 02:00-03:00 opens twice. Operator can schedule in UTC to avoid.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-050
+  source_doc: production-pentest-v2
+  severity: INFO
+  status: accepted
+  title: Bot-config timezone is operator-controlled - not exploitable
+  description: |
+    Operator could set Etc/GMT+12 (counterintuitive UTC-12). Pydantic + ZoneInfo accept it. Operator confusion only.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-051
+  source_doc: production-pentest-v2
+  severity: MEDIUM
+  status: open
+  title: reset() re-anchors peak - operator-confusion risk
+  description: |
+    reset() sets _peak_value None. Next update re-anchors to current. If operator panic-resets at low point during drawdown, peak re-anchors to low.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-052
+  source_doc: production-pentest-v2
+  severity: MEDIUM
+  status: in_progress
+  title: Rollback to old state.json restores older drawdown peak
+  description: |
+    Restore from 7-day-old backup resets peak. If bot ran 6 days post-backup, peak-tracking lost. Procedural risk.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-053
+  source_doc: production-pentest-v2
+  severity: MEDIUM
+  status: open
+  title: Liquidation formula validated at 2x leverage only
+  description: |
+    Approximate formula validated against one Bitget screenshot at 2x. Higher leverage (10x-100x) unverified. At 100x leverage, 0.2% error = entire margin.
+  resolution_ref: null
+  notes: "Phase-3 blocker: Must validate across 5x-100x leverage tiers"
+
+- finding_id: pt-054
+  source_doc: production-pentest-v2
+  severity: INFO
+  status: accepted
+  title: Position-update plus guard-thread share lock - race-safe
+  description: |
+    _lock protects _positions list. Engine tick updates and guard thread reads under same lock.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-055
+  source_doc: production-pentest-v2
+  severity: MEDIUM
+  status: in_progress
+  title: Breaker doesn't discriminate transient/permanent errors
+  description: |
+    circuit_breaker.py increments on any exception. Pair allowlist gates web routes but internal direct calls might still trip on permanent errors.
+  resolution_ref: null
+  notes: "Carry-forward from pt-038"
+
+- finding_id: pt-056
+  source_doc: production-pentest-v2
+  severity: HIGH
+  status: open
+  title: Paper-mode does NOT model funding-rate accrual
+  description: |
+    Bitget BTC/USD inverse perpetual charges/credits funding every 8h. Engine never reads funding_rate. Paper-mode PnL ignores 0.01-0.1% per cycle accrual.
+  resolution_ref: null
+  notes: "Phase-3 blocker: Funding is material PnL component"
+
+- finding_id: pt-057
+  source_doc: production-pentest-v2
+  severity: LOW
+  status: resolved
+  title: Stale PID file - _pid_alive check mitigates
+  description: |
+    If process killed -9, PID file remains. _pid_alive (signal-0 probe) detects. Recycled-PID false-positive mitigated by PermissionError catch.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-058
+  source_doc: production-pentest-v2
+  severity: INFO
+  status: accepted
+  title: Portal vs engine state mutations gated by exclusive_lock
+  description: |
+    main_paper.py holds exclusive_lock during engine init. web/routes/deals.py holds same lock during offline-close. Mutually exclusive.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-059
+  source_doc: production-pentest-v2
+  severity: INFO
+  status: accepted
+  title: Bot-engine uses direct _bitget_client, doesn't consume web cost-budget
+  description: |
+    Web routes consume _candles_cost_budget. Engine ticks call self.exchange.get_ticker() directly - different code path.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-060
+  source_doc: production-pentest-v2
+  severity: HIGH
+  status: open
+  title: Paper assumes 100% fills - live exchange returns partial
+  description: |
+    Paper engine records full requested size as filled. Live exchanges return partial fills on illiquid markets. Bot has no partial-fill state concept.
+  resolution_ref: null
+  notes: "Phase-3 blocker: Must implement partial-fill state machine plus DB schema update"
+
+- finding_id: pt-061
+  source_doc: production-pentest-v2
+  severity: MEDIUM
+  status: in_progress
+  title: OrderReconciler scaffold untested in real network conditions
+  description: |
+    live/order_reconciliation.py exists but isn't exercised by any production code path. Handling of ambiguous order state is theoretical.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-062
+  source_doc: production-pentest-v2
+  severity: LOW
+  status: accepted
+  title: ML entry-filter is opt-in - current production scope ignored
+  description: |
+    ml/ folder is optional. Phase 2 deferred. Out of current pentest scope.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: pt-063
+  source_doc: production-pentest-v2
+  severity: INFO
+  status: accepted
+  title: BotConfig YAML safely Pydantic-validated - no injection
+  description: |
+    yaml.safe_load everywhere. BotConfig Pydantic model validates types and ranges. Field-level constraints prevent invalid values.
+  resolution_ref: null
+  notes: ""
