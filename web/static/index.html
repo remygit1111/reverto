@@ -19,6 +19,12 @@
   body { visibility: hidden; }
   body.auth-checked { visibility: visible; }
 </style>
+<!-- Anti-flash safety-net. CSP whitelists this exact script via a
+     SHA-256 hash in web/app.py (search ``_INLINE_SCRIPT_CSP_HASH``).
+     Modifying this script — even adding/removing whitespace —
+     requires regenerating the hash, otherwise the browser will
+     refuse to execute it and the body stays hidden if app.js
+     never lands. -->
 <script>
   setTimeout(function () {
     document.body && document.body.classList.add('auth-checked');
