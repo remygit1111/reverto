@@ -290,6 +290,76 @@ class TestUpdateAPI:
         assert after["updated_at"] >= before["updated_at"]
 
 
+# ── Audit-log format consistency ──────────────────────────────────────────
+
+class TestAuditLogFormat:
+    """The PATCH /api/admin/findings/{id} audit entry must match the
+    standard ``_audit(action, slug, actor, user_id=N)`` shape used by
+    every other mutating route (bot_start, exchange_keys_set, etc.):
+
+      slug = finding_id          (target identifier)
+      user = "session:<username>" (actor — produced by _request_actor)
+      user_id = admin user id
+
+    The pre-fix call had ``slug`` and ``user`` swapped: ``slug`` got
+    the admin's username and ``user`` got a hand-built "id=X status=Y"
+    detail string. The mismatch broke any audit-log grep keyed on
+    finding-id and any per-actor rollup keyed on the user field.
+    """
+
+    def test_audit_log_uses_finding_id_as_slug_and_session_actor(
+        self, admin_client, seeded_db, tmp_path, monkeypatch,
+    ):
+        from core import paths
+        # Redirect LOG_DIR + per-user dir to tmp so we can read the
+        # audit.jsonl line this PATCH writes without polluting the
+        # operator's logs/ tree. Same fixture shape as
+        # tests/test_audit_log.py uses.
+        monkeypatch.setattr(webapp, "LOG_DIR", tmp_path)
+        monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
+
+        # Force a state change so the audit branch fires (the route
+        # only audits when audit_findings_store.update_finding
+        # returned ``changed=True``).
+        r = admin_client.patch(
+            "/api/admin/findings/r3-001",
+            json={"notes": "audit-format regression check"},
+        )
+        assert r.status_code == 200
+
+        global_jsonl = tmp_path / "audit.jsonl"
+        assert global_jsonl.exists(), (
+            "audit.jsonl never written — PATCH didn't reach _audit()"
+        )
+        import json as _json
+        lines = global_jsonl.read_text(encoding="utf-8").strip().splitlines()
+        # Walk backwards for the most recent admin_finding_update
+        # entry (other tests in the same suite may have written
+        # entries after we set up the redirect).
+        entry = None
+        for raw in reversed(lines):
+            candidate = _json.loads(raw)
+            if candidate.get("action") == "admin_finding_update":
+                entry = candidate
+                break
+        assert entry is not None, (
+            "no admin_finding_update entry found in audit.jsonl"
+        )
+
+        # The actual format-consistency assertions.
+        assert entry["slug"] == "r3-001", (
+            f"slug must be the finding_id (target), not the actor — "
+            f"got {entry['slug']!r}"
+        )
+        assert entry["user"] == "session:admin", (
+            f"user must be the actor 'session:<username>' shape, not "
+            f"a status detail string — got {entry['user']!r}"
+        )
+        # user_id should be the admin's id (1 in the test fixture).
+        admin_user = user_store.get_user_by_username("admin")
+        assert entry["user_id"] == admin_user.id
+
+
 # ── "Showing X of Y" filter-aware indicator ───────────────────────────────
 
 class TestShowingIndicator:
