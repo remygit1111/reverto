@@ -110,6 +110,94 @@ def test_uvicorn_config_suppresses_server_header():
     )
 
 
+def test_csp_inline_script_hash_matches_index_html():
+    """The auth-checked safety-net inline script in index.html
+    is whitelisted via a SHA-256 hash on ``script-src``. If the
+    script content drifts away from the hash (e.g. someone tweaked
+    whitespace, renamed a variable), the browser will silently
+    refuse to execute it and the page can stay hidden when app.js
+    fails to load. This test fails fast at CI time so the drift is
+    caught before deploy.
+
+    Two assertions:
+      1. The hash in the live CSP header matches the hash baked
+         into ``web/app.py``'s ``_INLINE_SCRIPT_CSP_HASH`` constant.
+      2. That hash is the actual SHA-256(base64) of the inline
+         script content currently shipping in
+         ``web/static/index.html``.
+    """
+    import base64
+    import hashlib
+    import re
+    from pathlib import Path
+
+    from web import app as webapp
+
+    expected_hash = webapp._INLINE_SCRIPT_CSP_HASH
+    assert expected_hash.startswith("sha256-"), (
+        f"_INLINE_SCRIPT_CSP_HASH must use the CSP ``sha256-…`` form; "
+        f"got {expected_hash!r}"
+    )
+
+    # 1) Hash is in the live CSP header on script-src.
+    client = TestClient(app)
+    r = client.get("/health")
+    csp = r.headers.get("Content-Security-Policy", "")
+    assert f"'{expected_hash}'" in csp, (
+        f"CSP script-src missing inline-script hash. CSP was: {csp!r}"
+    )
+
+    # 2) Hash matches the actual script bytes shipping in index.html.
+    index_html = (
+        Path(__file__).resolve().parent.parent
+        / "web" / "static" / "index.html"
+    ).read_text(encoding="utf-8")
+    # Find the first inline <script> block — that's the auth-checked
+    # safety-net (the only inline script in this file). Capture
+    # exactly the bytes between the closing ``>`` of the open tag
+    # and the opening ``<`` of the close tag — that's what browsers
+    # hash for CSP.
+    m = re.search(r"<script>(.*?)</script>", index_html, flags=re.DOTALL)
+    assert m is not None, (
+        "no inline <script> block found in index.html — CSP hash is "
+        "now whitelisting nothing"
+    )
+    script_body = m.group(1)
+    digest = hashlib.sha256(script_body.encode("utf-8")).digest()
+    computed = "sha256-" + base64.b64encode(digest).decode("ascii")
+    assert computed == expected_hash, (
+        f"Inline-script hash drift!\n"
+        f"  Expected (in web/app.py): {expected_hash}\n"
+        f"  Computed (from index.html): {computed}\n"
+        f"  → If you modified the inline script, regenerate the "
+        f"hash in web/app.py (see _INLINE_SCRIPT_CSP_HASH comment "
+        f"for the one-liner)."
+    )
+
+
+def test_csp_keeps_unsafe_inline_off_for_scripts():
+    """Belt-and-suspenders: even with the inline-script hash added,
+    ``'unsafe-inline'`` must NOT slip into ``script-src``. The whole
+    point of the per-script hash is to keep the strict posture — a
+    future PR that accidentally adds ``'unsafe-inline'`` would defeat
+    the entire mechanism."""
+    client = TestClient(app)
+    r = client.get("/health")
+    csp = r.headers.get("Content-Security-Policy", "")
+    # Walk the directives so a global substring hit on
+    # ``style-src 'unsafe-inline'`` (which is allowed; r1-076) does
+    # not false-positive.
+    directives = {
+        part.strip().split(" ", 1)[0]: part.strip()
+        for part in csp.split(";") if part.strip()
+    }
+    script_src = directives.get("script-src", "")
+    assert "'unsafe-inline'" not in script_src, (
+        f"script-src must not allow 'unsafe-inline' — defeats the "
+        f"per-script hash whitelist. script-src was: {script_src!r}"
+    )
+
+
 def test_permissions_policy_header_present():
     """Audit pd-011 — Permissions-Policy must deny every browser
     sensor / device API. A trading portal has no legit use for
