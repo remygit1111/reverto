@@ -277,6 +277,37 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_dashboard_layouts_user "
     "ON dashboard_layouts(user_id)",
+    # v8 additive: audit/pentest findings tracker. One row per
+    # finding, keyed by ``finding_id`` (e.g. r3-001, pt-043). The
+    # markdown audit-docs remain authoritative for description/
+    # rationale; this table tracks operator-mutable status + notes
+    # so the admin UI can roll up open vs resolved without grepping
+    # eight markdown files. ``description`` is denormalised from the
+    # source doc at seed time so the admin list view does not need
+    # to re-render markdown on every paint.
+    """
+    CREATE TABLE IF NOT EXISTS audit_findings (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        finding_id      TEXT NOT NULL UNIQUE,
+        source_doc      TEXT NOT NULL,
+        severity        TEXT NOT NULL CHECK (
+                          severity IN ('CRITICAL','HIGH','MEDIUM','LOW','INFO')
+                        ),
+        status          TEXT NOT NULL CHECK (
+                          status IN ('open','in_progress','resolved','accepted','deferred')
+                        ),
+        title           TEXT NOT NULL,
+        description     TEXT NOT NULL DEFAULT '',
+        resolution_ref  TEXT,
+        notes           TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_audit_findings_filter "
+    "ON audit_findings(status, severity)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_findings_source "
+    "ON audit_findings(source_doc)",
 )
 
 
@@ -369,8 +400,11 @@ def get_db() -> sqlite3.Connection:
 #     so the new table lands lazily on the next boot. Destructive
 #     guard explicitly does NOT trigger — v5 was the last
 #     destructive boundary.
-#   * == 7 → no-op.
-SCHEMA_VERSION = 7
+#   * < 8  → ADDITIVE: introduces ``audit_findings`` for the admin
+#     findings tracker. No existing rows touched; CREATE TABLE IF
+#     NOT EXISTS lazily lands the new table on the next boot.
+#   * == 8 → no-op.
+SCHEMA_VERSION = 8
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,
