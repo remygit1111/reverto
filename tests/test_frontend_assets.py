@@ -398,6 +398,73 @@ def test_initial_load_skeleton_present():
     assert "skeleton-on-init" in js
 
 
+def test_no_dead_css_classes_resurface():
+    """RHA-v1 rha-009 verified five orphan CSS classes (.amb,
+    .btn-delete, .deal-trigger-badge, .active-deals-header,
+    .bt-history-panel) and they were removed in
+    cleanup/rha-009-rha-010-dead-code. The RHA verification was a
+    4-way grep across CSS / HTML / JS / quoted strings — re-adding
+    one of these classes without re-running that verification almost
+    certainly means the operator just resurrected a dead artifact.
+
+    If a future PR genuinely needs one of these names, change it to
+    something that is not on this rejected list, or add an explicit
+    comment explaining why the audit verdict has flipped.
+    """
+    css = _STYLE_CSS.read_text(encoding="utf-8")
+    dead_classes = [
+        ".amb",
+        ".btn-delete",
+        ".deal-trigger-badge",
+        ".active-deals-header",
+        ".bt-history-panel",
+    ]
+    for cls in dead_classes:
+        # Match both ``.foo {`` and ``.foo{`` selector openings so a
+        # minified or unspaced re-introduction is still caught.
+        assert f"{cls} {{" not in css, (
+            f"Dead CSS class {cls} resurfaced (with-space). "
+            f"Re-run RHA-v1 rha-009 verification before re-adding."
+        )
+        assert f"{cls}{{" not in css, (
+            f"Dead CSS class {cls} resurfaced (no-space variant)."
+        )
+        # Pseudo-class / modifier variants on the same root.
+        assert f"{cls}:" not in css, (
+            f"Dead CSS class {cls} resurfaced via a pseudo-class "
+            f"or pseudo-element."
+        )
+        assert f"{cls}." not in css, (
+            f"Dead CSS class {cls} resurfaced via a chained class "
+            f"modifier (e.g. {cls}.something)."
+        )
+
+
+def test_fmtDateNL_stays_removed():
+    """RHA-v1 rha-010 — ``fmtDateNL`` had exactly one grep hit (its
+    own definition) and was removed in cleanup/rha-009-rha-010-dead-
+    code. Re-introducing it without first finding a real call site
+    would mean re-adding dead code.
+
+    Catches both ``function fmtDateNL`` and the const/let/var/arrow
+    assignment shapes so a refactor that swaps function-decl style
+    can't slip the helper back in unnoticed.
+    """
+    js = _APP_JS.read_text(encoding="utf-8")
+    assert "function fmtDateNL" not in js, (
+        "fmtDateNL re-added as a function declaration — verify it is "
+        "actually called somewhere first (RHA-v1 rha-010 found 0 "
+        "call sites)."
+    )
+    assert "const fmtDateNL" not in js
+    assert "let fmtDateNL" not in js
+    assert "var fmtDateNL" not in js
+    # Catches ``fmtDateNL = (ts) => {...}`` arrow-style and any
+    # assignment to a property of the same name.
+    assert "fmtDateNL =" not in js
+    assert "fmtDateNL:" not in js
+
+
 def test_running_status_pill_decoupled_from_detail_controls():
     """The running-status pill used to live inside ``.detail-controls``
     next to Start/Stop/Restart. PR 4 moved it into the bot-identity

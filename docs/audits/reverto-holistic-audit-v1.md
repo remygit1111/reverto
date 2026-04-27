@@ -237,7 +237,7 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 
 | ID | Severity | Finding | File:line |
 |----|----------|---------|-----------|
-| rha-009 | LOW | Five orphan CSS classes pre-date the iteration cycle | `web/static/style.css:446, 1510, 1780, 2071, 2521` |
+| rha-009 | LOW | Five orphan CSS classes pre-date the iteration cycle | `web/static/style.css:446, 1510, 1780, 2071, 2521` — **RESOLVED** in `cleanup/rha-009-rha-010-dead-code` |
 
 #### rha-009 — Dead CSS classes (LOW)
 
@@ -255,17 +255,21 @@ Verified by grep across `web/static/*.{html,js,css}` — each class has 0 refere
 
 **Remediation.** Single-PR cleanup; ~5 minutes of work.
 
+**STATUS.** RESOLVED in `cleanup/rha-009-rha-010-dead-code` — all five rules (`.amb`, `.btn-delete` + `:hover`, `.deal-trigger-badge`, `.active-deals-header`, `.bt-history-panel` + `.hidden` modifier) removed from `web/static/style.css` after a fresh 4-way grep re-confirmed each was orphan. Class-of-issue regression test in `tests/test_frontend_assets.py::test_no_dead_css_classes_resurface` ratchets against re-introduction (catches `.foo {`, `.foo{`, `.foo:`, `.foo.` — pseudo-class, modifier, and minified shapes).
+
 ### Area CH2 — Dead JS
 
 | ID | Severity | Finding | File:line |
 |----|----------|---------|-----------|
-| rha-010 | LOW | `fmtDateNL` defined but never called | `web/static/app.js:549` |
+| rha-010 | LOW | `fmtDateNL` defined but never called | `web/static/app.js:549` — **RESOLVED** in `cleanup/rha-009-rha-010-dead-code` |
 
 #### rha-010 — Dead JS function (LOW)
 
 `fmtDateNL` at `app.js:549` has exactly 1 hit in the file: its own definition. No call sites. Two other functions flagged by my Explore agent (`_btRenderOverlaysDebounced`, `_cancelChartPrefetch`) — I did not independently verify those; the agent claimed 0 references but I want to flag that as agent-claim, not auditor-confirmed. **Severity caveat:** treating as LOW for `fmtDateNL` only.
 
 **Remediation.** Remove `fmtDateNL` (~6 LOC); spot-check the other two during cleanup.
+
+**STATUS.** RESOLVED in `cleanup/rha-009-rha-010-dead-code` — `fmtDateNL` (7 LOC including the closing brace) removed from `web/static/app.js`. `_btRenderOverlaysDebounced` and `_cancelChartPrefetch` were not part of the cleanup PR; the audit's caveat that those were agent-claim-only stands and they remain available for a future verified-cleanup pass. Class-of-issue regression test in `tests/test_frontend_assets.py::test_fmtDateNL_stays_removed` ratchets against re-introduction (catches `function`, `const`, `let`, `var`, arrow-style assignment, and property-shape variants).
 
 ### Area CH3 — Stale comments
 
