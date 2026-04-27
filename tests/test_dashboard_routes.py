@@ -340,7 +340,13 @@ class TestSchemaMigrationV7:
             user_version = conn.execute(
                 "PRAGMA user_version",
             ).fetchone()[0]
-            assert user_version == 7
+            # Pin against the current SCHEMA_VERSION rather than a
+            # hardcoded literal so additive bumps (v7 -> v8 for the
+            # audit_findings table, etc.) don't require a parallel
+            # test edit. The migration contract being validated is
+            # "additive paths run cleanly from v6," which holds at
+            # any version above 6.
+            assert user_version == _database.SCHEMA_VERSION
 
             # Table + index must exist.
             tbl = conn.execute(
@@ -373,14 +379,16 @@ class TestSchemaMigrationV7:
             _database.close_db()
 
     def test_fresh_install_schema_declares_v7_shape(self):
-        """Fresh installs must land directly on v7 without taking
-        the migration path. The autouse fixture in conftest.py
-        gives us exactly this state: a tmp-DB that was just
-        created by ``init_db`` at the current SCHEMA_VERSION.
+        """Fresh installs must land directly on the current
+        SCHEMA_VERSION without taking the migration path. The
+        autouse fixture in conftest.py gives us exactly this
+        state: a tmp-DB that was just created by ``init_db`` at
+        the current SCHEMA_VERSION (v7 originally; bumped on each
+        additive table addition since).
         """
         conn = _database.get_db()
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert version == 7
+        assert version == _database.SCHEMA_VERSION
         tbl = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='dashboard_layouts'",

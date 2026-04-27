@@ -28,7 +28,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=90">
+<link rel="stylesheet" href="/static/style.css?v=91">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -664,6 +664,13 @@
             emergency-stop from one page.
           </div>
         </a>
+        <a class="card cl-admin-card" id="admin-card-findings" href="#admin/findings">
+          <div class="cl-admin-card-title">Findings</div>
+          <div class="cl-admin-card-desc">
+            Central tracker for every audit + pentest finding.
+            Filter by status, severity, source.
+          </div>
+        </a>
       </div>
     </div>
     <div id="admin-bots-overview" class="admin-subpage hidden">
@@ -734,6 +741,109 @@
           </tbody>
         </table>
       </div>
+    </div>
+    <!-- Audit findings tracker — admin sub-page. The seed at
+         data/findings_seed.yaml populates 240 rows on first boot;
+         operator edits to status/notes/resolution_ref persist via
+         PATCH /api/admin/findings/<id>. -->
+    <div id="admin-findings" class="admin-subpage hidden">
+      <div class="cl-breadcrumb">
+        <a href="#admin" class="admin-back-link">&larr; Back to Admin</a>
+      </div>
+      <div class="cl-admin-header">
+        <div class="section-title">Audit Findings</div>
+        <div class="findings-stats" id="findings-stats" aria-live="polite"></div>
+      </div>
+      <div class="findings-filters">
+        <label class="findings-filter">
+          Status
+          <select id="findings-filter-status">
+            <option value="">All</option>
+            <option value="open">Open</option>
+            <option value="in_progress">In progress</option>
+            <option value="resolved">Resolved</option>
+            <option value="accepted">Accepted</option>
+            <option value="deferred">Deferred</option>
+          </select>
+        </label>
+        <label class="findings-filter">
+          Severity
+          <select id="findings-filter-severity">
+            <option value="">All</option>
+            <option value="CRITICAL">Critical</option>
+            <option value="HIGH">High</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="LOW">Low</option>
+            <option value="INFO">Info</option>
+          </select>
+        </label>
+        <label class="findings-filter">
+          Source
+          <select id="findings-filter-source">
+            <option value="">All</option>
+          </select>
+        </label>
+      </div>
+      <div class="card card-no-pad">
+        <table class="findings-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Severity</th>
+              <th>Status</th>
+              <th>Source</th>
+              <th>Title</th>
+            </tr>
+          </thead>
+          <tbody id="findings-tbody">
+            <tr><td colspan="5" class="cl-empty-cell">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- MODAL: Finding detail / edit                                              -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="finding-detail-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title">
+      <span id="finding-detail-id"></span>
+      <span id="finding-detail-severity-badge" class="severity-badge"></span>
+    </div>
+    <div class="finding-detail-meta" id="finding-detail-meta"></div>
+    <div class="finding-detail-title" id="finding-detail-title"></div>
+    <div class="finding-detail-description" id="finding-detail-description"></div>
+    <div class="finding-edit-form">
+      <label class="finding-edit-label">
+        Status
+        <select id="finding-edit-status">
+          <option value="open">Open</option>
+          <option value="in_progress">In progress</option>
+          <option value="resolved">Resolved</option>
+          <option value="accepted">Accepted</option>
+          <option value="deferred">Deferred</option>
+        </select>
+      </label>
+      <label class="finding-edit-label">
+        Resolution reference
+        <input type="text" id="finding-edit-resolution"
+               placeholder="commit-hash, PR-branch, or empty"
+               maxlength="200">
+      </label>
+      <label class="finding-edit-label">
+        Notes
+        <textarea id="finding-edit-notes" rows="6"
+                  placeholder="Operator notes (plain text)"
+                  maxlength="8000"></textarea>
+      </label>
+      <div id="finding-edit-error" class="login-error hidden"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="hbtn hbtn-theme" id="finding-cancel-btn" type="button">Cancel</button>
+      <button class="hbtn hbtn-theme btn-accent" id="finding-save-btn" type="button">Save</button>
     </div>
   </div>
 </div>
@@ -1607,6 +1717,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=210"></script>
+<script src="/static/app.js?v=211"></script>
 </body>
 </html>

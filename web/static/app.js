@@ -2300,6 +2300,7 @@ function goAdmin(fromPop = false, subRoute = null) {
   _showAdminSubpage(subRoute);
   if (subRoute === 'changelog-manage') loadAdminChangelog();
   if (subRoute === 'bots') loadAdminBotsOverview();
+  if (subRoute === 'findings') loadAdminFindings();
 }
 
 function _showAdminSubpage(name) {
@@ -2309,13 +2310,17 @@ function _showAdminSubpage(name) {
   const index = $('admin-index');
   const subCl = $('admin-changelog-manage');
   const subBots = $('admin-bots-overview');
+  const subFindings = $('admin-findings');
   if (!index) return;
-  const subs = [subCl, subBots].filter(Boolean);
-  const showIndex = !(name === 'changelog-manage' || name === 'bots');
+  const subs = [subCl, subBots, subFindings].filter(Boolean);
+  const showIndex = !(
+    name === 'changelog-manage' || name === 'bots' || name === 'findings'
+  );
   index.classList.toggle('hidden', !showIndex);
   subs.forEach((el) => el.classList.add('hidden'));
   if (name === 'changelog-manage' && subCl) subCl.classList.remove('hidden');
   if (name === 'bots' && subBots) subBots.classList.remove('hidden');
+  if (name === 'findings' && subFindings) subFindings.classList.remove('hidden');
 }
 
 // ── Admin — Bot Overview (cross-user) ────────────────────────────────────
@@ -3391,6 +3396,179 @@ async function loadChangelog() {
     statusEl.textContent = 'Failed to load changelog.';
   }
 }
+
+// ── Admin — Audit findings tracker ───────────────────────────────────────
+// Centralises status / notes / resolution_ref editing for every audit +
+// pentest finding. Backend is /api/admin/findings (admin-only). The
+// markdown audit-docs in docs/audits/ + docs/pentests/ stay
+// authoritative for narrative; this UI is purely the operator-mutable
+// rollover view. Filters trigger a re-fetch (cheap — 240 rows). Modal
+// PATCHes a single finding then re-fetches to refresh the table.
+
+let _findingsCache = [];
+let _findingEditCurrent = null;  // currently-open finding_id, or null
+
+async function loadAdminFindings() {
+  const tbody = $('findings-tbody');
+  if (!tbody) return;
+  tbody.innerHTML =
+    '<tr><td colspan="5" class="cl-empty-cell">Loading...</td></tr>';
+  const params = new URLSearchParams();
+  const st = $('findings-filter-status').value;
+  const sv = $('findings-filter-severity').value;
+  const src = $('findings-filter-source').value;
+  if (st) params.set('status', st);
+  if (sv) params.set('severity', sv);
+  if (src) params.set('source_doc', src);
+  let payload;
+  try {
+    const url = '/api/admin/findings'
+      + (params.toString() ? `?${params}` : '');
+    const r = await fetch(url, { credentials: 'include' });
+    if (r.status === 401) { _handle401(); return; }
+    if (r.status === 403) {
+      tbody.innerHTML =
+        '<tr><td colspan="5" class="cl-empty-cell">Admin access required.</td></tr>';
+      return;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    payload = await r.json();
+  } catch (e) {
+    console.warn('[reverto] loadAdminFindings failed:', e);
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="cl-empty-cell">Failed to load findings.</td></tr>';
+    return;
+  }
+  _findingsCache = payload.findings || [];
+  _renderFindingsStats(payload.stats || {});
+  _renderFindingsSourceFilter(_findingsCache);
+  _renderFindingsTable(_findingsCache);
+}
+
+function _renderFindingsStats(stats) {
+  const el = $('findings-stats');
+  if (!el) return;
+  const total = stats.total || 0;
+  const by = stats.by_status || {};
+  const open = (by.open || 0) + (by.in_progress || 0);
+  const resolved = by.resolved || 0;
+  el.innerHTML = (
+    `<strong>${total}</strong> total &middot; `
+    + `<strong>${open}</strong> open or in progress &middot; `
+    + `<strong>${resolved}</strong> resolved`
+  );
+}
+
+function _renderFindingsSourceFilter(items) {
+  const sel = $('findings-filter-source');
+  if (!sel) return;
+  // Preserve current selection across re-renders.
+  const current = sel.value;
+  const sources = Array.from(new Set(items.map(f => f.source_doc))).sort();
+  // Rebuild options idempotently — drop everything except the leading
+  // "All" placeholder and re-emit the source list. Stable order keeps
+  // the dropdown from jumping around between fetches.
+  sel.innerHTML = '<option value="">All</option>'
+    + sources.map(s => `<option value="${safeText(s)}">${safeText(s)}</option>`).join('');
+  if (current && sources.includes(current)) sel.value = current;
+}
+
+function _renderFindingsTable(items) {
+  const tbody = $('findings-tbody');
+  if (!tbody) return;
+  if (!items.length) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="cl-empty-cell">No findings match the current filters.</td></tr>';
+    return;
+  }
+  const rows = items.map((f) => {
+    const sevCls = `severity-badge sev-${safeText(f.severity)}`;
+    const stCls = `status-badge st-${safeText(f.status)}`;
+    return (
+      `<tr data-finding-id="${safeText(f.finding_id)}">`
+      + `<td class="findings-id">${safeText(f.finding_id)}</td>`
+      + `<td><span class="${sevCls}">${safeText(f.severity)}</span></td>`
+      + `<td><span class="${stCls}">${safeText(f.status)}</span></td>`
+      + `<td class="findings-id">${safeText(f.source_doc)}</td>`
+      + `<td class="findings-title-cell">${safeText(f.title)}</td>`
+      + '</tr>'
+    );
+  }).join('');
+  tbody.innerHTML = rows;
+  Array.from(tbody.querySelectorAll('tr[data-finding-id]')).forEach((tr) => {
+    tr.addEventListener('click', () => _openFindingModal(tr.dataset.findingId));
+  });
+}
+
+function _openFindingModal(findingId) {
+  const finding = _findingsCache.find(f => f.finding_id === findingId);
+  if (!finding) return;
+  _findingEditCurrent = findingId;
+  $('finding-detail-id').textContent = finding.finding_id;
+  const sevBadge = $('finding-detail-severity-badge');
+  sevBadge.textContent = finding.severity;
+  sevBadge.className = `severity-badge sev-${safeText(finding.severity)}`;
+  const meta = `${finding.source_doc} | created ${finding.created_at} | updated ${finding.updated_at}`;
+  $('finding-detail-meta').textContent = meta;
+  $('finding-detail-title').textContent = finding.title;
+  $('finding-detail-description').textContent = finding.description || '';
+  $('finding-edit-status').value = finding.status;
+  $('finding-edit-resolution').value = finding.resolution_ref || '';
+  $('finding-edit-notes').value = finding.notes || '';
+  $('finding-edit-error').classList.add('hidden');
+  $('finding-detail-modal').classList.add('show');
+}
+
+function _closeFindingModal() {
+  $('finding-detail-modal').classList.remove('show');
+  _findingEditCurrent = null;
+}
+
+async function _saveFindingEdit() {
+  if (!_findingEditCurrent) return;
+  const errEl = $('finding-edit-error');
+  errEl.classList.add('hidden');
+  const body = {
+    status: $('finding-edit-status').value,
+    resolution_ref: $('finding-edit-resolution').value || null,
+    notes: $('finding-edit-notes').value || '',
+  };
+  try {
+    const r = await fetch(
+      `/api/admin/findings/${encodeURIComponent(_findingEditCurrent)}`,
+      {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': _readCookie('reverto_csrf') || '',
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) {
+      let detail = `HTTP ${r.status}`;
+      try { const j = await r.json(); if (j.detail) detail = j.detail; } catch (e) {}
+      throw new Error(detail);
+    }
+  } catch (e) {
+    console.warn('[reverto] saveFinding failed:', e);
+    errEl.textContent = e.message || 'Save failed.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  _closeFindingModal();
+  loadAdminFindings();
+}
+
+function _readCookie(name) {
+  const m = document.cookie.match(
+    new RegExp('(?:^|; )' + name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '=([^;]*)'),
+  );
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 
 // ── Admin — changelog CRUD ───────────────────────────────────────────────
 // Lists every entry (drafts + published) in a table and wires the
@@ -7984,6 +8162,20 @@ function setupEventListeners() {
     e.preventDefault();
     goAdmin(false, 'bots');
   });
+  const adminFindingsCard = $('admin-card-findings');
+  if (adminFindingsCard) adminFindingsCard.addEventListener('click', (e) => {
+    e.preventDefault();
+    goAdmin(false, 'findings');
+  });
+  // Findings filter dropdowns + modal buttons.
+  ['findings-filter-status', 'findings-filter-severity', 'findings-filter-source'].forEach((id) => {
+    const el = $(id);
+    if (el) el.addEventListener('change', loadAdminFindings);
+  });
+  const findingSaveBtn = $('finding-save-btn');
+  if (findingSaveBtn) findingSaveBtn.addEventListener('click', _saveFindingEdit);
+  const findingCancelBtn = $('finding-cancel-btn');
+  if (findingCancelBtn) findingCancelBtn.addEventListener('click', _closeFindingModal);
   // Admin sub-page back-link — the changelog subpage carries id
   // "admin-back-link" (legacy), the new bots subpage uses
   // class="admin-back-link". One handler per element, no duplicates.
