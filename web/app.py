@@ -1828,6 +1828,32 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# SHA-256 hash of the anti-flash safety-net inline script in
+# ``web/static/index.html`` (the ~5-line setTimeout that flips
+# body.auth-checked after 3s if app.js stalls). The script must
+# stay inline because it is the visibility-fallback for app.js
+# itself failing to load — we cannot externalise it without
+# defeating the whole point. Whitelisting via SHA-256 keeps the
+# strict ``script-src 'self' …`` posture (no ``'unsafe-inline'``)
+# while letting this one specific script through.
+#
+# **If you change the inline script in index.html, regenerate
+# this hash:**
+#
+#   python3 -c "import hashlib, base64, pathlib; \
+#     html = pathlib.Path('web/static/index.html').read_text(); \
+#     body = html.split('<script>', 1)[1].split('</script>', 1)[0]; \
+#     d = hashlib.sha256(body.encode()).digest(); \
+#     print('sha256-' + base64.b64encode(d).decode())"
+#
+# Or grab it from a browser CSP-violation console line — Chrome/
+# Firefox both report the expected hash inline with the violation.
+# A class-of-issue regression test in
+# ``tests/test_security_headers.py::test_csp_inline_script_hash_matches_index_html``
+# fails fast if the hash drifts from the script content.
+_INLINE_SCRIPT_CSP_HASH = "sha256-XQeafA09ntbXPkIJAbfACudywWm3RsGcY2+OrHfznMc="
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach standard hardening headers to every HTTP response."""
 
@@ -1835,7 +1861,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' https://unpkg.com; "
+            # Inline-script hash whitelists exactly the auth-checked
+            # safety-net in index.html (see _INLINE_SCRIPT_CSP_HASH
+            # comment block above). Every OTHER inline script stays
+            # blocked — no ``'unsafe-inline'`` here.
+            f"script-src 'self' '{_INLINE_SCRIPT_CSP_HASH}' https://unpkg.com; "
             # unpkg also hosts the GridStack stylesheet that the
             # Workspace view pulls in. Without this entry the
             # panel grid loses its layout rules and panels render
