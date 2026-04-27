@@ -1705,6 +1705,28 @@ tr:hover td { background: rgba(128,128,128,.04); }
   letter-spacing: .04em;
 }
 .findings-stats strong { color: var(--text); font-weight: 600; }
+
+/* Wrap so the global stats line and the filter-aware "Showing X of Y"
+   indicator stack right-aligned in the admin header without adding a
+   row of empty space when the indicator is hidden. */
+.findings-stats-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+/* "Showing X of Y" — appears only when a filter is active. Lighter
+   typography than the global stats line so the operator's eye lands
+   on the filter-result count without the global numbers competing
+   for attention. */
+.findings-showing {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: .04em;
+}
+.findings-showing.hidden { display: none; }
 .findings-filters {
   display: flex;
   gap: 14px;
