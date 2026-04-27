@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from core import audit_findings_store
 from core.user import User
-from web.app import _audit, _request_user, limiter
+from web.app import _audit, _request_actor, _request_user, limiter
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,7 @@ async def api_admin_findings_update(
     finding_id: str,
     body: _FindingPatchBody,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     """Operator-driven partial update of status / notes /
@@ -140,10 +141,16 @@ async def api_admin_findings_update(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if changed:
-        # Status flips are the meaningful events; log the new status
-        # if present so audit.log shows the operator-decision trail.
-        detail = f"id={finding_id}"
-        if body.status is not None:
-            detail += f" status={body.status}"
-        _audit("admin_finding_update", user.username, detail, user_id=user.id)
+        # Match the standard ``_audit(action, slug, actor, user_id=N)``
+        # shape used by every other mutating route (bot_start,
+        # exchange_keys_set, emergency_stop, etc.). Position-2 is the
+        # *target* identifier — the finding being edited — and
+        # position-3 is the *actor* string ("session:<username>")
+        # produced by ``_request_actor``. The pre-fix call had these
+        # swapped which produced inconsistent audit-log lines.
+        # Change-context (which fields moved) is intentionally not
+        # encoded in the audit line — the DB row's ``updated_at``
+        # plus the post-update state are the source of truth for
+        # *what* changed; the audit log captures *who* / *when*.
+        _audit("admin_finding_update", finding_id, actor, user_id=user.id)
     return audit_findings_store.get_finding(finding_id)
