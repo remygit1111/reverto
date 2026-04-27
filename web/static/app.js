@@ -3443,6 +3443,37 @@ async function loadAdminFindings() {
   _renderFindingsStats(payload.stats || {});
   _renderFindingsSourceFilter(_findingsCache);
   _renderFindingsTable(_findingsCache);
+  _updateShowingIndicator(
+    _findingsCache.length,
+    (payload.stats && payload.stats.total) || _findingsCache.length,
+  );
+}
+
+function _updateShowingIndicator(filteredCount, totalCount) {
+  // Compact "Showing X of Y" line that appears only when any filter
+  // is active. Total comes from the stats roll-up (server-side count
+  // of every row, irrespective of filters); filtered comes from the
+  // length of the current ``findings`` array (server-side filtered).
+  // Hidden state covers two cases: (a) no filter is active, and
+  // (b) the user explicitly cleared the filters — both paths land
+  // here on the next loadAdminFindings call.
+  const el = document.getElementById('findings-showing');
+  if (!el) return;
+  const statusSel = document.getElementById('findings-filter-status');
+  const sevSel = document.getElementById('findings-filter-severity');
+  const srcSel = document.getElementById('findings-filter-source');
+  const hasActiveFilter = Boolean(
+    (statusSel && statusSel.value)
+    || (sevSel && sevSel.value)
+    || (srcSel && srcSel.value),
+  );
+  if (!hasActiveFilter) {
+    el.classList.add('hidden');
+    el.textContent = '';
+    return;
+  }
+  el.textContent = `Showing ${filteredCount} of ${totalCount}`;
+  el.classList.remove('hidden');
 }
 
 function _renderFindingsStats(stats) {

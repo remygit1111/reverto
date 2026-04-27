@@ -28,7 +28,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=91">
+<link rel="stylesheet" href="/static/style.css?v=92">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -752,7 +752,13 @@
       </div>
       <div class="cl-admin-header">
         <div class="section-title">Audit Findings</div>
-        <div class="findings-stats" id="findings-stats" aria-live="polite"></div>
+        <div class="findings-stats-wrap">
+          <div class="findings-stats" id="findings-stats" aria-live="polite"></div>
+          <!-- "Showing X of Y" — visible only while any filter is
+               active. Toggled by app.js's _updateShowingIndicator,
+               which runs after every loadAdminFindings render. -->
+          <div class="findings-showing hidden" id="findings-showing" aria-live="polite"></div>
+        </div>
       </div>
       <div class="findings-filters">
         <label class="findings-filter">
@@ -1717,6 +1723,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=211"></script>
+<script src="/static/app.js?v=212"></script>
 </body>
 </html>
