@@ -546,13 +546,6 @@ function fmtDateTimeNL(ts) {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   return `${dd}-${mm}-${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
-function fmtDateNL(ts) {
-  const d = new Date(typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts);
-  if (!Number.isFinite(d.getTime())) return '--';
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  return `${dd}-${mm}-${d.getFullYear()}`;
-}
 function timeAgo(iso) {
   if (!iso) return '—';
   const s = Math.floor((Date.now() - new Date(iso)) / 1000);

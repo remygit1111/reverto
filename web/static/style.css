@@ -443,7 +443,6 @@ tr:hover td { background: rgba(128,128,128,.04); }
 .pos { color: var(--accent); }
 .neg { color: var(--red); }
 .neu { color: var(--muted); }
-.amb { color: var(--amber); }
 
 /* ── Log panel ───────────────────────────────────────────────────────────────── */
 .log-wrap {
@@ -1550,15 +1549,6 @@ tr:hover td { background: rgba(128,128,128,.04); }
   padding: 20px 18px;
 }
 
-/* ── Delete button on bot cards ─────────────────────────────────────────── */
-.btn-delete {
-  border-color: var(--red);
-  color: var(--red);
-}
-.btn-delete:hover {
-  background: rgba(255, 77, 109, .1);
-}
-
 /* ── Config tab in detail view ──────────────────────────────────────────── */
 .cfg-section {
   background: var(--surface);
@@ -2031,7 +2021,6 @@ tr:hover td { background: rgba(128,128,128,.04); }
   border-radius:6px; cursor:pointer; font-size:12px;
 }
 .btn-add-group:hover { border-color:var(--accent); color:var(--accent); }
-.deal-trigger-badge { display:flex; gap:4px; align-items:center; margin-top:4px; flex-wrap:wrap; }
 .trigger-group {
   font-size:10px; font-weight:600; color:var(--accent);
   background:rgba(38,166,154,0.1); padding:1px 6px; border-radius:10px;
@@ -2322,12 +2311,6 @@ table thead th.sorted .col-sort-arrow {
 }
 
 /* ── Active deals column manager ────────────────────────────────── */
-.active-deals-header {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .deals-table-header {
   display: flex;
   align-items: center;
@@ -2772,8 +2755,6 @@ html.compact .modal-card { padding: 19px; }
   from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.bt-history-panel { margin-top: 12px; }
-.bt-history-panel.hidden { display: none; }
 .bt-history-header {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 12px;
