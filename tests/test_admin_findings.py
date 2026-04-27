@@ -11,6 +11,7 @@ Coverage:
 - Admin gate (non-admin gets 403)
 - Update paths: status/notes/resolution_ref + invalid status rejected
 - updated_at advances on operator edits
+- "Showing X of Y" filter-aware count indicator structurally present
 """
 
 from __future__ import annotations
@@ -287,3 +288,60 @@ class TestUpdateAPI:
         assert after["resolution_ref"] == "tweak/test-ref"
         # updated_at is monotonic.
         assert after["updated_at"] >= before["updated_at"]
+
+
+# ── "Showing X of Y" filter-aware indicator ───────────────────────────────
+
+class TestShowingIndicator:
+    """The findings tracker shows a compact "Showing X of Y" line
+    that appears only when at least one filter is active. It sits
+    next to the always-visible global stats roll-up.
+
+    These are source-grep tests rather than browser-driven: there's
+    no JS test harness in the project (see tests/test_frontend_assets.py
+    for the same pattern). A future regression that drops the
+    element, the toggle helper, or the no-filter hide-branch fails
+    here before it lands in front of an operator.
+    """
+
+    def test_showing_indicator_element_present(self):
+        index_html = (
+            Path(__file__).resolve().parent.parent
+            / "web" / "static" / "index.html"
+        )
+        html = index_html.read_text(encoding="utf-8")
+        assert 'id="findings-showing"' in html
+        assert 'class="findings-showing' in html
+        # Default state must include `hidden` so a fresh page-load
+        # without any filter does not flash the indicator before the
+        # JS toggles it off.
+        assert 'class="findings-showing hidden"' in html
+
+    def test_showing_indicator_logic_present(self):
+        app_js = (
+            Path(__file__).resolve().parent.parent
+            / "web" / "static" / "app.js"
+        )
+        js = app_js.read_text(encoding="utf-8")
+        # Helper must exist and be wired up.
+        assert "_updateShowingIndicator" in js
+        # The "filter active?" check must compose all three filter
+        # selects so a partial composition (e.g. only checking
+        # status) does not silently drop coverage when a future
+        # source-doc-only filter is set.
+        assert "findings-filter-status" in js
+        assert "findings-filter-severity" in js
+        assert "findings-filter-source" in js
+        # No-filter hide branch must exist so the indicator does
+        # not stick around stale after the operator clears filters.
+        # Carve out the helper body so we don't false-positive on
+        # ``classList.add('hidden')`` calls elsewhere in app.js.
+        fn_start = js.index("function _updateShowingIndicator(")
+        fn_end = js.index("\nfunction ", fn_start + 1)
+        fn_body = js[fn_start:fn_end]
+        assert "hasActiveFilter" in fn_body
+        assert "classList.add('hidden')" in fn_body
+        assert "classList.remove('hidden')" in fn_body
+        # Output format must follow the operator-spec phrasing.
+        assert "Showing" in fn_body
+        assert " of " in fn_body
