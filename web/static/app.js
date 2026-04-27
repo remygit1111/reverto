@@ -1524,16 +1524,14 @@ function renderBotCard(b) {
   const openCount = Number(b.open_deals_count) || 0;
   const closedCount = Number(b.closed_deals_count) || 0;
 
-  const openDealsHtml = (b.open_deals || []).slice(0, 3).map(d => `
-    <div class="bot-card-deal-row">
-      <span class="deal-id-cell">${safeText(d.id)}</span>
-      <span class="muted-cell">${fmtPrice(d.entry_price)}</span>
-      <span>${fmtPnl(d.pnl_btc)}</span>
-    </div>`).join('');
-
-  const moreDeals = openCount > 3
-    ? `<div class="more-deals-row">+${openCount - 3} more deals</div>`
-    : '';
+  // The bot-card used to render the first 3 open deals as a label-
+  // free row of "deal_id  entry  pnl" beneath the stats grid, with
+  // a "+N more deals" overflow line. Operator feedback flagged the
+  // row as confusing — no headers, awkward placement between the
+  // stats grid and the action-buttons. The OPEN DEALS stat already
+  // surfaces the count; full deal detail lives on the Active Deals
+  // top-nav tab and on each bot's detail-page Deals tab. Removed
+  // here in cleanup/bot-card-remove-deal-preview.
 
   // State badges — drawdown pause and clock-skew pause are operator-
   // visible warning states that deserve a bold marker above the stats
@@ -1633,7 +1631,6 @@ function renderBotCard(b) {
         <div class="bot-stat-value" data-stat="closed">${closedCount}</div>
       </div>
     </div>
-    ${openDealsHtml ? `<div class="bot-card-deals">${openDealsHtml}${moreDeals}</div>` : ''}
     <div class="bot-card-footer">
       ${running
         ? `<button class="btn-sm btn-stop"    data-action="stop"    data-slug="${safeText(b.slug)}">■ Stop</button>

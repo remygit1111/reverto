@@ -398,6 +398,63 @@ def test_initial_load_skeleton_present():
     assert "skeleton-on-init" in js
 
 
+def test_bot_card_does_not_render_open_deal_preview():
+    """The bot-card on the Overview / Bots tab used to render the
+    first three open deals as a label-free row of
+    "deal_id  entry_price  pnl" beneath the stats grid, with a
+    "+N more deals" overflow line. Operator feedback: the row was
+    confusing — no headers, awkward placement between the stats
+    grid and the action-buttons. The OPEN DEALS stat already
+    surfaces the count; full deal detail lives on the Active Deals
+    top-nav tab and on each bot's detail-page Deals tab. Removed
+    in cleanup/bot-card-remove-deal-preview.
+
+    This regression guard pins the three preview-only CSS classes
+    + the JS render-helper variable names so a future PR that
+    re-introduces the row gets caught at CI rather than ending up
+    in front of the operator again. ``.deal-id-cell`` and
+    ``.muted-cell`` are intentionally NOT in the dead-list — both
+    are still used by the active-deals + closed-deals tables.
+    """
+    css = _STYLE_CSS.read_text(encoding="utf-8")
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    # Preview-only CSS classes must be gone.
+    for cls in (".bot-card-deals", ".bot-card-deal-row", ".more-deals-row"):
+        assert cls + " " not in css, (
+            f"Preview CSS {cls} resurfaced (with-space). "
+            f"See cleanup/bot-card-remove-deal-preview rationale."
+        )
+        assert cls + "{" not in css, (
+            f"Preview CSS {cls} resurfaced (no-space variant)."
+        )
+        assert cls + ":" not in css, (
+            f"Preview CSS {cls} resurfaced via a pseudo-class."
+        )
+
+    # Shared CSS classes (used by other tables) must stay.
+    assert ".deal-id-cell" in css, (
+        "shared .deal-id-cell removed by accident — still used by "
+        "the Active Deals table"
+    )
+    assert ".muted-cell" in css, (
+        "shared .muted-cell removed by accident — still used by "
+        "Active Deals + Closed Deals tables"
+    )
+
+    # JS render-helper for the preview must be gone. ``openDealsHtml``
+    # was the unique variable name for the preview-builder; killing
+    # it here catches a copy-paste resurrection that just renames the
+    # wrapper class.
+    assert "openDealsHtml" not in js, (
+        "openDealsHtml builder resurfaced in renderBotCard"
+    )
+    # Class-string usages should also be gone.
+    assert 'class="bot-card-deals"' not in js
+    assert 'class="bot-card-deal-row"' not in js
+    assert 'class="more-deals-row"' not in js
+
+
 def test_no_dead_css_classes_resurface():
     """RHA-v1 rha-009 verified five orphan CSS classes (.amb,
     .btn-delete, .deal-trigger-badge, .active-deals-header,
