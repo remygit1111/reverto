@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # ccxt exception class names that represent a retry-worthy failure. Using
@@ -35,6 +36,65 @@ _STATUS_CODE_BY_CLASS: dict[str, int] = {
 # fragments or rate-limit payloads we don't want verbatim on an external
 # channel.
 _MESSAGE_CHAR_CAP = 200
+
+
+# Audit v27-12: pattern-based credential redaction for exchange-error
+# strings. Applied BEFORE truncation so a credential at position 150
+# can't survive the 200-char cap simply by being placed in the second
+# half of the message. Patterns target the three credential shapes ccxt
+# is most likely to surface in exception text:
+#
+#   1. Query-string credential params (``apiKey=...``, ``signature=...``).
+#      ccxt occasionally embeds full request URLs in error messages,
+#      and signed-request URLs carry the key + signature inline.
+#   2. ``Authorization: Bearer <token>`` headers, which surface in some
+#      auth-failure exception messages.
+#   3. JWT-shaped tokens (three base64 segments dot-separated). Defence
+#      in depth — Reverto doesn't currently use JWTs, but a future
+#      exchange or middleware that does would have its tokens redacted
+#      automatically.
+#
+# Replacement preserves the parameter name (``apiKey=[REDACTED]``) so
+# the error message remains useful for debugging context — operators
+# can still see "this was an apiKey-shaped failure" without seeing the
+# key itself. Bearer / JWT matches collapse to a bare ``[REDACTED]``.
+_CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?i)\b(api[_-]?key|secret|passphrase|signature|sign)=[^&\s]+",
+    ),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._-]+"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
+)
+
+
+def _redact_match(match: re.Match[str]) -> str:
+    """Replace a credential match with a redacted form.
+
+    For ``key=value`` shapes we keep the key on the left of the ``=``
+    and replace only the value, so error context stays readable
+    ("the apiKey param had a bad value") without exposing the secret.
+    For shapes without an ``=`` (Bearer, JWT) we collapse the whole
+    match to ``[REDACTED]``.
+    """
+    text = match.group(0)
+    if "=" in text:
+        key, _, _ = text.partition("=")
+        return f"{key}=[REDACTED]"
+    return "[REDACTED]"
+
+
+def _redact_secrets(msg: str) -> str:
+    """Strip credential-bearing fragments from a free-form error
+    message before it lands in a log line or Telegram payload.
+
+    Apply this BEFORE any truncation. Truncation alone is not a
+    redaction — a 200-char cap leaves plenty of room for a full
+    apiKey + signature pair in the second half of the string. The
+    redaction-first ordering is what makes the cap safe.
+    """
+    for pattern in _CREDENTIAL_PATTERNS:
+        msg = pattern.sub(_redact_match, msg)
+    return msg
 
 
 @dataclass(frozen=True)
@@ -87,7 +147,11 @@ def classify_exception(
         attr = getattr(exc, "http_status", None)
         if isinstance(attr, int):
             status_code = attr
-    msg = str(exc)[:_MESSAGE_CHAR_CAP]
+    # Redact credentials BEFORE truncation — see _redact_secrets
+    # docstring for the ordering rationale (truncation-first would
+    # leave a 200-char window in which a full apiKey + signature can
+    # still survive into Telegram).
+    msg = _redact_secrets(str(exc))[:_MESSAGE_CHAR_CAP]
     return TickerError(
         exchange=exchange,
         endpoint=endpoint,

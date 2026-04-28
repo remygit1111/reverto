@@ -2786,11 +2786,11 @@ findings:
 - finding_id: v27-09
   source_doc: v27-report
   severity: LOW
-  status: open
+  status: resolved
   title: LoginBody.username has no character-class restriction
   description: |
-    LoginBody allows any characters in username — whitespace, control chars, punctuation, emoji. No real-world impact today (only `admin` exists, no signup endpoint). Once user-creation lands, control-char usernames break the audit log's pipe-delimited format and confuse SPA rendering. Add ^[a-z0-9_\\-]{3,32}$ + lowercase normalisation when the signup path lands.
-  resolution_ref: null
+    LoginBody allowed any characters in username — whitespace, control chars, punctuation, emoji, ASCII homoglyphs. No real-world impact pre-fix because only `admin` exists and no signup endpoint mints new usernames; defence-in-depth gap closed at the boundary so future signup work inherits the rejection. Pattern ^[a-zA-Z0-9_.-]+$ added to LoginBody.username Field — same character class core.user_store.validate_username has enforced at INSERT time since r1-032/r1-007, so every incumbent row passes.
+  resolution_ref: fix/v27-09-v27-12-defense-in-depth
   notes: ""
 
 - finding_id: v27-10
@@ -2816,11 +2816,11 @@ findings:
 - finding_id: v27-12
   source_doc: v27-report
   severity: INFO
-  status: open
+  status: resolved
   title: TickerError.message truncation may leak URL fragments to Telegram
   description: |
-    classify_exception truncates str(exc)[:200] into TickerError.message; _resolve_error_reason puts the first 80 chars on the Telegram "Reason" line. ccxt error format is not URL-pattern aware, so a future ccxt format change embedding apiKey=...&signature=... in exception text would surface a key tail on Telegram. Defence-in-depth only; mitigation is a regex strip of https?://[^\\s]+ before truncating.
-  resolution_ref: null
+    classify_exception truncated str(exc)[:200] into TickerError.message without scrubbing credential-bearing fragments first. A 200-char cap leaves room for a full apiKey + signature pair to survive into Telegram's "Reason" line. Resolved by paper.errors._redact_secrets running before the truncation cap. Targets: query-string credential params (apiKey, signature, secret, passphrase, sign), Bearer tokens, JWT-shape. Param-name preserved on key=value shapes so error context stays useful for debugging.
+  resolution_ref: fix/v27-09-v27-12-defense-in-depth
   notes: ""
 
 # ── v27-backlog (B-01, B-02, B-03 — collected during daily work) ──────────────
