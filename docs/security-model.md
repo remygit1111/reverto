@@ -1396,7 +1396,21 @@ gaat.
   **STATUS: pending (uitgesteld; vereist UX-design eerst).**
 - Rate-limiting per-user toegevoegd aan login-path
   (momenteel alleen per-IP).
-  **STATUS: pending PR 4.**
+  **STATUS: complete in PR 4 (`feat/per-user-login-rate-limit`).**
+  10 failed attempts in een 15-minuten venster triggeren 429
+  Too Many Requests met een `Retry-After` header. Counter wordt
+  geïncrementeerd op zowel password-step failure als
+  /auth/login/totp wrong-code; wordt pas gereset op FULL login
+  success (no-TOTP path: na password verify; TOTP path: na
+  /auth/login/totp success). Pre-PR4 reset gebeurde direct na
+  password-verify, wat een password-cracker met TOTP-faal hun
+  counter cheaply liet resetten. Twee nieuwe audit events:
+  `login_rate_limit_hit` en `login_totp_rate_limit_hit` (beide
+  result=denied). Window-constante `FAILED_LOGIN_WINDOW_S`
+  aangescherpt van 3600 → 900 sec per de operator-decision in
+  Phase B threshold-strategie. Dit sluit ook de tweede helft
+  van v26-01 — eerst (Phase A) was de active-check parity gap
+  gesloten, nu is de per-user rate-limit erbij gekomen.
 - Cookie-posture regression test (audit v26 v26-22).
   **STATUS: pending PR 5.**
 
@@ -1921,6 +1935,17 @@ wijzen straks naar dat bestand.
 
 ## Document changelog
 
+- **2026-04-28 (latest+2)** — Phase B PR 4 status update in Part 4:
+  per-user login rate-limit complete (`feat/per-user-login-rate-
+  limit`). New `check_login_rate_limit` helper in
+  `core.user_store` (returns `(is_limited, retry_after_seconds)`),
+  `Retry-After` header on 429, `login_rate_limit_hit` +
+  `login_totp_rate_limit_hit` audit events. Window tightened from
+  1 h → 15 min. Counter reset moved out of password-step success
+  into FULL-login success so a password-cracker who fails TOTP
+  can't reset their counter for free. Closes the second half of
+  v26-01. 18 regression tests including user-enumeration defence
+  + before-bcrypt placement check.
 - **2026-04-28 (latest+1)** — Phase B PR 3 status update in Part 4:
   TOTP login-flow integratie compleet (`feat/totp-login-integration`).
   `/auth/login` gates op `totp_enabled`, nieuwe `/auth/login/totp`
