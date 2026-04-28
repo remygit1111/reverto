@@ -2906,3 +2906,174 @@ findings:
     Same Phase-4 readiness gate as pt-101. Known-user 429 carries a timestamp-precise retry-after value; unknown-user 429 carries a worst-case-full-window value. The detail-string formatter normalised the user-facing message but the Retry-After HEADER still leaks the precision distinction. Two-decimal-points in seconds is enough for an attacker to distinguish.
   resolution_ref: null
   notes: "Profile A. Bundelbaar met pt-101 fix. ~5 min work — round Retry-After to 60s boundary on both paths. Closes the second user-enumeration channel that gates Phase-4 readiness."
+
+- finding_id: rhav2-001
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "audit.jsonl + audit.log world-readable (mode 644)"
+  description: |
+    Log files have mode 0644 — world-readable on the host. Bot user
+    is the only realistic reader on single-tenant deploy, but defense-
+    in-depth gap for future multi-user scenarios.
+  resolution_ref: null
+  notes: "Security area. Fix: chmod 0640 on audit.* + umask 0o077 on
+    log-rotate. ~5 min work."
+
+- finding_id: rhav2-002
+  source_doc: reverto-holistic-audit-v2
+  severity: INFO
+  status: open
+  title: "/auth/status exposes totp_enabled to authenticated user"
+  description: |
+    Endpoint returns totp_enabled boolean. Only exposed to user's own
+    authenticated session, equivalent privacy level to existing fields.
+    Paper-cut, ACCEPTED-by-design.
+  resolution_ref: null
+  notes: "Security area. ACCEPTED — no fix planned."
+
+- finding_id: rhav2-003
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "TOTP-disable modal Esc-handler leaves typed password in DOM"
+  description: |
+    Esc-handler routes to generic fallback (classList.remove('show'))
+    without calling the typed-cleanup helpers. Typed password in
+    disable-modal persists in DOM after dismissal.
+  resolution_ref: null
+  notes: "Security area. Cross-references RHA-v1 rha-007 (no focus
+    trap). Fix: data-action='close' on cancel buttons. Bundles with
+    rhav2-005."
+
+- finding_id: rhav2-004
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "TOTP modals miss aria-modal / role=dialog / aria-labelledby"
+  description: |
+    All 6 modals lack ARIA dialog attributes. Screen-reader users get
+    incorrect modal-state announcements; keyboard navigation may
+    escape modal context.
+  resolution_ref: null
+  notes: "UX area. Fix: aria-modal sweep across 6 modals. ~30 min."
+
+- finding_id: rhav2-005
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "Stale TOTP secret + QR persists in DOM after Escape"
+  description: |
+    After dismissing TOTP enrollment modal via Escape, the secret
+    string + QR-code SVG remain in DOM. Subsequent screen-shares or
+    DevTools-inspections leak data that should be ephemeral.
+  resolution_ref: null
+  notes: "UX area. Bundles with rhav2-003 fix (TOTP modal cleanup)."
+
+- finding_id: rhav2-006
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "_startTotpEnrollment not double-click-protected"
+  description: |
+    Enrollment button can be clicked multiple times before first
+    response arrives, generating multiple pending-state cookies.
+    Last-write-wins behavior, but minor confusion for user.
+  resolution_ref: null
+  notes: "UX area. Fix: button-disable during in-flight request.
+    ~5 min."
+
+- finding_id: rhav2-007
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "Manual-entry TOTP secret has no copy-button"
+  description: |
+    Users who can't scan QR code must manually select + copy 32-char
+    base32 secret. UX-friction; clipboard-copy button would help.
+  resolution_ref: null
+  notes: "UX area. Fix: copy-button next to manual-entry secret.
+    ~5 min."
+
+- finding_id: rhav2-008
+  source_doc: reverto-holistic-audit-v2
+  severity: INFO
+  status: accepted
+  title: "alert() pattern used in TOTP success-path"
+  description: |
+    TOTP success uses alert() for confirmation. Codebase-wide pattern
+    (login success, etc.) — not a regression, ACCEPTED-by-design.
+  resolution_ref: null
+  notes: "UX area. ACCEPTED — codebase-wide pattern, no fix planned."
+
+- finding_id: rhav2-009
+  source_doc: reverto-holistic-audit-v2
+  severity: INFO
+  status: accepted
+  title: "No loading-state on /auth/totp/setup request"
+  description: |
+    Enrollment-button click triggers backend request without visible
+    loading-state. Mitigated once rhav2-006 (double-click-protection)
+    is fixed.
+  resolution_ref: null
+  notes: "UX area. ACCEPTED — mitigated by rhav2-006 fix."
+
+- finding_id: rhav2-010
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "docs/architecture.md does not mention TOTP / 2FA"
+  description: |
+    Architecture document predates Phase B. Zero mentions of TOTP,
+    2FA, or two-factor across the file.
+  resolution_ref: null
+  notes: "Code-hygiene area. Fix: architecture.md Phase B section.
+    ~30 min."
+
+- finding_id: rhav2-011
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "README does not mention TOTP / 2FA"
+  description: |
+    Top-level README has no reference to 2FA capability. New users
+    discovering Reverto can't tell from README that TOTP is supported.
+  resolution_ref: null
+  notes: "Code-hygiene area. Fix: one sentence in README. ~5 min."
+
+- finding_id: rhav2-012
+  source_doc: reverto-holistic-audit-v2
+  severity: INFO
+  status: open
+  title: "docs/runbook.md TOTP-recovery section in Dutch"
+  description: |
+    Runbook is mostly English. New TOTP-recovery section was written
+    in Dutch (added 2026-04-28). Recurring inconsistency since
+    RHA-v1 noted the same.
+  resolution_ref: null
+  notes: "Code-hygiene area. Operator-decision: language policy needed."
+
+- finding_id: rhav2-013
+  source_doc: reverto-holistic-audit-v2
+  severity: INFO
+  status: open
+  title: "web/routes/auth.py grew to 1006 lines"
+  description: |
+    From ~390 lines pre-RHA-v1 to 1006 lines post-Phase-B. Cohesion
+    fine, but split-candidate before Phase C cleanup-PR.
+  resolution_ref: null
+  notes: "Code-hygiene area. DEFERRED until pre-Phase-C cleanup."
+
+- finding_id: rhav2-014
+  source_doc: reverto-holistic-audit-v2
+  severity: LOW
+  status: open
+  title: "session_epoch policy fragmentation, no source-of-truth doc"
+  description: |
+    session_epoch bumped on logout + password-change, NOT on TOTP
+    enable/disable. No single matrix in docs explains this.
+    Cross-references PT-v3 pt-130.
+  resolution_ref: null
+  notes: "Cross-cutting area. Cross-references PT-v3 pt-130. Fix:
+    session_epoch bump matrix in security-model.md (15 min). Pair
+    with pt-130 actual bump fix."
