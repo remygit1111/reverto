@@ -6,7 +6,13 @@ in the prompt; `8b2f5c2` only added `docs/audits/v27-backlog.md` B-03 —
 no code delta, so the audit surface is identical)
 **Delta**: 26 commits, 33 files, +3641 / -105 lines
 
-**Status**: IN PROGRESS — Phase 1 of 6 complete.
+**Status**: IN PROGRESS — Phase 1 of 6 complete. Findings-tracker
+seed (`data/findings_seed.yaml`) extended to include Phase 1 items.
+Per-finding STATUS blocks added below: 9 of 12 RESOLVED (v27-01,
+v27-02, v27-03, v27-04, v27-05, v27-06, v27-08, v27-10, v27-11),
+3 OPEN (v27-07, v27-09, v27-12). v27-01 was a pre-analysis
+correction — the v27 baseline narrative said "PRE-EXISTING" but
+grep against HEAD showed the short-term fix already in code.
 
 ---
 
@@ -145,6 +151,16 @@ curl -s -H "X-API-Key: $REVERTO_API_KEY" \
 - Document the current behaviour explicitly in `docs/security-model.md`
   until (1) lands — today it's implicit in the code comment.
 
+**STATUS — RESOLVED (pre-analysis correction).** The v27 baseline
+narrative said "PRE-EXISTING / Phase-3a design" but a grep against
+HEAD shows the short-term fix already landed (cross-references
+r1-001 / fix/r1-001-api-key-respects-active). `_request_user`'s
+API-key branch now does `user_store.get_user_by_id(1)` and refuses
+when `admin_user is None or not admin_user.active`
+(`web/app.py:631-645`). The medium-term per-user API-key system
+(Phase-3b) remains future work — tracked under r1-003 (Single
+shared REVERTO_API_KEY, status: open).
+
 ---
 
 #### v27-02 — `/api/emergency-stop` has no admin role gate
@@ -183,6 +199,13 @@ v26-02 audit narrative.
 `if user.id != 1: raise HTTPException(403)` — or, once Phase-3b role-
 checks land, the single-line `_require_admin_user` swap.
 
+**STATUS — RESOLVED (carry-over of v26-02).** Closed by the
+fix/v26-02 branch — `/api/emergency-stop` now resolves the caller
+via `Depends(_request_user)`, refuses non-admin with 403, and
+emits a structured audit event with `result="denied"` so failed
+attempts surface in `audit.jsonl`. See `docs/audits/v26-report.md`
+v26-02 STATUS block for closure detail.
+
 ---
 
 #### v27-03 — `StateBroadcaster.broadcast()` pushes cross-user payloads to every connected client
@@ -212,6 +235,13 @@ user's bot-state + summary payloads, including `total_pnl_btc`,
 `watch_state_files` when it sends per-bot payloads), look up the bot's
 owner and skip WS clients whose `user_id` doesn't match. Summary
 broadcasts should be computed per-user rather than globally.
+
+**STATUS — RESOLVED (carry-over of v26-16).** Closed by
+fix/v26-16-ws-per-user-filter — both `LogBroadcaster` and
+`StateBroadcaster` now record the connecting client's `user_id` and
+filter at broadcast time. Cross-tenant regression tests assert that
+a connection for user B does not receive frames produced by user A.
+See `docs/audits/v26-report.md` v26-16 STATUS block.
 
 ---
 
@@ -259,6 +289,12 @@ own admin endpoints with the admin user's session.
   the `https://unpkg.com` allowance from CSP. ~250 KB static file —
   negligible for a self-hosted portal.
 - Either approach closes the supply-chain surface.
+
+**STATUS — RESOLVED.** Every `<script src="https://unpkg.com/...">`
+in `web/static/index.html` now carries `integrity="sha384-..."` +
+`crossorigin="anonymous"`. The CSP `script-src` allowance for
+unpkg.com is retained but is now SRI-gated — a tampered bytestream
+would fail integrity verification before execution.
 
 ---
 
@@ -312,6 +348,13 @@ This works today but has two characteristics worth flagging:
 - Either makes the CSRF defense two-layered so a single config drift
   (or a future browser SameSite regression) doesn't flatten it.
 
+**STATUS — RESOLVED.** `CSRFMiddleware` (web/app.py) implements the
+double-submit pattern: a `reverto_csrf` cookie is minted on login,
+and every mutating request (POST/PATCH/DELETE) MUST echo the value
+in an `X-CSRF-Token` header. Cookie + header are compared in
+constant time. The defence is now two-layered — a SameSite drift
+no longer flattens it.
+
 ---
 
 #### v27-06 — OSError fallback in API-key bootstrap logs the full ephemeral key
@@ -351,6 +394,12 @@ instead (or `logger.error` with the key replaced by its 8-char SHA-256
 prefix for identification, and a stderr-only instruction to retrieve
 it from the operator's out-of-band channel). Don't write the key into
 a file that has log rotation.
+
+**STATUS — RESOLVED.** The OSError branch in
+`web/app.py:322-336` now logs only the sha256[:8] hint of the key
+with an instruction to set `REVERTO_API_KEY` in `.env` and
+restart. The full key never reaches `portal.log` and therefore
+never reaches downstream log shippers.
 
 ---
 
@@ -399,6 +448,14 @@ Three items worth flagging:
 - Phase out `style-src 'unsafe-inline'` by moving inline styles to
   classes (bigger refactor, separate PR).
 
+**STATUS — OPEN.** `style-src 'unsafe-inline'` remains in the CSP
+because the SPA emits inline `style=` attributes in places
+(`renderBotCard` templates and similar). An inline comment in
+`web/app.py` acknowledges it as necessary; the phase-out is
+tracked as a separate refactor — moving inline styles to classes —
+not a hardening blocker. The `connect-src` and missing-directive
+items remain to be addressed alongside.
+
 ---
 
 #### v27-08 — No `Strict-Transport-Security` header emitted by the portal itself
@@ -423,6 +480,12 @@ downgrade protection.
 includeSubDomains` to the middleware output, gated on `X-Forwarded-Proto:
 https` OR just emitted unconditionally and trusting the browser to
 ignore it over plain HTTP. Minimal code change.
+
+**STATUS — RESOLVED (audit r1-075).** `SecurityHeadersMiddleware`
+emits `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+unconditionally — browsers ignore the header over plain HTTP, so
+emitting it always is safer than gating on `X-Forwarded-Proto`
+(which the portal can't trust without a per-deploy proxy contract).
 
 ---
 
@@ -462,6 +525,11 @@ when the signup / add-user endpoint lands. `^[a-z0-9_\-]{3,32}$` is
 the safe default. Not urgent today because no write-path creates new
 usernames outside the `init_db()` seed.
 
+**STATUS — OPEN.** Defer until the signup / add-user endpoint
+lands. No real-world impact today (only `admin` exists, no
+write-path creates new usernames). Pre-condition for Phase-3b
+multi-user rollout — bundle with the user-creation route review.
+
 ---
 
 #### v27-10 — Cookie payload carries `u` field that no longer drives auth decisions
@@ -496,6 +564,13 @@ actions to the old name. Information-level; not an auth bypass.
 `session_epoch` so cookies force re-issue, or (b) drop `u` from the
 cookie payload and look it up per request from the DB. (a) is cheaper.
 
+**STATUS — RESOLVED (audit r1-006).** Option (b) was chosen — `u`
+is no longer in the cookie payload (`web/app.py:516-520`), only
+`uid` / `iat` / `ep` survive. Every read-path resolves the User
+from `uid` via `user_store.get_user_by_id`. Pre-fix cookies that
+still carry both `u` and `uid` continue to validate because the
+reader only requires `uid`.
+
 ---
 
 #### v27-11 — `audit.log` is a single cross-user file
@@ -518,6 +593,14 @@ is an operational segregation question, not a web-security one.
 files (`logs/<user_id>/audit.log`) OR add a `user_id` field to every
 audit line and filter at read time. Second option is simpler and
 preserves cross-user admin visibility for compliance queries.
+
+**STATUS — RESOLVED (audit r1-031, refined Phase-A wrap-up).**
+Both options were taken: the central `logs/audit.log` (legacy pipe
+format) and `logs/audit.jsonl` (JSONL with `user_id` / `ip` /
+`result` fields, Phase-A) preserve cross-user admin queries; a
+per-user split also lands at `logs/<user_id>/audit.jsonl` whenever
+the caller passes `user_id`, so per-tenant audit pulls are a
+single file read.
 
 ---
 
@@ -559,6 +642,12 @@ like a URL (`https?://[^\s]+`) before truncating. Cheap belt-and-braces.
 Alternatively: keep only the error class name + status code in the
 Telegram Reason line for unknown error classes, and rely on
 `portal.log` for the free-form message.
+
+**STATUS — OPEN.** The 200-char truncation remains in
+`paper/errors.py:_MESSAGE_CHAR_CAP`; no URL-pattern strip lives in
+`classify_exception` yet. Defence-in-depth gap, low priority — no
+confirmed ccxt format that leaks keys via exception text today.
+Tracked alongside the v26-09 telegram error-path observation.
 
 ---
 

@@ -1,6 +1,6 @@
 # Audit + pentest findings seed for the admin findings tracker.
 #
-# Sourced from eight markdown documents under docs/audits/ and
+# Sourced from eleven markdown documents under docs/audits/ and
 # docs/pentests/. Each YAML entry mirrors the AuditFinding row
 # shape in core.audit_findings_store.
 #
@@ -18,7 +18,18 @@
 # overwrites status / notes / resolution_ref on existing rows.
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
-# pt-v1=39, pt-v2=24. Total: 240.
+# pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3.
+# Total: 280.
+#
+# v26 + v27 status note. The v26 + v27 audit reports were re-verified
+# against HEAD via grep before extraction. Where the audit-doc
+# narrative still says "PRE-EXISTING" / "still open" but the codebase
+# already shows the fix landed (typically a v26 finding closed by an
+# earlier sweep PR), the seed reflects the *current* code state, not
+# the historical audit-doc claim. v27 carry-overs (v27-02 = v26-02,
+# v27-03 = v26-16) inherit the v26 row's resolution_ref so an operator
+# scanning the tracker sees consistent closure detail across both
+# audits.
 
 findings:
 
@@ -2435,5 +2446,411 @@ findings:
   title: BotConfig YAML safely Pydantic-validated - no injection
   description: |
     yaml.safe_load everywhere. BotConfig Pydantic model validates types and ranges. Field-level constraints prevent invalid values.
+  resolution_ref: null
+  notes: ""
+
+# ── v26-report (v26-01 … v26-26, 25 entries — v26-23 has no detailed section) ─
+
+- finding_id: v26-01
+  source_doc: v26-report
+  severity: MEDIUM
+  status: resolved
+  title: _require_session does not check user.active
+  description: |
+    The _require_session FastAPI dependency only validated cookie signature + TTL + session_epoch — not the users.active flag. A deactivated user with a still-valid epoch could call /api/auth/change-password while every other route (via _request_user) refused them. Phase-A wrap-up deleted _require_session entirely and migrated change-password onto _request_user, eliminating the parity surface.
+  resolution_ref: feat/phase-a-wrapup
+  notes: ""
+
+- finding_id: v26-02
+  source_doc: v26-report
+  severity: MEDIUM
+  status: resolved
+  title: /api/emergency-stop has no role gate
+  description: |
+    The endpoint guarded only on _request_actor (a string identifier for logging) without any role check, so any authenticated user could SIGTERM every bot across every tenant. Now resolves the caller via Depends(_request_user) and refuses non-admin with 403; non-admin attempts also emit a structured audit event with result="denied".
+  resolution_ref: fix/v26-02-emergency-stop-admin-gate
+  notes: ""
+
+- finding_id: v26-03
+  source_doc: v26-report
+  severity: MEDIUM
+  status: open
+  title: Password-length policy inconsistent (setup-admin 10 vs change-password 8)
+  description: |
+    scripts/setup_admin.py enforces a 10-character minimum; web/routes/auth.py change-password enforces 8. Operator can set a 10-char password via setup_admin and then change it down to 8 via the portal. Audit drift risk; tighten both to PASSWORD_MIN_LENGTH from core.user_store.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-04
+  source_doc: v26-report
+  severity: LOW
+  status: resolved
+  title: /auth/logout has no rate-limit decorator
+  description: |
+    Pre-fix the logout endpoint had no @limiter.limit decorator while every other auth endpoint did. A misbehaving client could hammer logout-then-relogin against a single user's session. Resolved by adding @limiter.limit("10/minute", key_func=_logout_rate_limit_key) — keys on uid when the cookie validates so one user can't swamp another's bucket.
+  resolution_ref: fix/v26-04-logout-rate-limit
+  notes: ""
+
+- finding_id: v26-05
+  source_doc: v26-report
+  severity: LOW
+  status: resolved
+  title: _create_session_cookie username-string fallback mints uid=-1
+  description: |
+    The pre-Phase-3a signature accepted a username string with a fallback that minted uid=-1 cookies if username didn't resolve. That branch was unreachable (login flow always passes a resolved User), so it was dead defensive code. Signature is now _create_session_cookie(user: User), no fallback path remains.
+  resolution_ref: fix/v26-05-session-cookie-user-only
+  notes: ""
+
+- finding_id: v26-06
+  source_doc: v26-report
+  severity: LOW
+  status: resolved
+  title: Dead Fernet helpers (save_encrypted/load_encrypted/_system_fernet)
+  description: |
+    The system-level Fernet helpers were carry-over from the .auth.json admin-credential blob. Phase-3a moved admin auth into users.password_hash (bcrypt), leaving these helpers without a caller. Removed in commit d69fcd2; only the historical-context preamble in core/credentials.py mentions them now.
+  resolution_ref: d69fcd2
+  notes: ""
+
+- finding_id: v26-07
+  source_doc: v26-report
+  severity: LOW
+  status: open
+  title: setup_admin.py treats REVERTO_ADMIN_PW="" as set, then fails length
+  description: |
+    The provisioning script's empty-string check uses `if env_pw:` which treats "" as truthy-only-when-non-empty correctly, but downstream uses `.get("REVERTO_ADMIN_PW")` without distinguishing unset vs empty. Operator who sets REVERTO_ADMIN_PW= (no value) gets a length-check failure instead of the interactive prompt. Treat empty as unset.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-08
+  source_doc: v26-report
+  severity: INFO
+  status: resolved
+  title: Rate limiter keyed on get_remote_address without XFF parsing
+  description: |
+    Behind a reverse proxy every request shared one bucket. Resolved by _rate_limit_key_func: prefers per-uid keying when a valid session cookie is present, falls back to the leftmost X-Forwarded-For entry under the r1-004 trust model (proxy overwrites XFF, so leftmost is the trusted client hop).
+  resolution_ref: feat/sprint-2-audit-sweep
+  notes: ""
+
+- finding_id: v26-09
+  source_doc: v26-report
+  severity: INFO
+  status: in_progress
+  title: Telegram error path logs response.text (potential token echo)
+  description: |
+    notifications/telegram.py logs response.text on upstream error. If the upstream error format ever embeds the bot token (URL fragment, debug dump), the log would carry it. Direct response.text leak path was tightened; the adjacent exception-message path is tracked under v27-12.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-10
+  source_doc: v26-report
+  severity: MEDIUM
+  status: resolved
+  title: Schema v4 destructive migration without confirmation gate
+  description: |
+    init_db automatically dropped owned tables on schema-version mismatch with only a WARNING log. Operator who pulled main and ran `make start` on an existing v3 DB lost all deals/orders/annotations/backtest_runs. Resolved with REVERTO_DESTRUCTIVE_MIGRATE=1 env-var gate; raises DestructiveMigrationBlocked with a runbook pointer when unset. Pre-existing-data probe means fresh installs never trigger the guard.
+  resolution_ref: fix/v26-10-destructive-migration-gate
+  notes: ""
+
+- finding_id: v26-11
+  source_doc: v26-report
+  severity: LOW
+  status: resolved
+  title: bump_session_epoch UPDATE-then-SELECT race on returned value
+  description: |
+    Used UPDATE then a separate SELECT to return the new epoch value. A concurrent bump from another thread could land between the two so the returned integer didn't match the value written. Resolved by using UPDATE ... RETURNING session_epoch in a single statement.
+  resolution_ref: fix/v26-11-update-returning
+  notes: ""
+
+- finding_id: v26-12
+  source_doc: v26-report
+  severity: INFO
+  status: deferred
+  title: _write_lock throughput ceiling
+  description: |
+    A module-level threading.Lock serialises every deal/order write across threads. WAL mode would allow concurrent writers at the SQLite level but the Python-side lock fires first. Not a correctness concern; a parity-test with 20 bots writing DCA updates would bottleneck here. Measure before acting.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-13
+  source_doc: v26-report
+  severity: INFO
+  status: deferred
+  title: ccxt pinned at 4.5.48 with no upgrade cadence
+  description: |
+    Specific ccxt point release with no documented upgrade policy and no CI smoke-test against a Bitget sandbox. Watch-item for the Phase-3 deployment runbook; not actionable today.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-14
+  source_doc: v26-report
+  severity: INFO
+  status: deferred
+  title: DB + state.json dual-source remains (carry-over of v25 #4)
+  description: |
+    Architectural carry-over. core.deal_store and paper.paper_engine._write_state both hold deal state; _db_create_deal_with_retry is the contract test pinning the current invariant (in-memory mutates only after DB persist). Belongs in Phase-3c/d scoping when the engine can migrate to a single source.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-15h
+  source_doc: v26-report
+  severity: HIGH
+  status: resolved
+  title: Emergency-stop signature mismatch — every stop_bot raises TypeError
+  description: |
+    web/routes/admin.py called `await stop_bot(bot.slug)` but stop_bot is `async def stop_bot(user_id: int, slug: str)`. Every iteration raised TypeError, was caught silently by the surrounding except clause, and no SIGTERM ever left the portal. The "oh-shit button" was a silent no-op. Resolved by passing bot.user_id explicitly + a regression test that registers a running mock bot and asserts the slug lands in stopped_bots.
+  resolution_ref: fix/v26-15h-emergency-stop-signature
+  notes: ""
+
+- finding_id: v26-16
+  source_doc: v26-report
+  severity: MEDIUM
+  status: resolved
+  title: WS broadcasters not per-user filtered
+  description: |
+    LogBroadcaster.broadcast and StateBroadcaster.broadcast pushed every message to every connected WS client. Phase-3b cross-tenant data leak. Resolved by recording user_id on connect() and filtering at broadcast time: log lines route on slug-ownership, state payloads are per-user pruned. Cross-tenant regression tests pin the contract.
+  resolution_ref: fix/v26-16-ws-per-user-filter
+  notes: ""
+
+- finding_id: v26-17
+  source_doc: v26-report
+  severity: LOW
+  status: resolved
+  title: GET /api/bots/{slug} returns 200 on unknown slug
+  description: |
+    Returned `{"error": ...}` with default HTTP 200 instead of HTTPException(404). Forced frontend to branch on the error field rather than HTTP status. Resolved by raising HTTPException(status_code=404, detail=f"Unknown bot: {slug}") matching the contract of every other {slug} route.
+  resolution_ref: fix/v26-17-unknown-slug-404
+  notes: ""
+
+- finding_id: v26-18
+  source_doc: v26-report
+  severity: MEDIUM
+  status: open
+  title: ML pipeline reads pre-Phase-2 config path
+  description: |
+    ml/nightly_pipeline.optimize_parameters reads config/bots/{slug}.yaml — the Phase-1 layout. The Phase-2 path is config/bots/{user_id}/{slug}.yaml (via core.paths.bot_yaml_path). The stub returns "config_missing" today so nothing crashes; the moment Phase-3 un-stubs the optuna harness every run will fail to find its config. Route through core.paths or delete the stub.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-19
+  source_doc: v26-report
+  severity: MEDIUM
+  status: resolved
+  title: make setup-admin not documented in runbook or README
+  description: |
+    Phase-3a requires `make setup-admin` before first portal login but the step was missing from docs/runbook.md startup checklist and README.md Quick start. New operator hit 401 with no signpost. Resolved by adding step 4 to the runbook, mirroring in README.md, and cross-referencing from docs/phase-3.md status-note.
+  resolution_ref: fix/v26-19-runbook-setup-admin
+  notes: ""
+
+- finding_id: v26-20
+  source_doc: v26-report
+  severity: LOW
+  status: resolved
+  title: Dangling TODO(phase-3) comments for WS broadcasters
+  description: |
+    Three TODO(phase-3) comments in web/app.py described the per-user filtering work for LogBroadcaster + StateBroadcaster + watch_state_files. Closed alongside v26-16 — comments removed when the implementation landed.
+  resolution_ref: fix/v26-16-ws-per-user-filter
+  notes: ""
+
+- finding_id: v26-21
+  source_doc: v26-report
+  severity: MEDIUM
+  status: resolved
+  title: Emergency-stop happy-path untested (test gap that masked v26-15h)
+  description: |
+    The only test for /api/emergency-stop covered the empty-registry branch — `stopped_bots == []`. The actual stop-every-bot path was unexercised, which is why v26-15h's TypeError sat latent across multiple commits. Resolved by extending tests/test_emergency_stop.py to register a running mock bot and assert its slug lands in stopped_bots.
+  resolution_ref: fix/v26-15h-emergency-stop-signature
+  notes: ""
+
+- finding_id: v26-22
+  source_doc: v26-report
+  severity: LOW
+  status: accepted
+  title: SameSite test-cluster drift (TestClient drops strict cookies on CI)
+  description: |
+    Production cookies are SameSite=strict; the test fixture flips to lax because httpx/TestClient on Python 3.13 + Ubuntu CI drops the cookie on follow-up requests. _COOKIE_SAMESITE override means tests validate the lax posture not the production strict one. Accepted 2026-04-21 — exploratory fix in branch fix/audit-v26-22 hit Gate 1 NO-GO (httpx 0.28.1 doesn't enforce SameSite, no Python 3.13 reproducibility on workstation). Revisit triggers documented in code comment.
+  resolution_ref: null
+  notes: "ACCEPTED 2026-04-21 — see v26-report.md §11 resolution note for revisit triggers."
+
+- finding_id: v26-24
+  source_doc: v26-report
+  severity: LOW
+  status: open
+  title: docs/phase-3.md body still describes .auth.json as auth-state store
+  description: |
+    Preface says the sections below are historical, but §7 still reads as present-tense ("password hashes in .auth.json"). A reader parsing the body without the preamble sees obsolete claims. Prune or strike-through the paragraphs overtaken by Phase-3a.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-25
+  source_doc: v26-report
+  severity: INFO
+  status: deferred
+  title: /api/price global serialisation via _price_lock
+  description: |
+    Every /api/price call takes _price_lock because ccxt clients are not thread-safe. Under heavy dashboard polling this becomes a choke point. Document as a Phase-3 item if /api/price ever becomes an SLO-critical path.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v26-26
+  source_doc: v26-report
+  severity: INFO
+  status: deferred
+  title: requirements-ml.txt has no -c constraint against requirements.txt
+  description: |
+    Installing requirements-ml.txt after requirements.txt can resolve to a different numpy / scipy than core pins. Pip's resolver detects most conflicts but transitive-dep edges can silently upgrade. Adding `-c requirements.txt` to the ML file would lock divergence out.
+  resolution_ref: null
+  notes: ""
+
+# ── v27-report (v27-01 … v27-12, 12 entries) ──────────────────────────────────
+
+- finding_id: v27-01
+  source_doc: v27-report
+  severity: MEDIUM
+  status: resolved
+  title: API-key fallback returns hard-coded admin stub bypassing user.active
+  description: |
+    _request_user's API-key branch returned a module-level DEFAULT_USER stub without consulting the DB, bypassing the active-check that the cookie path enforces. Resolved (already in code at audit-time, missed by the v27 baseline) — the API-key path now does user_store.get_user_by_id(1) with active+role validation, matching the cookie path. Cross-references r1-001.
+  resolution_ref: fix/r1-001-api-key-respects-active
+  notes: "v27-baseline narrative said PRE-EXISTING; grep against HEAD shows the fix already landed (web/app.py:631-645). Recorded as resolved per current code state."
+
+- finding_id: v27-02
+  source_doc: v27-report
+  severity: MEDIUM
+  status: resolved
+  title: /api/emergency-stop has no admin role gate (v26-02 carry-over)
+  description: |
+    Carry-over of v26-02. Closed when /api/emergency-stop adopted Depends(_request_user) + admin role refusal with 403 + structured denied audit event.
+  resolution_ref: fix/v26-02-emergency-stop-admin-gate
+  notes: "Carry-over of v26-02; resolution_ref shared with the parent finding."
+
+- finding_id: v27-03
+  source_doc: v27-report
+  severity: MEDIUM
+  status: resolved
+  title: StateBroadcaster pushes cross-user payloads (v26-16 carry-over)
+  description: |
+    Carry-over of v26-16. Closed when LogBroadcaster + StateBroadcaster started recording user_id on connect and filtering at broadcast time.
+  resolution_ref: fix/v26-16-ws-per-user-filter
+  notes: "Carry-over of v26-16; resolution_ref shared with the parent finding."
+
+- finding_id: v27-04
+  source_doc: v27-report
+  severity: MEDIUM
+  status: resolved
+  title: Third-party CDN script loaded without Subresource Integrity
+  description: |
+    web/static/index.html loaded lightweight-charts and other unpkg.com scripts without integrity= or crossorigin= attributes, trusting whatever bytes unpkg served. Supply-chain compromise of the npm maintainer or the unpkg CDN would push malicious JS into every Reverto deployment. Resolved by adding integrity="sha384-..." + crossorigin="anonymous" on every <script src="https://unpkg.com/..."> tag.
+  resolution_ref: fix/v27-04-cdn-sri
+  notes: ""
+
+- finding_id: v27-05
+  source_doc: v27-report
+  severity: MEDIUM
+  status: resolved
+  title: CSRF posture relied solely on SameSite=strict; no token or Origin check
+  description: |
+    No CSRF middleware, synchroniser token, or Origin/Referer check on mutating endpoints — single-lever defence. A SameSite drift (the test fixture already flips to lax) would have flattened the protection. Resolved by adding CSRFMiddleware: double-submit reverto_csrf cookie + X-CSRF-Token header pattern, mint on login, verified server-side on every mutating request.
+  resolution_ref: fix/v27-05-csrf-double-submit
+  notes: ""
+
+- finding_id: v27-06
+  source_doc: v27-report
+  severity: LOW
+  status: resolved
+  title: OSError fallback in API-key bootstrap logs the full ephemeral key
+  description: |
+    The `except OSError` branch when the ephemeral key file couldn't be written logged the full _API_KEY into portal.log — propagating the credential to docker logs / journald / log shippers. Resolved by replacing the full-key log with a sha256[:8] hint + an instruction to set REVERTO_API_KEY in .env and restart.
+  resolution_ref: fix/v27-06-api-key-bootstrap-redact
+  notes: ""
+
+- finding_id: v27-07
+  source_doc: v27-report
+  severity: LOW
+  status: open
+  title: CSP permits style-src 'unsafe-inline' + broad connect-src
+  description: |
+    Content-Security-Policy still allows style-src 'unsafe-inline' (needed by SPA inline-style emissions) and connect-src 'self' ws: wss: (allows WebSocket connections to any host). Defence-in-depth gap, not a primary vulnerability. Tightening connect-src to the portal host and phasing out unsafe-inline by moving inline styles to classes is a separate refactor.
+  resolution_ref: null
+  notes: "style-src 'unsafe-inline' acknowledged as necessary in inline CSP comment; phase-out tracked separately."
+
+- finding_id: v27-08
+  source_doc: v27-report
+  severity: LOW
+  status: resolved
+  title: No Strict-Transport-Security header emitted by the portal
+  description: |
+    SecurityHeadersMiddleware emitted X-Frame-Options + X-Content-Type-Options + Referrer-Policy + CSP but no HSTS. Reverse-proxy deploys typically add it at the proxy layer; portals running directly (dev, future TLS-terminating uvicorn) lacked the first-visit downgrade protection. Resolved (audit r1-075) by adding Strict-Transport-Security: max-age=31536000; includeSubDomains in the middleware.
+  resolution_ref: fix/r1-075-hsts
+  notes: ""
+
+- finding_id: v27-09
+  source_doc: v27-report
+  severity: LOW
+  status: open
+  title: LoginBody.username has no character-class restriction
+  description: |
+    LoginBody allows any characters in username — whitespace, control chars, punctuation, emoji. No real-world impact today (only `admin` exists, no signup endpoint). Once user-creation lands, control-char usernames break the audit log's pipe-delimited format and confuse SPA rendering. Add ^[a-z0-9_\\-]{3,32}$ + lowercase normalisation when the signup path lands.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: v27-10
+  source_doc: v27-report
+  severity: INFO
+  status: resolved
+  title: Cookie payload carries `u` field that no longer drives auth decisions
+  description: |
+    Pre-fix the session cookie carried "u": user.username alongside uid/iat/ep, but every auth path resolved the User from uid via user_store.get_user_by_id. The string-username was dead payload — and stale once a future rename API lands. Resolved (audit r1-006) by dropping `u` from the cookie payload; readers only require uid.
+  resolution_ref: fix/r1-006-cookie-no-username
+  notes: ""
+
+- finding_id: v27-11
+  source_doc: v27-report
+  severity: INFO
+  status: resolved
+  title: audit.log was a single cross-user file
+  description: |
+    The audit logger wrote to logs/audit.log with no user separation; multi-tenant rollout would expose every tenant's event timeline through one shared file. Resolved (audit r1-031) by adding the JSONL dual-write that lands a per-user copy at logs/<user_id>/audit.jsonl whenever the caller passes user_id, while keeping the global audit.log for cross-tenant compliance queries.
+  resolution_ref: fix/r1-031-audit-jsonl-dual-write
+  notes: ""
+
+- finding_id: v27-12
+  source_doc: v27-report
+  severity: INFO
+  status: open
+  title: TickerError.message truncation may leak URL fragments to Telegram
+  description: |
+    classify_exception truncates str(exc)[:200] into TickerError.message; _resolve_error_reason puts the first 80 chars on the Telegram "Reason" line. ccxt error format is not URL-pattern aware, so a future ccxt format change embedding apiKey=...&signature=... in exception text would surface a key tail on Telegram. Defence-in-depth only; mitigation is a regex strip of https?://[^\\s]+ before truncating.
+  resolution_ref: null
+  notes: ""
+
+# ── v27-backlog (B-01, B-02, B-03 — collected during daily work) ──────────────
+
+- finding_id: B-01
+  source_doc: v27-backlog
+  severity: MEDIUM
+  status: open
+  title: Multi-bot Bitget rate-limiting has no central coordination
+  description: |
+    On 2026-04-21 09:00 a 429 surfaced on fetchTicker when multiple bots crossed a 15m candle boundary together. Each bot owns its own ccxt.bitget instance with its own throttle state; Bitget sees the sum of all calls under one IP / API-key without Reverto tracking that sum anywhere. Direction is a centralised rate-limit-manager — natural fit for the Phase-B/C signing-service which is already the choke-point for all exchange calls.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: B-02
+  source_doc: v27-backlog
+  severity: LOW
+  status: open
+  title: Persistent tick-error notification claims "Bot stopped" but engine keeps retrying
+  description: |
+    The persistent-error Telegram notification labels failures as ⚠️ degraded (transient exhausted) or ⛔ stopped (non-transient), but the engine keeps tick-retrying in both cases. self.running stays True while the Telegram message tells the user to "restart via portal" — confusing not catastrophic. Direction is a lifecycle transition to an `auto_stopped` state on persistent-threshold-hit, with portal UI distinguishing it from a deliberate `make stop`.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: B-03
+  source_doc: v27-backlog
+  severity: MEDIUM
+  status: open
+  title: ml/nightly_pipeline._persist_results writes without user_id in path
+  description: |
+    Spotted while fixing v26-18 — ml/nightly_pipeline._persist_results(bot_slug, results) writes to ml/results_<slug>.json without user_id, so multi-tenant overlapping bot-slugs collide. Direction: ml/results_<user_id>_<slug>.json or ml/<user_id>/results_<slug>.json, consistent with the Phase-2 user-scoped layout in core/paths.py. v26-18 fixed the input-config path of the same file; this is the output-result path needing the same treatment.
   resolution_ref: null
   notes: ""

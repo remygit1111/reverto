@@ -133,6 +133,102 @@ class TestSeedFile:
             seen_ids.add(entry["finding_id"])
 
 
+# ── v26 / v27 / v27-backlog extension ──────────────────────────────────────
+
+
+class TestV26V27SeedExtension:
+    """Extension PR (feat/findings-seed-v26-v27-extension): the seed
+    grew from 240 entries / 8 sources to 280 entries / 11 sources by
+    folding in v26-report (25), v27-report (12), and v27-backlog (3).
+
+    Class-of-issue regression: a future PR that drops or renames one
+    of these sources, or that breaks the v26 ↔ v27 carry-over linkage,
+    would silently degrade the admin tracker without an obvious error.
+    These tests pin the contract.
+    """
+
+    @staticmethod
+    def _by_source(items, source):
+        return [f for f in items if f["source_doc"] == source]
+
+    def test_seed_has_v26_v27_and_backlog_sources_with_expected_counts(self):
+        raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
+        items = raw["findings"]
+        assert len(self._by_source(items, "v26-report")) == 25, (
+            "v26-report seed should carry 25 detailed-section findings "
+            "(v26-23 has no detailed section and is intentionally skipped)"
+        )
+        assert len(self._by_source(items, "v27-report")) == 12
+        assert len(self._by_source(items, "v27-backlog")) == 3
+
+    def test_total_seed_count_matches_documented_total(self):
+        raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
+        items = raw["findings"]
+        assert len(items) == 280, (
+            f"seed total drifted from 280: got {len(items)}. Update the "
+            "header comment in data/findings_seed.yaml in the same PR."
+        )
+
+    def test_v27_carry_overs_share_resolution_ref_with_v26_parent(self):
+        """v27-02 carries v26-02; v27-03 carries v26-16. The carry-over
+        rows MUST share the parent's resolution_ref so an operator
+        scanning the tracker sees consistent closure detail across both
+        audits — and a sweep PR that retitles the parent's branch can't
+        leave the carry-over pointing at a stale branch name.
+        """
+        raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
+        by_id = {f["finding_id"]: f for f in raw["findings"]}
+        assert by_id["v27-02"]["resolution_ref"] == by_id["v26-02"]["resolution_ref"]
+        assert by_id["v27-03"]["resolution_ref"] == by_id["v26-16"]["resolution_ref"]
+
+    def test_resolved_findings_have_resolution_ref_filled(self):
+        """Every entry with status=resolved MUST carry a non-empty
+        resolution_ref pointing at the closing branch / commit. An
+        operator looking at a resolved finding without a ref has no
+        way to navigate from the tracker back to the closure work.
+        Carved out: r1-077 onwards may legitimately be resolved-by-
+        deletion (no branch); for the v26+v27+backlog rows we hold
+        the stricter contract.
+        """
+        raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
+        new_sources = {"v26-report", "v27-report", "v27-backlog"}
+        new_resolved = [
+            f
+            for f in raw["findings"]
+            if f["source_doc"] in new_sources and f["status"] == "resolved"
+        ]
+        # Floor guards against an empty filter passing vacuously after
+        # a future refactor that drops the extension entries.
+        assert len(new_resolved) >= 20, (
+            "expected ≥ 20 resolved findings across the v26+v27+backlog "
+            f"sources; got {len(new_resolved)} — the extension may have "
+            "been reverted"
+        )
+        offenders = [f["finding_id"] for f in new_resolved if not f.get("resolution_ref")]
+        assert offenders == [], (
+            "v26/v27 seed entries with status=resolved but no "
+            f"resolution_ref: {offenders}"
+        )
+
+    def test_v27_open_findings_match_grep_verified_set(self):
+        """Pre-analysis correction guard. v27-baseline narrative said
+        most of v27 was PRE-EXISTING / unfixed, but grep against HEAD
+        showed 9 of 12 had already landed. Pin the open-set to exactly
+        the three that grep verified as still-open: v27-07 (CSP
+        unsafe-inline by design), v27-09 (LoginBody charset, defer
+        until signup lands), v27-12 (TickerError URL-redact). A future
+        PR that opens or closes one of these without updating the seed
+        will fail this assertion and force the YAML to stay in sync.
+        """
+        raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
+        v27 = [f for f in raw["findings"] if f["source_doc"] == "v27-report"]
+        open_ids = sorted(f["finding_id"] for f in v27 if f["status"] == "open")
+        assert open_ids == ["v27-07", "v27-09", "v27-12"], (
+            f"v27 open-set drifted: {open_ids} — re-run the grep "
+            "verification or sync data/findings_seed.yaml."
+        )
+
+
 # ── Seed import idempotency ────────────────────────────────────────────────
 
 class TestSeedImport:
