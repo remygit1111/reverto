@@ -8,11 +8,14 @@ no code delta, so the audit surface is identical)
 
 **Status**: IN PROGRESS — Phase 1 of 6 complete. Findings-tracker
 seed (`data/findings_seed.yaml`) extended to include Phase 1 items.
-Per-finding STATUS blocks added below: 9 of 12 RESOLVED (v27-01,
-v27-02, v27-03, v27-04, v27-05, v27-06, v27-08, v27-10, v27-11),
-3 OPEN (v27-07, v27-09, v27-12). v27-01 was a pre-analysis
-correction — the v27 baseline narrative said "PRE-EXISTING" but
-grep against HEAD showed the short-term fix already in code.
+Per-finding STATUS blocks added below: 11 of 12 RESOLVED (v27-01..06,
+v27-08..12), 1 OPEN (v27-07 — `style-src 'unsafe-inline'`
+acknowledged-as-necessary, phase-out tracked separately). v27-01
+was a pre-analysis correction — the v27 baseline narrative said
+"PRE-EXISTING" but grep against HEAD showed the short-term fix
+already in code. v27-09 + v27-12 closed by
+`fix/v27-09-v27-12-defense-in-depth` (LoginBody character-class
+regex + credential-redaction-before-truncation in `paper.errors`).
 
 ---
 
@@ -525,10 +528,17 @@ when the signup / add-user endpoint lands. `^[a-z0-9_\-]{3,32}$` is
 the safe default. Not urgent today because no write-path creates new
 usernames outside the `init_db()` seed.
 
-**STATUS — OPEN.** Defer until the signup / add-user endpoint
-lands. No real-world impact today (only `admin` exists, no
-write-path creates new usernames). Pre-condition for Phase-3b
-multi-user rollout — bundle with the user-creation route review.
+**STATUS — RESOLVED in `fix/v27-09-v27-12-defense-in-depth`.**
+`LoginBody.username` now carries `pattern=r"^[a-zA-Z0-9_.-]+$"` —
+the same character class `core.user_store.validate_username` has
+enforced at INSERT time since r1-032/r1-007, so every incumbent
+row is compatible (pinned by the
+`test_existing_users_match_new_pattern` regression). The login
+boundary now refuses whitespace, control chars, emoji, ASCII
+homoglyphs, and SQL-injection-shaped payloads with a 422 before
+the handler runs. `ChangePasswordBody` has no username field — the
+endpoint resolves the user from the session cookie via
+`_request_user` — so no parallel pattern is needed there.
 
 ---
 
@@ -643,11 +653,21 @@ Alternatively: keep only the error class name + status code in the
 Telegram Reason line for unknown error classes, and rely on
 `portal.log` for the free-form message.
 
-**STATUS — OPEN.** The 200-char truncation remains in
-`paper/errors.py:_MESSAGE_CHAR_CAP`; no URL-pattern strip lives in
-`classify_exception` yet. Defence-in-depth gap, low priority — no
-confirmed ccxt format that leaks keys via exception text today.
-Tracked alongside the v26-09 telegram error-path observation.
+**STATUS — RESOLVED in `fix/v27-09-v27-12-defense-in-depth`.**
+`paper.errors._redact_secrets` now runs against `str(exc)` BEFORE
+the 200-char truncation. Patterns target three credential shapes:
+query-string params (`apiKey=…`, `signature=…`, `secret=…`,
+`passphrase=…`, `sign=…`), `Authorization: Bearer …` headers, and
+JWT-shape (three base64 segments dot-separated). Param-name is
+preserved on the `key=value` shape (`apiKey=[REDACTED]`) so error
+context stays useful for debugging while the secret payload is
+gone. Critical ordering — redaction-first guarantees that a
+credential at position 150+ does not survive into Telegram via the
+truncation cap. End-to-end test (`test_classify_exception_strips_
+credentials_through_full_path`) drives a NetworkError carrying a
+URL with both `apiKey=` and `signature=` through the full
+`classify_exception` path and asserts neither value reaches
+`TickerError.message`.
 
 ---
 

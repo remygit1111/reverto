@@ -138,8 +138,22 @@ def _compute_backoff_s(pre_count: int) -> float:
     return min(_BACKOFF_BASE_S * (2 ** safe_exp), _BACKOFF_CAP_S)
 
 
+# Audit v27-09: defence-in-depth character-class restriction on the
+# login boundary. Length bounds alone accept whitespace, control chars,
+# emoji, and SQL-injection-shaped payloads — Pydantic + parameterised
+# queries elsewhere already block real exploits, but the audit asks for
+# the rejection at the boundary so malformed traffic never reaches the
+# DB-lookup at all. Pattern accepts alphanumerics + the three separators
+# any real-world username convention uses (underscore, dot, dash).
+# ChangePasswordBody has no username field (uid is resolved from the
+# session cookie via ``_request_user``) so no parallel pattern needed.
+_USERNAME_PATTERN = r"^[a-zA-Z0-9_.-]+$"
+
+
 class LoginBody(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+    username: str = Field(
+        min_length=1, max_length=64, pattern=_USERNAME_PATTERN,
+    )
     password: str = Field(min_length=1, max_length=512)
 
 
