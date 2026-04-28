@@ -312,7 +312,7 @@ trust-boundary hangen. De enige overblijvende verdediging is wat
 **Bewuste limitation van single-signing-service architectuur.** De
 signing-service is en blijft een single point of failure in dit
 architectuur-model. Horizontale scaling (meerdere signing-services
-met quorum- of threshold-signing) is R&D-spoor (zie Part 6.2b MPC
+met quorum- of threshold-signing) is R&D-spoor (zie Part 6.3b MPC
 threshold-signing) dat deze limitation kan reduceren maar niet
 elimineren — bij een compromise van ≥ threshold-many signing-
 services valt de defense alsnog. Acceptatie: de spec kiest voor
@@ -557,6 +557,7 @@ flow:
 payload, uid + u + ep). TTL blijft 24h absolute (geen sliding).
 Cookie geeft toegang tot **read-only** operations en
 kleine-threshold trades; boven de threshold komt approval erbij.
+Concrete per-tier cap-waardes: zie 6.2 cap-tabel.
 
 **Approval-channel.** Voor mutating operations boven threshold. Twee
 kanalen per user, configureerbaar bij onboarding:
@@ -572,8 +573,9 @@ kanalen per user, configureerbaar bij onboarding:
   TOTP-code. Zelfde seed als login-TOTP maar een apart "approval
   context" ruimte — een TOTP-code gebruikt voor login mag niet
   hergebruikt worden voor een pending approval binnen hetzelfde
-  window. TOTP-only users krijgen lagere default-caps (Part 3.4
-  Premium-column).
+  window. TOTP-only users krijgen lagere default-caps dan PWA
+  WebAuthn-users (zie 6.2 cap-tabel voor de definitieve waardes
+  per auth-tier).
 - **YubiKey (premium tier).** Hardware-key voor users die
   config-wijzigingen met extra assurance willen doen. WebAuthn-based
   FIDO2 — protocol-compatible met PWA-key, andere device-class.
@@ -657,6 +659,14 @@ approval-step nodig heeft.
 | Emergency stop (admin cross-user) | | ✓ | ✓ recommended | | — |
 | Cross-user admin action | | | ✓ | recommended premium | — |
 | Transfer ownership of account | | | ✓ | ✓ | 168h (7d) |
+
+**Threshold-waardes.** De numerieke caps achter "per-trade
+threshold" en "daily/weekly/monthly cap" in deze tabel zijn per
+auth-tier vastgelegd in 6.2 cap-tabel. De channel-keuze (welke
+kolom een actie minimum vereist) leeft hier; de cap-getallen
+(welk volume bij welke channel hoort) leven daar — zo blijft de
+kanaal-hiërarchie en de threshold-set onafhankelijk
+herzienbaar.
 
 **Cooldown semantiek.** De cooldown is geen throttle op aanroep-
 frequentie maar een delay tussen aanvraag en effectuering. Een
@@ -1544,40 +1554,135 @@ voordat Phase B kan launchen (dat is de eerstvolgende fase waar een
 user-facing keuze wordt vastgelegd), en een research-spoor dat geen
 launch-blocker is maar wel aandacht verdient op langere termijn.
 
-### 6.1 Must-answer voor Phase B launch
+### 6.1 Resolved pre-launch decisions (2026-04-28)
 
-- **TOTP fallback vs verplichte PWA.** Welke users krijgen welke
-  ervaring. Verplichte PWA maakt de defense sterker (device-bound
-  key) maar sluit users uit die geen PWA willen of kunnen
-  installeren. TOTP-fallback vergroot de doelgroep tegen een
-  zwakkere defense. Keuze: waarschijnlijk een hybride met TOTP-
-  fallback op lagere default-caps (zoals nu in Part 3.3/3.4
-  beschreven), maar exacte cap-verschillen moeten cijfers worden
-  in plaats van placeholders.
+Op 2026-04-28 zijn de twee Phase B must-answer items met user-
+facing scope geresolved (TOTP/PWA strategie + threshold-tabel).
+Het derde must-answer item — Bitget-subaccount-support — is op
+deze checkpoint NIET geresolved en blijft als open vraag onderaan
+deze sectie staan. De resolved beslissingen bepalen het launch-
+design van TOTP/PWA-implementatie en threshold-enforcement; Phase
+B implementatie kan op basis hiervan starten.
 
-- **Threshold-definities finaliseren op basis van real-world
-  strategy-data.** De per-trade threshold (default 2%, range
-  1-5%) en de Laag-4 tier-drempels (−2% / −5% / −10%) zijn
-  startwaarden zonder calibratie. Phase A verzamelt P&L-data uit
-  de bestaande paper- en dry-run-bots; Phase E kan de drempels
-  bijstellen voordat de caps live gaan. Alternatief: stel bij
-  launch conservatieve waarden in en monitor hoe vaak ze firen;
-  bij te veel false-positives bijstellen via een cap-tune-PR.
+#### Decision A — TOTP/PWA strategie: HYBRIDE
 
-- **Per-exchange subaccount-support voor Bitget.** Part 3.5 noemt
-  dit als "recommended" maar onduidelijk is of Bitget de retail-
-  subaccount API-flow volledig ondersteunt. Keuze: als het werkt,
-  subaccount-usage als onboarding-blocker voor Bitget-live
-  opnemen; zo niet, expliciet documenteren dat main-account usage
-  het enige pad is en dit als informed-consent aan de user
-  voorleggen bij onboarding.
+Phase B launcht met TOTP als baseline-2FA, verplicht voor alle
+users. PWA WebAuthn is een optionele upgrade die verhoogde
+thresholds unlocks (zie 6.2 cap-tabel).
 
-### 6.2 Research-spoor (geen launch-blocker)
+**Rationale.**
+
+- TOTP is een bekend pattern in de crypto-doelgroep met lage
+  onboarding-friction. Verplichte PWA-only zou users uitsluiten
+  die geen PWA willen of kunnen installeren.
+- PWA WebAuthn biedt sterkere defense (device-bound key,
+  phishing-resistant, secure-enclave waar beschikbaar) maar is
+  nog niet 100 % naadloos op alle desktop-browsers.
+- De cap-verschillen tussen tiers maken het verschil ook een
+  product-onderscheid: "we belonen sterkere auth met hogere
+  trade-thresholds" past bij de custodial-no-paternalistic
+  stance uit Part 1.3.
+- Migratie naar verplichte PWA wordt herzien wanneer PWA-support
+  volwassener is. **Re-evaluation target: Q4 2027.**
+
+**Operationele implicaties.**
+
+- Setup-flow: een nieuwe user moet TOTP enrollen voordat de
+  eerste live trade mogelijk is. Read-only en paper-mode acties
+  blijven werken zonder TOTP zodat onboarding-friction beperkt
+  blijft tot het moment dat het er echt toe doet.
+- Profile-pagina toont een "Upgrade naar PWA WebAuthn voor
+  verhoogde caps" call-to-action zodra een user de TOTP-flow
+  heeft afgerond.
+- Recovery-pad voor TOTP-loss in Phase B: admin-manual reset met
+  audit-trail. Phase D vervangt dit door een user-initiated
+  recovery-flow met cooldown.
+
+#### Decision B — Threshold strategie: conservatieve defaults + operator-approved verhoging
+
+Default caps zijn safe-by-default (low). Users vragen verhogingen
+aan via support-flow; de operator (initially: ROOT) reviewed de
+aanvraag handmatig en stelt cap-set bij voor de specifieke user.
+Volume-based auto-tiering wordt overwogen voor Phase D zodra
+voldoende verkeer-data beschikbaar is voor calibratie.
+
+**Rationale.**
+
+- Een gecompromiseerde session moet beperkt schade kunnen doen.
+  Lage defaults zorgen dat zelfs een attacker met cookie + TOTP-
+  device een kleine harm-budget heeft tot de operator-approved
+  verhoging bekend is.
+- Manuele review-step bij verhoging biedt human-in-the-loop voor
+  high-trust accounts en geeft een natuurlijke moment om context
+  uit te vragen ("wat voor strategy ga je draaien dat een
+  weekly cap > 1 BTC nodig heeft?").
+- Auto-tiering uitstellen tot Phase D voorkomt het ontwerpen van
+  een algoritme zonder real-world calibratie-data — een common
+  failure mode bij rate-limiter / cap-systemen.
+
+**Implementatie-implicatie.**
+
+- Phase B: hardcoded default-caps in config + per-user override-
+  velden in de `users`-tabel (kolommen `per_trade_cap`,
+  `daily_cap`, `weekly_cap`, `monthly_cap`, allemaal NULL ⇒
+  default-tier-cap-uit-config).
+- Phase D: replacement van per-user overrides door een
+  auto-tiering algoritme dat op (account-age, trade-volume,
+  realised-PnL-stability) tiers toekent. Per-user overrides
+  blijven beschikbaar als operator-escape-hatch.
+
+#### Open: Bitget subaccount-support (carry-over)
+
+Het derde must-answer item uit de v1-revisie van dit document
+blijft op 2026-04-28 onbeslist. Onduidelijk is of Bitget's
+retail-subaccount-API de volledige flow ondersteunt die Part 3.5
+"recommended" noemt. Wordt geadresseerd in een aparte exchange-
+research-thread; zie 6.3b "Exchange-subaccount-mapping per
+exchange" voor het bredere onderzoek waar deze sub-vraag in past.
+Niet-blocking voor Phase B (TOTP/threshold-enforcement raakt geen
+exchange-subaccount-flow); blocker voor de Phase B → live-launch
+gate als Bitget de eerste live-exchange wordt.
+
+### 6.2 Threshold cap-tabel (definitief voor Phase B launch)
+
+Default caps per auth-tier voor nieuwe users. Alle waardes in BTC
+(inverse-perpetual-aware: ze zijn position-size limits, niet
+notional USD).
+
+| Auth tier            | Per-trade | Daily    | Weekly   | Monthly |
+|----------------------|-----------|----------|----------|---------|
+| Session-only         | 0.005 BTC | 0.02 BTC | 0.05 BTC | 0.1 BTC |
+| TOTP                 | 0.05 BTC  | 0.2 BTC  | 0.5 BTC  | 1 BTC   |
+| PWA WebAuthn         | 0.5 BTC   | 2 BTC    | 5 BTC    | 10 BTC  |
+
+**Notes.**
+
+- Session-only caps gelden voor read-only en paper-trade actions.
+  Live-trade actions vereisen ten minste TOTP-tier — de session-
+  only kolom is hier voor read-paths en paper-mode opgenomen,
+  niet als gangbare live-trade-tier.
+- Verhogingen boven deze defaults vereisen operator-approval
+  (Phase B); auto-tiering wordt geëvalueerd in Phase D.
+- YubiKey-tier (FIDO2 hardware) is gepland voor Phase D met een
+  "no cap" policy voor authenticated actions binnen het account.
+  YubiKey-tier wordt gehouden achter een premium-product-tier
+  (zie 6.3c "Tier-modelering").
+- De caps zijn rolling windows die door de signing-service worden
+  bijgehouden (Part 3.6 Laag 2/3). Een wijziging van de defaults
+  in deze tabel raakt alleen NEW users — bestaande users blijven
+  op hun reeds-geconfigureerde set tot een operator-approved
+  verhoging anders bepaalt.
+- Performance-gemoduleerde scaling uit Part 3.6 Laag 4 blijft
+  bovenop deze defaults werken: de baseline-cap zoals hier
+  gedefinieerd wordt door Laag 4 verlaagd bij underperformance,
+  nooit verhoogd bij outperformance (anti-gaming asymmetry).
+
+### 6.3 Research-spoor (geen launch-blocker)
 
 Gegroepeerd voor scanability. Geen nieuwe items t.o.v. de vorige
 revisie — alleen herpositioneerd in drie categorieën.
 
-#### 6.2a Compliance & regulatory
+#### 6.3a Compliance & regulatory
 
 - **Compliance-requirements per EU jurisdictie.** Nederland (AFM,
   DNB-voor-custody-aspecten), EU algemeen (MiCA van toepassing per
@@ -1602,7 +1707,7 @@ revisie — alleen herpositioneerd in drie categorieën.
   kan adviseren). Zie ook Part 5 "Incident-response communication
   protocol".
 
-#### 6.2b Technical R&D
+#### 6.3b Technical R&D
 
 - **MPC threshold-signing voor enterprise-tier.** Technisch
   interessant voor users met significant balance. Fireblocks +
@@ -1642,7 +1747,7 @@ revisie — alleen herpositioneerd in drie categorieën.
   geen gedeelde shared-hosting infra. Zie ook Laag 7 "Minimale
   onafhankelijkheids-eisen voor watchdog" (Part 3.6).
 
-#### 6.2c Product positioning
+#### 6.3c Product positioning
 
 - **Tier-modelering (basic TOTP vs PWA vs YubiKey premium) en
   pricing-security-tradeoff.** Part 3.3 noemt YubiKey als
@@ -1767,6 +1872,24 @@ Dit document blijft focus op security-architectuur; operational
 execution is een cross-cutting concern die apart wordt gemanaged.
 Dangling references in dit doc naar "separate operational runbook"
 wijzen straks naar dat bestand.
+
+---
+
+## Document changelog
+
+- **2026-04-28** — Resolved Phase B pre-launch decisions (sectie
+  6.1, 6.2). TOTP/PWA hybride strategie + conservatieve
+  threshold-cap-tabel vastgelegd; auto-tiering uitgesteld naar
+  Phase D. Cross-references in 3.3 en 3.4 wijzen nu naar 6.2 voor
+  numerieke waardes; kanaal-keuze blijft in 3.4. Bestaande 6.2
+  research-spoor verschoven naar 6.3 (sub-secties hernoemd
+  6.3a/b/c). Phase B implementatie kan op concrete waardes
+  bouwen.
+- **2026-04-20** — v1 publicatie. Volledige security-model spec:
+  Part 1 (principes), Part 2 (threat model, 8 scenarios), Part 3
+  (target state architecture), Part 4 (migration roadmap, Phases
+  A–G), Part 5 (non-decisions), Part 6 (open questions), Part 7
+  (cross-references naar audit v26).
 
 ---
 
