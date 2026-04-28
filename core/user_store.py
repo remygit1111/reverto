@@ -80,6 +80,7 @@ __all__ = [
     "User",
     "PASSWORD_MIN_LENGTH",
     "FAILED_LOGIN_WINDOW_S",
+    "PER_ACCOUNT_FAIL_LIMIT",
     "get_user_by_id",
     "get_user_by_username",
     "get_admin_user_ids",
@@ -91,6 +92,7 @@ __all__ = [
     "increment_failed_login",
     "reset_failed_login",
     "get_failed_login_state",
+    "check_login_rate_limit",
 ]
 
 # Audit v26-03: single source of truth for the minimum plaintext
@@ -252,7 +254,26 @@ def get_session_epoch(user_id: int) -> int:
 # ``/auth/login`` handler uses the same value to gate its per-
 # account rate-limit — exposed as a public constant so the handler
 # imports the single source of truth.
-FAILED_LOGIN_WINDOW_S = 3600  # 1 hour
+# Phase B PR 4: tightened from 3600 (1 h) to 900 (15 min) per the
+# operator decision documented in security-model.md sectie 6.1
+# (Phase B threshold strategy). Matches the 10/15-min defaults
+# operators expect from typical SaaS auth-rate-limits and gives
+# legitimate users a 15-min cooldown after a typo-streak instead of
+# a full hour. The same constant gates the sliding-window reset
+# inside ``increment_failed_login`` AND the per-account cooldown
+# check in ``check_login_rate_limit`` — keeping them on the same
+# value means "wait out the cooldown" naturally returns the user to
+# zero on their next attempt.
+FAILED_LOGIN_WINDOW_S = 900  # 15 minutes
+
+# Phase B PR 4: hard threshold at which the per-account cooldown
+# kicks in. Exposed as a module-level constant so the route handler
+# imports the single source of truth — pre-PR-4 ``web/routes/auth.py``
+# carried a private ``_PER_ACCOUNT_FAIL_LIMIT = 10`` shadow that has
+# been removed in this commit. 10 attempts in 15 min = ~1.5 per min,
+# well under what a typo-prone legitimate user would hit and well
+# under what a brute-force script can usefully drive against bcrypt.
+PER_ACCOUNT_FAIL_LIMIT = 10
 
 
 def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
@@ -336,6 +357,48 @@ def reset_failed_login(user_id: int) -> bool:
             (user_id,),
         )
     return cur.rowcount > 0
+
+
+def check_login_rate_limit(
+    user_id: int,
+) -> tuple[bool, Optional[int]]:
+    """Phase B PR 4: per-user rate-limit gate for the login flow.
+
+    Returns ``(is_limited, retry_after_seconds)``:
+
+      * ``(False, None)`` — user not found, or under the threshold,
+        or threshold was reached but the cooldown has fully
+        elapsed. The caller proceeds with normal auth.
+      * ``(True, retry_after)`` — user is at-or-above
+        ``PER_ACCOUNT_FAIL_LIMIT`` AND their last failed attempt is
+        within ``FAILED_LOGIN_WINDOW_S``. The caller responds with
+        429 and embeds ``retry_after`` (whole seconds) in the
+        Retry-After header.
+
+    Failure to find the user (unknown username, deleted row) gives
+    the same code-path as a clean user — the 429 path is reserved
+    for the authoritative rate-limited case. This intentionally
+    does NOT use unknown-user as a rate-limit signal because that
+    would let an attacker probe valid usernames by observing
+    "unknown gets 401 fast, valid-but-throttled gets 429 with
+    retry hint" timing.
+    """
+    raw_count, last_at = get_failed_login_state(user_id)
+    if raw_count < PER_ACCOUNT_FAIL_LIMIT:
+        return (False, None)
+    if last_at is None:
+        # Defensive: counter > 0 with no timestamp shouldn't happen
+        # because ``increment_failed_login`` always writes both. If
+        # someone hand-edits the DB to put it in this shape, treat
+        # it as "no recent failure" rather than block forever.
+        return (False, None)
+    elapsed = (datetime.now(UTC) - last_at).total_seconds()
+    if elapsed >= FAILED_LOGIN_WINDOW_S:
+        # Cooldown fully elapsed — next failed attempt will reset
+        # the counter to 1 via the sliding-window logic in
+        # ``increment_failed_login``. No 429 from this position.
+        return (False, None)
+    return (True, int(FAILED_LOGIN_WINDOW_S - elapsed))
 
 
 def get_failed_login_state(user_id: int) -> tuple[int, Optional[datetime]]:
