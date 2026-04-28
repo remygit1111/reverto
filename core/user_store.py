@@ -85,6 +85,7 @@ __all__ = [
     "get_admin_user_ids",
     "verify_password",
     "set_password",
+    "update_user_totp_seed",
     "bump_session_epoch",
     "get_session_epoch",
     "increment_failed_login",
@@ -170,6 +171,35 @@ def set_password(user_id: int, plaintext: str) -> bool:
         conn.execute(
             "UPDATE users SET password_hash = ? WHERE id = ?",
             (pw_hash, user_id),
+        )
+    return True
+
+
+def update_user_totp_seed(
+    user_id: int, encrypted_seed: Optional[str],
+) -> bool:
+    """Set or clear the encrypted TOTP seed for a user.
+
+    Pass an encrypted blob to enable TOTP, or ``None`` to disable. The
+    encryption itself happens in ``core.totp.encrypt_seed_for_user``;
+    this helper is a thin DB write so the auth route doesn't reach
+    into the schema directly.
+
+    Returns True on a successful UPDATE, False when ``user_id`` does
+    not resolve to an existing row. Does NOT bump session_epoch —
+    enrolling in or disabling 2FA does not invalidate existing
+    cookies (the user already proved password ownership for both
+    paths; turning 2FA on is a forward-only enhancement, turning it
+    off is gated by the dual-factor check at the call site).
+    """
+    user = get_user_by_id(user_id)
+    if user is None:
+        return False
+    conn = get_db()
+    with conn:
+        conn.execute(
+            "UPDATE users SET totp_seed_encrypted = ? WHERE id = ?",
+            (encrypted_seed, user_id),
         )
     return True
 
