@@ -438,6 +438,8 @@ Combining 1 + 2: I cannot develop or validate a fix without Python 3.13 reproduc
 
 **Remediation (deferred).** The original proposal — `tests/test_auth_cookie_posture.py::test_login_cookie_has_strict_samesite` that reads `Set-Cookie` when `_COOKIE_SAMESITE` is its default — is still the right safety-net but would need to toggle the constant back to its production value before reading the header, which is the kind of test-fixture contortion this acceptance is trying to avoid. Revisit under one of the triggers above.
 
+**STATUS — RESOLVED in `feat/cookie-posture-regression-test` (Phase B PR 5).** The "test-fixture contortion" the deferral worried about turned out to be a single fixture that flips `_COOKIE_SECURE = True` + `_COOKIE_SAMESITE = "strict"` for the duration of the test, and only inspects the Set-Cookie header on the first response (no follow-up requests rely on the cookie surviving plain-HTTP TestClient transport). Pinned the per-cookie attribute posture for all four production cookies — `reverto_session`, `reverto_csrf`, `reverto_totp_pending` (Phase B PR 2), `reverto_login_totp_pending` (Phase B PR 3) — with an explicit "intentionally NOT HttpOnly" carve-out for the CSRF cookie (double-submit pattern requires JS read access). Plus a defence-in-depth check that no cookie carries a Domain attribute (would broaden scope to subdomains) and that `reverto_session` is NOT minted during the TOTP-pending phase (would bypass the 2FA gate). 12 regression tests; sanity-checked by tampering 3 different attributes (HttpOnly, SameSite, Secure) and observing diagnostic failures on each. The original "revisit triggers" section above is now informational only — Trigger #1 (Phase B re-opens the auth-stack) fired and produced this fix.
+
 ---
 
 ## 12. Documentation & Runbook
@@ -538,7 +540,12 @@ All five Phase-3b-gate items are RESOLVED at the time of the Phase-A wrap-up swe
 13. **v26-11** use `UPDATE ... RETURNING` in `bump_session_epoch`.
 14. **v26-17** `GET /api/bots/{slug}` → proper 404.
 15. **v26-20** resolve TODO(phase-3) comments together with v26-16.
-16. ~~**v26-22** add cookie-posture smoke test.~~ ACCEPTED as known limitation (2026-04-21) — see Part 11 resolution note.
+16. ~~**v26-22** add cookie-posture smoke test.~~ **RESOLVED** in
+    `feat/cookie-posture-regression-test` (Phase B PR 5). The
+    2026-04-21 ACCEPTED-status was rolled back when the Phase B
+    auth-stack re-opening (the explicit revisit-trigger #1 from the
+    original resolution note) produced a viable fixture pattern.
+    See Part 11 STATUS — RESOLVED block.
 17. **v26-24** strike through obsolete `docs/phase-3.md` sections.
 
 ### Defer (INFO / observational)
