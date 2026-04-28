@@ -187,11 +187,108 @@ async function handleLoginSubmit(e) {
       err.classList.remove('hidden');
       return;
     }
+    // Phase B PR 3: branch on requires_totp. The no-TOTP path is
+    // unchanged from pre-PR — JSON {ok: true, csrf_token: …,
+    // requires_totp: false}, session cookie already set, just
+    // reload into the authed shell. The TOTP path returns
+    // {requires_totp: true} with NO session cookie yet — show the
+    // second-step form.
+    let body = {};
+    try { body = await r.json(); } catch (_) {}
+    if (body && body.requires_totp) {
+      _showLoginTotpForm();
+      return;
+    }
     location.reload();
   } catch (e2) {
     err.textContent = 'Login failed';
     err.classList.remove('hidden');
   }
+}
+
+// ── Phase B PR 3: TOTP login second step ──────────────────────────────────
+
+function _showLoginTotpForm() {
+  document.getElementById('login-form').classList.add('hidden');
+  document.getElementById('login-totp-form').classList.remove('hidden');
+  const codeInput = document.getElementById('login-totp-code');
+  if (codeInput) {
+    codeInput.value = '';
+    codeInput.focus();
+  }
+  const err = document.getElementById('login-error');
+  if (err) {
+    err.classList.add('hidden');
+    err.textContent = '';
+  }
+}
+
+function _resetLoginToPasswordStep() {
+  document.getElementById('login-totp-form').classList.add('hidden');
+  document.getElementById('login-form').classList.remove('hidden');
+  // Don't wipe username — the user already typed it correctly. Wipe
+  // password (sensitive) and the TOTP code (already-stale).
+  document.getElementById('login-password').value = '';
+  const codeInput = document.getElementById('login-totp-code');
+  if (codeInput) codeInput.value = '';
+  const err = document.getElementById('login-error');
+  if (err) {
+    err.classList.add('hidden');
+    err.textContent = '';
+  }
+  document.getElementById('login-password').focus();
+}
+
+async function handleLoginTotpSubmit(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  const code = (document.getElementById('login-totp-code').value || '').trim();
+  const err = document.getElementById('login-error');
+  err.classList.add('hidden');
+  err.textContent = '';
+  if (!/^\d{6}$/.test(code)) {
+    err.textContent = 'Code must be exactly 6 digits.';
+    err.classList.remove('hidden');
+    return;
+  }
+  let r;
+  try {
+    r = await fetch('/auth/login/totp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+  } catch (e2) {
+    err.textContent = 'Network error. Please try again.';
+    err.classList.remove('hidden');
+    return;
+  }
+  if (r.status === 400) {
+    // Pending cookie missing or expired — the server told us to
+    // restart from the password step. Surface the message briefly,
+    // then auto-reset so the user isn't stuck staring at a dead
+    // form.
+    let msg = 'Login session expired. Please sign in again.';
+    try {
+      const body = await r.json();
+      if (body && body.detail) msg = body.detail;
+    } catch (_) {}
+    err.textContent = msg;
+    err.classList.remove('hidden');
+    setTimeout(_resetLoginToPasswordStep, 2000);
+    return;
+  }
+  if (!r.ok) {
+    let msg = 'TOTP verification failed.';
+    try {
+      const body = await r.json();
+      if (body && body.detail) msg = body.detail;
+    } catch (_) {}
+    err.textContent = msg;
+    err.classList.remove('hidden');
+    return;
+  }
+  // Success — session cookie set, reload into the authed shell.
+  location.reload();
 }
 
 async function handleLogout() {
@@ -8415,6 +8512,13 @@ function setupEventListeners() {
   $('modal-save-btn').addEventListener('click', saveApiKey);
 
   const lf  = $('login-form');   if (lf) lf.addEventListener('submit', handleLoginSubmit);
+  // Phase B PR 3: second-step TOTP form. Both the submit and the
+  // "Cancel and start over" button are wired here so the listener
+  // registration matches the password-form pattern above.
+  const ltf = $('login-totp-form');
+  if (ltf) ltf.addEventListener('submit', handleLoginTotpSubmit);
+  const ltc = $('login-totp-cancel');
+  if (ltc) ltc.addEventListener('click', _resetLoginToPasswordStep);
 
   setupActiveDealsCog();
   setupDetailOpenDealsCog();

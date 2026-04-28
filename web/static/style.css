@@ -3205,3 +3205,40 @@ html.compact .modal-card { padding: 19px; }
   font-size: 13px;
   line-height: 1.5;
 }
+
+/* ── Phase B PR 3: TOTP second-step on the login screen ──────────────────── */
+
+.login-totp-prompt {
+  margin: 0 0 14px 0;
+  color: var(--text-muted, #aaa);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#login-totp-code {
+  font-family: var(--mono);
+  font-size: 22px;
+  letter-spacing: 0.4em;
+  text-align: center;
+  width: 100%;
+}
+
+/* "Cancel and start over" link-style button — drops the user back
+   to the password form when their authenticator app is unavailable
+   or they want to retry from scratch. Distinct from the login-btn
+   so it visually reads as a secondary action. */
+.login-totp-cancel {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  font-size: 13px;
+  padding: 8px 4px 0;
+  margin-top: 6px;
+  text-align: center;
+  width: 100%;
+}
+.login-totp-cancel:hover {
+  text-decoration: none;
+}
