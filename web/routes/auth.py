@@ -37,13 +37,16 @@ from core.user_store import FAILED_LOGIN_WINDOW_S, PASSWORD_MIN_LENGTH
 from web import app as _webapp
 from web.app import (
     _audit,
+    _clear_pending_login_totp_cookie,
     _clear_pending_totp_cookie,
     _create_session_cookie,
+    _read_pending_login_totp_cookie,
     _read_pending_totp_cookie,
     _request_actor,
     _request_user,
     _SESSION_COOKIE,
     _SESSION_TTL,
+    _set_pending_login_totp_cookie,
     _set_pending_totp_cookie,
     _verify_session_cookie,
     limiter,
@@ -173,6 +176,16 @@ class ChangePasswordBody(BaseModel):
     new_password: str = Field(min_length=1, max_length=512)
 
 
+class LoginTotpBody(BaseModel):
+    """Phase B PR 3: body for /auth/login/totp — the second login
+    step for users with TOTP enabled. ``code`` is constrained the
+    same way as TotpVerifyBody (six digits exact) so an obviously
+    malformed value is rejected by Pydantic with 422 before the
+    handler runs."""
+
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
 @router.post("/auth/login")
 @limiter.limit("5/minute")
 async def auth_login(body: LoginBody, request: Request):
@@ -255,12 +268,53 @@ async def auth_login(body: LoginBody, request: Request):
     # has reformed.
     user_store.reset_failed_login(user.id)
 
+    # Phase B PR 3: branch on totp_enabled. Users without 2FA get
+    # the historical "set session cookie + return ok" response —
+    # zero behaviour change for them. Users WITH 2FA get a pending-
+    # login-TOTP cookie staged here, no session cookie yet, and
+    # ``requires_totp: True`` in the JSON body so the SPA renders
+    # the second-step input form. The actual session cookie is
+    # minted in /auth/login/totp once the code verifies.
+    if user.totp_enabled:
+        resp = JSONResponse({"ok": True, "requires_totp": True})
+        _set_pending_login_totp_cookie(resp, user.id)
+        _audit(
+            "login_password_ok_totp_required",
+            user.username,
+            "-",
+            user_id=user.id,
+            request=request,
+        )
+        return resp
+
+    return _mint_session_response(user, request, audit_action="auth_login")
+
+
+def _mint_session_response(
+    user: "User",
+    request: Request,
+    *,
+    audit_action: str,
+) -> JSONResponse:
+    """Mint the post-login session + CSRF cookies and return the
+    standard JSON shape.
+
+    Shared by ``/auth/login`` (no-TOTP path) and ``/auth/login/totp``
+    (TOTP-verified path). Centralising the cookie-set + audit-emit
+    here keeps the two paths from drifting on cookie flags or audit
+    field shape — every successful login lands the same observable
+    state regardless of whether 2FA was in play.
+    """
     token = _create_session_cookie(user)
     # Audit r1-073: mint a CSRF token on successful login. Random
     # per-session URL-safe value; readable by JS so the SPA can
     # echo it in the X-CSRF-Token header on mutating requests.
     csrf_token = _webapp._mint_csrf_token()
-    resp = JSONResponse({"ok": True, "csrf_token": csrf_token})
+    resp = JSONResponse({
+        "ok": True,
+        "csrf_token": csrf_token,
+        "requires_totp": False,
+    })
     # Look up cookie flags on the module at call-time (not at import)
     # so tests can override _COOKIE_SECURE / _COOKIE_SAMESITE on the
     # web.app module and have the change take effect without touching
@@ -279,12 +333,165 @@ async def auth_login(body: LoginBody, request: Request):
     # the two mint sites can't drift.
     _webapp._set_csrf_cookie_on_response(resp, csrf_token)
     _audit(
-        "auth_login",
+        audit_action,
         user.username,
         "-",
         user_id=user.id,
         request=request,
     )
+    return resp
+
+
+@router.post("/auth/login/totp")
+@limiter.limit("10/minute")
+async def auth_login_totp(
+    body: LoginTotpBody,
+    request: Request,
+):
+    """Phase B PR 3: complete a 2FA login by verifying the TOTP code
+    against the user staged by the prior /auth/login password step.
+
+    Reads the pending-login-TOTP cookie minted by /auth/login when
+    ``user.totp_enabled`` was True. Re-resolves the user from the DB
+    (so a deactivation or TOTP-disable that happened between steps
+    surfaces) and verifies the code against the stored encrypted
+    seed. On success the pending cookie is cleared and the standard
+    session + CSRF cookies are minted via _mint_session_response —
+    same shape /auth/login returns for the no-TOTP path, so the SPA
+    can finish login uniformly regardless of whether 2FA was in
+    play.
+
+    Failure modes (each emits a separate audit event so an operator
+    chasing an incident can distinguish them):
+      * No / expired pending cookie       → 400, no audit (the
+        pending cookie itself was the only authoritative state, so
+        there is no user to attribute to).
+      * User missing or deactivated       → 401, audit
+        ``login_totp_user_inactive`` denied.
+      * TOTP disabled mid-flow (race)     → 400, audit
+        ``login_totp_disabled_mid_flow`` denied.
+      * Stored seed won't decrypt         → 500, audit
+        ``login_totp_decrypt_failed`` error. Operator action
+        required (Fernet key rotation gone wrong, DB tamper).
+      * Code rejected                     → 401, audit
+        ``login_totp_failed`` denied. Pending cookie preserved so
+        a typo can be retried; rate-limit caps abuse at 10/min.
+    """
+    user_id = _read_pending_login_totp_cookie(request)
+    if user_id is None:
+        # No authoritative state to attribute to; bail without an
+        # audit row. The 400 response prods the SPA to reset to the
+        # password form (see app.js handler).
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No login in progress. Sign in again with your "
+                "username and password."
+            ),
+        )
+
+    user = user_store.get_user_by_id(user_id)
+    if user is None or not user.active:
+        # Race: user got deactivated between the two steps. Drop the
+        # pending cookie so a follow-up call gets the same 400 a fresh
+        # session would.
+        resp = JSONResponse(
+            status_code=401,
+            content={"detail": "User not found"},
+        )
+        _clear_pending_login_totp_cookie(resp)
+        _audit(
+            "login_totp_user_inactive",
+            user.username if user else "?",
+            "-",
+            user_id=user_id,
+            request=request,
+            result="denied",
+        )
+        return resp
+
+    if not user.totp_enabled:
+        # Race: user disabled TOTP via /auth/totp/disable in another
+        # tab between the two steps. The right move is to send them
+        # back to /auth/login — the password they already supplied
+        # would now suffice on its own.
+        resp = JSONResponse(
+            status_code=400,
+            content={
+                "detail": (
+                    "TOTP is no longer enabled for this account. "
+                    "Sign in again — your password alone is now "
+                    "sufficient."
+                ),
+            },
+        )
+        _clear_pending_login_totp_cookie(resp)
+        _audit(
+            "login_totp_disabled_mid_flow",
+            user.username,
+            "-",
+            user_id=user.id,
+            request=request,
+            result="denied",
+        )
+        return resp
+
+    # Decrypt — failure is an integrity event (DB tamper, key
+    # rotation gone wrong, missing keyfile), surfaced as 500 so
+    # ops sees it instead of a silent 401.
+    encrypted = user.totp_seed_encrypted
+    assert encrypted is not None  # totp_enabled guard above
+    try:
+        secret = totp.decrypt_seed_for_user(user.id, encrypted)
+    except (InvalidToken, ValueError) as e:
+        logger.error(
+            "login_totp: decrypt failed for user_id=%d: %s",
+            user.id, str(e)[:200],
+        )
+        _audit(
+            "login_totp_decrypt_failed",
+            user.username,
+            "-",
+            user_id=user.id,
+            request=request,
+            result="error",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "TOTP verification temporarily unavailable. Contact "
+                "an administrator."
+            ),
+        )
+
+    if not totp.verify_code(secret, body.code):
+        # Wrong code — preserve pending cookie so a typo can be
+        # retried within the 2-minute TTL. Rate-limit (10/min) caps
+        # brute-force; a future per-user rate-limit (PR 4) will
+        # tighten this further.
+        _audit(
+            "login_totp_failed",
+            user.username,
+            "-",
+            user_id=user.id,
+            request=request,
+            result="denied",
+        )
+        # NOTE: we do NOT increment user_store.failed_login_count
+        # here. That counter exists to gate password-spray; a TOTP
+        # mistype after a successful password-step is a different
+        # error class, and a future per-user TOTP-rate-limit (PR 4)
+        # will track it under its own counter.
+        raise HTTPException(status_code=401, detail="Invalid TOTP code")
+
+    # Code verified — clear pending state, mint the real session,
+    # audit the full-success row. ``login_success_totp`` is a
+    # distinct action from ``auth_login`` so operators can grep
+    # 2FA-completed logins separately when investigating.
+    resp = _mint_session_response(
+        user, request, audit_action="login_success_totp",
+    )
+    _clear_pending_login_totp_cookie(resp)
     return resp
 
 

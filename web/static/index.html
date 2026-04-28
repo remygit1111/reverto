@@ -34,7 +34,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=95">
+<link rel="stylesheet" href="/static/style.css?v=96">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -569,6 +569,32 @@
         <input id="login-password" type="password" autocomplete="current-password" required>
         <button type="submit" class="hbtn hbtn-theme btn-accent login-btn">Log in</button>
         <div id="login-error" class="login-error hidden"></div>
+      </form>
+      <!-- Phase B PR 3: second-step TOTP form. Hidden until
+           /auth/login responds with requires_totp=true; shown by
+           handleLoginSubmit which then arms the submit/cancel
+           handlers. The "Cancel and start over" link clears the
+           pending state and returns to the password form so a user
+           who arrives at this step without their authenticator app
+           in hand isn't stuck. -->
+      <form id="login-totp-form" class="login-form hidden">
+        <p class="login-totp-prompt">
+          Enter the 6-digit code from your authenticator app.
+        </p>
+        <label for="login-totp-code">TOTP code</label>
+        <input
+          id="login-totp-code"
+          type="text"
+          inputmode="numeric"
+          pattern="[0-9]{6}"
+          maxlength="6"
+          autocomplete="one-time-code"
+          placeholder="000000"
+          required>
+        <button type="submit" class="hbtn hbtn-theme btn-accent login-btn">Verify</button>
+        <button type="button" id="login-totp-cancel" class="login-totp-cancel">
+          Cancel and start over
+        </button>
       </form>
     </div>
   </div>
@@ -1839,6 +1865,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=216"></script>
+<script src="/static/app.js?v=217"></script>
 </body>
 </html>
