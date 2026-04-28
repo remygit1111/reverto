@@ -34,7 +34,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=94">
+<link rel="stylesheet" href="/static/style.css?v=95">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -155,10 +155,120 @@
       <div id="profile-api-copy-status" class="profile-success hidden">Copied to clipboard.</div>
     </section>
 
+    <!-- Phase B PR 2: TOTP 2FA enrollment + disable. Status surfaced
+         from /auth/status (totp_enabled). The two action buttons each
+         open a sub-modal — see #totp-enroll-modal and #totp-disable-
+         modal below. PR 3 will add the corresponding step on
+         /auth/login. -->
+    <section class="profile-section" id="profile-totp-section">
+      <div class="profile-section-title">Two-factor authentication (TOTP)</div>
+      <div id="profile-totp-disabled" class="profile-totp-state hidden">
+        <div class="profile-totp-help">
+          TOTP 2FA is not enabled. Add an extra layer of security by
+          requiring a 6-digit code from your authenticator app on
+          each login.
+        </div>
+        <button type="button" id="profile-totp-enable-btn" class="hbtn hbtn-theme btn-accent">Enable TOTP</button>
+      </div>
+      <div id="profile-totp-enabled" class="profile-totp-state hidden">
+        <div class="profile-totp-help profile-totp-active">
+          ✓ TOTP 2FA is active for this account.
+        </div>
+        <button type="button" id="profile-totp-disable-btn" class="hbtn hbtn-theme btn-danger">Disable TOTP</button>
+      </div>
+    </section>
+
     <div class="modal-actions">
       <button type="button" id="profile-close" class="hbtn hbtn-theme">Close</button>
       <button type="button" id="profile-save" class="hbtn hbtn-theme btn-accent">Save</button>
     </div>
+  </div>
+</div>
+
+<!-- ── TOTP enrollment modal (Phase B PR 2) ──────────────────────────────────
+     QR code is rendered server-side as inline SVG in the
+     /auth/totp/setup response (qr_svg field). No CDN dependency,
+     no SRI hash to maintain — keeps v27-04 supply-chain surface
+     closed.
+-->
+<div id="totp-enroll-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title">Enable Two-Factor Authentication</div>
+    <ol class="totp-steps">
+      <li>Install an authenticator app (Google Authenticator, Authy, 1Password, Aegis, etc.).</li>
+      <li>Scan the QR code below in your authenticator app.</li>
+      <li>Enter the 6-digit code your app generates and click <strong>Verify</strong>.</li>
+    </ol>
+
+    <div class="totp-qr-container" id="totp-qr-container">
+      <!-- innerHTML target for the server-rendered SVG -->
+    </div>
+
+    <details class="totp-manual-entry">
+      <summary>Can't scan? Enter the secret manually</summary>
+      <code id="totp-secret-display" class="totp-secret-text"></code>
+    </details>
+
+    <form id="totp-verify-form">
+      <label class="profile-label" for="totp-code-input">6-digit code</label>
+      <input
+        type="text"
+        id="totp-code-input"
+        class="modal-input totp-code-input"
+        inputmode="numeric"
+        pattern="[0-9]{6}"
+        maxlength="6"
+        autocomplete="one-time-code"
+        placeholder="000000"
+        required>
+      <div id="totp-verify-error" class="login-error hidden"></div>
+      <div class="modal-actions">
+        <button type="button" id="totp-enroll-cancel" class="hbtn hbtn-theme">Cancel</button>
+        <button type="submit" id="totp-verify-btn" class="hbtn hbtn-theme btn-accent">Verify and enable</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── TOTP disable modal (Phase B PR 2) ─────────────────────────────────────
+     Dual-factor: password + current TOTP code. Both required —
+     either alone is insufficient to remove the second factor.
+-->
+<div id="totp-disable-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-title">Disable Two-Factor Authentication</div>
+    <div class="totp-warning">
+      Disabling TOTP removes the extra security layer from your
+      account. Only your password will protect future logins.
+    </div>
+
+    <form id="totp-disable-form">
+      <label class="profile-label" for="totp-disable-password">Current password</label>
+      <input
+        type="password"
+        id="totp-disable-password"
+        class="modal-input"
+        autocomplete="current-password"
+        required>
+
+      <label class="profile-label" for="totp-disable-code">6-digit TOTP code</label>
+      <input
+        type="text"
+        id="totp-disable-code"
+        class="modal-input totp-code-input"
+        inputmode="numeric"
+        pattern="[0-9]{6}"
+        maxlength="6"
+        autocomplete="one-time-code"
+        placeholder="000000"
+        required>
+
+      <div id="totp-disable-error" class="login-error hidden"></div>
+      <div class="modal-actions">
+        <button type="button" id="totp-disable-cancel" class="hbtn hbtn-theme">Cancel</button>
+        <button type="submit" id="totp-disable-btn-confirm" class="hbtn hbtn-theme btn-danger">Disable TOTP</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1729,6 +1839,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=215"></script>
+<script src="/static/app.js?v=216"></script>
 </body>
 </html>

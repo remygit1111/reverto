@@ -1363,9 +1363,21 @@ gaat.
   de kolom nog — pure structurele PR.
 - TOTP-seed rotation endpoint (voor users die hun authenticator-app
   verliezen; requires admin-action initially).
-  **STATUS: pending PR 2 (enrollment + admin-reset flow).**
+  **STATUS: PARTIAL — disable + re-enroll path live in PR 2
+  (`feat/totp-enrollment`). Admin-reset endpoint voor andere users
+  (operator handmatig een seed clearen) blijft pending — tracked
+  voor een aparte sweep-PR omdat het een role-gated mutating endpoint
+  introduceert dat los staat van de self-service flow.**
 - TOTP-verify endpoint + integratie in `/auth/login` flow.
-  **STATUS: pending PR 3 (login-gate integration).**
+  **STATUS: enrollment-flow live in PR 2 (`feat/totp-enrollment`)
+  via three new endpoints — `/auth/totp/setup` (mints
+  pending-secret in 10-min server-signed cookie + returns server-
+  rendered SVG QR), `/auth/totp/verify` (validates code against
+  pending-secret + commits encrypted seed to
+  `users.totp_seed_encrypted`), `/auth/totp/disable` (dual-factor:
+  password + current TOTP code). 6 audit-event types cover the full
+  lifecycle. Login-flow integration (TOTP-step inside
+  `/auth/login`) deferred to PR 3.**
 - Password-rotation prompt: forced password change elke 6 maanden
   voor admin-role; optional voor user-role.
   **STATUS: pending (uitgesteld; vereist UX-design eerst).**
@@ -1896,6 +1908,13 @@ wijzen straks naar dat bestand.
 
 ## Document changelog
 
+- **2026-04-28 (latest)** — Phase B PR 2 status update in Part 4:
+  enrollment-flow live (`feat/totp-enrollment`). Three new endpoints,
+  pending-TOTP cookie via separate `URLSafeTimedSerializer`, server-
+  rendered SVG QR (deviation from PR-template's CDN approach —
+  closes v27-04 supply-chain surface as side-effect). Profile-page
+  UI + 23 regression tests. PR 3 will integrate TOTP into the
+  `/auth/login` flow.
 - **2026-04-28 (later)** — Phase B PR 1 status update in Part 4:
   TOTP foundation gemarkeerd als landed (DB-schema v9 +
   `core/totp.py` helpers + `CredentialProvider.encrypt_for_user` /
