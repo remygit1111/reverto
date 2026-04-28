@@ -398,6 +398,51 @@ def test_initial_load_skeleton_present():
     assert "skeleton-on-init" in js
 
 
+def test_closed_deals_table_has_dca_column():
+    """The bot-detail Deals tab's Closed Deals table renders a
+    column-driven table from the ``CLOSED_DEALS_COLUMNS`` array. A
+    new ``DCA`` column was added between ``close_price`` and
+    ``pnl_btc`` so operators can see how many DCA orders each closed
+    deal used (excludes base order). The data comes from
+    ``d.dca_count`` which paper.state_io.deal_to_dict serialises
+    from the engine's ``PaperDeal.dca_count`` property.
+
+    A future refactor that drops the column entry, renames the key,
+    or moves it past ``pnl_btc`` will fail this test before any
+    operator notices missing data on the live page.
+    """
+    js = _APP_JS.read_text(encoding="utf-8")
+
+    # Carve out the CLOSED_DEALS_COLUMNS array literal so the
+    # assertions only inspect the column-driven config, not other
+    # uses of the same strings (e.g. backtest UI).
+    arr_start = js.index("const CLOSED_DEALS_COLUMNS")
+    arr_end = js.index("];", arr_start) + 2
+    arr_src = js[arr_start:arr_end]
+
+    # Column is present, both as the dictionary ``key`` and the
+    # column ``label`` ("DCA" appears in the user-facing header).
+    assert "key: 'dca_count'" in arr_src, (
+        "CLOSED_DEALS_COLUMNS missing the 'dca_count' column entry"
+    )
+    assert "label: 'DCA'" in arr_src, (
+        "DCA column header label missing"
+    )
+    # Data binding: the cell renderer must pull from d.dca_count.
+    assert "d.dca_count" in arr_src
+
+    # Order matters: dca_count should sit between close_price and
+    # pnl_btc so the table reads naturally
+    # (entry → close → DCAs used → PnL).
+    close_idx = arr_src.index("key: 'close_price'")
+    dca_idx   = arr_src.index("key: 'dca_count'")
+    pnl_idx   = arr_src.index("key: 'pnl_btc'")
+    assert close_idx < dca_idx < pnl_idx, (
+        "DCA column must sit between close_price and pnl_btc; got "
+        f"close@{close_idx}, dca@{dca_idx}, pnl@{pnl_idx}"
+    )
+
+
 def test_bot_card_does_not_render_open_deal_preview():
     """The bot-card on the Overview / Bots tab used to render the
     first three open deals as a label-free row of

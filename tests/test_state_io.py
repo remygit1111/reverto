@@ -211,6 +211,76 @@ class TestDealSerialisation:
         assert out["pnl_btc"] == 0.005
         assert out["pnl_pct"] == 5.0
 
+    def test_dca_count_zero_for_base_only_deal(self):
+        """A deal that closed on the base order alone (no DCA's
+        triggered) reports ``dca_count = 0`` so the Closed Deals tab
+        renders a clean ``0`` rather than ``undefined``.
+        """
+        from datetime import UTC, datetime
+
+        from paper.paper_state import PaperDeal, PaperOrder
+
+        orders = [PaperOrder(
+            order_number=1, price=80_000.0, size=0.001,
+            timestamp=datetime(2026, 4, 18, tzinfo=UTC),
+            order_type="base",
+        )]
+        deal = PaperDeal(
+            id="P-DCA0", bot_name="t", symbol="BTC/USD",
+            side="long", leverage=1, orders=orders,
+        )
+        out = deal_to_dict(deal, current_price=80_500.0)
+        assert "dca_count" in out, (
+            "deal_to_dict must always emit dca_count so the frontend "
+            "Closed Deals column renders a value (not undefined)"
+        )
+        assert out["dca_count"] == 0
+
+    def test_dca_count_excludes_base_order(self):
+        """A deal with base + 3 DCA orders reports ``dca_count = 3``.
+        The base order (order_number=1, order_type='base') is
+        explicitly NOT counted — operators want to see how many
+        DCA-budget steps were used, not how many orders total.
+        """
+        from datetime import UTC, datetime
+
+        from paper.paper_state import PaperDeal, PaperOrder
+
+        orders = [
+            PaperOrder(
+                order_number=1, price=80_000.0, size=0.001,
+                timestamp=datetime(2026, 4, 18, tzinfo=UTC),
+                order_type="base",
+            ),
+            PaperOrder(
+                order_number=2, price=78_000.0, size=0.001,
+                timestamp=datetime(2026, 4, 18, 1, tzinfo=UTC),
+                order_type="dca",
+            ),
+            PaperOrder(
+                order_number=3, price=76_000.0, size=0.001,
+                timestamp=datetime(2026, 4, 18, 2, tzinfo=UTC),
+                order_type="dca",
+            ),
+            PaperOrder(
+                order_number=4, price=74_000.0, size=0.001,
+                timestamp=datetime(2026, 4, 18, 3, tzinfo=UTC),
+                order_type="dca",
+            ),
+        ]
+        deal = PaperDeal(
+            id="P-DCA3", bot_name="t", symbol="BTC/USD",
+            side="long", leverage=1, orders=orders,
+        )
+        out = deal_to_dict(deal, current_price=75_000.0)
+        assert out["dca_count"] == 3
+        # Belt-and-braces: order_count IS the total (base + DCAs)
+        # while dca_count is DCAs only. Two values intentionally
+        # carry different semantics; this guards a future refactor
+        # that might collapse them by accident.
+        assert out["order_count"] == 4
+        assert out["order_count"] - out["dca_count"] == 1
+
 
 # ── paper_engine backwards-compat aliases ───────────────────────────────────
 
