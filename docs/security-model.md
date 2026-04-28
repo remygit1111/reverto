@@ -1343,18 +1343,37 @@ gestaakt project niet in een half-werkende state eindigt.
 
 ### Phase B — Authentication Hardening
 
+Phase B landt in 5 PRs. Status per deliverable hieronder. PR 1
+(foundation) is geland; PR 2..5 volgen incrementeel zodat elke PR
+zelfstandig review-baar is en geen halve auth-stack tegelijk live
+gaat.
+
 **Deliverables:**
 - TOTP 2FA-layer: nieuwe kolom `users.totp_seed_encrypted` +
   bijbehorende encryption-key-management (nog in main-app, verhuist
   in Phase C).
+  **STATUS: foundation landed in `feat/totp-foundation` (PR 1).**
+  DB-schema v8 → v9 (additive ALTER TABLE), `core/totp.py` met
+  `pyotp`-backed RFC-6238 helpers (generate_secret,
+  generate_provisioning_uri, verify_code), per-user Fernet
+  encryption via uitgebreide `CredentialProvider` interface
+  (`encrypt_for_user` / `decrypt_for_user`), 38 regression-tests
+  inclusief schema-migration check + tampered-ciphertext +
+  cross-user key-isolation. Geen endpoint of login-flow consumeert
+  de kolom nog — pure structurele PR.
 - TOTP-seed rotation endpoint (voor users die hun authenticator-app
   verliezen; requires admin-action initially).
+  **STATUS: pending PR 2 (enrollment + admin-reset flow).**
 - TOTP-verify endpoint + integratie in `/auth/login` flow.
+  **STATUS: pending PR 3 (login-gate integration).**
 - Password-rotation prompt: forced password change elke 6 maanden
   voor admin-role; optional voor user-role.
+  **STATUS: pending (uitgesteld; vereist UX-design eerst).**
 - Rate-limiting per-user toegevoegd aan login-path
   (momenteel alleen per-IP).
+  **STATUS: pending PR 4.**
 - Cookie-posture regression test (audit v26 v26-22).
+  **STATUS: pending PR 5.**
 
 ### Phase C — Service Separation
 
@@ -1877,6 +1896,12 @@ wijzen straks naar dat bestand.
 
 ## Document changelog
 
+- **2026-04-28 (later)** — Phase B PR 1 status update in Part 4:
+  TOTP foundation gemarkeerd als landed (DB-schema v9 +
+  `core/totp.py` helpers + `CredentialProvider.encrypt_for_user` /
+  `decrypt_for_user` extension + 38 regression tests). Andere
+  Phase B deliverables (PR 2..5) als pending gemarkeerd zodat de
+  status per-PR traceable is.
 - **2026-04-28** — Resolved Phase B pre-launch decisions (sectie
   6.1, 6.2). TOTP/PWA hybride strategie + conservatieve
   threshold-cap-tabel vastgelegd; auto-tiering uitgesteld naar

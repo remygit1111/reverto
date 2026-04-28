@@ -29,6 +29,12 @@ class User:
     the old logs/.auth.json blob. ``role`` gates admin-only endpoints
     (Phase-3c scope); ``session_epoch`` invalidates all cookies for
     THIS user on logout / password change (was global pre-Phase-3).
+
+    Phase B (v9): ``totp_seed_encrypted`` carries the user's encrypted
+    TOTP secret. ``None`` = user has not yet enrolled in 2FA. The
+    field is structural in PR 1; PR 2 wires the enrollment flow,
+    PR 3 wires the login-flow gate. No code consults the column
+    today.
     """
 
     id: int
@@ -36,9 +42,17 @@ class User:
     active: bool = True
     role: str = "user"
     session_epoch: int = 0
+    totp_seed_encrypted: Optional[str] = None
 
     def __repr__(self) -> str:  # pragma: no cover — cosmetic
         return f"User(id={self.id}, username={self.username!r})"
+
+    @property
+    def totp_enabled(self) -> bool:
+        """True iff the user has enrolled in TOTP 2FA. Convenience
+        boolean for routes that want to render "enrolled / not
+        enrolled" without inspecting the encrypted blob itself."""
+        return self.totp_seed_encrypted is not None
 
 
 def _row_to_user(row) -> User:
@@ -56,6 +70,11 @@ def _row_to_user(row) -> User:
         session_epoch=(
             int(row["session_epoch"]) if "session_epoch" in keys else 0
         ),
+        totp_seed_encrypted=(
+            row["totp_seed_encrypted"]
+            if "totp_seed_encrypted" in keys
+            else None
+        ),
     )
 
 
@@ -66,8 +85,8 @@ def get_user_by_id(user_id: int) -> Optional[User]:
     """
     conn = get_db()
     row = conn.execute(
-        "SELECT id, username, active, role, session_epoch "
-        "FROM users WHERE id = ?",
+        "SELECT id, username, active, role, session_epoch, "
+        "totp_seed_encrypted FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
     if not row:
@@ -81,8 +100,8 @@ def get_user_by_username(username: str) -> Optional[User]:
     on username guarantees at most one match."""
     conn = get_db()
     row = conn.execute(
-        "SELECT id, username, active, role, session_epoch "
-        "FROM users WHERE username = ?",
+        "SELECT id, username, active, role, session_epoch, "
+        "totp_seed_encrypted FROM users WHERE username = ?",
         (username,),
     ).fetchone()
     if not row:

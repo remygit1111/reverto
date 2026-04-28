@@ -121,7 +121,14 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         -- NOT NULL with DEFAULT 0 so fresh installs skip the
         -- v5→v6 ALTER path and existing installs auto-backfill.
         failed_login_count     INTEGER NOT NULL DEFAULT 0,
-        last_failed_login_at   TEXT
+        last_failed_login_at   TEXT,
+        -- v9 (feat/totp-foundation): TOTP 2FA seed, encrypted with the
+        -- user's Fernet key. NULL = user has not enrolled. Phase B PR 2
+        -- will add the enrollment flow that populates this column;
+        -- Phase B PR 3 will require it for /auth/login. For Phase B
+        -- PR 1 (this one) the column is purely structural — no read
+        -- path consults it yet.
+        totp_seed_encrypted    TEXT DEFAULT NULL
     )
     """,
     # Seed the single admin user. INSERT OR IGNORE keeps init_db
@@ -403,8 +410,14 @@ def get_db() -> sqlite3.Connection:
 #   * < 8  → ADDITIVE: introduces ``audit_findings`` for the admin
 #     findings tracker. No existing rows touched; CREATE TABLE IF
 #     NOT EXISTS lazily lands the new table on the next boot.
-#   * == 8 → no-op.
-SCHEMA_VERSION = 8
+#   * < 9  → ADDITIVE: adds ``users.totp_seed_encrypted`` column for
+#     Phase B TOTP 2FA foundation. ALTER TABLE ADD COLUMN with
+#     DEFAULT NULL — every existing row reads back NULL ("user has
+#     not enrolled"), no data wiped. The fresh-install schema above
+#     declares the v9 shape directly so a clean install never takes
+#     the ALTER path.
+#   * == 9 → no-op.
+SCHEMA_VERSION = 9
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,
@@ -573,9 +586,12 @@ def _apply_column_additions(conn: sqlite3.Connection) -> None:
     """Idempotent ALTER TABLE ADD COLUMN migrations.
 
     v5 → v6: ``users.failed_login_count`` + ``users.last_failed_login_at``
-    for login-security-hardening. Each column is added in its own
-    try/except so a mid-migration crash that added one column but not
-    the other still converges on the next boot.
+    for login-security-hardening.
+    v8 → v9: ``users.totp_seed_encrypted`` for Phase B TOTP 2FA.
+
+    Each column is added in its own try/except so a mid-migration
+    crash that added one column but not the next still converges on
+    the next boot.
     """
     _add_column_if_missing(
         conn, "users",
@@ -584,6 +600,10 @@ def _apply_column_additions(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(
         conn, "users",
         "last_failed_login_at TEXT",
+    )
+    _add_column_if_missing(
+        conn, "users",
+        "totp_seed_encrypted TEXT DEFAULT NULL",
     )
 
 
