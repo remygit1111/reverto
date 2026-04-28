@@ -102,8 +102,18 @@ class TestClosedDealsSurviveRestart:
         restored = e2.state.closed_deals[0]
         assert restored.id == "PAPER-0001"
         assert restored.close_reason == "tp"
-        assert restored.pnl_btc == pytest.approx(original_pnl_btc, rel=1e-6)
-        assert e2.state.balance_btc == pytest.approx(original_balance, rel=1e-9)
+        # Persistence rounds pnl_btc to 8 decimals on write; the
+        # contract is "round-trip fidelity within that precision
+        # floor", not bit-identical equality. abs=1e-8 is the right
+        # bound — pre-pt-043 the OLD formula coincidentally produced
+        # an exact-decimal value (0.001 * 0.03 = 0.00003) which made
+        # tighter tolerances work; the inverse-perpetual formula
+        # yields repeating decimals (2.9126…e-5) so we express the
+        # bound on the rounding floor itself. Balance carries the
+        # same rounded pnl_btc into the running total, hence the same
+        # abs=1e-8 floor applies there too.
+        assert restored.pnl_btc == pytest.approx(original_pnl_btc, abs=1e-8)
+        assert e2.state.balance_btc == pytest.approx(original_balance, abs=1e-8)
 
     def test_new_ids_are_globally_unique_after_restore(self, tmp_path):
         """Post-collision-fix (2026-04-19): the old per-instance
