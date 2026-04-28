@@ -142,17 +142,20 @@ class TestCloseDeal:
     def test_close_calculates_pnl_from_entry_delta(
         self, deal_in_state, state_io, seed_user,
     ):
-        """Long deal, entry 100, close 110, size 0.0001, lev 1
-        → pnl_btc = 0.0001 * (110 - 100) / 100 * 1 = 0.00001."""
+        """Long deal, entry 100, close 110, size 0.0001, lev 1.
+        Inverse-perpetual formula (pt-043 fix):
+        pnl_btc = 0.0001 * (110 - 100) / 110 * 1 ≈ 9.0909e-6."""
         state, deal_id = deal_in_state
         handler = _make_handler(state, state_io)
 
         result = handler.close_deal(deal_id, current_price=110.0)
 
-        assert result["pnl_btc"] == pytest.approx(0.00001, rel=1e-6)
+        expected_pnl = 0.0001 * (110.0 - 100.0) / 110.0
+        assert result["pnl_btc"] == pytest.approx(expected_pnl, rel=1e-9)
         # Percent of margin (size / leverage = 0.0001 / 1 = 0.0001 BTC).
-        # pnl_pct = pnl_btc / margin * 100 = 10.0%
-        assert result["pnl_pct"] == pytest.approx(10.0, rel=1e-6)
+        # pnl_pct = pnl_btc / margin * 100 ≈ 9.0909%
+        expected_pct = (expected_pnl / (0.0001 / 1)) * 100
+        assert result["pnl_pct"] == pytest.approx(expected_pct, rel=1e-9)
 
     def test_close_deducts_exit_fee_from_balance(
         self, deal_in_state, state_io, seed_user,
@@ -167,8 +170,10 @@ class TestCloseDeal:
         # The state's close_deal applies PnL to balance (adds pnl_btc)
         # and then the handler deducts the fee. So final balance is:
         #   initial + pnl_btc - fee
+        # PnL uses the inverse-perpetual formula (pt-043) — denominator
+        # is ``current_price``, not ``entry``.
         expected_fee = 0.0001 * 0.001
-        expected_pnl = 0.00001
+        expected_pnl = 0.0001 * (110.0 - 100.0) / 110.0
         assert result["fee_btc"] == pytest.approx(expected_fee)
         assert state.balance_btc == pytest.approx(
             balance_before + expected_pnl - expected_fee, rel=1e-9,
