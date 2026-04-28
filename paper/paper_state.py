@@ -114,35 +114,56 @@ class PaperDeal:
         """
         Calculate unrealized PnL for Bitget BTCUSD inverse perpetual.
 
-        On Bitget, position size is expressed in BTC (not USD contracts).
-        The correct PnL formula for a BTC-denominated size is:
+        On Bitget, position size is expressed in BTC. PT-v2 audit
+        pt-043 flagged this formula as potentially incorrect for
+        inverse perpetual; operator validated against Bitget testnet
+        on 2026-04-28 (LONG + SHORT, 1x leverage, 0.1 BTC, 4-hour
+        positions). Bitget's actual formula matches:
 
-            PnL (BTC) = size * (exit - entry) / entry * leverage   [long]
-            PnL (BTC) = size * (entry - exit) / entry * leverage   [short]
+            PnL (BTC) = size * (current - entry) / current * leverage   [long]
+            PnL (BTC) = size * (entry - current) / current * leverage   [short]
 
-        This is equivalent to: PnL = size * pct_change * leverage
+        Note: denominator is ``current_price``, NOT ``entry``. Pre-fix
+        the formula used ``entry`` as denominator (the linear-perpetual
+        shape), which produced ~1% under-statement per percent of
+        price movement (e.g. a 5% move yielded a ~5% PnL error).
 
-        pnl_pct is the return as a percentage of the margin (initial BTC committed).
-        With no leverage: margin = size (full BTC value at entry).
-        With leverage N:  margin = size / N.
+        Testnet validation reference (2026-04-28):
+          * LONG  76801.10 → 76108.30, 0.1 BTC, 1x:
+              Bitget reported -0.00090973 BTC,
+              Reverto post-fix -0.00091028 BTC, match within 0.06 %.
+          * SHORT 76806.00 → 76113.70, 0.1 BTC, 1x:
+              Bitget reported +0.00090914 BTC,
+              Reverto post-fix +0.00090956 BTC, match within 0.05 %.
 
-        Returns (pnl_btc, pnl_pct)
+        ``pnl_pct`` is the return as a percentage of the margin
+        (initial BTC committed). With no leverage: margin = size (full
+        BTC value at entry). With leverage N: margin = size / N.
+
+        Returns (pnl_btc, pnl_pct).
         """
+        # Guard up-front: missing orders OR a non-positive current
+        # price both leave the formula undefined. The current_price
+        # guard is load-bearing post-fix because ``current_price`` is
+        # now the denominator on both branches; a ZeroDivisionError
+        # here would crash the tick loop.
         if not self.orders or current_price <= 0:
             return 0.0, 0.0
 
         avg  = self.avg_entry_price
         size = self.total_size
 
-        # Guard tegen division-by-zero als orders allemaal price=0 hebben
-        # (kan voorkomen bij corrupte state of bij niet-geïnitialiseerde deals).
+        # Belt-and-braces: avg_entry_price returns 0.0 for an empty
+        # orders list (covered above), but we keep this guard so a
+        # corrupt state with all-zero order prices can't bleed a
+        # division-by-zero through pnl_pct's margin calc.
         if avg <= 0:
             return 0.0, 0.0
 
         if self.side == "long":
-            pnl_btc = size * (current_price - avg) / avg * self.leverage
+            pnl_btc = size * (current_price - avg) / current_price * self.leverage
         else:
-            pnl_btc = size * (avg - current_price) / avg * self.leverage
+            pnl_btc = size * (avg - current_price) / current_price * self.leverage
 
         # Margin = BTC committed = size / leverage
         margin_btc = size / self.leverage
