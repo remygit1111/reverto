@@ -588,3 +588,51 @@ def test_running_status_pill_decoupled_from_detail_controls():
     assert ".detail-controls .running-status" not in css
     # The general .running-status rule must remain (de-scoped form).
     assert ".running-status" in css
+
+
+def test_login_error_div_outside_both_login_forms():
+    """``#login-error`` must sit OUTSIDE both ``#login-form`` and
+    ``#login-totp-form`` so it stays visible across the 2-step
+    login flow. PR 3 follow-up: pre-fix the div lived inside
+    ``#login-form`` and was dragged into display:none with its
+    parent when ``_showLoginTotpForm()`` swapped the forms — wrong-
+    TOTP-code attempts produced no UI feedback.
+
+    Pin the DOM-structure here: error-div opens AFTER both form
+    closing tags. Tests the source order in index.html, not the
+    runtime DOM, but that's sufficient — innerHTML/string-build
+    paths in app.js do not produce these IDs.
+    """
+    html = _INDEX_HTML.read_text(encoding="utf-8")
+
+    # Locate the open-tag of each form and the closing </form> that
+    # belongs to it. .find() returns the first match; the password
+    # form opens first so its </form> is the first one after.
+    login_form_open = html.find('id="login-form"')
+    assert login_form_open >= 0, "missing #login-form in index.html"
+    login_form_close = html.find("</form>", login_form_open)
+    assert login_form_close > login_form_open
+
+    totp_form_open = html.find('id="login-totp-form"')
+    assert totp_form_open >= 0, "missing #login-totp-form in index.html"
+    totp_form_close = html.find("</form>", totp_form_open)
+    assert totp_form_close > totp_form_open
+
+    # There must be exactly one #login-error in the document, and it
+    # must sit AFTER both form closing tags. A duplicate inside
+    # either form would defeat the visibility fix.
+    error_open = html.find('id="login-error"')
+    assert error_open >= 0, "missing #login-error in index.html"
+    assert html.find('id="login-error"', error_open + 1) == -1, (
+        "duplicate #login-error in index.html — the visibility fix "
+        "needs a single shared div outside both forms"
+    )
+    assert error_open > login_form_close, (
+        "#login-error sits inside #login-form. When _showLoginTotpForm "
+        "hides #login-form to reveal the TOTP step, this error-div "
+        "would be hidden too. Move it after both </form> tags."
+    )
+    assert error_open > totp_form_close, (
+        "#login-error sits inside #login-totp-form. It would be hidden "
+        "during the password step. Move it after both </form> tags."
+    )
