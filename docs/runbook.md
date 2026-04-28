@@ -546,6 +546,52 @@ an S3-compatible endpoint) so a full-host failure — disk
 corruption, ransomware, lost VPS — doesn't take the backups
 with it. Tracked on the VPS roadmap.
 
+## TOTP recovery (operator-side fallback)
+
+Wanneer een user TOTP heeft enabled maar geen toegang meer heeft tot 
+zijn authenticator-app (telefoon kwijt, app verwijderd, secret 
+gecorrumpeerd), kan operator TOTP resetten via direct DB-toegang.
+
+**Procedure:**
+
+```bash
+# 1. SSH naar VPS als bot user
+ssh bot@reverto.bot
+
+# 2. Verifieer dat user TOTP enabled heeft
+sqlite3 ~/reverto/logs/reverto.db \
+  "SELECT id, username, totp_seed_encrypted IS NOT NULL AS has_totp 
+   FROM users WHERE username = '<naam>';"
+
+# 3. Reset TOTP (zet kolom op NULL)
+sqlite3 ~/reverto/logs/reverto.db \
+  "UPDATE users SET totp_seed_encrypted = NULL 
+   WHERE username = '<naam>';"
+
+# 4. Verifieer reset
+sqlite3 ~/reverto/logs/reverto.db \
+  "SELECT username, totp_seed_encrypted IS NOT NULL FROM users 
+   WHERE username = '<naam>';"
+# Expected: <naam>|0
+```
+
+User kan nu inloggen met alleen wachtwoord, en kan via Profile → 
+Enable TOTP opnieuw enrollen met een nieuwe authenticator-app.
+
+**Wanneer gebruiken:**
+
+- Operator-eigen lockout (jij bent zelf de admin)
+- User-request voor TOTP-reset (Phase B+ multi-tenant)
+
+**Beveiliging:**
+
+Vereist SSH-toegang tot VPS + sudo-rechten op bot-user account. Niet 
+exposed via portal (geen reset-endpoint in UI). Audit-trail loopt 
+via SSH-login logs.
+
+**Validatie:** procedure getest op 2026-04-28 tijdens Phase B PR 3 
+deploy. Werkt zoals bedoeld.
+
 ## Database reset (multi-tenant migration)
 
 Voor de migratie van pre-MT (schema ≤ 2) naar v3 is een eenmalige
