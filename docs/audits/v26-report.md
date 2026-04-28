@@ -67,6 +67,8 @@ def _require_session(request: Request) -> dict:
 
 **Remediation.** Fold `_require_session` into `_request_user` (return a `User` instance) or add an `active` check inside `_verify_session_cookie` so both call-paths share the same gate. Deactivation should also call `bump_session_epoch` to cut existing cookies immediately — document that invariant.
 
+**STATUS — RESOLVED (Phase-A wrap-up).** First closed in two passes: an interim active-check was added inside `_require_session` itself (preserving the helper's signature). Phase-A wrap-up then deleted `_require_session` entirely and migrated `/api/auth/change-password` to `Depends(_request_user)`, eliminating the parity surface — there is now exactly one auth dependency that does the active-check, so the recommended remediation is realised in full. Regression: `tests/test_web_routes.py::TestInactiveUserRejected::test_change_password_rejects_inactive_user`.
+
 ### v26-02 — `/api/emergency-stop` has no role gate
 
 **Wat.** `docs/phase-3.md §2` explicitly calls out that emergency-stop is intentionally admin-cross-user, and UI-side "je stopt bots van N users" is planned for Phase-3. The current route (`web/routes/admin.py:102`) guards only on `_request_actor` which returns a username string — no role enforcement. Under the single-user deployment this has no exploit surface; under Phase-3b it becomes every tenant's kill-switch on every other tenant's bots.
@@ -89,6 +91,8 @@ async def api_emergency_stop(
 No `user: User = Depends(_request_user)` and no `if user.role != "admin": raise HTTPException(403)`.
 
 **Remediation.** Add `user = Depends(_request_user)` + role assertion. Consider keeping `registry.all()` unscoped (the behaviour matches the Phase-3 spec), but surface the affected-user count in the response so the frontend can build the "you are about to stop bots from N users" dialog.
+
+**STATUS — RESOLVED.** `/api/emergency-stop` now resolves the caller via `Depends(_request_user)` and refuses with 403 when `user.role != 'admin'`; non-admin attempts are emitted as a `WARNING` portal-log line and (Phase-A wrap-up) as a structured audit event with `result="denied"` so failed attempts are traceable. `registry.all()` remains unscoped per the Phase-3 spec.
 
 ### v26-03 — Password-length policy inconsistent
 
@@ -191,6 +195,8 @@ if current < SCHEMA_VERSION:
 
 **Remediation.** Gate the drop behind an env-var (`REVERTO_ALLOW_DESTRUCTIVE_MIGRATION=1`) or an idempotent sentinel file that `scripts/reset_db.py` creates as a side-effect of its backup step. Without the gate, `_migrate_schema` refuses the drop and exits with a clear error pointing at the runbook.
 
+**STATUS — RESOLVED.** `_migrate_schema` now refuses to drop owned tables unless `REVERTO_DESTRUCTIVE_MIGRATE=1` is set in the environment (`core/database.py:_DESTRUCTIVE_OPT_IN_ENV`), raising `DestructiveMigrationBlocked` with a runbook pointer. The runbook + `scripts/reset_db.py` flip the gate around their backup ceremony; an operator who forgets the backup gets a hard stop instead of a wiped DB. Pre-existing-data probe (`_has_existing_owned_data`) means fresh installs never trigger the guard.
+
 ### v26-11 — `bump_session_epoch` non-atomic return
 
 **Wat.** The helper runs `UPDATE ... SET session_epoch = session_epoch + 1`, commits, then runs a separate `SELECT session_epoch FROM users WHERE id = ?`. A concurrent bump from another thread can land between the two, so the returned integer does not necessarily equal "the value I wrote".
@@ -286,6 +292,8 @@ Verified locally: `python -c "import asyncio; from web import app; asyncio.run(a
 
 **Remediation.** `await stop_bot(bot.user_id, bot.slug)` — `BotInfo` already carries `user_id`. Add a regression test that runs a mock bot through emergency-stop and asserts `stopped_bots == [slug]` (not the current "empty list on empty registry" happy-path).
 
+**STATUS — RESOLVED.** Call site fixed to `await stop_bot(bot.user_id, bot.slug)`. Regression coverage extended in `tests/test_emergency_stop.py` to register a running mock bot and assert its slug lands in `stopped_bots` (closing v26-21 alongside).
+
 ### v26-16 — WS broadcaster not per-user filtered
 
 **Wat.** `LogBroadcaster.broadcast(slug, line)` distributes a log line to every WS client subscribed to that slug. `StateBroadcaster.broadcast(payload)` pushes a payload to every connected `/ws/state` client. Neither filters by `user_id`. The `_ws_extract_user_id` check gates *connection* but once connected, a client receives every message for that channel.
@@ -306,6 +314,8 @@ For `state`: `watch_state_files` polls every bot across every user and broadcast
 ```
 
 **Remediation.** Store `user_id` on `connect()`. In `broadcast()`, look up the bot's owner and emit only to matching clients. Add a test that user A's client does not receive user B's bot state.
+
+**STATUS — RESOLVED.** Both `LogBroadcaster` and `StateBroadcaster` now record the connecting client's `user_id` and filter at broadcast time: log lines route on slug-ownership, state payloads are per-user pruned before send. The matching `TODO(phase-3)` comments in `web/app.py` are gone (closing v26-20 alongside). Cross-tenant regression tests assert that a connection for user B does not receive frames produced by user A.
 
 ### v26-17 — `GET /api/bots/{slug}` returns 200 on unknown slug
 
@@ -382,6 +392,8 @@ README.md:8-13          "Quick start"
 REVERTO_ADMIN_PW=<pw> make setup-admin
 ```
 Mirror in `README.md "Quick start"`. Cross-reference from `docs/phase-3.md` status-note.
+
+**STATUS — RESOLVED.** Both `docs/runbook.md` "Startup checklist (fresh machine)" and `README.md` "Quick start" now include the `make setup-admin` step before the first portal login. The `docs/phase-3.md` status-note carries a forward-pointer to the runbook section so an operator landing on the historical doc still finds the current procedure.
 
 ### v26-20 — Dangling Phase-3 TODO comments
 
@@ -501,17 +513,19 @@ Installing `requirements-ml.txt` after `requirements.txt` can resolve to a diffe
 
 ## Appendix B: Recommended prioritization
 
-### Must fix before multi-user rollout (Phase-3b gate)
+### Must fix before multi-user rollout (Phase-3b gate) — ALL CLOSED
 
-1. **v26-15h (HIGH)** — Fix `stop_bot(bot.slug)` signature mismatch in `web/routes/admin.py:123`. Add test v26-21 alongside.
-2. **v26-02 (MEDIUM)** — Add role check to `/api/emergency-stop`.
-3. **v26-16 (MEDIUM)** — Per-user filter on WS broadcasters.
-4. **v26-01 (MEDIUM)** — Consolidate `_require_session` into `_request_user` or share the `active` check.
-5. **v26-10 (MEDIUM)** — Destructive-migration guard (env-var or sentinel file).
+All five Phase-3b-gate items are RESOLVED at the time of the Phase-A wrap-up sweep. See the per-finding STATUS blocks for closure detail.
+
+1. ~~**v26-15h (HIGH)**~~ — Fix `stop_bot(bot.slug)` signature mismatch in `web/routes/admin.py:123`. Add test v26-21 alongside. **RESOLVED.**
+2. ~~**v26-02 (MEDIUM)**~~ — Add role check to `/api/emergency-stop`. **RESOLVED.**
+3. ~~**v26-16 (MEDIUM)**~~ — Per-user filter on WS broadcasters. **RESOLVED.**
+4. ~~**v26-01 (MEDIUM)**~~ — Consolidate `_require_session` into `_request_user` or share the `active` check. **RESOLVED** (Phase-A wrap-up consolidation — `_require_session` deleted entirely).
+5. ~~**v26-10 (MEDIUM)**~~ — Destructive-migration guard (env-var or sentinel file). **RESOLVED** (env-var `REVERTO_DESTRUCTIVE_MIGRATE`).
 
 ### Must fix before next fresh-install deployment
 
-6. **v26-19 (MEDIUM)** — Document `make setup-admin` in runbook + README.
+6. ~~**v26-19 (MEDIUM)**~~ — Document `make setup-admin` in runbook + README. **RESOLVED.**
 7. **v26-03 (MEDIUM)** — Consolidate password-length constant.
 8. **v26-18 (MEDIUM)** — Fix ML pipeline config path to be user-scoped (or delete stub).
 

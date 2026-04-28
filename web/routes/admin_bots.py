@@ -140,6 +140,7 @@ async def admin_start_bot(
     _audit(
         "admin_bot_start", f"user={target_user_id}/{slug}", user.username,
         user_id=user.id,
+        request=request,
     )
     logger.warning(
         "[ADMIN ACTION] %s started bot user_id=%s slug=%s",
@@ -164,6 +165,7 @@ async def admin_start_bot_dry_run(
         "admin_bot_start_dry_run",
         f"user={target_user_id}/{slug}", user.username,
         user_id=user.id,
+        request=request,
     )
     logger.warning(
         "[ADMIN ACTION] %s started (dry-run) bot user_id=%s slug=%s",
@@ -187,6 +189,7 @@ async def admin_stop_bot(
     _audit(
         "admin_bot_stop", f"user={target_user_id}/{slug}", user.username,
         user_id=user.id,
+        request=request,
     )
     logger.warning(
         "[ADMIN ACTION] %s stopped bot user_id=%s slug=%s",
@@ -211,6 +214,7 @@ async def admin_restart_bot(
         "admin_bot_restart",
         f"user={target_user_id}/{slug}", user.username,
         user_id=user.id,
+        request=request,
     )
     logger.warning(
         "[ADMIN ACTION] %s restarted bot user_id=%s slug=%s",
@@ -288,6 +292,7 @@ async def _bulk_execute(
     audit_action: str,
     bot_log_line: str,
     helper,
+    request: Request,
 ) -> dict:
     """Shared loop-body for bulk stop + bulk restart.
 
@@ -308,6 +313,7 @@ async def _bulk_execute(
     _audit(
         audit_action, f"count={len(body.bots)}", user.username,
         user_id=user.id,
+        request=request,
     )
     logger.warning(
         "[ADMIN BULK] %s requested bulk-%s of %d bots",
@@ -375,6 +381,7 @@ async def admin_bulk_stop(
         audit_action="admin_bulk_stop",
         bot_log_line="Bot stopped by admin (bulk) user={username}",
         helper=stop_bot,
+        request=request,
     )
 
 
@@ -393,4 +400,5 @@ async def admin_bulk_restart(
         audit_action="admin_bulk_restart",
         bot_log_line="Bot restarted by admin (bulk) user={username}",
         helper=restart_bot,
+        request=request,
     )
