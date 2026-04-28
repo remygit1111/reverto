@@ -648,6 +648,88 @@ class TestPerUserSessionEpoch:
         assert auth_client.get("/api/bots").status_code == 200
 
 
+class TestLoginBodyUsernameValidation:
+    """v27-09 regression — LoginBody.username has a character-class
+    restriction (``^[a-zA-Z0-9_.-]+$``). Defence in depth: real
+    exploits are blocked by Pydantic + parameterised SQL elsewhere,
+    but rejecting malformed usernames at the boundary keeps emoji /
+    control-chars / SQL-shaped payloads from ever reaching the
+    DB-lookup. ChangePasswordBody has no username field (the
+    endpoint resolves the user from the session cookie via
+    ``_request_user``) so no parallel pattern is needed there.
+    """
+
+    def test_alphanumeric_username_accepted_by_pydantic(self):
+        from web.routes.auth import LoginBody
+        # Plain, with underscore, dot, dash — all of the separators
+        # the pattern explicitly allows.
+        for name in ("admin", "user_123", "first.last", "user-name"):
+            body = LoginBody(username=name, password="x")
+            assert body.username == name
+
+    def test_special_chars_rejected_by_pydantic(self):
+        """Pydantic raises ``ValidationError`` for any character
+        outside ``[a-zA-Z0-9_.-]``. Tested shapes cover the categories
+        that motivate the rule: whitespace, SQL-injection-shape,
+        emoji, control character."""
+        from pydantic import ValidationError
+        from web.routes.auth import LoginBody
+        for bad in ("user name", "admin' OR 1=1", "admin\U0001F600", "admin\x00"):
+            with pytest.raises(ValidationError):
+                LoginBody(username=bad, password="x")
+
+    def test_login_endpoint_returns_422_on_bad_username(self, auth_client):
+        """End-to-end: malformed username never reaches
+        ``user_store.verify_password`` — Pydantic 422s the request
+        before the handler body runs. 422 (not 401) is the right
+        signal because the input shape itself is invalid."""
+        r = auth_client.post(
+            "/auth/login",
+            json={"username": "user with space", "password": "x"},
+        )
+        assert r.status_code == 422
+
+    def test_existing_users_match_new_pattern(self):
+        """Compatibility guard: every username currently in the
+        ``users`` table MUST match the new pattern. If a future seed
+        introduces a username with characters outside the class, this
+        test fails before the seed lands and forces either widening
+        the pattern or renaming the user. The autouse DB-isolation
+        fixture brings up the seeded admin row, so the assertion
+        always exercises at least one real username.
+
+        Cross-checks against the long-standing ``validate_username``
+        rule in ``core.user_store``: that helper has carried the same
+        character-class since r1-032 / r1-007, so any incumbent row
+        already passed it at INSERT time. The login-boundary pattern
+        is a subset of the same class — so any row that survived
+        ``validate_username`` will also pass here."""
+        import re
+        from core.database import get_db
+        from web.routes.auth import _USERNAME_PATTERN
+        pattern = re.compile(_USERNAME_PATTERN)
+        rows = get_db().execute("SELECT username FROM users").fetchall()
+        offenders = [
+            r["username"] for r in rows if not pattern.match(r["username"])
+        ]
+        assert offenders == [], (
+            f"existing usernames don't match v27-09 pattern: {offenders}"
+        )
+
+    def test_unicode_letters_outside_ascii_rejected(self):
+        """Latin-1 supplement, Cyrillic, Han etc. are outside the
+        class. The username field is intentionally ASCII-only — a
+        homoglyph attack against the seeded ``admin`` row (e.g. a
+        Cyrillic-а that visually resembles an ASCII-a) would create
+        a separate row indistinguishable from the real admin in a
+        UI listing. The pattern blocks that at signup-time."""
+        from pydantic import ValidationError
+        from web.routes.auth import LoginBody
+        for bad in ("admín", "адmin", "管理员"):
+            with pytest.raises(ValidationError):
+                LoginBody(username=bad, password="x")
+
+
 class TestLoginSecurityHardening:
     """Exponential backoff + per-account rate-limit + anomaly logging
     + in-memory fallback for unknown-username IP traffic. Counterpart

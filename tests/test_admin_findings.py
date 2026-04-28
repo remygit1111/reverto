@@ -213,17 +213,18 @@ class TestV26V27SeedExtension:
     def test_v27_open_findings_match_grep_verified_set(self):
         """Pre-analysis correction guard. v27-baseline narrative said
         most of v27 was PRE-EXISTING / unfixed, but grep against HEAD
-        showed 9 of 12 had already landed. Pin the open-set to exactly
-        the three that grep verified as still-open: v27-07 (CSP
-        unsafe-inline by design), v27-09 (LoginBody charset, defer
-        until signup lands), v27-12 (TickerError URL-redact). A future
-        PR that opens or closes one of these without updating the seed
-        will fail this assertion and force the YAML to stay in sync.
+        showed 9 of 12 had already landed. The
+        fix/v27-09-v27-12-defense-in-depth PR closed the remaining two
+        actionable items, leaving v27-07 (CSP `style-src 'unsafe-inline'`,
+        acknowledged-as-necessary while the SPA emits inline styles)
+        as the sole open finding. Pin that exact one-element set so a
+        future PR that opens or closes any v27 finding without syncing
+        the seed fails this assertion.
         """
         raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
         v27 = [f for f in raw["findings"] if f["source_doc"] == "v27-report"]
         open_ids = sorted(f["finding_id"] for f in v27 if f["status"] == "open")
-        assert open_ids == ["v27-07", "v27-09", "v27-12"], (
+        assert open_ids == ["v27-07"], (
             f"v27 open-set drifted: {open_ids} — re-run the grep "
             "verification or sync data/findings_seed.yaml."
         )

@@ -18,6 +18,7 @@ from paper.errors import (  # noqa: E402
     classify_exception,
     format_log_line,
 )
+from paper.errors import _MESSAGE_CHAR_CAP, _redact_secrets  # noqa: E402
 
 
 # Stand-ins for the ccxt exception hierarchy. Using plain subclasses keeps
@@ -244,3 +245,99 @@ class TestFormatLogLine:
             bot="mybot",
         )
         assert 'message="bad \'response\' body"' in line
+
+
+# ── v27-12: credential redaction in error-message path ────────────────────
+
+
+class TestSecretRedaction:
+    """v27-12 regression tests. Patterns must scrub secret values
+    from exchange-error strings BEFORE truncation hits, so a credential
+    placed past position 150 doesn't survive to Telegram via the 200-
+    char cap."""
+
+    def test_apikey_query_param_redacted(self):
+        msg = (
+            "Request failed: "
+            "https://api.bitget.com/order?apiKey=BG_LIVE_xxx_yyy&t=123"
+        )
+        result = _redact_secrets(msg)
+        assert "BG_LIVE_xxx_yyy" not in result
+        # Param name is preserved so the operator still sees that an
+        # apiKey-shaped credential was the offending field.
+        assert "apiKey=[REDACTED]" in result
+
+    def test_signature_param_redacted(self):
+        msg = "Bad signature: signature=abc123xyz789 in request body"
+        result = _redact_secrets(msg)
+        assert "abc123xyz789" not in result
+        assert "signature=[REDACTED]" in result
+
+    def test_bearer_token_redacted(self):
+        msg = "Auth failed for Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 reason=expired"
+        result = _redact_secrets(msg)
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in result
+        assert "[REDACTED]" in result
+        # Surrounding context survives so the operator still gets the
+        # "auth failed" framing.
+        assert "Auth failed" in result
+        assert "reason=expired" in result
+
+    def test_jwt_shape_redacted(self):
+        """Three-segment base64 JWT-shape collapses to [REDACTED]."""
+        msg = (
+            "Token rejected: "
+            "eyJhbGc.eyJpYXQ.signature_suffix_abc123 by gateway"
+        )
+        result = _redact_secrets(msg)
+        assert "eyJhbGc.eyJpYXQ" not in result
+        assert "signature_suffix_abc123" not in result
+        assert "[REDACTED]" in result
+
+    def test_redaction_runs_before_truncation(self):
+        """Critical ordering test: a credential placed past position
+        150 is scrubbed even though the message gets truncated at the
+        200-char cap. Truncation-first would have left the secret
+        intact in the surviving prefix."""
+        prefix = "x" * 130
+        msg = prefix + " apiKey=SECRET_VALUE_THAT_MUST_NOT_LEAK_TO_TELEGRAM"
+        result = _redact_secrets(msg)[:_MESSAGE_CHAR_CAP]
+        assert "SECRET_VALUE_THAT_MUST_NOT_LEAK_TO_TELEGRAM" not in result
+        assert "apiKey=[REDACTED]" in result
+
+    def test_no_credentials_pass_through_unchanged(self):
+        """Messages with no credential-shaped fragments are returned
+        verbatim — redaction must not mangle benign error text."""
+        msg = "Connection timeout after 30s during fetch_ticker"
+        assert _redact_secrets(msg) == msg
+
+    def test_multiple_patterns_in_one_message(self):
+        """Two distinct credential shapes in the same message are both
+        redacted — neither leaks because the other was processed first."""
+        msg = "Failed: apiKey=ABC123 and signature=DEF456 mismatch"
+        result = _redact_secrets(msg)
+        assert "ABC123" not in result
+        assert "DEF456" not in result
+        assert "apiKey=[REDACTED]" in result
+        assert "signature=[REDACTED]" in result
+
+    def test_classify_exception_strips_credentials_through_full_path(self):
+        """End-to-end: an exchange exception whose ``str(exc)`` carries
+        a credential lands in TickerError.message already-redacted, so
+        downstream consumers (Telegram, audit log) never see the raw
+        secret regardless of how they format the field."""
+        exc = _NetworkError(
+            "GET /v1/order?apiKey=BITGET_LIVE_KEY_ABC&signature=SIG_XYZ",
+        )
+        err = classify_exception(
+            exc,
+            exchange="bitget",
+            endpoint="fetch_order",
+            symbol="BTC/USD",
+            retry_attempt=0,
+            max_retries=3,
+        )
+        assert "BITGET_LIVE_KEY_ABC" not in err.message
+        assert "SIG_XYZ" not in err.message
+        assert "apiKey=[REDACTED]" in err.message
+        assert "signature=[REDACTED]" in err.message
