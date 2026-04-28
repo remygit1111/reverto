@@ -337,6 +337,11 @@ async function showProfileModal() {
   const ok  = document.getElementById('profile-pw-success');
   err.classList.add('hidden'); err.textContent = '';
   ok.classList.add('hidden');
+  // Phase B PR 2: render the TOTP enrollment status block. The
+  // enabled/disabled toggle is driven by /auth/status's totp_enabled
+  // field — re-fetched here so a state-change made in another tab
+  // surfaces on the next profile open.
+  await _renderTotpStatusInProfile();
   document.getElementById('profile-modal').classList.add('show');
 }
 function closeProfileModal() {
@@ -8639,9 +8644,230 @@ function setupEventListeners() {
   }, { passive: false });
 }
 
+// ── Phase B PR 2: TOTP enrollment + disable ───────────────────────────────
+//
+// Three endpoints back this flow: POST /auth/totp/setup mints a secret
+// + server-rendered SVG QR; POST /auth/totp/verify commits the code on
+// success; POST /auth/totp/disable requires both password AND code.
+// The pending-secret lives in a 10-minute server-signed cookie, so the
+// SPA does not need to keep it in JS state across page reloads — the
+// secret-display in the manual-entry fallback is the only place it
+// ever surfaces in the DOM, and only inside the open enrollment modal.
+
+async function _renderTotpStatusInProfile() {
+  // Ask /auth/status for the latest totp_enabled flag rather than
+  // trusting any cached value — a state change made in another tab
+  // (or via the disable-flow that just succeeded) needs to surface
+  // here without a hard reload.
+  let enabled = false;
+  try {
+    const r = await fetch('/auth/status', {credentials: 'same-origin'});
+    if (r.ok) {
+      const j = await r.json();
+      enabled = !!(j && j.totp_enabled);
+    }
+  } catch (e) {
+    console.warn('[reverto] /auth/status fetch failed:', e);
+  }
+  const disabledBlock = document.getElementById('profile-totp-disabled');
+  const enabledBlock  = document.getElementById('profile-totp-enabled');
+  if (disabledBlock) disabledBlock.classList.toggle('hidden', enabled);
+  if (enabledBlock)  enabledBlock.classList.toggle('hidden', !enabled);
+}
+
+async function _startTotpEnrollment() {
+  const errBox = document.getElementById('totp-verify-error');
+  if (errBox) {
+    errBox.classList.add('hidden');
+    errBox.textContent = '';
+  }
+  let data;
+  try {
+    const r = await fetch('/auth/totp/setup', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'X-CSRF-Token': _readCookie('reverto_csrf') || ''},
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      alert('TOTP setup failed: ' + (j.detail || ('HTTP ' + r.status)));
+      return;
+    }
+    data = await r.json();
+  } catch (e) {
+    console.warn('[reverto] /auth/totp/setup error:', e);
+    alert('Network error during TOTP setup. Please try again.');
+    return;
+  }
+
+  // Render the server-supplied SVG QR. innerHTML is safe here because
+  // qr_svg comes from our own backend (qrcode.image.svg.SvgPathImage
+  // output), not from any user-controlled source.
+  const qrBox = document.getElementById('totp-qr-container');
+  if (qrBox) qrBox.innerHTML = data.qr_svg || '';
+  const secretEl = document.getElementById('totp-secret-display');
+  if (secretEl) secretEl.textContent = data.secret || '';
+
+  // Reset the form, open the modal, focus the code field.
+  const codeInput = document.getElementById('totp-code-input');
+  if (codeInput) {
+    codeInput.value = '';
+  }
+  document.getElementById('totp-enroll-modal').classList.add('show');
+  if (codeInput) codeInput.focus();
+}
+
+async function _handleTotpVerify(event) {
+  event.preventDefault();
+  const codeInput = document.getElementById('totp-code-input');
+  const errBox = document.getElementById('totp-verify-error');
+  errBox.classList.add('hidden');
+  errBox.textContent = '';
+  const code = (codeInput.value || '').trim();
+  if (!/^\d{6}$/.test(code)) {
+    errBox.textContent = 'Code must be exactly 6 digits.';
+    errBox.classList.remove('hidden');
+    return;
+  }
+  try {
+    const r = await fetch('/auth/totp/verify', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': _readCookie('reverto_csrf') || '',
+      },
+      body: JSON.stringify({code}),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      errBox.textContent = j.detail || ('Verification failed (HTTP ' + r.status + ')');
+      errBox.classList.remove('hidden');
+      return;
+    }
+  } catch (e) {
+    console.warn('[reverto] /auth/totp/verify error:', e);
+    errBox.textContent = 'Network error. Please try again.';
+    errBox.classList.remove('hidden');
+    return;
+  }
+  // Success — close the modal, refresh the status block, hand the
+  // user a confirmation. PR 3 will start enforcing TOTP at /auth/login;
+  // the alert text already references that to set expectations.
+  _closeTotpEnrollModal();
+  await _renderTotpStatusInProfile();
+  alert(
+    'TOTP is now active for this account. From your next login, you ' +
+    'will be prompted for a 6-digit code from your authenticator app.',
+  );
+}
+
+function _closeTotpEnrollModal() {
+  document.getElementById('totp-enroll-modal').classList.remove('show');
+  const codeInput = document.getElementById('totp-code-input');
+  if (codeInput) codeInput.value = '';
+  const errBox = document.getElementById('totp-verify-error');
+  if (errBox) {
+    errBox.classList.add('hidden');
+    errBox.textContent = '';
+  }
+  // Clear the rendered QR and secret so a re-open of the modal
+  // without going through /auth/totp/setup first shows nothing —
+  // prevents stale-secret leakage if the user cancels and re-opens.
+  const qrBox = document.getElementById('totp-qr-container');
+  if (qrBox) qrBox.innerHTML = '';
+  const secretEl = document.getElementById('totp-secret-display');
+  if (secretEl) secretEl.textContent = '';
+}
+
+function _showTotpDisableModal() {
+  document.getElementById('totp-disable-password').value = '';
+  document.getElementById('totp-disable-code').value = '';
+  const errBox = document.getElementById('totp-disable-error');
+  errBox.classList.add('hidden');
+  errBox.textContent = '';
+  document.getElementById('totp-disable-modal').classList.add('show');
+  document.getElementById('totp-disable-password').focus();
+}
+
+function _closeTotpDisableModal() {
+  document.getElementById('totp-disable-modal').classList.remove('show');
+  document.getElementById('totp-disable-password').value = '';
+  document.getElementById('totp-disable-code').value = '';
+  const errBox = document.getElementById('totp-disable-error');
+  if (errBox) {
+    errBox.classList.add('hidden');
+    errBox.textContent = '';
+  }
+}
+
+async function _handleTotpDisable(event) {
+  event.preventDefault();
+  const passwordInput = document.getElementById('totp-disable-password');
+  const codeInput     = document.getElementById('totp-disable-code');
+  const errBox        = document.getElementById('totp-disable-error');
+  errBox.classList.add('hidden');
+  errBox.textContent = '';
+  const password = passwordInput.value || '';
+  const code = (codeInput.value || '').trim();
+  if (!password || !/^\d{6}$/.test(code)) {
+    errBox.textContent = 'Password and a 6-digit code are both required.';
+    errBox.classList.remove('hidden');
+    return;
+  }
+  try {
+    const r = await fetch('/auth/totp/disable', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': _readCookie('reverto_csrf') || '',
+      },
+      body: JSON.stringify({current_password: password, totp_code: code}),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      errBox.textContent = j.detail || ('Disable failed (HTTP ' + r.status + ')');
+      errBox.classList.remove('hidden');
+      return;
+    }
+  } catch (e) {
+    console.warn('[reverto] /auth/totp/disable error:', e);
+    errBox.textContent = 'Network error. Please try again.';
+    errBox.classList.remove('hidden');
+    return;
+  }
+  _closeTotpDisableModal();
+  await _renderTotpStatusInProfile();
+  alert('TOTP has been disabled for this account.');
+}
+
+function _wireTotpUiHandlers() {
+  const enableBtn = document.getElementById('profile-totp-enable-btn');
+  if (enableBtn) {
+    enableBtn.addEventListener('click', () => {
+      _startTotpEnrollment();
+    });
+  }
+  const disableBtn = document.getElementById('profile-totp-disable-btn');
+  if (disableBtn) disableBtn.addEventListener('click', _showTotpDisableModal);
+
+  const enrollCancel = document.getElementById('totp-enroll-cancel');
+  if (enrollCancel) enrollCancel.addEventListener('click', _closeTotpEnrollModal);
+  const disableCancel = document.getElementById('totp-disable-cancel');
+  if (disableCancel) disableCancel.addEventListener('click', _closeTotpDisableModal);
+
+  const verifyForm = document.getElementById('totp-verify-form');
+  if (verifyForm) verifyForm.addEventListener('submit', _handleTotpVerify);
+  const disableForm = document.getElementById('totp-disable-form');
+  if (disableForm) disableForm.addEventListener('submit', _handleTotpDisable);
+}
+
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
+  _wireTotpUiHandlers();
 
   // Gate: require a valid session cookie before bringing up the SPA.
   const authed = await checkAuthStatus();
