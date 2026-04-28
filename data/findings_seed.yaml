@@ -18,8 +18,8 @@
 # overwrites status / notes / resolution_ref on existing rows.
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
-# pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3.
-# Total: 280.
+# pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
+# pt-v3=5. Total: 285.
 #
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
@@ -2854,3 +2854,55 @@ findings:
     Spotted while fixing v26-18 — ml/nightly_pipeline._persist_results(bot_slug, results) writes to ml/results_<slug>.json without user_id, so multi-tenant overlapping bot-slugs collide. Direction: ml/results_<user_id>_<slug>.json or ml/<user_id>/results_<slug>.json, consistent with the Phase-2 user-scoped layout in core/paths.py. v26-18 fixed the input-config path of the same file; this is the output-result path needing the same treatment.
   resolution_ref: null
   notes: ""
+
+# ── production-pentest-v3 (5 entries — Phase B auth-stack adversarial review) ─
+
+- finding_id: pt-101
+  source_doc: production-pentest-v3
+  severity: MEDIUM
+  status: open
+  title: Bcrypt timing channel enables username enumeration
+  description: |
+    core.user_store.verify_password short-circuits to None at line 128-129 when the user is unknown, never running bcrypt. The resulting ~100ms response-time gap survives the equalising backoff sleep and lets a network attacker enumerate valid usernames via response timing. Single-tenant non-exploitable today (only "admin" exists) but a hard pre-Phase-4 must-fix once a signup endpoint or second user lands.
+  resolution_ref: null
+  notes: "Profile A (anonymous network attacker). White-box confirmed via grep on core/user_store.py:127-129. Contradicts v27-report.md 'Items verified clean' login-timing claim. Remediation: dummy bcrypt.checkpw against a constant fake hash on the unknown-user branch (~15 min)."
+
+- finding_id: pt-102
+  source_doc: production-pentest-v3
+  severity: LOW
+  status: open
+  title: TOTP code re-use within ±1-window acceptance
+  description: |
+    pyotp.verify(valid_window=1) accepts the same 6-digit code across roughly a 90-second window with no replay-tracking. The same code that succeeded on a legitimate login can be re-submitted within the window by an attacker who has the password and shoulder-surfs the code. RFC 6238 §5.2 explicitly acknowledges this trade-off.
+  resolution_ref: null
+  notes: "Profile A/B. Mitigated in practice by per-user 10/15-min rate-limit + slowapi 10/min on /auth/login/totp. Operator decision: implement consumed-set with 90s TTL OR ACCEPT-by-design with explicit doc-comment referencing RFC."
+
+- finding_id: pt-130
+  source_doc: production-pentest-v3
+  severity: LOW
+  status: open
+  title: Pre-2FA sessions survive TOTP enrolment
+  description: |
+    update_user_totp_seed does NOT bump session_epoch on TOTP enable or disable; pre-existing session cookies keep working until 24h TTL expiry. A pre-enrolment stolen session cookie survives the user enabling 2FA, defeating the user-visible expectation that "I just enabled 2FA, my old sessions should now require it".
+  resolution_ref: null
+  notes: "Profile B (authenticated user with stolen pre-enrolment session cookie). UX trade-off: bumping session_epoch on /auth/totp/verify forces re-login on other devices — operator decision on whether the security gain warrants the friction. Same gap on /auth/totp/disable."
+
+- finding_id: pt-150
+  source_doc: production-pentest-v3
+  severity: LOW
+  status: open
+  title: SQL TOTP recovery has no audit trail
+  description: |
+    The runbook-documented recovery procedure UPDATE users SET totp_seed_encrypted = NULL WHERE id = ? bypasses /auth/totp/disable and produces no totp_disabled audit row. If the SSH-access used to run the SQL is itself compromised (stolen key, social engineering), there is no application-layer trace of the recovery to surface in audit.jsonl.
+  resolution_ref: null
+  notes: "Profile: operator (insider/post-breach scenario). Remediation: scripts/totp_admin_reset.py wrapper that calls update_user_totp_seed + emits a totp_admin_recovery audit row. ~10 min work + runbook update."
+
+- finding_id: pt-160
+  source_doc: production-pentest-v3
+  severity: INFO
+  status: open
+  title: 429 Retry-After precision differs by user-existence
+  description: |
+    Same Phase-4 readiness gate as pt-101. Known-user 429 carries a timestamp-precise retry-after value; unknown-user 429 carries a worst-case-full-window value. The detail-string formatter normalised the user-facing message but the Retry-After HEADER still leaks the precision distinction. Two-decimal-points in seconds is enough for an attacker to distinguish.
+  resolution_ref: null
+  notes: "Profile A. Bundelbaar met pt-101 fix. ~5 min work — round Retry-After to 60s boundary on both paths. Closes the second user-enumeration channel that gates Phase-4 readiness."
