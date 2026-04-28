@@ -123,12 +123,26 @@ async def api_emergency_stop(
             "Emergency-stop attempt by non-admin user=%s (role=%s) — 403",
             user.username, user.role,
         )
+        _audit(
+            "emergency_stop",
+            "-",
+            user.username,
+            user_id=user.id,
+            request=request,
+            result="denied",
+        )
         raise HTTPException(
             status_code=403,
             detail="Emergency stop requires admin role.",
         )
 
-    _audit("emergency_stop", "-", user.username, user_id=user.id)
+    _audit(
+        "emergency_stop",
+        "-",
+        user.username,
+        user_id=user.id,
+        request=request,
+    )
     logger.error("EMERGENCY STOP requested by %s", user.username)
 
     stopped: list[str] = []
