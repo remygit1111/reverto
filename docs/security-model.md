@@ -1412,7 +1412,17 @@ gaat.
   van v26-01 — eerst (Phase A) was de active-check parity gap
   gesloten, nu is de per-user rate-limit erbij gekomen.
 - Cookie-posture regression test (audit v26 v26-22).
-  **STATUS: pending PR 5.**
+  **STATUS: complete in PR 5
+  (`feat/cookie-posture-regression-test`).** 12 regression tests in
+  `tests/test_cookie_posture.py` pin the attribute posture
+  (HttpOnly, Secure, SameSite=Strict, Path=/) for all four
+  production cookies — `reverto_session`, `reverto_csrf` (with
+  intentional non-HttpOnly carve-out for the double-submit
+  pattern), `reverto_totp_pending`, `reverto_login_totp_pending`.
+  Defence-in-depth checks: no Domain attribute on any cookie
+  (would broaden scope to subdomains) and `reverto_session` is
+  NOT minted during the TOTP-pending phase (would bypass the
+  2FA gate). Closes v26-22. Phase B is now feature-complete.
 
 ### Phase C — Service Separation
 
@@ -1935,6 +1945,15 @@ wijzen straks naar dat bestand.
 
 ## Document changelog
 
+- **2026-04-28 (latest+3)** — Phase B PR 5 status update in Part 4:
+  cookie-posture regression test landed
+  (`feat/cookie-posture-regression-test`). 12 tests pin the
+  HttpOnly / Secure / SameSite=Strict / Path=/ attributes on all
+  four production cookies. Closes v26-22 (was ACCEPTED 2026-04-21
+  with three revisit-triggers; Trigger #1 — Phase B re-opens the
+  auth-stack — fired). **Phase B is feature-complete.** Phase C
+  (signing-service service-separation) follows when multi-tenant
+  rollout becomes scope-relevant.
 - **2026-04-28 (latest+2)** — Phase B PR 4 status update in Part 4:
   per-user login rate-limit complete (`feat/per-user-login-rate-
   limit`). New `check_login_rate_limit` helper in
