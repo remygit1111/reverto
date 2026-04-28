@@ -66,13 +66,18 @@ class TestCalculatePnl:
 
     def test_correct_formula(self):
         """
-        Verifieer de Bitget BTCUSD formule:
-        PnL (BTC) = size * (exit - entry) / entry * leverage
+        Verifieer de Bitget BTCUSD inverse-perpetual formule (pt-043):
+        PnL (BTC) = size * (exit - entry) / exit * leverage
         Bij size=1.0 BTC, entry=80000, exit=82000, lev=1:
-        PnL = 1.0 * (82000 - 80000) / 80000 = 0.025 BTC
+        PnL = 1.0 * (82000 - 80000) / 82000 = 0.024390... BTC
+
+        Pre-fix de denominator was ``entry`` (linear-perpetual shape),
+        wat 0.025 BTC opleverde — een ~2.4 % over-statement in dit
+        scenario. Bitget testnet validatie 2026-04-28 bevestigde dat
+        ``current_price`` de juiste deler is.
         """
         d = _deal(80000.0, 1.0)
-        expected = 1.0 * (82000.0 - 80000.0) / 80000.0
+        expected = 1.0 * (82000.0 - 80000.0) / 82000.0
         pnl, _ = d.calculate_pnl(82000.0)
         assert abs(pnl - expected) < 1e-10
 
@@ -82,6 +87,99 @@ class TestCalculatePnl:
         p1, _ = d1.calculate_pnl(82000.0)
         p5, _ = d5.calculate_pnl(82000.0)
         assert abs(p5 - p1*5) < 1e-10
+
+
+class TestCalculatePnlInversePerpetual:
+    """pt-043 regression — Bitget inverse-perpetual formula validation.
+
+    All assertions are anchored to actual Bitget testnet trades the
+    operator executed on 2026-04-28. Pre-fix the denominator was
+    ``entry``; post-fix it is ``current_price``. These tests pin the
+    fix in place: a class-of-issue revert to the linear-perpetual
+    shape (deler=avg) immediately fails the testnet-data assertions
+    AND the explicit denominator probe.
+    """
+
+    def test_long_matches_bitget_testnet_data(self):
+        """LONG, 0.1 BTC, 1x leverage, entry $76,801.10, exit
+        $76,108.30. Bitget reported -0.00090973 BTC. Tolerance 0.1 %
+        relative to absorb testnet rounding + fee artefacts that
+        Reverto's PnL formula doesn't model (the exchange reports
+        ``closing profit`` net of fees on the close leg)."""
+        deal = _deal(76801.10, size=0.1, side="long", lev=1)
+        pnl_btc, _ = deal.calculate_pnl(76108.30)
+
+        bitget_reported = -0.00090973
+        tolerance = abs(bitget_reported) * 0.001
+        assert abs(pnl_btc - bitget_reported) < tolerance, (
+            f"pnl_btc {pnl_btc} drifts from Bitget {bitget_reported} "
+            f"by more than {tolerance} BTC — formula may have reverted"
+        )
+
+    def test_short_matches_bitget_testnet_data(self):
+        """SHORT, 0.1 BTC, 1x leverage, entry $76,806.00, exit
+        $76,113.70. Bitget reported +0.00090914 BTC."""
+        deal = _deal(76806.00, size=0.1, side="short", lev=1)
+        pnl_btc, _ = deal.calculate_pnl(76113.70)
+
+        bitget_reported = +0.00090914
+        tolerance = abs(bitget_reported) * 0.001
+        assert abs(pnl_btc - bitget_reported) < tolerance, (
+            f"pnl_btc {pnl_btc} drifts from Bitget {bitget_reported} "
+            f"by more than {tolerance} BTC — formula may have reverted"
+        )
+
+    def test_denominator_is_current_price_not_avg(self):
+        """Class-of-issue probe: avg=100, current=200 (a 100 % move
+        with size=1, long, 1x). Inverse-perpetual yields 0.5 BTC
+        (1 * 100 / 200); linear-perpetual would yield 1.0 BTC
+        (1 * 100 / 100). A revert to the linear shape would double
+        the answer here, immediately failing the assertion."""
+        deal = _deal(100.0, size=1.0, side="long", lev=1)
+        pnl_btc, _ = deal.calculate_pnl(200.0)
+
+        assert abs(pnl_btc - 0.5) < 1e-9, (
+            f"inverse-perpetual formula expected 0.5, got {pnl_btc}. "
+            "If this reads 1.0, the formula reverted to the linear "
+            "(entry-as-denominator) shape — see pt-043."
+        )
+
+    def test_zero_or_negative_current_price_returns_zero_pnl(self):
+        """Edge case: ``current_price`` is the denominator post-fix,
+        so a zero or negative tick must not propagate a
+        ZeroDivisionError up the tick loop."""
+        deal = _deal(100.0, size=1.0, side="long", lev=1)
+
+        pnl_btc, pnl_pct = deal.calculate_pnl(0.0)
+        assert pnl_btc == 0.0
+        assert pnl_pct == 0.0
+
+        pnl_btc, pnl_pct = deal.calculate_pnl(-50.0)
+        assert pnl_btc == 0.0
+        assert pnl_pct == 0.0
+
+    def test_long_short_asymmetry_at_same_prices(self):
+        """Inverse perpetual is NOT symmetric: the magnitude of a
+        LONG losing on the same dollar move differs from a SHORT
+        losing on the mirrored move, because the denominator differs.
+        This documents the expected asymmetry and pins it as a
+        regression — a future symmetry-restoring "simplification"
+        would be wrong for inverse perpetual."""
+        # 0.1 BTC, prices 76800 → 76100 (~0.91 % move).
+        long_deal  = _deal(76800.0, size=0.1, side="long",  lev=1)
+        short_deal = _deal(76100.0, size=0.1, side="short", lev=1)
+
+        long_pnl, _  = long_deal.calculate_pnl(76100.0)   # losing
+        short_pnl, _ = short_deal.calculate_pnl(76800.0)  # losing
+
+        # Both losing positions.
+        assert long_pnl < 0
+        assert short_pnl < 0
+        # Magnitudes are close but not identical (asymmetry).
+        assert abs(long_pnl) != abs(short_pnl)
+        # ...and the difference is bounded — not a wildly different
+        # number, just the sub-1 % drift the inverse formula predicts.
+        assert abs(abs(long_pnl) - abs(short_pnl)) < abs(long_pnl) * 0.02
 
 
 class TestPaperState:
