@@ -112,3 +112,67 @@ def test_auth_login_audit_fires_per_user_split(tmp_logs):
     entry = _read_last_jsonl(user_jsonl)
     assert entry["action"] == "auth_login"
     assert entry["user_id"] == admin.id
+
+
+# ── Phase-A wrap-up: ip + result fields ────────────────────────────────────
+
+
+def test_audit_emits_ip_and_result_fields(tmp_logs):
+    """Phase-A wrap-up: every audit record must carry the new ``ip``
+    and ``result`` fields. Class-of-issue guard: a future refactor
+    that drops either field from the entry dict regresses observability
+    for the failed-attempt path (result="denied") and for IP-aware
+    incident triage (ip).
+    """
+    webapp._audit("test_action", "slug", "session:alice")
+    jsonl = tmp_logs / "audit.jsonl"
+    entry = _read_last_jsonl(jsonl)
+    assert "ip" in entry
+    assert "result" in entry
+    # No request was passed → ip is None; default result is "ok".
+    assert entry["ip"] is None
+    assert entry["result"] == "ok"
+
+
+def test_audit_extracts_ip_from_x_forwarded_for(tmp_logs):
+    """``_extract_client_ip`` MUST prefer the leftmost X-Forwarded-For
+    entry over the direct socket address (r1-004 trust model: the
+    reverse proxy overwrites XFF, so the leftmost hop is the real
+    client). Regression guard against accidentally trusting
+    ``request.client.host`` when XFF is present.
+    """
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/auth/login",
+        "headers": [(b"x-forwarded-for", b"203.0.113.42, 10.0.0.1")],
+        "client": ("10.0.0.1", 50000),
+    }
+    request = Request(scope)
+    webapp._audit(
+        "auth_login", "alice", "session:alice",
+        user_id=1, request=request, result="ok",
+    )
+    jsonl = tmp_logs / "audit.jsonl"
+    entry = _read_last_jsonl(jsonl)
+    assert entry["ip"] == "203.0.113.42"
+    assert entry["result"] == "ok"
+
+
+def test_audit_records_denied_result_for_failed_attempts(tmp_logs):
+    """Failed admin attempts (e.g. non-admin hitting /api/emergency-
+    stop) must surface in the audit trail with ``result="denied"``,
+    not just as a portal-log warning. Pin the contract so future
+    callsites that miss the kwarg get caught.
+    """
+    webapp._audit(
+        "emergency_stop", "-", "session:bob",
+        user_id=2, result="denied",
+    )
+    jsonl = tmp_logs / "audit.jsonl"
+    entry = _read_last_jsonl(jsonl)
+    assert entry["action"] == "emergency_stop"
+    assert entry["result"] == "denied"
+    assert entry["user_id"] == 2

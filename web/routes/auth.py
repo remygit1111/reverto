@@ -25,12 +25,13 @@ from slowapi.util import get_remote_address
 
 from core import user_store
 from core.password_breach import is_password_pwned
+from core.user import User
 from core.user_store import FAILED_LOGIN_WINDOW_S, PASSWORD_MIN_LENGTH
 from web import app as _webapp
 from web.app import (
     _audit,
     _create_session_cookie,
-    _require_session,
+    _request_user,
     _SESSION_COOKIE,
     _SESSION_TTL,
     _verify_session_cookie,
@@ -211,6 +212,8 @@ async def auth_login(body: LoginBody, request: Request):
                 body.username,
                 f"count={new_count}",
                 user_id=user_record.id if user_record is not None else None,
+                request=request,
+                result="denied",
             )
 
         # Backoff uses the PRE-attempt count so the first failure
@@ -250,7 +253,13 @@ async def auth_login(body: LoginBody, request: Request):
     # with the graceful-migration mint path in CSRFMiddleware so
     # the two mint sites can't drift.
     _webapp._set_csrf_cookie_on_response(resp, csrf_token)
-    _audit("auth_login", user.username, "-", user_id=user.id)
+    _audit(
+        "auth_login",
+        user.username,
+        "-",
+        user_id=user.id,
+        request=request,
+    )
     return resp
 
 
@@ -333,25 +342,17 @@ async def auth_status(request: Request):
 async def auth_change_password(
     body: ChangePasswordBody,
     request: Request,
-    session: dict = Depends(_require_session),
+    user: User = Depends(_request_user),
 ):
     if len(body.new_password) < PASSWORD_MIN_LENGTH:
         raise HTTPException(
             status_code=400,
             detail=f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
         )
-    # Audit r1-006: cookie no longer carries ``u`` — resolve the
-    # username from ``uid`` via the DB so we can feed it into
-    # ``verify_password`` (which still takes the username as its
-    # lookup key). Missing-user case can't actually fire here because
-    # _require_session already validated uid + active, but an empty-
-    # string fallback keeps verify_password's failure path clean.
-    uid = session.get("uid")
-    username = ""
-    if isinstance(uid, int) and uid > 0:
-        db_user = user_store.get_user_by_id(uid)
-        if db_user is not None:
-            username = db_user.username
+    # Audit v26-01: dependency consolidated to ``_request_user``, which
+    # already validated uid + active and resolved the row in one go,
+    # so the prior helper-local DB re-lookup is gone.
+    username = user.username
     # Audit pd-003: current-password verify MUST run before the HIBP
     # network round-trip. Otherwise an attacker with a valid session
     # cookie (or a stale tab) could spray change-password requests
@@ -359,8 +360,8 @@ async def auth_change_password(
     # HTTPS to haveibeenpwned.com on every attempt — wasting egress
     # + burning against the HIBP SLA. Gate the network call behind
     # the cheap local check.
-    user = user_store.verify_password(username, body.current_password)
-    if user is None:
+    verified = user_store.verify_password(username, body.current_password)
+    if verified is None:
         await asyncio.sleep(0.1)
         raise HTTPException(status_code=401, detail="Current password is incorrect")
     # HIBP Pwned-Passwords check (k-anonymity API — see
@@ -382,5 +383,11 @@ async def auth_change_password(
     # routing choice: forcing a fresh login after password-change is
     # the standard expectation.
     user_store.bump_session_epoch(user.id)
-    _audit("auth_change_password", username, "-", user_id=user.id)
+    _audit(
+        "auth_change_password",
+        username,
+        "-",
+        user_id=user.id,
+        request=request,
+    )
     return {"ok": True}
