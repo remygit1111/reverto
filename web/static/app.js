@@ -1124,6 +1124,14 @@ const CLOSED_DEALS_COLUMNS = [
   { key: 'close_price', label: 'Close Price',
     cell: d => `<td>${fmtPrice(d.close_price)}</td>`,
     sortValue: d => (d.close_price == null ? null : Number(d.close_price)) },
+  // DCA = number of DCA orders (order_number > 1). Reads from
+  // d.dca_count which paper.state_io.deal_to_dict serialises from
+  // the engine's PaperDeal.dca_count property. ``?? 0`` defends
+  // against a state.json written by a pre-feature engine: missing
+  // field renders as 0 rather than ``undefined``.
+  { key: 'dca_count',   label: 'DCA',
+    cell: d => `<td class="muted-cell" style="text-align:center">${d.dca_count ?? 0}</td>`,
+    sortValue: d => (d.dca_count == null ? 0 : Number(d.dca_count)) },
   { key: 'pnl_btc',     label: 'PnL BTC',
     cell: d => `<td>${fmtPnl(d.pnl_btc)}</td>`,
     sortValue: d => (d.pnl_btc == null ? null : Number(d.pnl_btc)) },
