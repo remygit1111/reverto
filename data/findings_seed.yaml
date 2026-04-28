@@ -2664,12 +2664,12 @@ findings:
 - finding_id: v26-22
   source_doc: v26-report
   severity: LOW
-  status: accepted
+  status: resolved
   title: SameSite test-cluster drift (TestClient drops strict cookies on CI)
   description: |
-    Production cookies are SameSite=strict; the test fixture flips to lax because httpx/TestClient on Python 3.13 + Ubuntu CI drops the cookie on follow-up requests. _COOKIE_SAMESITE override means tests validate the lax posture not the production strict one. Accepted 2026-04-21 — exploratory fix in branch fix/audit-v26-22 hit Gate 1 NO-GO (httpx 0.28.1 doesn't enforce SameSite, no Python 3.13 reproducibility on workstation). Revisit triggers documented in code comment.
-  resolution_ref: null
-  notes: "ACCEPTED 2026-04-21 — see v26-report.md §11 resolution note for revisit triggers."
+    Production cookies are SameSite=strict; the test fixture flips to lax because httpx/TestClient on Python 3.13 + Ubuntu CI drops the cookie on follow-up requests. _COOKIE_SAMESITE override means tests validated the lax posture not the production strict one — meaning the test-suite did not actually exercise the production cookie attributes. Resolved by tests/test_cookie_posture.py (Phase B PR 5) which forces the production posture for the duration of the test and inspects only the Set-Cookie header on the first response, so no follow-up requests rely on cookie-survival across plain-HTTP TestClient transport. 12 tests pin the per-cookie posture for all four production cookies.
+  resolution_ref: feat/cookie-posture-regression-test
+  notes: "Was ACCEPTED 2026-04-21 with three revisit-triggers; Trigger #1 (Phase B re-opens the auth-stack) fired and produced the fixture pattern that closes the test-fixture-contortion concern."
 
 - finding_id: v26-24
   source_doc: v26-report
