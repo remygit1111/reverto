@@ -1369,15 +1369,28 @@ gaat.
   voor een aparte sweep-PR omdat het een role-gated mutating endpoint
   introduceert dat los staat van de self-service flow.**
 - TOTP-verify endpoint + integratie in `/auth/login` flow.
-  **STATUS: enrollment-flow live in PR 2 (`feat/totp-enrollment`)
-  via three new endpoints — `/auth/totp/setup` (mints
-  pending-secret in 10-min server-signed cookie + returns server-
-  rendered SVG QR), `/auth/totp/verify` (validates code against
-  pending-secret + commits encrypted seed to
-  `users.totp_seed_encrypted`), `/auth/totp/disable` (dual-factor:
-  password + current TOTP code). 6 audit-event types cover the full
-  lifecycle. Login-flow integration (TOTP-step inside
-  `/auth/login`) deferred to PR 3.**
+  **STATUS: integration complete in PR 3
+  (`feat/totp-login-integration`). `/auth/login` now branches on
+  `user.totp_enabled`: users without 2FA get the historical
+  password-only response (zero behaviour change), users with 2FA
+  get `requires_totp: true` + a 2-minute pending-login-TOTP cookie
+  (separate `URLSafeTimedSerializer` salt — confused-deputy attack
+  with the enrollment cookie fails at the MAC). The new
+  `/auth/login/totp` endpoint reads the pending cookie, re-resolves
+  the user (catches active=0 + disable-mid-flow races), decrypts
+  the seed, verifies the code, and mints the real session cookie
+  via the shared `_mint_session_response` helper. 5 new audit-event
+  types: `login_password_ok_totp_required`,
+  `login_success_totp`, `login_totp_failed` (denied),
+  `login_totp_user_inactive` (denied),
+  `login_totp_disabled_mid_flow` (denied), plus
+  `login_totp_decrypt_failed` (error) for the integrity-event
+  alert path. Lockout-recovery via SQL fallback
+  (`UPDATE users SET totp_seed_encrypted = NULL WHERE id = ?`)
+  is pinned by `test_recovery_via_seed_null_returns_to_password_
+  only_path` so a future refactor that introduces a separate
+  `totp_required` gate can't silently break the operator's
+  tested fallback.**
 - Password-rotation prompt: forced password change elke 6 maanden
   voor admin-role; optional voor user-role.
   **STATUS: pending (uitgesteld; vereist UX-design eerst).**
@@ -1908,6 +1921,15 @@ wijzen straks naar dat bestand.
 
 ## Document changelog
 
+- **2026-04-28 (latest+1)** — Phase B PR 3 status update in Part 4:
+  TOTP login-flow integratie compleet (`feat/totp-login-integration`).
+  `/auth/login` gates op `totp_enabled`, nieuwe `/auth/login/totp`
+  voor de tweede stap, separate-salt pending-cookie (2-min TTL),
+  6 nieuwe audit-event types (success + 4 denied + 1 error). 19
+  regression tests inclusief operator-recovery contract. Phase B
+  is hierna feature-compleet voor de TOTP-track; PR 4 (per-user
+  rate-limit) en PR 5 (cookie-posture regression test) blijven
+  als hardening-werk over.
 - **2026-04-28 (latest)** — Phase B PR 2 status update in Part 4:
   enrollment-flow live (`feat/totp-enrollment`). Three new endpoints,
   pending-TOTP cookie via separate `URLSafeTimedSerializer`, server-

@@ -374,6 +374,13 @@ _CSRF_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #
 #   * /auth/login — caller has no session + no CSRF cookie yet.
 #     That endpoint issues the first CSRF cookie on success.
+#   * /auth/login/totp (Phase B PR 3) — second step of the 2FA
+#     login flow. Same rationale as /auth/login: no session and
+#     no CSRF cookie are present yet (the password step staged
+#     only the pending-login-TOTP cookie, intentionally not the
+#     CSRF cookie). The endpoint is gated by the itsdangerous-
+#     signed pending cookie which is HttpOnly + SameSite=Strict —
+#     a cross-site form submit could not produce a valid one.
 #
 # Decisions about what stays NON-exempt (audit pd-042):
 #
@@ -386,6 +393,7 @@ _CSRF_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #     locked out.
 _CSRF_EXEMPT_PATHS = frozenset({
     "/auth/login",
+    "/auth/login/totp",
 })
 
 
@@ -665,6 +673,87 @@ def _clear_pending_totp_cookie(response) -> None:
     signature lingering past the failed flow)."""
     response.delete_cookie(
         key=_PENDING_TOTP_COOKIE,
+        path="/",
+        samesite=_COOKIE_SAMESITE,
+        secure=_COOKIE_SECURE,
+        httponly=True,
+    )
+
+
+# ── Phase B PR 3: pending-login-TOTP cookie ───────────────────────────────
+#
+# Distinct from the enrollment-pending cookie above. /auth/login mints
+# this cookie when the password step succeeds AND the user has
+# ``totp_enabled = True``; /auth/login/totp reads it back, verifies the
+# code against the user's stored seed, and on success swaps the
+# pending-state for a real session cookie. The two cookies use
+# different salts so a confused-deputy attack that swapped enrollment-
+# pending and login-pending values fails at the itsdangerous signature
+# check (different salt = different MAC).
+#
+# 2-minute TTL — the login flow is supposed to be quick, and a longer
+# window widens the brute-force surface against the TOTP code without
+# any UX benefit.
+
+_PENDING_LOGIN_TOTP_COOKIE = "reverto_login_totp_pending"
+_PENDING_LOGIN_TOTP_TTL = 120
+_PENDING_LOGIN_TOTP_SALT = "reverto.login_totp_pending.v1"
+_pending_login_totp_serializer = URLSafeTimedSerializer(
+    _SECRET_KEY, salt=_PENDING_LOGIN_TOTP_SALT,
+)
+
+
+def _set_pending_login_totp_cookie(response, user_id: int) -> None:
+    """Stage password-step success. The cookie carries only the
+    user_id (and a mint timestamp via itsdangerous's signed envelope
+    + max_age) — no username, no password, no TOTP secret. The
+    caller owns the password row at the moment we mint, so binding
+    just the uid is sufficient: /auth/login/totp re-resolves the
+    user from the DB before reaching the TOTP-verify step.
+    """
+    payload = _pending_login_totp_serializer.dumps({
+        "uid": user_id,
+        "iat": int(time.time()),
+    })
+    response.set_cookie(
+        key=_PENDING_LOGIN_TOTP_COOKIE,
+        value=payload,
+        max_age=_PENDING_LOGIN_TOTP_TTL,
+        httponly=True,
+        samesite=_COOKIE_SAMESITE,
+        secure=_COOKIE_SECURE,
+        path="/",
+    )
+
+
+def _read_pending_login_totp_cookie(request: Request) -> Optional[int]:
+    """Return the user_id staged by a prior /auth/login password-step,
+    or ``None`` for missing / tampered / expired. The caller (
+    /auth/login/totp) translates a single None into 400 and cleans
+    up any lingering cookie."""
+    raw = request.cookies.get(_PENDING_LOGIN_TOTP_COOKIE)
+    if not raw:
+        return None
+    try:
+        data = _pending_login_totp_serializer.loads(
+            raw, max_age=_PENDING_LOGIN_TOTP_TTL,
+        )
+    except (BadSignature, SignatureExpired):
+        return None
+    except Exception as e:  # noqa: BLE001 — defensive
+        logger.debug("pending-login-TOTP cookie parse failed: %s", e)
+        return None
+    if not isinstance(data, dict):
+        return None
+    uid = data.get("uid")
+    if not isinstance(uid, int) or uid <= 0:
+        return None
+    return uid
+
+
+def _clear_pending_login_totp_cookie(response) -> None:
+    response.delete_cookie(
+        key=_PENDING_LOGIN_TOTP_COOKIE,
         path="/",
         samesite=_COOKIE_SAMESITE,
         secure=_COOKIE_SECURE,
@@ -2066,6 +2155,13 @@ _PUBLIC_PATHS = {
     "/metrics",
     "/auth/status",
     "/auth/login",
+    # Phase B PR 3: /auth/login/totp is the second step of the
+    # 2FA login flow. By definition it runs BEFORE the session
+    # cookie is minted (the password step staged a pending cookie
+    # only) — so AuthMiddleware would otherwise 303 it to /.
+    # The endpoint enforces its own auth via the signed pending-
+    # login-TOTP cookie that /auth/login set.
+    "/auth/login/totp",
     "/auth/logout",
 }
 
