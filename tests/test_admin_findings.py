@@ -164,8 +164,8 @@ class TestV26V27SeedExtension:
     def test_total_seed_count_matches_documented_total(self):
         raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
         items = raw["findings"]
-        assert len(items) == 280, (
-            f"seed total drifted from 280: got {len(items)}. Update the "
+        assert len(items) == 285, (
+            f"seed total drifted from 285: got {len(items)}. Update the "
             "header comment in data/findings_seed.yaml in the same PR."
         )
 
@@ -227,6 +227,72 @@ class TestV26V27SeedExtension:
         assert open_ids == ["v27-07"], (
             f"v27 open-set drifted: {open_ids} — re-run the grep "
             "verification or sync data/findings_seed.yaml."
+        )
+
+
+# ── PT-v3 extension (Phase B auth-stack adversarial review) ────────────────
+
+
+class TestPTv3SeedExtension:
+    """PT-v3 produced 5 findings (pt-101, pt-102, pt-130, pt-150,
+    pt-160) all status=open at the time of seeding. These tests pin
+    the contract so a future PR that fixes one of them MUST sync the
+    seed YAML's status / resolution_ref alongside the code change —
+    otherwise the open-set assertion below fails."""
+
+    def test_ptv3_findings_present_in_yaml(self):
+        raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
+        ptv3 = [
+            f for f in raw["findings"]
+            if f["source_doc"] == "production-pentest-v3"
+        ]
+        assert len(ptv3) == 5
+        assert {f["finding_id"] for f in ptv3} == {
+            "pt-101", "pt-102", "pt-130", "pt-150", "pt-160",
+        }
+
+    def test_ptv3_findings_all_open_with_no_resolution_ref(self):
+        """At seed-time none of the PT-v3 findings had been fixed.
+        When a fix lands, this test fails until the seed is updated
+        — forcing the seed-DB-tracker to stay in sync with reality."""
+        raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
+        ptv3 = [
+            f for f in raw["findings"]
+            if f["source_doc"] == "production-pentest-v3"
+        ]
+        # Floor-guard against vacuous-truth: an empty filter would
+        # trivially pass the offenders check. The other tests in this
+        # class already pin the count, but stating the precondition
+        # here keeps each test self-contained.
+        assert len(ptv3) == 5
+        offenders = [
+            (f["finding_id"], f["status"], f["resolution_ref"])
+            for f in ptv3
+            if f["status"] != "open" or f["resolution_ref"] is not None
+        ]
+        assert offenders == [], (
+            f"PT-v3 findings drifted from open/no-ref: {offenders}. "
+            "If you fixed one, update its status to resolved + fill "
+            "resolution_ref. If you intentionally accepted one, set "
+            "status=accepted with a notes field explaining why."
+        )
+
+    def test_ptv3_severity_distribution_matches_pentest_doc(self):
+        """The PT-v3 markdown report has a severity table claiming
+        1 MEDIUM + 3 LOW + 1 INFO across the 5 findings. Pin that
+        distribution so a careless edit to the seed (e.g. promoting
+        an INFO to MEDIUM without updating the doc) breaks here."""
+        from collections import Counter
+        raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
+        ptv3 = [
+            f for f in raw["findings"]
+            if f["source_doc"] == "production-pentest-v3"
+        ]
+        counts = Counter(f["severity"] for f in ptv3)
+        assert counts == Counter({"LOW": 3, "MEDIUM": 1, "INFO": 1}), (
+            f"PT-v3 severity distribution drifted: {dict(counts)}. "
+            "Cross-check with docs/pentests/production-pentest-v3.md "
+            "Hypothesis Summary table — both must agree."
         )
 
 
