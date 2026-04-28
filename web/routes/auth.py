@@ -5,6 +5,9 @@ Routes:
   POST /auth/logout                — bumps per-user session epoch + clears cookie
   GET  /auth/status                — returns auth state (no auth required)
   POST /api/auth/change-password   — rotates password + session epoch
+  POST /auth/totp/setup            — start TOTP enrollment (Phase B PR 2)
+  POST /auth/totp/verify           — verify code + commit TOTP seed
+  POST /auth/totp/disable          — disable TOTP (password + code required)
 
 Phase-3a: every auth-state read/write goes via ``core.user_store``
 (DB-backed). The .auth.json blob is gone — admin password is
@@ -14,26 +17,34 @@ provisioned via ``scripts/setup_admin.py`` post-migration.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import time
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import qrcode
+from cryptography.fernet import InvalidToken
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from qrcode.image.svg import SvgPathImage
 from slowapi.util import get_remote_address
 
-from core import user_store
+from core import totp, user_store
 from core.password_breach import is_password_pwned
 from core.user import User
 from core.user_store import FAILED_LOGIN_WINDOW_S, PASSWORD_MIN_LENGTH
 from web import app as _webapp
 from web.app import (
     _audit,
+    _clear_pending_totp_cookie,
     _create_session_cookie,
+    _read_pending_totp_cookie,
+    _request_actor,
     _request_user,
     _SESSION_COOKIE,
     _SESSION_TTL,
+    _set_pending_totp_cookie,
     _verify_session_cookie,
     limiter,
 )
@@ -339,16 +350,24 @@ async def auth_status(request: Request):
         # resolve from ``uid`` instead. Missing user falls through
         # to ``username=None`` so the SPA's avatar-initial renders
         # its placeholder instead of crashing.
+        totp_enabled = False
         if isinstance(uid, int) and uid > 0:
             u = user_store.get_user_by_id(uid)
             if u is not None:
                 username = u.username
+                totp_enabled = u.totp_enabled
         return {
             "authenticated": True,
             "username": username,
             "user_id": int(uid) if isinstance(uid, int) else None,
+            "totp_enabled": totp_enabled,
         }
-    return {"authenticated": False, "username": None, "user_id": None}
+    return {
+        "authenticated": False,
+        "username": None,
+        "user_id": None,
+        "totp_enabled": False,
+    }
 
 
 @router.post("/api/auth/change-password")
@@ -405,3 +424,302 @@ async def auth_change_password(
         request=request,
     )
     return {"ok": True}
+
+
+# ── Phase B PR 2: TOTP enrollment + disable ────────────────────────────────
+#
+# Three endpoints back the profile-page TOTP flow. The flow is split
+# across setup → verify because we mint the secret in one round-trip
+# (so the user can scan the QR), then commit the encrypted seed to the
+# DB only after the user has proven possession of the authenticator
+# app by typing a valid code. The pending-state lives in a 10-minute
+# server-signed cookie (``_set_pending_totp_cookie`` in web/app.py)
+# that is uid-bound — one user's pending cookie cannot be replayed
+# against another user's verify call.
+#
+# Disable requires BOTH the current password AND a current TOTP code.
+# Password proves session ownership; TOTP code proves physical access
+# to the authenticator app. Either alone would be insufficient — a
+# stolen cookie would be enough to disable the second factor without
+# the password gate, and a stolen device-with-code would be enough to
+# disable without the password gate.
+#
+# Audit-event types (six total — three success, three denied):
+#   * totp_setup_initiated   — user kicked off enrollment
+#   * totp_enabled           — verify succeeded, secret committed
+#   * totp_verify_failed     — verify code rejected (denied)
+#   * totp_disabled          — disable succeeded
+#   * totp_disable_failed_password  — wrong password (denied)
+#   * totp_disable_failed_code      — wrong TOTP code (denied)
+
+
+class TotpSetupResponse(BaseModel):
+    """Response of POST /auth/totp/setup. Carries the secret + a
+    server-rendered SVG QR code so the SPA does not need a CDN-loaded
+    QR encoder library — the v27-04 supply-chain surface stays closed
+    and the operator does not need to regenerate an SRI hash on every
+    qrcode-library bump."""
+
+    provisioning_uri: str
+    secret: str
+    qr_svg: str  # raw <svg>...</svg> markup, embed via innerHTML
+    expires_at: datetime
+
+
+class TotpVerifyBody(BaseModel):
+    """Body for POST /auth/totp/verify. The ``pattern`` mirrors the
+    six-digit-only contract enforced in core.totp.verify_code, so an
+    obviously-bad shape gets rejected by Pydantic with a 422 before
+    the handler runs."""
+
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class TotpDisableBody(BaseModel):
+    """Body for POST /auth/totp/disable. Dual-factor: password +
+    TOTP code. Both fields are required — Pydantic rejects an empty
+    or shape-wrong submission before the handler weighs in."""
+
+    current_password: str = Field(min_length=1, max_length=512)
+    totp_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+def _render_qr_svg(provisioning_uri: str) -> str:
+    """Render an otpauth:// URI as an inline SVG QR code.
+
+    Uses ``qrcode.image.svg.SvgPathImage`` so the output is a single
+    ``<path>`` element rather than per-module ``<rect>``s — keeps the
+    response body small (sub-15 KB for our URIs). Returns the SVG
+    markup as a UTF-8 string, ready to embed via ``innerHTML`` on
+    the SPA side. Server-side rendering is the v27-04 supply-chain
+    posture: no CDN-loaded QR library, no SRI hash to regenerate.
+    """
+    img = qrcode.make(
+        provisioning_uri,
+        image_factory=SvgPathImage,
+    )
+    buf = io.BytesIO()
+    img.save(buf)
+    return buf.getvalue().decode("utf-8")
+
+
+@router.post("/auth/totp/setup", response_model=TotpSetupResponse)
+@limiter.limit("5/minute")
+async def auth_totp_setup(
+    request: Request,
+    response: Response,
+    user: User = Depends(_request_user),
+    actor: str = Depends(_request_actor),
+):
+    """Start TOTP enrollment.
+
+    Generates a fresh base32 seed, stores it server-signed in the
+    pending-TOTP cookie (10-minute TTL, uid-bound), and returns the
+    provisioning URI + an inline-renderable SVG QR. The user has 10
+    minutes to scan the QR with an authenticator app and POST a
+    matching code to ``/auth/totp/verify`` — that call is what
+    actually commits the secret to the DB.
+
+    Refuses with 400 if the user already has TOTP enabled. The
+    disable-flow exists for re-enrolment, and forcing the user
+    through it ensures both password + current TOTP code prove
+    intent before a brand-new seed lands in the DB.
+    """
+    if user.totp_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "TOTP already enabled. Disable first via "
+                "/auth/totp/disable to re-enroll."
+            ),
+        )
+
+    secret = totp.generate_secret()
+    provisioning_uri = totp.generate_provisioning_uri(
+        secret, user.username,
+    )
+    qr_svg = _render_qr_svg(provisioning_uri)
+    expires_at = datetime.fromtimestamp(
+        time.time() + _webapp._PENDING_TOTP_TTL, tz=UTC,
+    )
+
+    body = TotpSetupResponse(
+        provisioning_uri=provisioning_uri,
+        secret=secret,
+        qr_svg=qr_svg,
+        expires_at=expires_at,
+    )
+    json_response = JSONResponse(content=body.model_dump(mode="json"))
+    _set_pending_totp_cookie(json_response, secret, user.id)
+
+    _audit(
+        "totp_setup_initiated",
+        user.username,
+        actor,
+        user_id=user.id,
+        request=request,
+    )
+    return json_response
+
+
+@router.post("/auth/totp/verify")
+@limiter.limit("10/minute")
+async def auth_totp_verify(
+    body: TotpVerifyBody,
+    request: Request,
+    response: Response,
+    user: User = Depends(_request_user),
+    actor: str = Depends(_request_actor),
+):
+    """Verify a TOTP code against the pending-secret and commit on
+    success.
+
+    On success the secret is encrypted via the user's Fernet key and
+    stored in ``users.totp_seed_encrypted``; the pending cookie is
+    cleared. On failure the cookie is left intact so the user can
+    retry without re-running setup. Wrong-code emits a denied audit
+    event so brute-force attempts surface in the audit trail.
+    """
+    pending_secret = _read_pending_totp_cookie(request, user.id)
+    if pending_secret is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No TOTP enrolment in progress. POST /auth/totp/setup "
+                "first."
+            ),
+        )
+
+    if not totp.verify_code(pending_secret, body.code):
+        _audit(
+            "totp_verify_failed",
+            user.username,
+            actor,
+            user_id=user.id,
+            request=request,
+            result="denied",
+        )
+        raise HTTPException(status_code=401, detail="Invalid TOTP code")
+
+    encrypted = totp.encrypt_seed_for_user(user.id, pending_secret)
+    if not user_store.update_user_totp_seed(user.id, encrypted):
+        # Race: user row deleted between the dependency-resolve and
+        # here. Vanishingly unlikely on a single-tenant deploy, but
+        # surfacing 500 here would mask a real auth-state bug — fall
+        # closed with 401 + audit trail instead.
+        _audit(
+            "totp_enable_failed_user_missing",
+            user.username,
+            actor,
+            user_id=user.id,
+            request=request,
+            result="error",
+        )
+        raise HTTPException(
+            status_code=401, detail="User row no longer exists",
+        )
+
+    response_body = JSONResponse(content={"ok": True, "totp_enabled": True})
+    _clear_pending_totp_cookie(response_body)
+
+    _audit(
+        "totp_enabled",
+        user.username,
+        actor,
+        user_id=user.id,
+        request=request,
+    )
+    return response_body
+
+
+@router.post("/auth/totp/disable")
+@limiter.limit("5/minute")
+async def auth_totp_disable(
+    body: TotpDisableBody,
+    request: Request,
+    user: User = Depends(_request_user),
+    actor: str = Depends(_request_actor),
+):
+    """Disable TOTP — requires BOTH current password AND a current
+    valid TOTP code.
+
+    Two-factor by design: a stolen session cookie alone cannot turn
+    off the second factor (password gate), and a stolen device-with-
+    code alone cannot either (password gate). Both must succeed.
+    The two failure modes are audited separately so an operator
+    investigating an incident can tell whether the attacker had the
+    cookie or the device.
+    """
+    if not user.totp_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="TOTP is not enabled for this account.",
+        )
+
+    # Audit pd-003 carry-over: verify the current password BEFORE
+    # touching the encrypted seed. A stolen cookie cannot drive a
+    # decrypt round-trip without the password gate.
+    verified = user_store.verify_password(
+        user.username, body.current_password,
+    )
+    if verified is None:
+        await asyncio.sleep(0.1)
+        _audit(
+            "totp_disable_failed_password",
+            user.username,
+            actor,
+            user_id=user.id,
+            request=request,
+            result="denied",
+        )
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Decrypt the stored seed and check the supplied code. A
+    # decrypt failure is an integrity event (DB tamper / wrong key /
+    # corruption) — surface it as 500 with a denied audit so the
+    # operator notices.
+    encrypted = user.totp_seed_encrypted
+    assert encrypted is not None  # totp_enabled guard above
+    try:
+        secret = totp.decrypt_seed_for_user(user.id, encrypted)
+    except (InvalidToken, ValueError) as e:
+        logger.error(
+            "totp_disable: decrypt failed for user_id=%d: %s",
+            user.id, str(e)[:200],
+        )
+        _audit(
+            "totp_disable_failed_decrypt",
+            user.username,
+            actor,
+            user_id=user.id,
+            request=request,
+            result="error",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not decrypt stored TOTP seed. Contact an "
+                "administrator."
+            ),
+        )
+
+    if not totp.verify_code(secret, body.totp_code):
+        _audit(
+            "totp_disable_failed_code",
+            user.username,
+            actor,
+            user_id=user.id,
+            request=request,
+            result="denied",
+        )
+        raise HTTPException(status_code=401, detail="Invalid TOTP code")
+
+    user_store.update_user_totp_seed(user.id, None)
+    _audit(
+        "totp_disabled",
+        user.username,
+        actor,
+        user_id=user.id,
+        request=request,
+    )
+    return {"ok": True, "totp_enabled": False}

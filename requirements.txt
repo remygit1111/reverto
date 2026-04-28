@@ -43,6 +43,7 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-telegram-bot==22.7
 PyYAML==6.0.3
+qrcode==8.0
 requests==2.33.1
 setuptools==82.0.1
 six==1.17.0

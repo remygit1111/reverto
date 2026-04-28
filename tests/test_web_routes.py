@@ -295,10 +295,13 @@ class TestAuth:
         assert r.status_code == 200
         # user_id is part of the response shape since the changelog
         # PR — the SPA uses it to gate admin-only nav items.
+        # Phase B PR 2: totp_enabled added so the SPA's profile
+        # modal can render the right enrollment-status block on open.
         assert r.json() == {
             "authenticated": False,
             "username": None,
             "user_id": None,
+            "totp_enabled": False,
         }
 
     def test_login_bad_credentials_returns_401(self, auth_client):

@@ -565,6 +565,113 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
     return data
 
 
+# ── Phase B: pending-TOTP-enrollment cookie ────────────────────────────────
+#
+# /auth/totp/setup mints a base32 secret and stores it server-signed in a
+# short-lived cookie. /auth/totp/verify reads it back, validates the
+# user-supplied 6-digit code against the secret, and on success commits
+# the encrypted secret to ``users.totp_seed_encrypted``.
+#
+# Why a cookie and not a DB row:
+#   - Pending state per (user, browser tab); a DB column adds a write
+#     path that has to clean itself up on abandonment.
+#   - itsdangerous signing keeps the secret off the client's
+#     localStorage / non-HttpOnly surface — only the SPA's setup-flow
+#     ever sees the plaintext (in the response body, on screen for the
+#     QR-code render).
+#   - 10-minute TTL via URLSafeTimedSerializer so a forgotten tab
+#     auto-expires the secret without operator action.
+#
+# The salt is distinct from the session-cookie salt — a confused-deputy
+# attack that swapped one cookie value for the other would fail at the
+# itsdangerous signature check (different salt = different MAC).
+
+_PENDING_TOTP_COOKIE = "reverto_totp_pending"
+_PENDING_TOTP_TTL = 600  # 10 minutes
+_PENDING_TOTP_SALT = "reverto.totp_pending.v1"
+_pending_totp_serializer = URLSafeTimedSerializer(
+    _SECRET_KEY, salt=_PENDING_TOTP_SALT,
+)
+
+
+def _set_pending_totp_cookie(response, secret: str, user_id: int) -> None:
+    """Sign + emit the pending-TOTP cookie. ``secret`` is the freshly-
+    generated base32 seed; ``user_id`` is bound into the payload so a
+    cookie minted for user A cannot be replayed against user B's
+    /auth/totp/verify call.
+
+    Reuses the global cookie-flag posture (Secure, Strict, HttpOnly)
+    so a single REVERTO_INSECURE_COOKIES override flips both the
+    session and the pending-TOTP cookie together — no drift between
+    them under local-dev or production deploys.
+    """
+    payload = _pending_totp_serializer.dumps({
+        "secret": secret,
+        "uid": user_id,
+        "iat": int(time.time()),
+    })
+    response.set_cookie(
+        key=_PENDING_TOTP_COOKIE,
+        value=payload,
+        max_age=_PENDING_TOTP_TTL,
+        httponly=True,
+        samesite=_COOKIE_SAMESITE,
+        secure=_COOKIE_SECURE,
+        path="/",
+    )
+
+
+def _read_pending_totp_cookie(
+    request: Request, expected_user_id: int,
+) -> Optional[str]:
+    """Return the pending base32 secret for ``expected_user_id`` if the
+    cookie is present, signed, within TTL, and bound to that user.
+    Returns ``None`` for every other case (missing, tampered, expired,
+    user-mismatch) so the caller can translate a single None to a
+    400/401.
+
+    User-binding is the load-bearing check post-itsdangerous: the
+    signature alone proves "we minted this", but a multi-user portal
+    must also reject "user A's pending cookie replayed by user B's
+    session". The signed payload carries ``uid`` so this is a single
+    int-compare after the signature passes.
+    """
+    raw = request.cookies.get(_PENDING_TOTP_COOKIE)
+    if not raw:
+        return None
+    try:
+        data = _pending_totp_serializer.loads(
+            raw, max_age=_PENDING_TOTP_TTL,
+        )
+    except (BadSignature, SignatureExpired):
+        return None
+    except Exception as e:  # noqa: BLE001 — defensive
+        logger.debug("pending-TOTP cookie parse failed: %s", e)
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("uid") != expected_user_id:
+        return None
+    secret = data.get("secret")
+    if not isinstance(secret, str) or not secret:
+        return None
+    return secret
+
+
+def _clear_pending_totp_cookie(response) -> None:
+    """Remove the pending-TOTP cookie from the client. Called on
+    successful verify (commit succeeded — pending state served its
+    purpose) and on expired-pending cleanup (don't leave a stale
+    signature lingering past the failed flow)."""
+    response.delete_cookie(
+        key=_PENDING_TOTP_COOKIE,
+        path="/",
+        samesite=_COOKIE_SAMESITE,
+        secure=_COOKIE_SECURE,
+        httponly=True,
+    )
+
+
 def _request_actor(request: Request) -> str:
     """Return a short audit-log identifier for the caller.
 
