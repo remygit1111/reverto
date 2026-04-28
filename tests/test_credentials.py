@@ -238,6 +238,11 @@ class TestCredentialProviderInterface:
             "delete_keys",
             "get_bitget_passphrase",
             "rotate_user_key",
+            # Phase B PR 1 (feat/totp-foundation): generic per-user
+            # encrypt/decrypt primitive used by core.totp + future
+            # per-user secret callers.
+            "encrypt_for_user",
+            "decrypt_for_user",
         }
 
     def test_module_shims_delegate_to_default_provider(
@@ -276,6 +281,15 @@ class TestCredentialProviderInterface:
 
             def rotate_user_key(self, user_id=1, retention_days=7):
                 return {"user_id": user_id}
+
+            def encrypt_for_user(self, user_id, plaintext):
+                self.calls.append(("encrypt_for_user", user_id, plaintext))
+                return f"enc:{plaintext}"
+
+            def decrypt_for_user(self, user_id, ciphertext):
+                self.calls.append(("decrypt_for_user", user_id, ciphertext))
+                assert ciphertext.startswith("enc:")
+                return ciphertext[4:]
 
         original = credentials.get_default_provider()
         stub = _RecordingProvider()

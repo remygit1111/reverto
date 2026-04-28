@@ -166,6 +166,29 @@ class CredentialProvider(ABC):
         commit-order contract that keeps the old payloads recoverable
         on a crash mid-rotation."""
 
+    @abstractmethod
+    def encrypt_for_user(self, user_id: int, plaintext: str) -> str:
+        """Encrypt arbitrary UTF-8 plaintext using the user's key.
+
+        General-purpose primitive — the exchange-credential helpers
+        above wrap a JSON payload of (api_key, api_secret, passphrase)
+        through the same key, but other callers (Phase B TOTP seeds,
+        future per-user secrets) only need a scalar string. Returned
+        ciphertext is a UTF-8 string suitable for direct DB storage.
+        """
+
+    @abstractmethod
+    def decrypt_for_user(self, user_id: int, ciphertext: str) -> str:
+        """Decrypt a string previously produced by ``encrypt_for_user``.
+
+        Raises on tamper / wrong key / corruption — callers MUST
+        handle the failure path explicitly. Unlike ``get_keys`` we
+        do NOT swallow decrypt failures here, because the caller
+        almost always wants to distinguish "no value stored" (which
+        they can detect at the DB layer with a NULL) from "stored
+        value won't decrypt" (an integrity event worth surfacing).
+        """
+
 
 # ── FernetCredentialProvider (concrete, on-disk Fernet backend) ────────────
 
@@ -480,6 +503,27 @@ class FernetCredentialProvider(CredentialProvider):
             "keys_rotated": sorted(plaintext.keys()),
             "backups_removed": removed,
         }
+
+    # ── Generic per-user encrypt / decrypt (Phase B foundation) ──
+
+    def encrypt_for_user(self, user_id: int, plaintext: str) -> str:
+        """Encrypt an arbitrary UTF-8 string with the user's Fernet
+        key. Returns the ciphertext as a UTF-8 string ready for DB
+        storage. Reuses the same per-user key the exchange-credentials
+        helpers use, so a future ``rotate_user_key`` rotates BOTH
+        domains — TOTP seeds and exchange creds — under the same
+        commit-order contract."""
+        f = self._user_fernet(user_id)
+        return f.encrypt(plaintext.encode("utf-8")).decode("utf-8")
+
+    def decrypt_for_user(self, user_id: int, ciphertext: str) -> str:
+        """Decrypt a value previously produced by ``encrypt_for_user``.
+        Raises ``cryptography.fernet.InvalidToken`` on tamper / wrong
+        key / corruption — callers MUST distinguish "value not stored"
+        (DB NULL, never reaches this method) from "stored value won't
+        decrypt" (integrity event)."""
+        f = self._user_fernet(user_id)
+        return f.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
 
 
 # ── Default provider singleton + module-level shims ────────────────────────
