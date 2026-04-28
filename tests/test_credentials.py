@@ -208,3 +208,88 @@ class TestPerUserIsolation:
 # zijn gedelete post-Phase-3a. Admin-auth leeft nu in
 # users.password_hash (bcrypt), niet in een Fernet-encrypted
 # .auth.json blob.
+
+
+# ── Phase-A wrap-up: provider abstraction ──────────────────────────────────
+
+
+class TestCredentialProviderInterface:
+    """Phase-A wrap-up regression guard. The provider seam (ABC +
+    concrete Fernet impl) exists so a Phase-C signing-service backend
+    can drop in without touching call sites. These tests pin the
+    contract so a future refactor can't quietly remove the abstraction
+    or skip a method."""
+
+    def test_default_provider_is_fernet(self):
+        provider = credentials.get_default_provider()
+        assert isinstance(provider, credentials.FernetCredentialProvider)
+        assert isinstance(provider, credentials.CredentialProvider)
+
+    def test_credential_provider_abc_declares_full_surface(self):
+        """A new backend must implement every method the existing
+        callers already rely on. Pin the abstract method set so an
+        ABC trim-down cannot silently break Phase-C drop-in."""
+        abstracts = credentials.CredentialProvider.__abstractmethods__
+        assert abstracts == {
+            "save_keys",
+            "get_keys",
+            "has_keys",
+            "list_exchanges_with_keys",
+            "delete_keys",
+            "get_bitget_passphrase",
+            "rotate_user_key",
+        }
+
+    def test_module_shims_delegate_to_default_provider(
+        self, tmp_store, monkeypatch,
+    ):
+        """``credentials.get_keys`` (module-level shim) must route
+        through ``_default_provider`` — not have its own duplicated
+        implementation. Swap the default for a stub and confirm the
+        stub sees the call.
+        """
+
+        class _RecordingProvider(credentials.CredentialProvider):
+            def __init__(self):
+                self.calls: list[tuple] = []
+
+            def save_keys(self, exchange, api_key, api_secret, user_id, *, passphrase=""):
+                self.calls.append(
+                    ("save_keys", exchange, user_id, passphrase),
+                )
+
+            def get_keys(self, exchange, user_id):
+                self.calls.append(("get_keys", exchange, user_id))
+                return {"api_key": "stub", "api_secret": "stub", "passphrase": ""}
+
+            def has_keys(self, exchange, user_id):
+                return True
+
+            def list_exchanges_with_keys(self, user_id):
+                return ["bitget"]
+
+            def delete_keys(self, exchange, user_id):
+                return True
+
+            def get_bitget_passphrase(self, user_id):
+                return "stub-pass"
+
+            def rotate_user_key(self, user_id=1, retention_days=7):
+                return {"user_id": user_id}
+
+        original = credentials.get_default_provider()
+        stub = _RecordingProvider()
+        try:
+            credentials.set_default_provider(stub)
+            credentials.save_keys(
+                "bitget", "k", "s", user_id=9, passphrase="pp",
+            )
+            result = credentials.get_keys("bitget", user_id=9)
+        finally:
+            credentials.set_default_provider(original)
+
+        assert ("save_keys", "bitget", 9, "pp") in stub.calls
+        assert ("get_keys", "bitget", 9) in stub.calls
+        assert result == {
+            "api_key": "stub", "api_secret": "stub", "passphrase": "",
+        }

@@ -1008,15 +1008,16 @@ class TestLoginSecurityHardening:
 
 
 class TestInactiveUserRejected:
-    """Audit v26-01: ``_require_session`` must reject a user whose
-    row has been flipped to ``active = 0`` even when their cookie
+    """Audit v26-01: every authenticated endpoint must reject a user
+    whose row has been flipped to ``active = 0`` even when their cookie
     still passes signature + TTL + session_epoch checks.
-    ``_request_user`` already enforced this; the two helpers now
-    share the same gate.
 
-    Covers both auth-dependency paths:
-      * ``_require_session`` → ``/api/auth/change-password``
-      * ``_request_user``    → ``/api/bots``
+    Phase-A wrap-up: ``_require_session`` was consolidated away — the
+    sole caller (``/api/auth/change-password``) now uses
+    ``_request_user`` like every other authenticated route. Both tests
+    exercise ``_request_user`` directly; they remain split because the
+    two endpoints they cover are wired by different mechanics (router
+    vs. main app) and either could regress independently.
     """
 
     def _deactivate_admin(self):
@@ -1029,13 +1030,13 @@ class TestInactiveUserRejected:
         with conn:
             conn.execute("UPDATE users SET active = 0 WHERE id = 1")
 
-    def test_require_session_rejects_inactive_user(self, auth_client):
+    def test_change_password_rejects_inactive_user(self, auth_client):
         """Pre-fix: cookie signature + epoch both passed, the endpoint
-        served the deactivated user. Post-fix: 401 before the handler
-        body runs. The 'User not found' detail matches what
-        ``_request_user`` already returns for the same state, so the
-        SPA's generic 401 handler fires regardless of which
-        dependency the endpoint uses."""
+        served the deactivated user via ``_require_session``. Post-fix
+        (and post-consolidation): the endpoint runs through
+        ``_request_user`` which 401s before the handler body. The
+        'User not found' detail matches every other authenticated
+        route, so the SPA's generic 401 handler fires uniformly."""
         token = _admin_cookie()
         auth_client.cookies.set("reverto_session", token)
         self._deactivate_admin()
@@ -1061,6 +1062,35 @@ class TestInactiveUserRejected:
         r = auth_client.get("/api/bots")
         assert r.status_code == 401
         assert r.json()["detail"] == "User not found"
+
+
+class TestRequireSessionHelperRemoved:
+    """Phase-A wrap-up — class-of-issue guard for v26-01 consolidation.
+
+    The ``_require_session`` helper used to be a parallel auth
+    dependency that lacked the ``user.active`` check. We folded its
+    only caller onto ``_request_user`` and deleted the helper. If a
+    future refactor reintroduces ``_require_session`` (or imports it
+    from the old location), the active-check parity gap risks coming
+    back. These structural tests catch that the moment it happens.
+    """
+
+    def test_require_session_attribute_does_not_exist(self):
+        from web import app as webapp
+        assert not hasattr(webapp, "_require_session"), (
+            "v26-01: _require_session was deleted in Phase-A wrap-up. "
+            "If you need a session-only helper, fold the active-check "
+            "into _request_user instead of resurrecting this helper."
+        )
+
+    def test_auth_route_does_not_import_require_session(self):
+        from web.routes import auth as auth_routes
+        # Ensure neither the symbol nor a stale module-level binding
+        # has been re-introduced.
+        assert not hasattr(auth_routes, "_require_session"), (
+            "auth.py imported _require_session from web.app — but the "
+            "helper was deleted in Phase-A wrap-up. Use _request_user."
+        )
 
 
 class TestApiKeyRespectsActive:

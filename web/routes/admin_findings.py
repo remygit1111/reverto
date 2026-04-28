@@ -152,5 +152,11 @@ async def api_admin_findings_update(
         # encoded in the audit line — the DB row's ``updated_at``
         # plus the post-update state are the source of truth for
         # *what* changed; the audit log captures *who* / *when*.
-        _audit("admin_finding_update", finding_id, actor, user_id=user.id)
+        _audit(
+            "admin_finding_update",
+            finding_id,
+            actor,
+            user_id=user.id,
+            request=request,
+        )
     return audit_findings_store.get_finding(finding_id)

@@ -565,37 +565,6 @@ def _verify_session_cookie(token: Optional[str]) -> Optional[dict]:
     return data
 
 
-def _require_session(request: Request) -> dict:
-    """FastAPI dependency — reject if the caller has no valid session
-    cookie OR if the backing user has been deactivated.
-
-    Audit v26-01 MEDIUM: pre-fix this helper only checked the
-    itsdangerous signature + TTL + session_epoch on the cookie. A
-    user flipped to ``active = 0`` still had a cookie that passed
-    those checks — the only way to lock them out was to wait for
-    TTL expiry or bump their session_epoch. ``_request_user`` (the
-    dependency used by almost every other route) already does the
-    active-check, so this was a parity gap: one endpoint
-    (``/api/auth/change-password`` at time of fix) would happily
-    serve a deactivated account.
-
-    Post-fix: same 401 + "User not found" response shape as
-    ``_request_user`` on the inactive-user path, so clients see
-    identical UI behaviour regardless of which helper a given
-    endpoint happens to use.
-    """
-    payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
-    if not payload:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    uid = payload.get("uid")
-    if not isinstance(uid, int) or uid <= 0:
-        raise HTTPException(status_code=401, detail="Invalid session")
-    user = user_store.get_user_by_id(uid)
-    if user is None or not user.active:
-        raise HTTPException(status_code=401, detail="User not found")
-    return payload
-
-
 def _request_actor(request: Request) -> str:
     """Return a short audit-log identifier for the caller.
 
@@ -746,11 +715,39 @@ if not _audit_logger.handlers:
     _audit_logger.addHandler(_audit_handler)
 
 
+def _extract_client_ip(request: Optional[Request]) -> Optional[str]:
+    """Return the client IP for the request, or ``None`` when no
+    request is in-scope (e.g. an audit emitted from a background
+    task that has no HTTP context).
+
+    Trust model: the reverse proxy is configured to *overwrite*
+    ``X-Forwarded-For`` rather than append (Caddy's ``reverse_proxy``
+    default; same for nginx's ``proxy_set_header X-Forwarded-For
+    $remote_addr;`` recipe). That means the leftmost entry is the
+    first proxy-trusted hop and we can use it directly without
+    scanning the chain — a client cannot inject a fake leftmost
+    value because the proxy strips whatever they sent. Falls back
+    to ``request.client.host`` when no XFF header is present (local
+    dev or direct exposure).
+    """
+    if request is None:
+        return None
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        first = xff.split(",", 1)[0].strip()
+        if first:
+            return first
+    return get_remote_address(request)
+
+
 def _audit(
     action: str,
     slug: str = "-",
     key_hint: str = "-",
     user_id: Optional[int] = None,
+    *,
+    request: Optional[Request] = None,
+    result: str = "ok",
 ) -> None:
     """Append one record to the audit trail.
 
@@ -770,8 +767,17 @@ def _audit(
     The JSON record embeds the current request id (r1-034) so
     an operator correlating an audit event with surrounding
     portal-log lines can filter both streams on the same id.
+
+    Phase-A wrap-up: ``request`` and ``result`` are optional
+    keyword-only fields. ``request`` is used to extract the client
+    IP (per-r1-004 trust model — see ``_extract_client_ip``) and
+    ``result`` records whether the action succeeded ("ok") or was
+    refused ("denied", "error", etc.) so the audit trail captures
+    failed attempts as well as successes. Both default to absent /
+    "ok" so existing callers keep their previous behaviour.
     """
-    # Pipe-format (legacy, grep-friendly).
+    # Pipe-format (legacy, grep-friendly). Format unchanged so the
+    # existing grep recipes operators rely on keep matching.
     _audit_logger.info("%s | %s | %s", action, slug, key_hint)
 
     # JSONL — dual-write. Failures stay local to the audit path;
@@ -784,6 +790,8 @@ def _audit(
         "slug": slug,
         "user": key_hint,
         "user_id": user_id,
+        "ip": _extract_client_ip(request),
+        "result": result,
         "request_id": _request_id_ctx.get(),
     }
     line = json.dumps(entry, separators=(",", ":")) + "\n"
@@ -2020,13 +2028,12 @@ def _rate_limit_key_func(request: Request) -> str:
             uid = payload.get("uid")
             if isinstance(uid, int) and uid > 0:
                 return f"user:{uid}"
-    # IP fallback — same X-Forwarded-For handling as before (r1-004).
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        first = xff.split(",", 1)[0].strip()
-        if first:
-            return first
-    return get_remote_address(request)
+    # IP fallback — same X-Forwarded-For handling as the audit
+    # logger (r1-004 trust model). Both pathways must agree on
+    # what counts as "the client IP" or rate-limit attribution
+    # and audit attribution will diverge under a Caddy-misconfig
+    # incident — exactly the moment they need to match.
+    return _extract_client_ip(request) or get_remote_address(request)
 
 
 limiter = Limiter(key_func=_rate_limit_key_func)
