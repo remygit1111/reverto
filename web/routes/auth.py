@@ -66,12 +66,15 @@ router = APIRouter(tags=["auth"])
 _BACKOFF_BASE_S = 0.1
 _BACKOFF_CAP_S = 30.0
 
-# Per-account rate limit: once the failure counter reaches this, further
-# attempts within the 1-hour sliding window are refused with 429 before
-# password verification. Deliberately NOT a hard account lockout per
-# NIST SP 800-63B — sliding window + backoff gives equivalent brute-
-# force resistance without the DoS vector against legitimate users.
-_PER_ACCOUNT_FAIL_LIMIT = 10
+# Phase B PR 4: the per-account rate-limit threshold lives in
+# ``core.user_store`` now (single source of truth — the
+# ``check_login_rate_limit`` helper there owns the check, the
+# 429-return shape, AND the sliding-window reset semantics inside
+# ``increment_failed_login``). The limit is 10 failed attempts inside
+# a ``FAILED_LOGIN_WINDOW_S = 900`` (15 min) window. Re-exported here
+# for back-compat with the in-memory unknown-IP fallback below — that
+# path still uses a count-based gate against the same ceiling.
+_PER_ACCOUNT_FAIL_LIMIT = user_store.PER_ACCOUNT_FAIL_LIMIT
 
 # Anomaly-log trigger: every N failures write a ``suspicious_login_pattern``
 # line to audit.log so an operator scanning the log spots brute-force
@@ -152,6 +155,25 @@ def _compute_backoff_s(pre_count: int) -> float:
     return min(_BACKOFF_BASE_S * (2 ** safe_exp), _BACKOFF_CAP_S)
 
 
+def _rate_limit_detail(retry_after_s: int) -> str:
+    """User-facing detail-text for a 429 response. Same shape on the
+    known-user path (precise retry-after computed from the stored
+    timestamp) and the unknown-user path (worst-case = full window)
+    so an attacker can't user-enumerate by reading the precision of
+    the message — see ``check_login_rate_limit``'s docstring on the
+    intentional symmetry."""
+    minutes, seconds = divmod(int(retry_after_s), 60)
+    if minutes and seconds:
+        wait = f"{minutes} minutes and {seconds} seconds"
+    elif minutes:
+        wait = f"{minutes} minutes"
+    else:
+        wait = f"{seconds} seconds"
+    return (
+        f"Too many failed login attempts. Please try again in {wait}."
+    )
+
+
 # Audit v27-09: defence-in-depth character-class restriction on the
 # login boundary. Length bounds alone accept whitespace, control chars,
 # emoji, and SQL-injection-shaped payloads — Pydantic + parameterised
@@ -219,16 +241,40 @@ async def auth_login(body: LoginBody, request: Request):
     else:
         pre_count = _unknown_user_fail_get(client_ip)
 
-    # Per-account rate limit. Returns 429 BEFORE password verification
-    # so an attacker can't amortise CPU by piling bcrypt calls against
-    # a locked account.
-    if pre_count >= _PER_ACCOUNT_FAIL_LIMIT:
+    # Phase B PR 4: per-account rate-limit gate. Runs BEFORE password
+    # verification so an attacker can't amortise CPU by piling bcrypt
+    # calls against a locked account, AND emits a Retry-After header
+    # so a well-behaved client can pace its retries — the existing
+    # detail-string pre-PR4 was operator-text only with no machine-
+    # readable retry hint.
+    if user_record is not None:
+        is_limited, retry_after = user_store.check_login_rate_limit(
+            user_record.id,
+        )
+        if is_limited:
+            _audit(
+                "login_rate_limit_hit",
+                body.username,
+                "-",
+                user_id=user_record.id,
+                request=request,
+                result="denied",
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=_rate_limit_detail(retry_after),
+                headers={"Retry-After": str(retry_after)},
+            )
+    elif pre_count >= _PER_ACCOUNT_FAIL_LIMIT:
+        # Unknown-username path: per-IP in-memory counter. No
+        # Retry-After here because the in-memory counter has no
+        # timestamp granularity finer than the sliding window — and
+        # surfacing one would be a user-enumeration tell ("known
+        # user gets a precise hint, unknown doesn't"). Detail text
+        # matches the known-user shape for the same reason.
         raise HTTPException(
             status_code=429,
-            detail=(
-                "Too many failed login attempts. "
-                "Please wait and try again later."
-            ),
+            detail=_rate_limit_detail(FAILED_LOGIN_WINDOW_S),
         )
 
     user = user_store.verify_password(body.username, body.password)
@@ -262,19 +308,15 @@ async def auth_login(body: LoginBody, request: Request):
         await asyncio.sleep(_compute_backoff_s(pre_count))
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Success — clear per-account counter so the sliding window
-    # starts fresh on any future failures. Unknown-IP fallback is
-    # left alone; a successful login doesn't imply the attacker's IP
-    # has reformed.
-    user_store.reset_failed_login(user.id)
-
-    # Phase B PR 3: branch on totp_enabled. Users without 2FA get
-    # the historical "set session cookie + return ok" response —
-    # zero behaviour change for them. Users WITH 2FA get a pending-
-    # login-TOTP cookie staged here, no session cookie yet, and
-    # ``requires_totp: True`` in the JSON body so the SPA renders
-    # the second-step input form. The actual session cookie is
-    # minted in /auth/login/totp once the code verifies.
+    # Phase B PR 3 + PR 4: branch on totp_enabled. Users without 2FA
+    # get the historical "set session cookie + return ok" response;
+    # users with 2FA get a 2-min pending cookie + ``requires_totp:
+    # True``, no session yet. PR 4 moved the failed-login counter
+    # reset OUT of this point — pre-PR4 the reset fired immediately
+    # after password-verify, which let a user who password-cracked
+    # but failed TOTP reset their counter cheaply. Now the reset
+    # only fires on FULL login success: in this handler for the
+    # no-TOTP path, in /auth/login/totp for the TOTP path.
     if user.totp_enabled:
         resp = JSONResponse({"ok": True, "requires_totp": True})
         _set_pending_login_totp_cookie(resp, user.id)
@@ -287,6 +329,9 @@ async def auth_login(body: LoginBody, request: Request):
         )
         return resp
 
+    # No-TOTP path = full login complete. Reset counter + mint
+    # session in one go.
+    user_store.reset_failed_login(user.id)
     return _mint_session_response(user, request, audit_action="auth_login")
 
 
@@ -436,6 +481,31 @@ async def auth_login_totp(
         )
         return resp
 
+    # Phase B PR 4: per-user rate-limit also gates the TOTP step. A
+    # password-step success that gets paired with a brute-force on
+    # the TOTP code would otherwise rack up 10/min via the slowapi
+    # decorator only — the per-user gate adds a 15-min cooldown
+    # against the same account regardless of source IP. Pending
+    # cookie is cleared on the 429 path so the user has to re-prove
+    # password ownership after the cooldown elapses.
+    is_limited, retry_after = user_store.check_login_rate_limit(user.id)
+    if is_limited:
+        resp = JSONResponse(
+            status_code=429,
+            content={"detail": _rate_limit_detail(retry_after)},
+            headers={"Retry-After": str(retry_after)},
+        )
+        _clear_pending_login_totp_cookie(resp)
+        _audit(
+            "login_totp_rate_limit_hit",
+            user.username,
+            "-",
+            user_id=user.id,
+            request=request,
+            result="denied",
+        )
+        return resp
+
     # Decrypt — failure is an integrity event (DB tamper, key
     # rotation gone wrong, missing keyfile), surfaced as 500 so
     # ops sees it instead of a silent 401.
@@ -466,9 +536,15 @@ async def auth_login_totp(
 
     if not totp.verify_code(secret, body.code):
         # Wrong code — preserve pending cookie so a typo can be
-        # retried within the 2-minute TTL. Rate-limit (10/min) caps
-        # brute-force; a future per-user rate-limit (PR 4) will
-        # tighten this further.
+        # retried within the 2-minute TTL. Phase B PR 4 reversed
+        # the pre-PR4 decision to NOT touch the failed-login
+        # counter on this branch: a TOTP brute-force after a
+        # successful password-step IS a brute-force, and bumping
+        # the same counter the password-step uses keeps the
+        # threshold uniform — 10 failures in 15 min trigger the
+        # cooldown regardless of which factor the attacker is
+        # spraying.
+        user_store.increment_failed_login(user.id)
         _audit(
             "login_totp_failed",
             user.username,
@@ -477,17 +553,16 @@ async def auth_login_totp(
             request=request,
             result="denied",
         )
-        # NOTE: we do NOT increment user_store.failed_login_count
-        # here. That counter exists to gate password-spray; a TOTP
-        # mistype after a successful password-step is a different
-        # error class, and a future per-user TOTP-rate-limit (PR 4)
-        # will track it under its own counter.
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
-    # Code verified — clear pending state, mint the real session,
-    # audit the full-success row. ``login_success_totp`` is a
-    # distinct action from ``auth_login`` so operators can grep
-    # 2FA-completed logins separately when investigating.
+    # Code verified — full login complete. Reset the per-account
+    # counter (the reset moved here from /auth/login in Phase B
+    # PR 4 so a password-cracker who fails TOTP can't reset the
+    # counter for free), clear pending state, mint the real
+    # session, audit the full-success row. ``login_success_totp``
+    # is a distinct action from ``auth_login`` so operators can
+    # grep 2FA-completed logins separately when investigating.
+    user_store.reset_failed_login(user.id)
     resp = _mint_session_response(
         user, request, audit_action="login_success_totp",
     )
