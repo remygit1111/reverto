@@ -48,6 +48,13 @@ def deal_to_dict(deal: PaperDeal, current_price: float = 0.0) -> dict:
         "side":            deal.side,
         "leverage":        deal.leverage,
         "order_count":     len(deal.orders),
+        # ``dca_count`` excludes the base order (order_number == 1) so
+        # a deal that closed on base alone reports 0. The Closed Deals
+        # tab on the bot-detail page renders this as a dedicated DCA
+        # column. Computed from the existing PaperDeal.dca_count
+        # property so the per-row aggregation engine code already uses
+        # stays the single source of truth.
+        "dca_count":       deal.dca_count,
         "entry_price":     round(deal.orders[0].price, 2) if deal.orders else 0.0,
         "avg_entry_price": round(deal.avg_entry_price, 2),
         "total_size":      deal.total_size,
