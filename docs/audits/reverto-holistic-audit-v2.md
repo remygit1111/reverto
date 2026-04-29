@@ -301,6 +301,8 @@ A new contributor reading architecture.md as their starting point will not disco
 
 **Remediation:** add a "Phase B: Authentication" section after the existing auth section. ~30 minutes; cross-reference docs/security-model.md for the deep design rationale.
 
+**STATUS (2026-04-29 / `fix/docs-phase-b-reflection`): RESOLVED.** New "Authentication architecture (Phase B)" chapter added to `docs/architecture.md` with the Layer 1 / Layer 2 / Layer 3 split (password, TOTP, session cookies), enrollment + login + disable flow descriptions, and cross-references to `docs/security-model.md` Part 3.3 + Part 6. Test pin: `tests/test_docs_phase_b_reflection.py::test_core_docs_mention_totp`.
+
 **rhav2-011 (LOW × HIGH) — `README.md` does not mention TOTP / 2FA.**
 
 ```
@@ -311,6 +313,8 @@ $ grep -ciE "totp|2fa|two.factor" README.md
 README is the public-facing onboarding doc. It still describes Reverto as "Bitcoin DCA bot platform" with no mention that user-facing 2FA is part of the security posture. A potential user / contractor reading the README cannot discover that TOTP is required.
 
 **Remediation:** one sentence in the Security or Auth section. ~5 minutes.
+
+**STATUS (2026-04-29 / `fix/docs-phase-b-reflection`): RESOLVED.** New "Authentication & Security" section added to `README.md` between Safety rails and Monitoring, summarising TOTP, per-user rate limiting, session-cookie posture, and audit logging with cross-links to `docs/security-model.md` and `docs/runbook.md`. Test pin: `tests/test_docs_phase_b_reflection.py::test_core_docs_mention_totp`.
 
 ### Area CH3 — Documentation drift
 
@@ -326,6 +330,8 @@ Wanneer een user TOTP heeft enabled maar geen toegang meer heeft tot
 Cross-reference: RHA-v1 rha-011 already noted "README + runbook mix Dutch and English". The PR (`docs/collaboration-and-recovery`) added a fresh Dutch section to a doc that was 90% English, doubling down on the inconsistency.
 
 **Remediation:** translate to English or pick a language-policy and stick with it. Operator decision (some Reverto docs are intentionally Dutch — runbook conventions vary).
+
+**STATUS (2026-04-29 / `fix/docs-phase-b-reflection`): RESOLVED.** TOTP-recovery section in `docs/runbook.md` translated to English, matching the rest of the operator-facing runbook. PT-v3 pt-150 limitation (no audit-trail emission for the SQL recovery path) is now explicitly cross-referenced as a forward-pointer to a future `scripts/totp_admin_reset.py` wrapper. Test pin: `tests/test_docs_phase_b_reflection.py::test_runbook_totp_recovery_english`.
 
 ### Area CH4 — Test health
 
@@ -361,6 +367,8 @@ Current state:
 PT-v3 pt-130 flagged the missing bump on enrol from a security angle (pre-2FA stolen sessions survive). RHA-v2 surfaces the same root cause from a doc-clarity angle: `docs/security-model.md` Part 3.3 mentions session_epoch as a per-user invalidation counter but does not enumerate which actions trigger a bump. An operator reasoning about "if I do X, are all my devices invalidated?" has to read three handlers + one helper to find out.
 
 **Remediation:** add a "Session-epoch bump matrix" table in `docs/security-model.md` Part 3.3 listing every bumping site + every NON-bumping site (the latter requires explicit rationale). ~15 minutes; pair with PT-v3 pt-130 fix when that lands so the matrix reflects post-fix reality.
+
+**STATUS (2026-04-29 / `fix/docs-phase-b-reflection`): RESOLVED.** New section 6.4 "Session epoch policy matrix" added to `docs/security-model.md` enumerating every BUMP / do-NOT-BUMP event with rationale. PT-v3 pt-130 is cross-referenced as a "documented attack vector, decision deferred until multi-tenant rollout" with three concrete mitigation options (bump on `/auth/totp/verify`, explicit "log out other sessions" button, force re-auth on enrollment). The matrix reflects current code state (only `/auth/logout` and `/auth/change-password` bump); no pt-130 code-fix is part of this PR. Test pin: `tests/test_docs_phase_b_reflection.py::test_session_epoch_policy_documented`.
 
 ### Pending-cookie pattern consistency
 

@@ -95,6 +95,29 @@ make live BOT=<slug>       # Phase-3 real orders (refused until Phase 3 lands)
   before retrying, closing the "rate-limited on confirmation →
   duplicate" race.
 
+## Authentication & Security
+
+- **Two-factor authentication (TOTP)** — optional but recommended.
+  Uses RFC 6238-compliant time-based one-time passwords compatible
+  with Google Authenticator, Authy, 1Password, Aegis, and similar
+  apps. Enable via Profile → Two-factor authentication → Enable TOTP.
+- **Per-user login rate limiting** — automatically blocks accounts
+  after 10 failed login attempts within a 15-minute window, with a
+  rounded `Retry-After` header so legitimate clients can pace.
+- **Session management** — signed `itsdangerous` cookies with
+  HttpOnly + Secure + SameSite=Strict and a per-user epoch counter
+  that lets the user (or operator) invalidate every existing session
+  in one DB write.
+- **Audit logging** — every authentication event lands as a
+  structured JSONL record in `logs/audit.jsonl` with IP attribution,
+  request id, and a per-user split under `logs/<user_id>/audit.jsonl`
+  (mode `0o640`).
+
+For the full design rationale + threat model, see
+[docs/security-model.md](docs/security-model.md). For the operator-
+side TOTP recovery procedure, see [docs/runbook.md](docs/runbook.md)
+"TOTP recovery".
+
 ## Monitoring
 
 - `GET /healthz` — liveness probe (200 OK, no auth, no rate-limit).
