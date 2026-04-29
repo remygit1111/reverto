@@ -162,6 +162,52 @@ having a Redis or Postgres-with-NOTIFY service in the deploy).
 **Effort estimate.** Smaller than 2.1 / 2.2 — this is mostly
 config + a token-bucket coordinator (~200 LoC + tests).
 
+### 2.4 WebSocket coordination (r2-006, MEDIUM)
+
+**Finding.** WebSocket endpoints (`/ws/logs/{slug}`, `/ws/state`
+in `web/app.py`) have no per-user or per-connection cap. Slowapi
+does not hook into the WebSocket protocol — its middleware sits
+on the HTTP request-cycle, so neither the connection handshake
+nor post-upgrade frames are throttled. An authenticated user
+could open arbitrary numbers of concurrent WS connections, each
+carrying its own entry in `LogBroadcaster._clients` /
+`StateBroadcaster._clients` plus the `_user_map` dict, consuming
+server memory and slowing the broadcast fan-out loop.
+
+In single-tenant deploy this is self-DoS only — the operator is
+the only authenticated user, and self-attacks are out of threat
+model. At Phase 4 multi-tenant rollout, one tenant could degrade
+WS-quality for all other tenants by opening many connections
+from a single session-cookie.
+
+**Resolution direction.**
+
+* Per-user connection cap (e.g. 10 concurrent WS per user_id)
+  enforced at the `_ws_extract_user_id` callsite. Reject excess
+  with close code `4429` (custom Retry-After-equivalent for WS
+  — the WebSocket close-code namespace `4xxx` is reserved for
+  application-defined codes).
+* The cap-counter must be coordinated across uvicorn workers —
+  same Redis dependency as r1-024 / r1-025 / r1-026. Process-
+  local enforcement is no enforcement under multi-worker deploy:
+  4 workers × 10-cap each = 40 effective connections per user,
+  defeating the limit.
+* Optional defence-in-depth: ipaddr-keyed connection-rate (new
+  connections per minute per IP) at the same callsite, mirroring
+  the slowapi `5/minute` posture on `/auth/login`.
+
+**Effort estimate.** Small once Redis is in the deploy (~150 LoC
++ 4-6 tests for cap-enforcement, race-condition between cap-check
+and register, close-code handling). Without Redis: a process-
+local implementation is single-worker-only and would need
+rewriting at Phase 4. Hence deferred — implementing now would
+ship the same architectural fault as the (already-deferred)
+r1-026 slowapi in-memory limiter.
+
+**Re-evaluation trigger.** Same as r1-026 — moves to "active"
+when Phase 4 multi-tenant scope opens, OR when the deploy
+switches to `uvicorn --workers N > 1` for any reason.
+
 ## 3. What stays single-host even in Phase 4
 
 Some Reverto components are intentionally single-host even
@@ -233,6 +279,14 @@ section 2.
   decision so a future audit can reconstruct why these HIGH-
   severity findings sat open through the single-tenant
   lifetime of the project.
+* **2026-04-29 (later).** r2-006 (No per-connection rate-limit
+  on WebSocket throughput) status flipped from `in_progress`
+  to `deferred`. Rationale: same architectural pattern as
+  r1-026 — process-local enforcement is multi-worker-incoherent,
+  and the auditor description explicitly notes "single-operator
+  means self-DoS unrealistic". Captured in section 2.4 above.
+  Tracker note extended with cross-reference. PR:
+  `cleanup/r2-006-defer-to-phase-4`.
 
 ## 6. Re-evaluation triggers
 
@@ -270,5 +324,6 @@ to this document, and no scheduling pressure attaches to them.
   — operator procedures that already account for per-user
   credentials.
 * Findings tracker entries: r1-017, r1-024, r1-025, r1-026,
-  r1-027, r1-029. All currently `status=open` with notes
-  pointing here.
+  r1-027, r1-029, r2-006. All currently `status=open` (the
+  r1-* set) or `status=deferred` (r2-006), with notes pointing
+  here.
