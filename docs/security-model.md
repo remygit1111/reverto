@@ -1908,9 +1908,12 @@ to grep `bump_session_epoch` call-sites to recover the rationale.
 |-------|--------|-----------|
 | Logout (`POST /auth/logout`) | Every cookie for this user invalidated, including the one that just made the request | The user explicitly chose to terminate; "log out other devices too" matches user intuition for a destructive action they kicked off themselves |
 | Password change (`POST /api/auth/change-password`) | Every cookie for this user invalidated | Industry standard: a password rotation is the canonical "compromise assumed" signal — every existing session must re-authenticate against the new credential |
+| TOTP enrolment (`POST /auth/totp/verify`) — RESOLVED 2026-04-29 (pt-130) | Every cookie for this user invalidated, including any pre-enrolment session that may have been stolen | A pre-2FA stolen cookie surviving the user enabling 2FA defeats the user-visible expectation that "I just enabled 2FA, my old sessions should now require it." Security gain outweighs the UX friction (operator's other browsers re-login). The user already proved password ownership for the verify call, so the bump is on a path where re-auth burden is acceptable. |
+| TOTP disable (`POST /auth/totp/disable`) — RESOLVED 2026-04-29 (pt-130) | Every cookie for this user invalidated | Same reasoning. Disable requires dual-factor (password + current TOTP code), so the user has just re-proved explicit ownership. Other devices' cookies are pre-disable artefacts that should not survive the security-state change. |
 
 Bump call-sites: `web/routes/auth.py` (logout handler ≈ L648,
-change-password handler ≈ L737). Atomicity guarantee:
+change-password handler ≈ L737, totp-enrolment handler ≈ L924,
+totp-disable handler ≈ L1036). Atomicity guarantee:
 `bump_session_epoch` uses `UPDATE … RETURNING` so concurrent bumps
 serialise without lost increments (audit v26-11).
 
@@ -1918,43 +1921,58 @@ serialise without lost increments (audit v26-11).
 
 | Event | Effect | Rationale |
 |-------|--------|-----------|
-| TOTP enrollment (`POST /auth/totp/verify`) | Other sessions remain valid | UX-friction trade-off; the user just authenticated with both factors and would not expect "enable 2FA" to log them out of their other tabs / devices |
-| TOTP disable (`POST /auth/totp/disable`) | Other sessions remain valid | Same trade-off; disabling already requires dual-factor verification (password + current TOTP code), so explicit ownership has just been re-proven |
+| Login with TOTP (`POST /auth/login/totp`) | New session cookie issued; existing cookies on other devices remain valid | KRITIEK scope-boundary of the pt-130 fix above: this endpoint does NOT call `update_user_totp_seed`, only `pyotp.verify_code` against the stored seed. Bumping here would self-DoS the freshly-minted session cookie this very request just emitted. Pinned by `tests/test_auth_login_totp.py::TestLoginTotpDoesNotBumpSessionEpoch`. |
 | Failed login attempt | Counter not affected | A failed login does not change the legitimate user's session ownership — bumping here would let an attacker DoS any account by triggering enough failures to invalidate the legitimate user's session |
 | Successful login | Counter not affected | New cookies pick up the current epoch; existing cookies on other devices remain valid by design |
+| Failed TOTP enrolment-verify (wrong code) | Counter not affected | DB write didn't happen; no security-state change to invalidate sessions for. Pinned by `test_failed_enrolment_does_not_bump_session_epoch` |
+| Failed TOTP disable (wrong password or wrong code) | Counter not affected | Same reasoning — dual-factor verification gates the DB write, so failure means no state change. Pinned by `test_failed_disable_does_not_bump_session_epoch` |
 | User row marked `active = 0` | Counter not affected, but `_request_user` rejects on `not user.active` regardless of cookie validity | Active-flag check is a parallel mechanism — no schema-rotation cost, fail-closed at the dependency-resolve step |
 
-#### Known security implication (PT-v3 pt-130)
+#### Known security implication (PT-v3 pt-130) — RESOLVED 2026-04-29
 
-Because TOTP enrollment does not bump `session_epoch`, a session
-cookie obtained BEFORE the user enabled TOTP remains valid AFTER
-the user enables it. Concretely: an attacker who stole a session
-cookie pre-enrollment retains access until one of the bumping
-events above fires (logout, password change), the cookie's 24h
-TTL expires, or the user's row is deactivated.
+**Status:** RESOLVED in `fix/pt-130-totp-bumps-epoch`. Pre-fix
+`/auth/totp/verify` and `/auth/totp/disable` did NOT bump
+`session_epoch`, so a session cookie obtained BEFORE the user
+enabled TOTP would remain valid AFTER they enabled it (and
+similarly across disable). This defeated the user-visible
+expectation that "I just enabled 2FA, my old sessions should
+now require it." An attacker who had stolen a session cookie
+pre-enrolment retained access until one of the existing bump
+events fired (logout, password change), the cookie's 24h TTL
+expired, or the user row was deactivated.
 
-**Risk assessment:**
+**Resolution.** Both endpoints now call
+`user_store.bump_session_epoch(user.id)` after their respective
+DB writes succeed (auth.py L924 + L1036). The bump runs
+*before* the audit-log emission so the audit row reflects the
+post-bump state. `/auth/login/totp` deliberately does NOT bump
+— it's the second-factor step of login, not a TOTP-state
+mutation, and bumping would self-DoS the freshly-minted
+session. Pinned by 5 regression tests:
+
+* `tests/test_auth_totp.py::TestSessionEpochBumpOnTotpMutation`
+  — 4 tests covering enrolment + disable bump, plus the failed-
+  mutation guards proving the bump only fires on successful DB
+  writes.
+* `tests/test_auth_login_totp.py::TestLoginTotpDoesNotBumpSessionEpoch`
+  — 1 test pinning the scope-boundary so a future "consistency"
+  refactor can't extend the bump to the login path.
+
+**Pre-resolution risk assessment** (kept for the audit trail):
 - *Single-tenant operator deploy* — low risk. The operator
-  controls their own session lifecycle; the realistic recovery
-  path after suspecting a stolen cookie is "log out + change
-  password", which the existing matrix already invalidates.
-- *Multi-tenant* — documented attack vector. A user enabling 2FA
-  legitimately expects their account to be "more secure now",
-  which a survived pre-enrollment cookie violates.
+  controlled their own session lifecycle; the realistic
+  recovery path after suspecting a stolen cookie was "log out
+  + change password", which already invalidated everything.
+- *Multi-tenant* — documented attack vector. A user enabling
+  2FA legitimately expected their account to be "more secure
+  now", which a survived pre-enrolment cookie violated.
 
-**Mitigation options (decision deferred):**
-- Bump `session_epoch` on `/auth/totp/verify` (UX cost: every
-  other browser / device session for this user gets logged out
-  the moment they enable 2FA — possibly surprising).
-- Surface an explicit "log out other sessions" button in the
-  profile page (zero-cost UX, opt-in, but discoverability is
-  weaker than automatic invalidation).
-- Force re-authentication on TOTP enrollment by clearing the
-  current session immediately after `/auth/totp/verify` — same
-  effect as the bump but also logs out the current tab.
-
-**Decision deferred** until the multi-tenant rollout. Tracked in
-`data/findings_seed.yaml` as `pt-130` (status=open, severity=LOW).
+**Operator decision (2026-04-29).** Security gain outweighs UX
+friction. The user just proved 2FA ownership (or, for disable,
+dual-factor) — burdening them with a re-login on other devices
+is acceptable for the security signal it provides. Recorded in
+`data/findings_seed.yaml` as `pt-130 status=resolved` with
+`resolution_ref: fix/pt-130-totp-bumps-epoch`.
 
 #### Files
 

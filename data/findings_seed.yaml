@@ -2882,12 +2882,12 @@ findings:
 - finding_id: pt-130
   source_doc: production-pentest-v3
   severity: LOW
-  status: open
+  status: resolved
   title: Pre-2FA sessions survive TOTP enrolment
   description: |
     update_user_totp_seed does NOT bump session_epoch on TOTP enable or disable; pre-existing session cookies keep working until 24h TTL expiry. A pre-enrolment stolen session cookie survives the user enabling 2FA, defeating the user-visible expectation that "I just enabled 2FA, my old sessions should now require it".
-  resolution_ref: null
-  notes: "Profile B (authenticated user with stolen pre-enrolment session cookie). UX trade-off: bumping session_epoch on /auth/totp/verify forces re-login on other devices — operator decision on whether the security gain warrants the friction. Same gap on /auth/totp/disable."
+  resolution_ref: fix/pt-130-totp-bumps-epoch
+  notes: "Profile B (authenticated user with stolen pre-enrolment session cookie). RESOLVED 2026-04-29 in fix/pt-130-totp-bumps-epoch. user_store.bump_session_epoch(user.id) toegevoegd aan TOTP enrolment-verify (auth.py:924) en TOTP disable (auth.py:1036), na succesvolle update_user_totp_seed maar voor de audit-emit. Login-met-TOTP (/auth/login/totp) bumpt expliciet NIET — die roept update_user_totp_seed niet aan en bumpen zou de net-uitgegeven session cookie self-DoS'en. Operator-beslissing: security gain weegt zwaarder dan UX-friction (re-login op andere devices). 5 regression tests pinpoint enrolment-bump, disable-bump, failed-mutation-NO-bump (×2), en login-NO-bump scope-boundary. docs/security-model.md §6.4 matrix bijgewerkt: enrolment + disable nu in BUMP-tabel, login-met-TOTP expliciet in NOT-BUMP-tabel."
 
 - finding_id: pt-150
   source_doc: production-pentest-v3

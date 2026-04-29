@@ -938,6 +938,18 @@ async def auth_totp_verify(
             status_code=401, detail="User row no longer exists",
         )
 
+    # pt-130: bump session_epoch after successful enrolment so any
+    # pre-2FA session cookies (other browser tabs, mobile apps, a
+    # cookie that may have been stolen before TOTP was enabled) are
+    # immediately invalidated. The user-visible expectation when
+    # enabling 2FA is "my old sessions should now require 2FA";
+    # without this bump a pre-enrolment stolen cookie would survive
+    # the entire session TTL. Mirrors the password-change flow at
+    # auth.py:737. Login-with-TOTP (/auth/login/totp) deliberately
+    # does NOT bump — that path does not call update_user_totp_seed
+    # and bumping there would self-DoS the freshly-minted session.
+    user_store.bump_session_epoch(user.id)
+
     response_body = JSONResponse(content={"ok": True, "totp_enabled": True})
     _clear_pending_totp_cookie(response_body)
 
@@ -1034,6 +1046,15 @@ async def auth_totp_disable(
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
     user_store.update_user_totp_seed(user.id, None)
+    # pt-130: same invalidation reasoning as the enrolment bump
+    # above — disabling 2FA is also a security-state change. The
+    # user just proved dual-factor (password + current TOTP code),
+    # so re-issuing every other device into a re-auth flow is a
+    # security-positive. Single-tenant cost: the operator's other
+    # browsers re-login. Multi-tenant cost: the user's other
+    # devices re-login. Both are acceptable trade-offs for the
+    # security gain (pre-disable stolen cookie ceases to work).
+    user_store.bump_session_epoch(user.id)
     _audit(
         "totp_disabled",
         user.username,
