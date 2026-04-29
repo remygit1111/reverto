@@ -251,30 +251,51 @@ class TestPTv3SeedExtension:
             "pt-101", "pt-102", "pt-130", "pt-150", "pt-160",
         }
 
-    def test_ptv3_findings_all_open_with_no_resolution_ref(self):
+    def test_ptv3_findings_status_matches_known_resolution_set(self):
         """At seed-time none of the PT-v3 findings had been fixed.
-        When a fix lands, this test fails until the seed is updated
-        — forcing the seed-DB-tracker to stay in sync with reality."""
+        ``fix/phase-4-readiness-security-cluster`` (2026-04-29) closed
+        pt-101 and pt-160 — both must carry status=resolved + a
+        resolution_ref. The remaining three (pt-102, pt-130, pt-150)
+        are still open with resolution_ref=None at the time of writing.
+
+        Forces the seed YAML to stay in sync with reality — a future
+        PR that fixes pt-130 (e.g. session-epoch bump on TOTP toggle)
+        must sync this expected-state map alongside the code change.
+        """
         raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
-        ptv3 = [
-            f for f in raw["findings"]
+        ptv3 = {
+            f["finding_id"]: f
+            for f in raw["findings"]
             if f["source_doc"] == "production-pentest-v3"
-        ]
-        # Floor-guard against vacuous-truth: an empty filter would
-        # trivially pass the offenders check. The other tests in this
-        # class already pin the count, but stating the precondition
-        # here keeps each test self-contained.
+        }
         assert len(ptv3) == 5
+
+        expected: dict[str, tuple[str, str | None]] = {
+            "pt-101": (
+                "resolved", "fix/phase-4-readiness-security-cluster",
+            ),
+            "pt-102": ("open", None),
+            "pt-130": ("open", None),
+            "pt-150": ("open", None),
+            "pt-160": (
+                "resolved", "fix/phase-4-readiness-security-cluster",
+            ),
+        }
         offenders = [
-            (f["finding_id"], f["status"], f["resolution_ref"])
-            for f in ptv3
-            if f["status"] != "open" or f["resolution_ref"] is not None
+            (fid, ptv3[fid]["status"], ptv3[fid]["resolution_ref"])
+            for fid, (want_status, want_ref) in expected.items()
+            if (
+                ptv3[fid]["status"] != want_status
+                or ptv3[fid]["resolution_ref"] != want_ref
+            )
         ]
         assert offenders == [], (
-            f"PT-v3 findings drifted from open/no-ref: {offenders}. "
-            "If you fixed one, update its status to resolved + fill "
-            "resolution_ref. If you intentionally accepted one, set "
-            "status=accepted with a notes field explaining why."
+            f"PT-v3 findings drifted from expected status set: "
+            f"{offenders}. If you fixed one, update its status to "
+            "resolved + fill resolution_ref AND update the expected "
+            "map in this test. If you intentionally accepted one, "
+            "set status=accepted with a notes field and update the "
+            "map."
         )
 
     def test_ptv3_severity_distribution_matches_pentest_doc(self):

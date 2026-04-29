@@ -98,6 +98,72 @@ class TestVerifyPassword:
             )
         assert user_store.verify_password("admin", "anything") is None
 
+    def test_verify_password_unknown_user_runs_bcrypt(self):
+        """Audit pt-101: an unknown-username verify must still run a
+        bcrypt round-trip (~50ms+ on rounds=12) so an attacker timing
+        the response can't tell "no such user" from "wrong password".
+        We assert a generous lower bound — exact wall time is host-
+        dependent — but anything below 50ms means the dummy-bcrypt
+        path was skipped and the fix has regressed."""
+        import time as _time
+
+        # Warm up bcrypt — first call on a fresh interpreter pays
+        # one-time import + hash compile costs that would otherwise
+        # show up in this measurement.
+        user_store.verify_password("warmup-noop-user", "warmup")
+
+        start = _time.perf_counter()
+        result = user_store.verify_password("definitely-no-such-user", "pw")
+        elapsed_ms = (_time.perf_counter() - start) * 1000
+        assert result is None
+        # rounds=12 bcrypt is ~150-300ms on commodity hardware.
+        # 50ms guards against accidental short-circuit ("if user is
+        # None: return None") regressions while staying well clear
+        # of CI flakiness on slow runners.
+        assert elapsed_ms >= 50, (
+            f"unknown-user verify returned in {elapsed_ms:.1f}ms — "
+            "dummy-bcrypt path appears to have been skipped"
+        )
+
+    def test_verify_password_timing_parity(self):
+        """Audit pt-101: the unknown-user path and the known-user-
+        wrong-password path should take comparable time so a remote
+        attacker comparing two response timings can't separate them.
+        We assert ratio < 2.0 (i.e. one path no more than 2x the
+        other) — exact equality is unattainable with a real-world
+        clock + GC + Python overhead, but a 100ms-vs-300ms gap
+        (the pre-fix shape) would blow well past this threshold."""
+        import time as _time
+
+        user_store.set_password(1, _KNOWN_PW)
+
+        # Warm up — first bcrypt call after import pays one-time costs.
+        user_store.verify_password("admin", "warmup-wrong-pw")
+        user_store.verify_password("warmup-unknown-user", "pw")
+
+        # Sample multiple times — single-shot timings on a noisy host
+        # can have 2x jitter even with no code change. Three samples,
+        # take the median, compare medians.
+        def _median_ms(username: str, pw: str) -> float:
+            samples = []
+            for _ in range(3):
+                t0 = _time.perf_counter()
+                user_store.verify_password(username, pw)
+                samples.append((_time.perf_counter() - t0) * 1000)
+            samples.sort()
+            return samples[1]  # median of 3
+
+        known_wrong_ms = _median_ms("admin", "wrong-password-xxx")
+        unknown_ms = _median_ms("totally-unknown-user", "pw")
+
+        ratio = max(known_wrong_ms, unknown_ms) / min(
+            known_wrong_ms, unknown_ms,
+        )
+        assert ratio < 2.0, (
+            f"timing parity broken: known-wrong={known_wrong_ms:.1f}ms, "
+            f"unknown={unknown_ms:.1f}ms, ratio={ratio:.2f}"
+        )
+
 
 class TestSetPassword:
     def test_updates_hash(self):

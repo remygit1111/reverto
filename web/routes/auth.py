@@ -155,13 +155,39 @@ def _compute_backoff_s(pre_count: int) -> float:
     return min(_BACKOFF_BASE_S * (2 ** safe_exp), _BACKOFF_CAP_S)
 
 
+def _round_retry_after_to_minute(seconds: int) -> int:
+    """Round a retry-after value up to the next 60-second boundary.
+
+    Audit pt-160 (PT-v3, INFO × MEDIUM): the known-user 429 path
+    carried a timestamp-precise retry-after (e.g. 873 s, computed
+    from the stored ``last_failed_login_at``) while the unknown-
+    user path carried the full-window worst-case (900 s). An
+    attacker comparing two 429 responses could distinguish "this
+    username is rate-limited" from "this username doesn't exist
+    BUT happens to have hit the per-IP limit" via the precision of
+    the Retry-After header. Rounding both up to the next 60 s
+    boundary collapses the precision channel without making the
+    user wait longer than they would have anyway.
+
+    Round UP, never down — rounding 1 s down to 0 would tell the
+    SPA "retry now", which would re-trigger the 429 immediately.
+    Edge cases: a value that's already on a 60 s boundary stays
+    there; a value of 0 returns 0.
+    """
+    if seconds <= 0:
+        return 0
+    return ((seconds + 59) // 60) * 60
+
+
 def _rate_limit_detail(retry_after_s: int) -> str:
     """User-facing detail-text for a 429 response. Same shape on the
     known-user path (precise retry-after computed from the stored
     timestamp) and the unknown-user path (worst-case = full window)
     so an attacker can't user-enumerate by reading the precision of
     the message — see ``check_login_rate_limit``'s docstring on the
-    intentional symmetry."""
+    intentional symmetry. Caller is expected to pass a value that
+    has already been rounded by ``_round_retry_after_to_minute`` so
+    the rendered text never carries sub-minute precision."""
     minutes, seconds = divmod(int(retry_after_s), 60)
     if minutes and seconds:
         wait = f"{minutes} minutes and {seconds} seconds"
@@ -260,10 +286,16 @@ async def auth_login(body: LoginBody, request: Request):
                 request=request,
                 result="denied",
             )
+            # Audit pt-160: round Retry-After UP to the next 60 s
+            # boundary so the precision of this header doesn't tell
+            # an attacker "this username is rate-limited" vs "this
+            # username doesn't exist" (the unknown-user path returns
+            # the full window worst-case, also rounded).
+            rounded = _round_retry_after_to_minute(retry_after)
             raise HTTPException(
                 status_code=429,
-                detail=_rate_limit_detail(retry_after),
-                headers={"Retry-After": str(retry_after)},
+                detail=_rate_limit_detail(rounded),
+                headers={"Retry-After": str(rounded)},
             )
     elif pre_count >= _PER_ACCOUNT_FAIL_LIMIT:
         # Unknown-username path: per-IP in-memory counter. No
@@ -274,7 +306,9 @@ async def auth_login(body: LoginBody, request: Request):
         # matches the known-user shape for the same reason.
         raise HTTPException(
             status_code=429,
-            detail=_rate_limit_detail(FAILED_LOGIN_WINDOW_S),
+            detail=_rate_limit_detail(
+                _round_retry_after_to_minute(FAILED_LOGIN_WINDOW_S),
+            ),
         )
 
     user = user_store.verify_password(body.username, body.password)
@@ -490,10 +524,13 @@ async def auth_login_totp(
     # password ownership after the cooldown elapses.
     is_limited, retry_after = user_store.check_login_rate_limit(user.id)
     if is_limited:
+        # Audit pt-160: round Retry-After UP to the next 60 s
+        # boundary, mirroring the /auth/login known-user path.
+        rounded = _round_retry_after_to_minute(retry_after)
         resp = JSONResponse(
             status_code=429,
-            content={"detail": _rate_limit_detail(retry_after)},
-            headers={"Retry-After": str(retry_after)},
+            content={"detail": _rate_limit_detail(rounded)},
+            headers={"Retry-After": str(rounded)},
         )
         _clear_pending_login_totp_cookie(resp)
         _audit(

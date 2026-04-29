@@ -438,3 +438,53 @@ class TestUserEnumerationDefence:
         # in <wait>." — the wait value carries no user-specific
         # data leak, just the time math.
         assert "try again in" in r_known.json()["detail"].lower()
+
+
+class TestRetryAfterRoundedToMinute:
+    """Audit pt-160 (PT-v3, INFO × MEDIUM): the Retry-After header
+    on every 429 path must be rounded UP to the next 60 s boundary
+    so an attacker comparing two 429 responses can't separate
+    "rate-limited known account" from "unknown account hit per-IP
+    cap" by reading the timestamp precision."""
+
+    def test_round_retry_after_to_minute_helper(self):
+        from web.routes.auth import _round_retry_after_to_minute
+
+        # Zero / negative passes through to 0 — the SPA reads this
+        # as "retry now" but the 429 body itself is the gate, not
+        # the Retry-After header.
+        assert _round_retry_after_to_minute(0) == 0
+        assert _round_retry_after_to_minute(-5) == 0
+
+        # Sub-minute precision is rounded up to a full minute.
+        assert _round_retry_after_to_minute(1) == 60
+        assert _round_retry_after_to_minute(59) == 60
+        # Exact 60 stays at 60 (no jump to 120).
+        assert _round_retry_after_to_minute(60) == 60
+        # Non-boundary multi-minute precision rounds up.
+        assert _round_retry_after_to_minute(61) == 120
+        assert _round_retry_after_to_minute(599) == 600
+        assert _round_retry_after_to_minute(873) == 900
+        # Already on a 60 s boundary stays put.
+        assert _round_retry_after_to_minute(900) == 900
+
+    def test_login_429_retry_after_header_is_60s_multiple(
+        self, base_client,
+    ):
+        """End-to-end check: the live /auth/login 429 path must
+        return a Retry-After value that's a clean multiple of 60.
+        Pre-pt-160 it was the raw seconds-until-window-end (e.g.
+        873) which leaked sub-minute precision."""
+        _seed_failed_count(1, count=user_store.PER_ACCOUNT_FAIL_LIMIT)
+        r = base_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "wrong"},
+        )
+        assert r.status_code == 429
+        retry_after = int(r.headers["Retry-After"])
+        assert retry_after % 60 == 0, (
+            f"Retry-After={retry_after} is not a 60 s multiple — "
+            "pt-160 rounding regressed"
+        )
+        assert retry_after > 0
+        assert retry_after <= 900  # one full window, ceiling-rounded
