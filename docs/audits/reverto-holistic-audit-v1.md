@@ -308,6 +308,8 @@ No findings. Searched for `TODO:` / `FIXME:` / `HACK:` / `XXX:` / `temporary` / 
 
 **Remediation.** Tighten README:4 to "Phase-1 live-mode scaffold (runner refuses until Phase-3)."
 
+**STATUS (2026-04-29 / `fix/docs-and-setup-cleanups`): RESOLVED.** README:1-5 now reads "BTC/USD inverse-perpetual DCA bot platform with a web portal, paper engine, backtest engine, and a Phase-1 live-trading scaffold (the runner refuses real orders until Phase-3 lands)" — closing the rha-012 contradiction at the source. Plus a new `## Status` section enumerates Foundation, Phase-3a, Phase A wrap-up + Phase B, Phase-3 live-trading prep, and Phase C+ as separate milestones with cross-links to `docs/security-model.md` and `docs/phase-3.md`. Test pin: `tests/test_docs_and_setup_cleanups.py::test_readme_status_section_lists_phase_a_and_b`.
+
 #### rha-014 — Reconcile duplicates `mark_stopped` semantics (INFO)
 
 **What.** `BotInfo._persist_silent_exit_reconcile` in `web/app.py` writes `running=false` + `current_price=0` + adds `stopped_at` and `stopped_reason`. `StateIO.mark_stopped` in `paper/state_io.py:246` writes `running=false` + `current_price=0` (no `stopped_at`/`stopped_reason`). The two helpers do almost the same thing in two places.
@@ -321,6 +323,8 @@ No findings. Searched for `TODO:` / `FIXME:` / `HACK:` / `XXX:` / `temporary` / 
 #### rha-015 — Dutch comment in `requirements-ml.txt` (INFO)
 
 **What.** Line 1 of `requirements-ml.txt` is in Dutch ("niet nodig voor paper/live trading"). Same forward-looking concern as rha-011.
+
+**STATUS (2026-04-29 / `fix/docs-and-setup-cleanups`): RESOLVED.** The full comment block in `requirements-ml.txt` is translated to English to match the rest of the dependency-file ecosystem. The v26-26 audit cross-reference is preserved verbatim. Test pin: `tests/test_docs_and_setup_cleanups.py::test_requirements_ml_comments_are_english` greps the file for known Dutch fragments so a future copy-paste from a Dutch source file fails CI.
 
 ---
 

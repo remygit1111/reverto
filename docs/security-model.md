@@ -210,6 +210,39 @@ rechten als de hoofd-process.
 | Extract exchange-secrets bij runtime | **Ja** — credentials zijn in het proces-geheugen gedurende `_user_fernet(uid).decrypt(...)`. | Main-app heeft geen secrets. Signing-service wel, maar is een veel kleiner stuk code met een smalle dependency-graph (Fernet + HTTP server + audit-log — ideaal enkele tientallen deps). Kleinere blast-radius. |
 | Extract TOTP-seeds | **N/A**. | Seeds leven in DB van de main-app encrypted; de encryption-key leeft in de signing-service (Part 3.2). Main-app process-heap bevat TOTP-seeds alleen tijdens login-verify en dan kort. |
 
+#### Dependency-pinning policy (r1-061 — ACCEPTED-by-design)
+
+Direct dependencies are version-pinned in `requirements.txt` with
+exact `==` syntax. Transitive dependencies are **not** explicitly
+pinned — `pip` resolves them from the direct-dep version ranges.
+The `pip-audit --strict` step in CI is **blocking** on direct
+deps and **non-blocking** (warning-only) on transitive deps.
+
+**Rationale.**
+
+- Strict transitive pinning via `pip-compile`-generated lockfile
+  (or `--require-hashes` in `requirements.txt`) would improve
+  reproducibility and shrink the supply-chain blast radius, but
+  adds non-trivial maintenance overhead — every direct-dep bump
+  requires a re-resolve of the entire transitive set, with the
+  attendant churn on every PR that touches dependencies.
+- Single-tenant operator deploy: the blast radius of transitive-
+  dep drift is limited to one host, and the operator runs the
+  same `pip install -r requirements.txt` flow as CI, so the
+  resolved versions match between dev and prod within a few
+  minutes of each other.
+- Scenario 2.5 above already establishes that runtime hash
+  verification is the more impactful long-term mitigation; the
+  lockfile is a complementary measure rather than a replacement.
+
+**Acceptance.** r1-061 is **ACCEPTED-by-design** for the current
+single-tenant operator deploy. The decision is revisited as part
+of the Phase-4 multi-tenant rollout, where multiple tenants on
+shared infra raise the blast-radius bar enough to justify the
+maintenance overhead. Concrete trigger for re-evaluation:
+`pip-compile --generate-hashes` (or equivalent) shipping in
+`requirements.txt` becomes a Phase-4 gate item.
+
 ### 2.6 Scenario: Exchange-side API-leak
 
 Attacker heeft de user's exchange-API-key + secret. Route irrelevant

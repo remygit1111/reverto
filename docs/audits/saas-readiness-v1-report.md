@@ -71,6 +71,7 @@ Sprint 1 (five HIGHs, individually merged) + Sprint 2 (eleven MEDIUM/LOWs bundle
 | **r1-049** | MEDIUM | `fix/vps-0-sweep` (`paths.user_ml_results_path`, per-user folder) | RESOLVED |
 | **r1-057** | LOW    | `fix/vps-0-sweep` (`core/circuit_breaker.py` wired into `PublicExchange`) | RESOLVED |
 | **r1-059** | LOW    | `fix/vps-0-sweep` (`_validate_config_completeness` in lifespan) | RESOLVED |
+| **r1-061** | INFO   | `fix/docs-and-setup-cleanups` (Dependency-pinning policy section in security-model.md Part 2.5) | ACCEPTED-by-design (re-evaluate at Phase-4) |
 | **r1-074** | MEDIUM | `fix/vps-0-sweep` (SHA-384 SRI on unpkg scripts) | RESOLVED |
 | **r1-037** | MEDIUM | `fix/vps-0-deploy-rollback` (maintenance-page HTML + runbook Caddy wiring) | RESOLVED |
 | **r1-038** | MEDIUM | `fix/vps-0-deploy-rollback` (`scripts/rollback.sh` + `make rollback` + runbook) | RESOLVED |
@@ -974,6 +975,14 @@ class TestApiKeyActiveBypass:
 - `pip-audit --strict` in CI blocks on direct-dep CVEs.
 - Smoke-import check catches accidental lazy-import drift.
 - `requirements-ml.txt` constrains to `requirements.txt` (v26-26 fixed).
+
+#### r1-061 — Transitive deps non-blocking in CI (INFO)
+
+**Wat.** `pip-audit` in `.github/workflows/test.yml` runs with `--strict` blocking on direct dependencies but warning-only on transitive ones. A CVE-bearing transitive dep slips past CI without failing the run.
+
+**Phase.** —
+
+**STATUS (2026-04-29 / `fix/docs-and-setup-cleanups`): ACCEPTED-by-design (single-tenant deploy).** A new "Dependency-pinning policy" subsection inside `docs/security-model.md` Part 2.5 documents the rationale: strict transitive pinning via `pip-compile --generate-hashes` (or `--require-hashes` in `requirements.txt`) would improve reproducibility but adds non-trivial maintenance overhead — every direct-dep bump requires a re-resolve of the entire transitive set. On a single-tenant operator deploy the blast radius is bounded to one host, and the operator runs the same install flow as CI. Re-evaluation trigger: Phase-4 multi-tenant rollout, where shared infra raises the bar enough to justify the maintenance cost. Test pin: `tests/test_docs_and_setup_cleanups.py::test_security_model_documents_dependency_pinning_acceptance` greps for the "ACCEPTED-by-design" label + Phase-4 trigger so a future "tighten everything" sweep cannot silently delete the rationale and re-open the finding.
 
 ---
 
