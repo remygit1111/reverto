@@ -1,7 +1,29 @@
 # Reverto
 
 BTC/USD inverse-perpetual DCA bot platform with a web portal, paper
-engine, backtest engine, and a Phase-1 live-trading scaffold.
+engine, backtest engine, and a Phase-1 live-trading scaffold (the
+runner refuses real orders until Phase-3 lands).
+
+## Status
+
+- **Foundation** (multi-bot architecture, paper engine, backtest
+  engine, exchange abstraction) — complete.
+- **Phase 3a** (DB-based auth: `users` table, bcrypt + per-user
+  session-epoch, admin provisioning via `make setup-admin`) —
+  complete.
+- **Phase A wrap-up + Phase B** (per-user filesystem, per-user
+  Fernet credentials, TOTP 2FA, per-user login rate-limit, audit-
+  log hardening, cookie-posture regression test) — complete.
+- **Phase 3 live-trading** (Phase-1 scaffold + dry-run preflights
+  in repo; the `make live` runner currently refuses real orders) —
+  in preparation; PT-v3 + RHA-v2 audits open the remaining
+  blockers.
+- **Phase C+** (signing-service separation, multi-tenant scale) —
+  future work.
+
+For the per-finding security backlog see
+[docs/security-model.md](docs/security-model.md); for the live-
+trading scope see [docs/phase-3.md](docs/phase-3.md).
 
 ## Quick start
 
