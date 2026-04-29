@@ -956,3 +956,115 @@ class TestModalAccessibility:
             "before focusing the trigger — a re-rendered UI may have "
             "detached it."
         )
+
+
+class TestBotButtonStateRules:
+    """rha-013 regression — every state declared in
+    ``_BOT_BUTTON_STATE_RULES`` carries concrete ``{disabled, title}``
+    entries for all three buttons, never an empty placeholder.
+
+    The original RHA-v1 finding flagged the ``error`` state as
+    "structural-only / unreachable". Today the dict is fully
+    populated and the comment block above it explains that ``error``
+    is a forward-compatibility entry (the day a backend signal
+    lands, the JS resolves without further changes). This guard
+    pins both the populated structure and the rha-013 marker so a
+    future "clean up unreachable code" sweep cannot quietly empty
+    the ``error`` entry back to ``{}``.
+    """
+
+    def _slice_rules_block(self, js):
+        """Return just the ``_BOT_BUTTON_STATE_RULES = { ... };`` body
+        as a string — narrowing the assertion target so a stray
+        ``error`` token elsewhere in app.js does not vacuously satisfy
+        the test."""
+        start = js.find("_BOT_BUTTON_STATE_RULES = {")
+        assert start >= 0, (
+            "rha-013: _BOT_BUTTON_STATE_RULES declaration missing"
+        )
+        end = js.find("\n};", start)
+        assert end > 0
+        return js[start:end + 3]
+
+    def _slice_state_entry(self, block, state_name):
+        """Return the content of ``<state_name>: { ... }`` from the
+        rules block, balancing brace-depth so the inner
+        ``{ disabled: ..., title: ... }`` entries do NOT terminate the
+        slice prematurely. Necessary because each button rule ends in
+        ``},`` and a naive ``find('},')`` cuts off after the first one.
+        """
+        anchor = f"{state_name}: {{"
+        start = block.find(anchor)
+        if start < 0:
+            return None
+        # Walk forward, depth-tracking, starting AT the opening brace.
+        i = start + len(anchor) - 1  # points at the '{'
+        depth = 0
+        while i < len(block):
+            ch = block[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return block[start:i + 1]
+            i += 1
+        return None
+
+    def test_error_state_has_concrete_rules(self):
+        """The ``error`` state must declare all three button rules
+        (``start`` / ``stop`` / ``restart``) — not an empty {}."""
+        js = _APP_JS.read_text(encoding="utf-8")
+        block = self._slice_rules_block(js)
+
+        error_block = self._slice_state_entry(block, "error")
+        assert error_block is not None, (
+            "rha-013: 'error' state missing from _BOT_BUTTON_STATE_RULES"
+        )
+
+        # Each of the three buttons must be present with a concrete
+        # disabled-flag — pre-fix this entry was {} or absent.
+        assert "start:" in error_block, (
+            "rha-013: 'error' state missing 'start' button rule"
+        )
+        assert "stop:" in error_block, (
+            "rha-013: 'error' state missing 'stop' button rule"
+        )
+        assert "restart:" in error_block, (
+            "rha-013: 'error' state missing 'restart' button rule"
+        )
+        # Concrete disabled flags (true/false), not undefined.
+        assert "disabled:" in error_block
+
+    def test_running_and_stopped_states_remain_concrete(self):
+        """Symmetry guard: a careless edit that empties one of the
+        always-reachable states (running / stopped) is just as bad
+        as emptying the forward-compat error state — pin both."""
+        js = _APP_JS.read_text(encoding="utf-8")
+        block = self._slice_rules_block(js)
+
+        for state in ("running", "stopped"):
+            section = self._slice_state_entry(block, state)
+            assert section is not None, f"rha-013: '{state}' state missing"
+            assert "start:" in section
+            assert "stop:" in section
+            assert "restart:" in section
+            assert "disabled:" in section
+
+    def test_rha013_marker_present_in_comment_block(self):
+        """The comment above ``_BOT_BUTTON_STATE_RULES`` must carry
+        the rha-013 marker so a future reader following the audit
+        trail lands on the rationale + this regression test."""
+        js = _APP_JS.read_text(encoding="utf-8")
+        # Slice the 30 lines preceding the dict declaration.
+        rules_start = js.find("const _BOT_BUTTON_STATE_RULES")
+        assert rules_start > 0
+        # Walk back through the contiguous comment block.
+        comment_start = js.rfind("\n\n", 0, rules_start)
+        comment_block = js[comment_start:rules_start]
+        assert "rha-013" in comment_block, (
+            "rha-013: the comment block above _BOT_BUTTON_STATE_RULES "
+            "must reference the finding so the rationale + the "
+            "regression test in TestBotButtonStateRules are "
+            "discoverable from the source."
+        )

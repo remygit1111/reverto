@@ -257,6 +257,36 @@ class StateIO:
         the current state, overwrites the running / current_price
         fields, writes back atomically. Does not delete — the portal
         polls the file for the stopped-state signal.
+
+        rha-014 — semantic counterpart of ``Bot._persist_silent_exit_
+        reconcile`` in ``web/app.py``. Both write ``running=False`` +
+        ``current_price=0.0`` via the same atomic tmp+rename, but the
+        two functions exist deliberately because they fire from
+        different contexts:
+
+        * ``mark_stopped()`` (this method) — invoked from inside the
+          paper engine on **graceful** shutdown (atexit hook +
+          SIGTERM handler). The engine knows it is stopping; it has
+          no need for ``stopped_at`` or ``stopped_reason`` — the
+          graceful-shutdown path leaves those fields ``None`` so the
+          portal can later distinguish "stopped cleanly" from
+          "killed silently".
+        * ``_persist_silent_exit_reconcile()`` — invoked from the
+          portal's ``read_state`` when a bot subprocess died without
+          its atexit hook running (cgroup SIGKILL, OOM, hung past
+          ``HEARTBEAT_STALE_THRESHOLD_SEC``). It MUST stamp
+          ``stopped_at`` (post-mortem timestamp) and
+          ``stopped_reason`` (``"silent_exit"`` / ``"heartbeat_stale"``)
+          so the operator-facing UI can surface the failure mode.
+
+        Do NOT consolidate. The two write-back contracts encode
+        whether the lifecycle was clean — collapsing them would lose
+        the ``stopped_reason`` signal (cleaning up after a crash) or
+        fabricate one (graceful shutdown stamped with ``"normal"``,
+        false-positive when grepping audit logs for crashes).
+
+        Reference: ``web/app.py`` line ~94 docstring on the
+        ``stopped_at`` / ``stopped_reason`` fields.
         """
         if self.state_file is None:
             return
