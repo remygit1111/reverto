@@ -68,8 +68,10 @@ The remaining seven are all INFO-tier; no spot-check needed.
 All five PT-v3 entries (pt-101, pt-102, pt-130, pt-150, pt-160) are present in `data/findings_seed.yaml` with `status: open` and `resolution_ref: null`. I cross-checked each against current code:
 
 * **pt-101** — bcrypt-timing dummy not added. `core/user_store.py:128-129` still short-circuits without a bcrypt round.
+  * **STATUS (2026-04-29 / `fix/phase-4-readiness-security-cluster`): RESOLVED.** `_DUMMY_BCRYPT_HASH` (rounds=12) seeded at module import; `verify_password` now runs `bcrypt.checkpw(plaintext, _DUMMY_BCRYPT_HASH)` on every failure path (unknown user, missing row, NULL hash) before returning `None`. Smoke-tested: unknown-user verify pays ~260 ms vs. ~261 ms for known-wrong-password. Tests: `tests/test_user_store.py::TestVerifyPassword::test_verify_password_unknown_user_runs_bcrypt` + `test_verify_password_timing_parity`.
 * **pt-130** — `bump_session_epoch` only fires on logout (auth.py:611) and password-change (auth.py:700); NOT in `update_user_totp_seed` or `/auth/totp/verify`/`/auth/totp/disable`. Same gap PT-v3 flagged.
 * **pt-160** — `_rate_limit_detail(retry_after)` formats minutes+seconds as-is, no rounding to 60s boundary.
+  * **STATUS (2026-04-29 / `fix/phase-4-readiness-security-cluster`): RESOLVED.** `_round_retry_after_to_minute(seconds)` helper added in `web/routes/auth.py`; applied to all three 429 paths (login known-user, login unknown-user, login/totp). Round-up semantics so a sub-minute delay becomes 60 s, not 0. Tests: `tests/test_auth_rate_limit.py::TestRetryAfterRoundedToMinute`.
 
 No silent fixes. No status drift. ✅
 
@@ -154,6 +156,8 @@ $ ls -la /home/bot/reverto/logs/audit.*
 Audit logs carry usernames, IPs, action types (login_password_failed, totp_setup_initiated, etc.), and structured JSON metadata. On a single-tenant deploy with one user (the operator), the read-set is `{operator}` so info-leak surface is narrow. On a future shared-hosting environment, any local user could `cat logs/audit.jsonl` to map login patterns + IPs.
 
 Defence-in-depth: rotate-handler does NOT explicitly set umask 0o077 or chmod 0600 on the rotated files. The container/OS umask from systemd inherits whatever the bot user has, defaulting to 0o022 → mode 644.
+
+**STATUS (2026-04-29 / `fix/phase-4-readiness-security-cluster`): RESOLVED.** `web/app.py` audit-logger setup now narrows umask to `0o077` while RotatingFileHandler creates `audit.log`, then `os.chmod` enforces mode `0o640` deterministically (independent of the running process's umask). The `_audit()` JSONL writes apply the same umask-narrow + post-write `chmod 0o640` to `audit.jsonl` (global) and per-user `audit.jsonl` files. Operator post-deploy: run `chmod 0o640 logs/audit.* logs/*/audit.jsonl` once on existing files (the new code only owns the create/write path). Regression test: `tests/test_audit_log.py::test_audit_jsonl_files_chmod_0640_on_create`.
 
 **rhav2-002 (INFO × MEDIUM) — `/auth/status` exposes `totp_enabled` to authenticated session-holders.**
 
