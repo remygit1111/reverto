@@ -276,7 +276,9 @@ class TestPTv3SeedExtension:
             ),
             "pt-102": ("open", None),
             "pt-130": ("open", None),
-            "pt-150": ("open", None),
+            "pt-150": (
+                "resolved", "fix/pt-150-totp-admin-reset-wrapper",
+            ),
             "pt-160": (
                 "resolved", "fix/phase-4-readiness-security-cluster",
             ),

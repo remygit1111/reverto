@@ -550,32 +550,38 @@ with it. Tracked on the VPS roadmap.
 
 When a user has TOTP enabled but loses access to their authenticator
 app (lost phone, app deleted, secret corrupted), the operator can
-reset TOTP via direct database access.
+reset TOTP via the admin-reset wrapper script.
 
-**Procedure:**
+**Procedure (recommended — produces audit-log entry):**
 
 ```bash
 # 1. SSH to the VPS as the bot user
 ssh bot@reverto.bot
+cd ~/reverto
 
-# 2. Verify the user has TOTP enabled
-sqlite3 ~/reverto/logs/reverto.db \
-  "SELECT id, username, totp_seed_encrypted IS NOT NULL AS has_totp
-   FROM users WHERE username = '<name>';"
+# 2. Run the wrapper. It validates the user exists + currently has
+#    TOTP enabled, prompts for confirmation, writes an audit-log
+#    entry, and clears the encrypted seed.
+.venv/bin/python scripts/totp_admin_reset.py --username <name>
 
-# 3. Reset TOTP (set the column to NULL)
-sqlite3 ~/reverto/logs/reverto.db \
-  "UPDATE users SET totp_seed_encrypted = NULL
-   WHERE username = '<name>';"
+# Or with the recovery reason recorded in the audit entry:
+.venv/bin/python scripts/totp_admin_reset.py \
+  --username <name> --reason "lost phone"
 
-# 4. Verify the reset
-sqlite3 ~/reverto/logs/reverto.db \
-  "SELECT username, totp_seed_encrypted IS NOT NULL FROM users
-   WHERE username = '<name>';"
-# Expected: <name>|0
+# Or scripted (skips the confirmation prompt):
+.venv/bin/python scripts/totp_admin_reset.py \
+  --username <name> --reason "..." --yes
 ```
 
-The user can now log in with their password only, and can re-enroll
+The wrapper writes a `totp_admin_reset` event to
+`logs/audit.jsonl` (and the per-user split at
+`logs/<user_id>/audit.jsonl`) BEFORE the DB UPDATE, so a forensic
+investigator chasing a "who reset whose TOTP" question has the
+same trail they would for any other `totp_*` event. The
+`reason` field is captured verbatim. Verify with
+`tail -1 ~/reverto/logs/audit.jsonl` after running.
+
+The user can now log in with their password only, and can re-enrol
 via Profile → Enable TOTP with a new authenticator-app entry.
 
 **When to use:**
@@ -587,18 +593,41 @@ via Profile → Enable TOTP with a new authenticator-app entry.
 
 Requires SSH access to the VPS plus sudo rights on the bot user
 account. Not exposed via the portal (no reset endpoint in the UI).
-Audit trail goes through SSH login logs.
+Both the audit row and the SSH login log capture the recovery.
 
-**Limitation (PT-v3 pt-150):** this SQL path produces no application-
-layer audit row — `totp_disabled` only fires from the
-`/auth/totp/disable` endpoint. A future `scripts/totp_admin_reset.py`
-wrapper will call `update_user_totp_seed(uid, None)` and emit a
-`totp_admin_recovery` audit row so direct-DB recoveries surface in
-`logs/audit.jsonl`. Until then, log the SSH session and the
-operator's reason out-of-band.
+**Emergency fallback — raw SQL (no audit-log entry):**
 
-**Validation:** procedure tested on 2026-04-28 during the Phase B
-PR 3 deploy. Works as intended.
+If the wrapper cannot run — broken Python environment,
+`logs/` filesystem unwritable, or `init_db()` itself failing —
+the raw SQL path remains:
+
+```bash
+# Verify the user has TOTP enabled
+sqlite3 ~/reverto/logs/reverto.db \
+  "SELECT id, username, totp_seed_encrypted IS NOT NULL AS has_totp
+   FROM users WHERE username = '<name>';"
+
+# Reset TOTP (set the column to NULL)
+sqlite3 ~/reverto/logs/reverto.db \
+  "UPDATE users SET totp_seed_encrypted = NULL
+   WHERE username = '<name>';"
+
+# Verify the reset
+sqlite3 ~/reverto/logs/reverto.db \
+  "SELECT username, totp_seed_encrypted IS NOT NULL FROM users
+   WHERE username = '<name>';"
+# Expected: <name>|0
+```
+
+The raw SQL path produces **NO application-layer audit row** —
+that's why it's the fallback, not the primary path. Operator
+must record the reset out-of-band (incident log, ticket, email)
+for compliance and forensic continuity. Treat as last resort.
+
+**Validation (pt-150 fix):** wrapper tested on 2026-04-29 during
+the `fix/pt-150-totp-admin-reset-wrapper` deploy. Audit-row
+visible in `logs/audit.jsonl` with the operator-supplied reason
+captured verbatim.
 
 ## Database reset (multi-tenant migration)
 

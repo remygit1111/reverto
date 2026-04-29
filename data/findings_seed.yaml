@@ -2890,12 +2890,12 @@ findings:
 - finding_id: pt-150
   source_doc: production-pentest-v3
   severity: LOW
-  status: open
+  status: resolved
   title: SQL TOTP recovery has no audit trail
   description: |
     The runbook-documented recovery procedure UPDATE users SET totp_seed_encrypted = NULL WHERE id = ? bypasses /auth/totp/disable and produces no totp_disabled audit row. If the SSH-access used to run the SQL is itself compromised (stolen key, social engineering), there is no application-layer trace of the recovery to surface in audit.jsonl.
-  resolution_ref: null
-  notes: "Profile: operator (insider/post-breach scenario). Remediation: scripts/totp_admin_reset.py wrapper that calls update_user_totp_seed + emits a totp_admin_recovery audit row. ~10 min work + runbook update."
+  resolution_ref: fix/pt-150-totp-admin-reset-wrapper
+  notes: "Profile: operator (insider/post-breach scenario). RESOLVED 2026-04-29: scripts/totp_admin_reset.py wraps the recovery with audit emission (action=totp_admin_reset, dual-write to global + per-user audit.jsonl, audit-before-DB-update ordering, --reason flag captures context). Runbook updated: wrapper is primary path, raw SQL retained as documented emergency fallback. Pinned by tests/test_totp_admin_reset.py (11 tests)."
 
 - finding_id: pt-160
   source_doc: production-pentest-v3
