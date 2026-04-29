@@ -3,20 +3,65 @@ name: Tests
 on:
   push:
     branches: [main]
+    # Pure documentation / data-content changes do not affect runtime
+    # behaviour, so skip the full CI suite and preserve Actions
+    # minutes for code-impacting work. A PR that touches BOTH a
+    # paths-ignore entry AND a code file still triggers CI — the
+    # ignore set must match every file in the change for the run
+    # to be skipped, which is the correct semantic. Categories:
+    #   * docs/**, **.md      — operator runbook, audit reports,
+    #                           architecture notes. Pure prose.
+    #   * data/findings_seed.yaml — content-only seed for the admin
+    #                           findings tracker. The YAML-parse +
+    #                           schema invariants are already pinned
+    #                           by tests/test_admin_findings.py, so a
+    #                           push that ONLY touches this file has
+    #                           no behavioural surface for CI to
+    #                           verify.
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'data/findings_seed.yaml'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'data/findings_seed.yaml'
+
+# Cancel in-progress runs on the same branch when a new commit
+# lands. PRs frequently receive fix-up commits or force-pushes
+# after rebase; without this guard each push spawns a fresh CI
+# run and the older runs continue to completion in parallel,
+# burning Actions minutes for results that will be discarded as
+# soon as the new run finishes. Group key includes the workflow
+# name so unrelated workflows (drift detection, future ones)
+# don't cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # fail-fast: false is now structurally redundant (the matrix
+      # has one entry) but kept for forward-compat: any future
+      # re-introduction of a second runtime should default to
+      # surfacing both failures rather than masking one behind the
+      # other.
       fail-fast: false
       matrix:
-        # 3.12 is the primary dev version.
-        # 3.13 is smoke-tested; some deps may lag.
-        # 3.11 was dropped: pandas-ta==0.4.71b0 requires 3.12+ and
-        # the codebase uses 3.10+ union syntax, so 3.11 support was
-        # aspirational at best.
-        python-version: ['3.12', '3.13']
+        # Single Python version: 3.12 is the production runtime on
+        # Reverto-Server. Drift-detection against 3.13 (and future
+        # versions) lives in `.github/workflows/python-drift.yml`
+        # as a weekly scheduled run. Per-PR matrix was 2× the
+        # minutes-burn for marginal extra signal — 3.12-only
+        # failures already block merges; 3.13-only failures
+        # historically rarely blocked deploys to a 3.12 host.
+        # 3.11 was dropped earlier: pandas-ta==0.4.71b0 requires
+        # 3.12+ and the codebase uses 3.10+ union syntax, so 3.11
+        # support was aspirational at best.
+        python-version: ['3.12']
 
     steps:
       - uses: actions/checkout@v4
