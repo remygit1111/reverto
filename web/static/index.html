@@ -96,8 +96,8 @@
 
 <!-- ── API Key modal ───────────────────────────────────────────────────────── -->
 <div id="api-key-modal" class="modal-overlay">
-  <div class="modal-card">
-    <div class="modal-title">🔑 Reverto API Key</div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="api-key-modal-title">
+    <div class="modal-title" id="api-key-modal-title">🔑 Reverto API Key</div>
     <div class="modal-body-text">
       The portal requires an API key for start/stop/restart and log streaming.
       Ask the operator for the value of <code>REVERTO_API_KEY</code> (or look it up in <code>logs/portal.log</code> if an ephemeral key was generated).
@@ -113,8 +113,8 @@
 
 <!-- ── Profile modal ───────────────────────────────────────────────────────── -->
 <div id="profile-modal" class="modal-overlay">
-  <div class="modal-card">
-    <div class="modal-title">👤 Profile</div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
+    <div class="modal-title" id="profile-modal-title">👤 Profile</div>
 
     <section class="profile-section">
       <div class="profile-section-title">Account</div>
@@ -297,8 +297,8 @@
 
 <!-- ── Settings modal ──────────────────────────────────────────────────────── -->
 <div id="settings-modal" class="modal-overlay">
-  <div class="modal-card">
-    <div class="modal-title">⚙ Settings</div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+    <div class="modal-title" id="settings-modal-title">⚙ Settings</div>
 
     <section class="profile-section">
       <div class="profile-section-title">Appearance</div>
@@ -337,7 +337,7 @@
 
 <!-- ── Deal edit modal ────────────────────────────────────────────────────── -->
 <div id="deal-edit-modal" class="modal-overlay">
-  <div class="modal-card">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="deal-edit-title">
     <div class="modal-title" id="deal-edit-title">Edit Deal</div>
     <section class="profile-section">
       <div class="profile-section-title">Take Profit</div>
@@ -399,8 +399,8 @@
 
 <!-- ── Wizard Backtest modal ──────────────────────────────────────────────── -->
 <div id="wizard-backtest-modal" class="modal-overlay">
-  <div class="modal-card bt-modal-card">
-    <div class="modal-title">▶ Strategy Backtest</div>
+  <div class="modal-card bt-modal-card" role="dialog" aria-modal="true" aria-labelledby="wizard-backtest-modal-title">
+    <div class="modal-title" id="wizard-backtest-modal-title">▶ Strategy Backtest</div>
     <div class="bt-config-row bt-config-row-compact">
       <label class="bt-label">Start
         <input type="date" id="wbt-start" class="bt-input">
@@ -452,8 +452,8 @@
 
 <!-- ── Sweep modal ────────────────────────────────────────────────────────── -->
 <div id="sweep-modal" class="modal-overlay">
-  <div class="modal-card sweep-modal-card">
-    <div class="modal-title">🔄 Auto Optimize — Parameter Sweep</div>
+  <div class="modal-card sweep-modal-card" role="dialog" aria-modal="true" aria-labelledby="sweep-modal-title">
+    <div class="modal-title" id="sweep-modal-title">🔄 Auto Optimize — Parameter Sweep</div>
 
     <!-- Sweep parameter tabs -->
     <div class="sweep-tabs">
@@ -987,7 +987,7 @@
 <!-- MODAL: Finding detail / edit                                              -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="finding-detail-modal" class="modal-overlay">
-  <div class="modal-card">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="finding-detail-id">
     <div class="modal-title">
       <span id="finding-detail-id"></span>
       <span id="finding-detail-severity-badge" class="severity-badge"></span>
@@ -1031,8 +1031,8 @@
 <!-- MODAL: Emergency-stop confirmation (admin Bot Overview)                   -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="emergency-stop-modal" class="modal-overlay">
-  <div class="modal-card">
-    <div class="modal-title">🛑 Emergency stop</div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="emergency-stop-modal-title">
+    <div class="modal-title" id="emergency-stop-modal-title">🛑 Emergency stop</div>
     <div class="modal-body-text">
       This will <strong>SIGTERM every running bot across all users</strong>.
       Open positions on the exchange are <strong>not closed</strong> automatically.
@@ -1050,8 +1050,8 @@
 <!-- MODAL: Bulk stop confirmation (admin Bot Overview)                        -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="bulk-stop-modal" class="modal-overlay">
-  <div class="modal-card">
-    <div class="modal-title">■ Bulk stop</div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="bulk-stop-modal-title">
+    <div class="modal-title" id="bulk-stop-modal-title">■ Bulk stop</div>
     <div class="modal-body-text">
       <div>You are about to stop <strong id="bulk-stop-count">0</strong> bots:</div>
       <ul class="admin-bulk-list" id="bulk-stop-list"></ul>
@@ -1068,8 +1068,8 @@
 <!-- MODAL: Bulk restart confirmation (admin Bot Overview)                     -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="bulk-restart-modal" class="modal-overlay">
-  <div class="modal-card">
-    <div class="modal-title">↺ Bulk restart</div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="bulk-restart-modal-title">
+    <div class="modal-title" id="bulk-restart-modal-title">↺ Bulk restart</div>
     <div class="modal-body-text">
       <div>You are about to restart <strong id="bulk-restart-count">0</strong> bots:</div>
       <ul class="admin-bulk-list" id="bulk-restart-list"></ul>
@@ -1086,7 +1086,7 @@
 <!-- MODAL: Changelog entry editor (new + edit)                                -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="cl-edit-modal" class="modal-overlay">
-  <div class="modal-card">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="cl-modal-title">
     <div class="modal-title" id="cl-modal-title">Changelog entry</div>
 
     <label class="profile-label" for="cl-modal-title-input">Title</label>
@@ -1896,6 +1896,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=218"></script>
+<script src="/static/app.js?v=219"></script>
 </body>
 </html>

@@ -328,6 +328,197 @@ function handleGlobalEscape(e) {
 }
 document.addEventListener('keydown', handleGlobalEscape);
 
+
+// ── Modal accessibility (rha-006 + rha-007 + rhav2-004 broader sweep) ──────
+//
+// Three concerns share one wireup pass:
+//   * rha-006 — auto-focus the right element when a modal opens.
+//   * rha-007 — Tab/Shift-Tab cycle within the modal, never escape to
+//     the page underneath.
+//   * focus-restore — return focus to the trigger button when the
+//     modal closes, so a keyboard user lands back where they were.
+//
+// All three are driven by a single MutationObserver per modal that
+// watches the ``show`` class on the ``.modal-overlay`` element. The
+// observer fires synchronously after the class mutation, which lets
+// us snapshot ``document.activeElement`` (still the trigger button at
+// that point — focus has not yet moved into the modal-card) before
+// running the auto-focus path.
+
+const _modalTriggers = new WeakMap();
+
+function _focusFirstElementInModal(modalElement) {
+  if (!modalElement) return;
+  // Defer one frame so the modal has actually been laid out — focusing
+  // a still-display:none element silently no-ops in some browsers.
+  requestAnimationFrame(() => {
+    const isUsable = (el) => el && !el.disabled
+      && el.offsetParent !== null
+      && el.getAttribute('aria-hidden') !== 'true';
+
+    // Priority 1 — text-entry inputs, the natural starting point on
+    // any form-like modal (login, profile, deal-edit, ...).
+    const textInput = modalElement.querySelector(
+      'input[type="text"], input[type="email"], '
+      + 'input[type="password"], input[type="number"], '
+      + 'input[type="search"], input[type="tel"], '
+      + 'input[type="url"], input:not([type])',
+    );
+    if (isUsable(textInput) && !textInput.readOnly) {
+      textInput.focus();
+      return;
+    }
+
+    // Priority 2 — textarea.
+    const textarea = modalElement.querySelector('textarea');
+    if (isUsable(textarea) && !textarea.readOnly) {
+      textarea.focus();
+      return;
+    }
+
+    // Priority 3 — select.
+    const select = modalElement.querySelector('select');
+    if (isUsable(select)) {
+      select.focus();
+      return;
+    }
+
+    // Priority 4 — first non-destructive button. Auto-focusing
+    // Cancel / Close on a confirmation modal would mean Enter
+    // dismisses the action the user came to take. Accent / primary
+    // buttons (the right-most action in our convention) are picked
+    // last in DOM order anyway, so we walk forwards skipping the
+    // closers.
+    const buttons = modalElement.querySelectorAll('button');
+    for (const btn of buttons) {
+      if (!isUsable(btn)) continue;
+      const text = (btn.textContent || '').toLowerCase();
+      if (text.includes('cancel') || text.includes('close')) continue;
+      if (btn.classList.contains('modal-close')) continue;
+      if (btn.dataset && btn.dataset.action === 'close') continue;
+      btn.focus();
+      return;
+    }
+
+    // Priority 5 — anything tabbable. Final fallback so the trap
+    // (rha-007) has somewhere to land focus on an empty-form modal.
+    const focusable = modalElement.querySelector(
+      'button, [href], input, select, textarea, '
+      + '[tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable) focusable.focus();
+  });
+}
+
+function _trapFocusInModal(modalElement) {
+  // rha-007: returns a cleanup fn so the wire-up function can detach
+  // the listener when the modal closes. Without cleanup, every
+  // open-close cycle would leak a listener.
+  if (!modalElement) return () => {};
+
+  const handler = (e) => {
+    if (e.key !== 'Tab') return;
+    const focusable = modalElement.querySelectorAll(
+      'button:not([disabled]), [href], '
+      + 'input:not([disabled]):not([type="hidden"]), '
+      + 'select:not([disabled]), textarea:not([disabled]), '
+      + '[tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) {
+        last.focus();
+        e.preventDefault();
+      }
+    } else if (document.activeElement === last) {
+      first.focus();
+      e.preventDefault();
+    }
+  };
+  modalElement.addEventListener('keydown', handler);
+  return () => modalElement.removeEventListener('keydown', handler);
+}
+
+function _restoreFocusAfterModalClose(modalElement) {
+  // rha-006 part 2: return focus to whatever the user was on before
+  // the modal opened, so a keyboard / screen-reader user does not
+  // land on document.body and have to Tab their way back.
+  const trigger = _modalTriggers.get(modalElement);
+  if (trigger && document.body.contains(trigger)
+      && typeof trigger.focus === 'function') {
+    trigger.focus();
+  }
+  _modalTriggers.delete(modalElement);
+}
+
+function _wireFocusTrap(modalId) {
+  // Single wiring point per modal. The MutationObserver fires on
+  // every class change on the .modal-overlay; we only act when the
+  // ``show`` flag transitions. This lets every existing call-site
+  // (``modal.classList.add('show')`` / .remove('show')) keep working
+  // unchanged — the modal becomes accessible by virtue of being
+  // shown via the canonical class.
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  let trapCleanup = null;
+  let wasOpen = modal.classList.contains('show');
+
+  const observer = new MutationObserver(() => {
+    const isOpen = modal.classList.contains('show');
+    if (isOpen === wasOpen) return;
+    wasOpen = isOpen;
+
+    if (isOpen) {
+      // Snapshot the trigger BEFORE we move focus into the modal.
+      // The MutationObserver fires after the class change but before
+      // requestAnimationFrame — at this moment activeElement is
+      // still the button the user just clicked / pressed Enter on.
+      const trigger = document.activeElement;
+      if (trigger && trigger !== document.body) {
+        _modalTriggers.set(modal, trigger);
+      }
+      _focusFirstElementInModal(modal);
+      trapCleanup = _trapFocusInModal(modal);
+    } else {
+      if (trapCleanup) {
+        trapCleanup();
+        trapCleanup = null;
+      }
+      _restoreFocusAfterModalClose(modal);
+    }
+  });
+  observer.observe(modal, {
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+}
+
+function _wireAllModalFocusTraps() {
+  // The full set of .modal-overlay IDs in index.html. Discovered via
+  // grep '<div id="..." class="modal-overlay"' — keep in sync with
+  // index.html or the test_focus_trap_wired_to_modals regression
+  // guard will fail.
+  const modalIds = [
+    'api-key-modal',
+    'profile-modal',
+    'totp-enroll-modal',
+    'totp-disable-modal',
+    'settings-modal',
+    'deal-edit-modal',
+    'wizard-backtest-modal',
+    'sweep-modal',
+    'finding-detail-modal',
+    'emergency-stop-modal',
+    'bulk-stop-modal',
+    'bulk-restart-modal',
+    'cl-edit-modal',
+  ];
+  for (const id of modalIds) _wireFocusTrap(id);
+}
+
+
 async function handleResetDrawdown(slug) {
   if (!slug) return;
   if (!window.confirm(
@@ -9041,6 +9232,11 @@ function _wireTotpUiHandlers() {
 document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   _wireTotpUiHandlers();
+  // rha-006 + rha-007 + rhav2-004 broader sweep — wire auto-focus,
+  // focus-trap, and focus-restore on every .modal-overlay. Runs
+  // before auth check so the login view's modals (api-key) are
+  // already accessible at first interaction.
+  _wireAllModalFocusTraps();
 
   // Gate: require a valid session cookie before bringing up the SPA.
   const authed = await checkAuthStatus();
