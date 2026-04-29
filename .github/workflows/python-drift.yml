@@ -1,0 +1,82 @@
+name: Python Drift Detection
+
+# Weekly Python 3.13 drift-detection.
+#
+# The main test workflow (.github/workflows/test.yml) runs only
+# against Python 3.12 — the production runtime on Reverto-Server.
+# This workflow runs the smoke-import + test suite against 3.13
+# once a week to catch dependency-compatibility drift (a wheel
+# going missing, an upstream lib dropping 3.13 support, a new
+# 3.13 syntax feature unintentionally landing in our code) without
+# taxing every PR.
+#
+# Failure here is an early-warning signal — investigate the
+# failing dep, decide whether to pin or wait. NOT a deploy
+# blocker; the production host stays on 3.12 regardless. If the
+# drift run is red for several consecutive weeks the operator
+# should either pin the offending dep, file a tracker entry, or
+# accept the drift (open issue + suppress here).
+
+on:
+  schedule:
+    # Monday 06:00 UTC. Weekday so any failure surfaces during
+    # working hours in EU/AMS for triage.
+    - cron: '0 6 * * 1'
+  # Allow manual trigger for ad-hoc checks before a planned
+  # Python-runtime upgrade.
+  workflow_dispatch:
+
+# Drift detection is independent of every other workflow on the
+# repo, so a separate concurrency group keeps it from cancelling
+# (or being cancelled by) the per-PR test runs.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install -r requirements-ml.txt
+          .venv/bin/pip install pytest pytest-cov ruff
+
+      - name: Smoke-import core modules
+        # Slim version of the per-PR smoke-import. Imports the
+        # surfaces most likely to break under a runtime upgrade
+        # (web app, paper engine, DB layer, user store, telegram
+        # notifier). A failure here is the first sign of drift —
+        # the per-PR workflow's full module list runs on 3.12 and
+        # would not catch a 3.13-only break.
+        run: |
+          .venv/bin/python -c "
+          import web.app
+          import paper.paper_engine
+          import core.database
+          import core.user_store
+          import notifications.telegram
+          print('3.13 smoke-import OK')
+          "
+
+      - name: Run tests
+        # No --cov-fail-under: drift detection is a binary
+        # works/works-not signal. Coverage regressions are caught
+        # on every PR by the main workflow; re-asserting here
+        # would only add noise without catching a class of bug
+        # the main workflow misses.
+        run: .venv/bin/pytest -q --tb=short
+
+      - name: Lint
+        run: .venv/bin/ruff check .
