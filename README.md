@@ -156,4 +156,7 @@ side TOTP recovery procedure, see [docs/runbook.md](docs/runbook.md)
 - [Runbook](docs/runbook.md) — startup checklist, emergency procedures,
   credential rotation, common error fixes.
 - [Deployment](docs/deployment.md) — bare-metal + Docker + Kubernetes.
+- [Phase 3 scoping](docs/phase-3.md) — live-trading roadmap.
+- [Phase 4 scoping](docs/phase-4.md) — multi-tenant readiness
+  prerequisites (Postgres + Redis coordination).
 - [Alert rules](docs/alerts.yml) — Prometheus alert template.

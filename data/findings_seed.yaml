@@ -203,7 +203,7 @@ findings:
   description: |
     SQLite WAL supports concurrent readers but only one writer. Multi-host deploys cannot share the DB, and 100+ tenant bots saturate the single-writer.
   resolution_ref: null
-  notes: ""
+  notes: "Phase 4 prerequisite. See docs/phase-4.md §2.1 for migration plan + re-evaluation triggers. Decision-logged 2026-04-29: not implementing now; deferred to Phase 4 kickoff (no current drukfactor + Phase 4 design-keuzes can still influence schema choices)."
 
 - finding_id: r1-018
   source_doc: saas-readiness-v1-report
@@ -273,7 +273,7 @@ findings:
   description: |
     BotRegistry holds bot lifecycle state in process-local asyncio.Lock. Under uvicorn --workers 4, each worker has independent registry, allowing same-bot double-start races.
   resolution_ref: null
-  notes: ""
+  notes: "Phase 4 prerequisite. See docs/phase-4.md §2.2 for resolution direction (Redis or Postgres advisory locks) + re-evaluation triggers. Decision-logged 2026-04-29: deferred to Phase 4 kickoff (no current multi-worker deploy)."
 
 - finding_id: r1-025
   source_doc: saas-readiness-v1-report
@@ -283,7 +283,7 @@ findings:
   description: |
     WebSocket clients held in process-local memory. With multi-worker setup, watch_state_files on worker 2 broadcasts updates that worker 1's clients never receive.
   resolution_ref: null
-  notes: ""
+  notes: "Phase 4 prerequisite. See docs/phase-4.md §2.2 for resolution direction (Redis pub/sub fan-out) + re-evaluation triggers. Decision-logged 2026-04-29: deferred to Phase 4 kickoff (no current multi-worker deploy)."
 
 - finding_id: r1-026
   source_doc: saas-readiness-v1-report
@@ -293,7 +293,7 @@ findings:
   description: |
     Each uvicorn worker has independent token buckets. Attacker can hit 5 reqs/min on each worker, bypassing per-endpoint limits. Requires Redis backend.
   resolution_ref: null
-  notes: ""
+  notes: "Phase 4 prerequisite. See docs/phase-4.md §2.3 for resolution direction (slowapi storage_uri='redis://...') + re-evaluation triggers. Decision-logged 2026-04-29: deferred to Phase 4 kickoff (no current multi-worker deploy; one-line config change once Redis is in the deploy)."
 
 - finding_id: r1-027
   source_doc: saas-readiness-v1-report
@@ -303,7 +303,7 @@ findings:
   description: |
     /api/price uses module-level ccxt client and lock, serializing all price fetches. Heavy dashboard polling queues behind it.
   resolution_ref: null
-  notes: ""
+  notes: "Phase 4 prerequisite. See docs/phase-4.md §2.3 for resolution direction (per-process clients with central rate-coordinator) + re-evaluation triggers. Decision-logged 2026-04-29: deferred to Phase 4 kickoff (no current multi-worker deploy; serialisation is correct under single-worker)."
 
 - finding_id: r1-028
   source_doc: saas-readiness-v1-report
@@ -323,7 +323,7 @@ findings:
   description: |
     Each bot's ccxt client rate-limits independently. With 100 tenants x 3 bots, distributed rate-limiting causes cascading failures.
   resolution_ref: null
-  notes: ""
+  notes: "Phase 4 prerequisite. See docs/phase-4.md §2.3 for resolution direction (per-tenant rate-budgets fed back to bots) + re-evaluation triggers. Decision-logged 2026-04-29: deferred to Phase 4 kickoff (single-tenant deploy has no cumulative-load problem)."
 
 - finding_id: r1-030
   source_doc: saas-readiness-v1-report
