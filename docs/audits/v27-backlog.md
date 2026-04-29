@@ -43,6 +43,12 @@ exhausted) of ⛔ stopped (non-transient), maar de engine blijft in
 beide gevallen gewoon door-retryen. "Bot stopped" in de message is
 daarmee een user-facing framing, niet de feitelijke process-state.
 
+**STATUS (2026-04-29 / `fix/b02-telegram-blocked-label`): PARTIALLY RESOLVED — UX-text-tweak landed; engine auto-stop still pending.**
+
+The misleading-label half of the finding is closed: `notifications/telegram.py:328` renders the non-transient persistent-error notification as "⛔ Bot **blocked**" instead of "⛔ Bot stopped". "Blocked" frames the message around what the operator needs to do (unblock by fixing the root cause) rather than implying the subprocess has already exited. The transient path ("⚠️ Bot degraded") and the severity-emoji are unchanged. Pinned by `tests/test_telegram.py::TestPersistentErrorSeverity::test_non_transient_renders_as_blocked`, which both asserts the new label AND fails if "stopped" creeps back into the body anywhere.
+
+The engine-side half (transitioning `self.running = False` + auto_stopped lifecycle state + portal UI distinction) stays open under this entry — that work has cross-cutting blast radius (engine semantics, portal display, runbook update) and is genuinely B-02 territory rather than a UX-text-tweak. Track as the remaining scope of this finding.
+
 Huidige staat: `PaperEngine._tick` increment een consecutive-error
 counter en firet één Telegram-message als de threshold wordt geraakt.
 `self.running` blijft `True`; de portal ziet de bot als running maar

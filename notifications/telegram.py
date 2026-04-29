@@ -312,10 +312,22 @@ class TelegramNotifier:
         retry will help.
 
         Severity-emoji follows the classification: non-transient failures
-        (auth errors, bugs in our own code) render as ⛔ "Bot stopped"
+        (auth errors, bugs in our own code) render as ⛔ "Bot blocked"
         because they need operator intervention; exhausted-transient
         failures render as ⚠️ "Bot degraded" because the engine is still
         retrying but is structurally failing to make progress.
+
+        Audit B-02: the non-transient label is "blocked" rather than
+        "stopped" — the engine subprocess is still in its tick-loop
+        when this notification fires, just unable to make progress
+        until the operator intervenes. Saying "stopped" to the operator
+        was misleading because process-state and progress-state are
+        different things; "blocked" frames the message around what the
+        operator needs to do (unblock by fixing the root cause) rather
+        than implying the bot has already exited. Auto-stop on the
+        engine side (transitioning ``self.running = False``) is tracked
+        separately under v27-backlog B-02 — this fix is a UX-text-tweak
+        only.
 
         Distinct from ``notify_error`` which takes a free-form string —
         that entry point stays for callers outside the engine tick path
@@ -325,7 +337,7 @@ class TelegramNotifier:
         if err.is_transient:
             severity, state_label = "⚠️", "degraded"
         else:
-            severity, state_label = "⛔", "stopped"
+            severity, state_label = "⛔", "blocked"
 
         reason = _resolve_error_reason(err)
         context = _resolve_error_context(err)
