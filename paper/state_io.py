@@ -238,6 +238,41 @@ class StateIO:
         tick path and a transient disk-full condition must not kill
         the engine. The log line drops to DEBUG because a filesystem
         error here is usually transient and engine stays responsive.
+
+        Atomicity contract (audit r2-007).
+
+        On a POSIX-compliant filesystem, ``Path.replace`` (the
+        ``rename(2)`` syscall) is atomic with respect to readers:
+        any process opening ``self.state_file`` either sees the
+        previous version or the new version, never a partial write.
+        Power-loss between the ``write_text`` and the ``replace``
+        also leaves the previous valid state intact; the orphan
+        ``.tmp`` is cleaned up by the next ``load()`` call (see
+        pd-044).
+
+        **Filesystem assumptions.** Reverto's deployment target is
+        Linux on a local POSIX filesystem (ext4, xfs, tmpfs), where
+        the contract above holds unconditionally. On non-POSIX
+        layouts the guarantees weaken in implementation-specific
+        ways:
+
+        * **NFS / SMB** — atomicity depends on protocol version and
+          server config. NFSv4 with ``-o sync`` approximates the
+          POSIX guarantee; NFSv3 in default mode does not.
+        * **Windows pre-Server-2012** — ``os.replace`` may surface
+          ``ERROR_ALREADY_EXISTS`` on the first call instead of
+          atomic-replacing; Python's standard library normalises
+          most of this on modern Windows but the contract is
+          weaker than the Linux baseline.
+        * **FUSE / overlayfs / containerised volumes** — depend on
+          the underlying backing store; usually fine for ext4 /
+          xfs hosts but failure modes are layout-specific.
+
+        Phase-4 multi-host scaling cannot rely on this primitive:
+        cross-host file locks are not POSIX-atomic. If state ever
+        needs to be shared across hosts the right replacement is a
+        distributed-consensus store (etcd / consul) rather than
+        layering more file-locking on top.
         """
         if self.state_file is None:
             return
