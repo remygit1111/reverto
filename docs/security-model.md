@@ -1855,6 +1855,83 @@ revisie — alleen herpositioneerd in drie categorieën.
   plus one-tap reactivation is in Part 3.6 Laag 8 ingeschat;
   user-testing moet aantonen of dit werkt.
 
+### 6.4 Session epoch policy matrix
+
+The `users.session_epoch` column is a per-user counter. Every
+issued session cookie embeds the epoch that was current at issue
+time; on every authenticated request, `web.app._request_user`
+re-reads the column and rejects the cookie when its embedded
+epoch trails the DB value. Bumping the column is therefore a
+single-write "log out everyone" primitive — and the policy of
+*which* events bump it is a deliberate trade-off between session
+continuity and security posture.
+
+This section pins the contract so a future reader does not have
+to grep `bump_session_epoch` call-sites to recover the rationale.
+
+#### Events that BUMP `session_epoch`
+
+| Event | Effect | Rationale |
+|-------|--------|-----------|
+| Logout (`POST /auth/logout`) | Every cookie for this user invalidated, including the one that just made the request | The user explicitly chose to terminate; "log out other devices too" matches user intuition for a destructive action they kicked off themselves |
+| Password change (`POST /api/auth/change-password`) | Every cookie for this user invalidated | Industry standard: a password rotation is the canonical "compromise assumed" signal — every existing session must re-authenticate against the new credential |
+
+Bump call-sites: `web/routes/auth.py` (logout handler ≈ L648,
+change-password handler ≈ L737). Atomicity guarantee:
+`bump_session_epoch` uses `UPDATE … RETURNING` so concurrent bumps
+serialise without lost increments (audit v26-11).
+
+#### Events that do NOT BUMP `session_epoch`
+
+| Event | Effect | Rationale |
+|-------|--------|-----------|
+| TOTP enrollment (`POST /auth/totp/verify`) | Other sessions remain valid | UX-friction trade-off; the user just authenticated with both factors and would not expect "enable 2FA" to log them out of their other tabs / devices |
+| TOTP disable (`POST /auth/totp/disable`) | Other sessions remain valid | Same trade-off; disabling already requires dual-factor verification (password + current TOTP code), so explicit ownership has just been re-proven |
+| Failed login attempt | Counter not affected | A failed login does not change the legitimate user's session ownership — bumping here would let an attacker DoS any account by triggering enough failures to invalidate the legitimate user's session |
+| Successful login | Counter not affected | New cookies pick up the current epoch; existing cookies on other devices remain valid by design |
+| User row marked `active = 0` | Counter not affected, but `_request_user` rejects on `not user.active` regardless of cookie validity | Active-flag check is a parallel mechanism — no schema-rotation cost, fail-closed at the dependency-resolve step |
+
+#### Known security implication (PT-v3 pt-130)
+
+Because TOTP enrollment does not bump `session_epoch`, a session
+cookie obtained BEFORE the user enabled TOTP remains valid AFTER
+the user enables it. Concretely: an attacker who stole a session
+cookie pre-enrollment retains access until one of the bumping
+events above fires (logout, password change), the cookie's 24h
+TTL expires, or the user's row is deactivated.
+
+**Risk assessment:**
+- *Single-tenant operator deploy* — low risk. The operator
+  controls their own session lifecycle; the realistic recovery
+  path after suspecting a stolen cookie is "log out + change
+  password", which the existing matrix already invalidates.
+- *Multi-tenant* — documented attack vector. A user enabling 2FA
+  legitimately expects their account to be "more secure now",
+  which a survived pre-enrollment cookie violates.
+
+**Mitigation options (decision deferred):**
+- Bump `session_epoch` on `/auth/totp/verify` (UX cost: every
+  other browser / device session for this user gets logged out
+  the moment they enable 2FA — possibly surprising).
+- Surface an explicit "log out other sessions" button in the
+  profile page (zero-cost UX, opt-in, but discoverability is
+  weaker than automatic invalidation).
+- Force re-authentication on TOTP enrollment by clearing the
+  current session immediately after `/auth/totp/verify` — same
+  effect as the bump but also logs out the current tab.
+
+**Decision deferred** until the multi-tenant rollout. Tracked in
+`data/findings_seed.yaml` as `pt-130` (status=open, severity=LOW).
+
+#### Files
+
+- Counter column: `users.session_epoch` (schema v3+).
+- Bump primitive: `core.user_store.bump_session_epoch` (atomic
+  `UPDATE … RETURNING`).
+- Cookie validation: `web.app._request_user` →
+  `_verify_session_cookie` (signature) →
+  `user_store.get_session_epoch` (epoch match).
+
 ---
 
 ## Part 7 · Appendix: Cross-references

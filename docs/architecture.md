@@ -373,6 +373,100 @@ auto-gegenereerde pre-migration backup naar
 `docs/runbook.md` "Schema migrations" voor de volledige flow +
 restore-procedure.
 
+## Authentication architecture (Phase B)
+
+Reverto's authentication is a layered stack. Layer 1 ships at every
+deploy; Layer 2 is opt-in per user; Layer 3 binds the result to a
+session cookie that the rest of the portal validates on every
+request.
+
+### Layer 1 — Password authentication
+
+- Bcrypt-hashed passwords (rounds=12) stored in
+  `users.password_hash`.
+- Constant-time verification via `bcrypt.checkpw`. The unknown-user
+  / NULL-hash / inactive-user branches all run a dummy
+  `bcrypt.checkpw` against `_DUMMY_BCRYPT_HASH` so the wall-time of
+  a failed login does not leak whether the username exists
+  (audit pt-101 closure).
+- Per-user rate limiting: 10 failed attempts inside a 15-minute
+  sliding window flips the account to a 429 with a rounded
+  `Retry-After` header. Backoff is exponential (`0.1 * 2^count`,
+  capped at 30 s) so a typo pays 0.1 s but a campaign escalates.
+- HIBP Pwned-Passwords k-anonymity check on password change blocks
+  known-breached passwords without leaking the new password to the
+  network.
+
+### Layer 2 — Two-factor authentication (TOTP, opt-in)
+
+Optional second factor for users who enable it via
+`POST /auth/totp/setup` → scan QR → `POST /auth/totp/verify`. The
+seed lives encrypted at rest with the user's Fernet key (consistent
+with the exchange-credential pattern, Phase 2 per-user filesystem).
+
+- RFC 6238 time-based one-time passwords (`pyotp`).
+- 30-second window with ±1-window skew tolerance.
+- 160-bit secrets (32-character base32).
+- Per-user Fernet encryption at rest in
+  `users.totp_seed_encrypted`.
+
+**Enrollment flow:**
+1. Authenticated user `POST /auth/totp/setup` → server generates a
+   fresh secret, server-renders an SVG QR (no CDN-loaded JS QR
+   library — see `docs/security-model.md` for the supply-chain
+   rationale), and sets a 10-min uid-bound pending-state cookie.
+2. User scans the QR with an authenticator app.
+3. `POST /auth/totp/verify` with the first 6-digit code.
+4. On success the encrypted secret is committed to
+   `users.totp_seed_encrypted` and the pending cookie is cleared.
+
+**Login flow with TOTP enabled:**
+1. `POST /auth/login` with username + password.
+2. If valid, the response carries `requires_totp: true` and the
+   server sets a 2-min pending-login-TOTP cookie. No session cookie
+   is issued yet.
+3. `POST /auth/login/totp` with the 6-digit code.
+4. On success the full session cookie is issued and the failed-
+   login counter is reset (the reset moved here from
+   `/auth/login` in Phase B PR 4 so a password-cracker who fails
+   the TOTP step cannot reset the counter for free).
+
+**Disable flow:**
+Requires BOTH the current password AND a current valid TOTP code
+— a stolen session alone or a stolen device alone is insufficient.
+For operator-side recovery when a user has lost the authenticator
+app, see `docs/runbook.md` "TOTP recovery".
+
+### Layer 3 — Session cookies
+
+- HttpOnly + Secure + SameSite=Strict.
+- Signed via `itsdangerous.URLSafeTimedSerializer` with a
+  per-purpose salt so the three cookie types cannot be replayed
+  across each other.
+- Three cookie types:
+  - **session** (24h TTL) — issued on full login success.
+  - **pending-totp-enrollment** (10 min, uid-bound) — issued by
+    `/auth/totp/setup`, consumed by `/auth/totp/verify`.
+  - **pending-login-totp** (2 min) — issued by `/auth/login` when
+    `user.totp_enabled`, consumed by `/auth/login/totp`.
+- Validation on every request (`web.app._request_user`) checks: a
+  valid signature, the cookie's claimed user_id resolves to an
+  active row, and the cookie's session_epoch matches the row's
+  current epoch. The epoch counter lets logout / password-change
+  invalidate every cookie for that user atomically. See
+  `docs/security-model.md` §6.4 for the full bump-vs-no-bump
+  matrix.
+
+### Files
+
+- Endpoint logic: `web/routes/auth.py`
+- TOTP helpers: `core/totp.py`
+- User + auth store: `core/user_store.py`
+- Cookie management + session validation: `web/app.py`
+
+Detailed design rationale + threat model:
+`docs/security-model.md` Part 3.3 + Part 6.
+
 ## Key inter-module contracts
 
 - **exchanges.base_exchange** — the `BaseExchange` ABC is the single

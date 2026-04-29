@@ -548,49 +548,57 @@ with it. Tracked on the VPS roadmap.
 
 ## TOTP recovery (operator-side fallback)
 
-Wanneer een user TOTP heeft enabled maar geen toegang meer heeft tot 
-zijn authenticator-app (telefoon kwijt, app verwijderd, secret 
-gecorrumpeerd), kan operator TOTP resetten via direct DB-toegang.
+When a user has TOTP enabled but loses access to their authenticator
+app (lost phone, app deleted, secret corrupted), the operator can
+reset TOTP via direct database access.
 
 **Procedure:**
 
 ```bash
-# 1. SSH naar VPS als bot user
+# 1. SSH to the VPS as the bot user
 ssh bot@reverto.bot
 
-# 2. Verifieer dat user TOTP enabled heeft
+# 2. Verify the user has TOTP enabled
 sqlite3 ~/reverto/logs/reverto.db \
-  "SELECT id, username, totp_seed_encrypted IS NOT NULL AS has_totp 
-   FROM users WHERE username = '<naam>';"
+  "SELECT id, username, totp_seed_encrypted IS NOT NULL AS has_totp
+   FROM users WHERE username = '<name>';"
 
-# 3. Reset TOTP (zet kolom op NULL)
+# 3. Reset TOTP (set the column to NULL)
 sqlite3 ~/reverto/logs/reverto.db \
-  "UPDATE users SET totp_seed_encrypted = NULL 
-   WHERE username = '<naam>';"
+  "UPDATE users SET totp_seed_encrypted = NULL
+   WHERE username = '<name>';"
 
-# 4. Verifieer reset
+# 4. Verify the reset
 sqlite3 ~/reverto/logs/reverto.db \
-  "SELECT username, totp_seed_encrypted IS NOT NULL FROM users 
-   WHERE username = '<naam>';"
-# Expected: <naam>|0
+  "SELECT username, totp_seed_encrypted IS NOT NULL FROM users
+   WHERE username = '<name>';"
+# Expected: <name>|0
 ```
 
-User kan nu inloggen met alleen wachtwoord, en kan via Profile → 
-Enable TOTP opnieuw enrollen met een nieuwe authenticator-app.
+The user can now log in with their password only, and can re-enroll
+via Profile → Enable TOTP with a new authenticator-app entry.
 
-**Wanneer gebruiken:**
+**When to use:**
 
-- Operator-eigen lockout (jij bent zelf de admin)
-- User-request voor TOTP-reset (Phase B+ multi-tenant)
+- Operator's own lockout (you are the admin).
+- User-requested TOTP reset (Phase B+ multi-tenant).
 
-**Beveiliging:**
+**Security:**
 
-Vereist SSH-toegang tot VPS + sudo-rechten op bot-user account. Niet 
-exposed via portal (geen reset-endpoint in UI). Audit-trail loopt 
-via SSH-login logs.
+Requires SSH access to the VPS plus sudo rights on the bot user
+account. Not exposed via the portal (no reset endpoint in the UI).
+Audit trail goes through SSH login logs.
 
-**Validatie:** procedure getest op 2026-04-28 tijdens Phase B PR 3 
-deploy. Werkt zoals bedoeld.
+**Limitation (PT-v3 pt-150):** this SQL path produces no application-
+layer audit row — `totp_disabled` only fires from the
+`/auth/totp/disable` endpoint. A future `scripts/totp_admin_reset.py`
+wrapper will call `update_user_totp_seed(uid, None)` and emit a
+`totp_admin_recovery` audit row so direct-DB recoveries surface in
+`logs/audit.jsonl`. Until then, log the SSH session and the
+operator's reason out-of-band.
+
+**Validation:** procedure tested on 2026-04-28 during the Phase B
+PR 3 deploy. Works as intended.
 
 ## Database reset (multi-tenant migration)
 
