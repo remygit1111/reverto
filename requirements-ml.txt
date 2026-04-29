@@ -1,12 +1,11 @@
-# ML dependencies — niet nodig voor paper/live trading
-# Installeer met: pip install -r requirements-ml.txt
+# ML dependencies — not required for paper / live trading.
+# Install with: pip install -r requirements-ml.txt
 #
-# Audit v26-26: -c requirements.txt pint alle shared transitive
-# dependencies (numpy, pandas, scipy, etc.) op dezelfde versies
-# als core. Zonder deze constraint kan pip bij een ML-install een
-# nieuwere numpy oplossen, wat runtime-incompatibilities oplevert
-# wanneer het ML-subsystem in hetzelfde proces als de paper-engine
-# draait.
+# Audit v26-26: ``-c requirements.txt`` pins every shared transitive
+# dependency (numpy, pandas, scipy, etc.) to the same versions as
+# the core install. Without this constraint, pip can resolve a newer
+# numpy during an ML install, which causes runtime incompatibilities
+# when the ML subsystem runs in the same process as the paper engine.
 -c requirements.txt
 
 lightgbm==4.6.0

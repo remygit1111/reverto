@@ -82,17 +82,23 @@ WHERE id=1`. De ADD COLUMN route is simpeler en geen data-loss —
 sterk voorkeur, maar de beslissing hoort bij de implementatie.
 Belangrijk: deze kolom komt **naast** de bestaande credential-
 store. De users-tabel bevat identiteit + metadata (username, role,
-active); password hashes + session-epoch blijven in `.auth.json`
-(per-user na Phase-3, zie §3).
+active); ~~password hashes + session-epoch blijven in
+`.auth.json` (per-user na Phase-3, zie §3)~~. _(v26-24:
+historical — Phase-3a verhuisde password hashes en session-epoch
+naar de `users` tabel; `.auth.json` is verwijderd.)_
 
-**Credential-opslag per user.** De huidige `logs/.auth.json`
+**Credential-opslag per user.** ~~De huidige `logs/.auth.json`
 wordt gesplitst in per-user bestanden langs de Fase-2 layout-lijn
-(exacte plek — `credentials/<uid>/.auth.json` of `logs/<uid>/.auth.json`
-— is een implementatie-detail voor bij het schrijven van de
-migratie). De huidige admin-blob verhuist bij de schema-v4 bump
-naar het pad voor `user_id=1`, zodat bestaande operators na
-migratie gewoon kunnen blijven inloggen. Deze keuze is consistent
-met `credentials/<uid>/` en `keys/<uid>.key` uit Fase 2.
+(exacte plek — `credentials/<uid>/.auth.json` of
+`logs/<uid>/.auth.json` — is een implementatie-detail voor bij
+het schrijven van de migratie). De huidige admin-blob verhuist
+bij de schema-v4 bump naar het pad voor `user_id=1`, zodat
+bestaande operators na migratie gewoon kunnen blijven inloggen.
+Deze keuze is consistent met `credentials/<uid>/` en
+`keys/<uid>.key` uit Fase 2.~~ _(v26-24: historical — Phase-3a
+verving `.auth.json` met DB-columns op `users`. Per-user
+exchange-credentials blijven onveranderd in `credentials/<uid>/`
++ per-user Fernet keys in `keys/<uid>.key`.)_
 
 ## 3. Open vragen
 
