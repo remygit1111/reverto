@@ -459,3 +459,61 @@ class TestFrontendLoginTotpAssets:
         assert ".login-totp-prompt" in css
         assert ".login-totp-cancel" in css
         assert "#login-totp-code" in css
+
+
+# ── pt-130 scope-boundary: login/totp must NOT bump session_epoch ─────────
+
+
+class TestLoginTotpDoesNotBumpSessionEpoch:
+    """pt-130 scope-boundary pin: ``/auth/login/totp`` is the
+    second-factor step of the *login* flow, not a TOTP-state
+    mutation. It calls ``totp.verify_code`` against the stored
+    seed but does NOT touch ``update_user_totp_seed``. Bumping
+    ``session_epoch`` here would self-DoS the freshly-minted
+    session cookie that this very request just emitted.
+
+    The pt-130 fix wires bumps into enrolment-verify
+    (auth.py:924) + disable (auth.py:1036). This test pins the
+    boundary so a future "consistency" refactor can't silently
+    extend the bump to the login path and break the user's
+    just-completed login.
+
+    Without this test a regression would surface as a confusing
+    "I just logged in but my session immediately stops working"
+    bug — caught quickly by integration testing but expensive
+    in operator-trust terms.
+    """
+
+    def test_successful_login_with_totp_does_not_bump(
+        self, admin_with_totp,
+    ):
+        client, secret = admin_with_totp
+        before = user_store.get_session_epoch(1)
+
+        # Step 1: password.
+        r1 = client.post(
+            "/auth/login",
+            json={"username": "admin", "password": _KNOWN_PW},
+        )
+        assert r1.status_code == 200
+        assert r1.json()["requires_totp"] is True
+
+        # Step 2: TOTP code.
+        r2 = client.post(
+            "/auth/login/totp",
+            json={"code": _current_code(secret)},
+        )
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["ok"] is True
+
+        # Login complete — but epoch must NOT have moved. The
+        # session cookie that landed in r2 carries the
+        # current-at-mint epoch; bumping after-mint would
+        # invalidate it on the very next authenticated request.
+        after = user_store.get_session_epoch(1)
+        assert after == before, (
+            f"pt-130 boundary: /auth/login/totp must NOT bump "
+            f"session_epoch — that would self-DoS the freshly-"
+            f"minted session cookie. Before={before}, "
+            f"after={after}."
+        )

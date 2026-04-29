@@ -275,7 +275,9 @@ class TestPTv3SeedExtension:
                 "resolved", "fix/phase-4-readiness-security-cluster",
             ),
             "pt-102": ("open", None),
-            "pt-130": ("open", None),
+            "pt-130": (
+                "resolved", "fix/pt-130-totp-bumps-epoch",
+            ),
             "pt-150": (
                 "resolved", "fix/pt-150-totp-admin-reset-wrapper",
             ),
