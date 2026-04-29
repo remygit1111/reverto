@@ -34,7 +34,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=96">
+<link rel="stylesheet" href="/static/style.css?v=97">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
@@ -192,8 +192,14 @@
      closed.
 -->
 <div id="totp-enroll-modal" class="modal-overlay">
-  <div class="modal-card">
-    <div class="modal-title">Enable Two-Factor Authentication</div>
+  <!-- rhav2-004: aria-modal + role="dialog" + aria-labelledby make
+       this a proper a11y dialog. The global Escape handler at
+       app.js:312-329 treats data-action="close" as a close-target,
+       so adding it to the Cancel button (rhav2-003 + rhav2-005)
+       routes Esc through _closeTotpEnrollModal which clears the
+       stale secret + QR. -->
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="totp-enroll-title">
+    <div class="modal-title" id="totp-enroll-title">Enable Two-Factor Authentication</div>
     <ol class="totp-steps">
       <li>Install an authenticator app (Google Authenticator, Authy, 1Password, Aegis, etc.).</li>
       <li>Scan the QR code below in your authenticator app.</li>
@@ -206,7 +212,20 @@
 
     <details class="totp-manual-entry">
       <summary>Can't scan? Enter the secret manually</summary>
-      <code id="totp-secret-display" class="totp-secret-text"></code>
+      <!-- rhav2-007: copy-button with clipboard API + selection
+           fallback. user-select:all on the <code> still works for
+           keyboard-copy users. -->
+      <div class="totp-manual-secret-row">
+        <code id="totp-secret-display" class="totp-secret-text"></code>
+        <button
+          type="button"
+          id="totp-secret-copy-btn"
+          class="hbtn hbtn-theme btn-small"
+          aria-label="Copy TOTP secret to clipboard">
+          Copy
+        </button>
+      </div>
+      <span id="totp-secret-copy-feedback" class="copy-feedback hidden">Copied!</span>
     </details>
 
     <form id="totp-verify-form">
@@ -223,7 +242,7 @@
         required>
       <div id="totp-verify-error" class="login-error hidden"></div>
       <div class="modal-actions">
-        <button type="button" id="totp-enroll-cancel" class="hbtn hbtn-theme">Cancel</button>
+        <button type="button" id="totp-enroll-cancel" class="hbtn hbtn-theme" data-action="close">Cancel</button>
         <button type="submit" id="totp-verify-btn" class="hbtn hbtn-theme btn-accent">Verify and enable</button>
       </div>
     </form>
@@ -235,8 +254,12 @@
      either alone is insufficient to remove the second factor.
 -->
 <div id="totp-disable-modal" class="modal-overlay">
-  <div class="modal-card">
-    <div class="modal-title">Disable Two-Factor Authentication</div>
+  <!-- rhav2-004: aria-modal + role="dialog" + aria-labelledby.
+       rhav2-003: data-action="close" on Cancel routes Esc through
+       _closeTotpDisableModal so the typed password is cleared from
+       the DOM rather than persisting under display:none. -->
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="totp-disable-title">
+    <div class="modal-title" id="totp-disable-title">Disable Two-Factor Authentication</div>
     <div class="totp-warning">
       Disabling TOTP removes the extra security layer from your
       account. Only your password will protect future logins.
@@ -265,7 +288,7 @@
 
       <div id="totp-disable-error" class="login-error hidden"></div>
       <div class="modal-actions">
-        <button type="button" id="totp-disable-cancel" class="hbtn hbtn-theme">Cancel</button>
+        <button type="button" id="totp-disable-cancel" class="hbtn hbtn-theme" data-action="close">Cancel</button>
         <button type="submit" id="totp-disable-btn-confirm" class="hbtn hbtn-theme btn-danger">Disable TOTP</button>
       </div>
     </form>
@@ -1873,6 +1896,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=217"></script>
+<script src="/static/app.js?v=218"></script>
 </body>
 </html>

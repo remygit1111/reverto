@@ -2935,65 +2935,84 @@ findings:
 - finding_id: rhav2-003
   source_doc: reverto-holistic-audit-v2
   severity: LOW
-  status: open
+  status: resolved
   title: "TOTP-disable modal Esc-handler leaves typed password in DOM"
   description: |
     Esc-handler routes to generic fallback (classList.remove('show'))
     without calling the typed-cleanup helpers. Typed password in
-    disable-modal persists in DOM after dismissal.
-  resolution_ref: null
+    disable-modal persists in DOM after dismissal. Resolved by
+    adding data-action="close" to #totp-disable-cancel so the
+    global Esc handler routes through _closeTotpDisableModal which
+    clears both the password and code inputs.
+  resolution_ref: fix/totp-modal-hygiene-cluster
   notes: "Security area. Cross-references RHA-v1 rha-007 (no focus
-    trap). Fix: data-action='close' on cancel buttons. Bundles with
-    rhav2-005."
+    trap). Fix landed alongside rhav2-005 (same data-action route)."
 
 - finding_id: rhav2-004
   source_doc: reverto-holistic-audit-v2
   severity: LOW
-  status: open
+  status: resolved
   title: "TOTP modals miss aria-modal / role=dialog / aria-labelledby"
   description: |
-    All 6 modals lack ARIA dialog attributes. Screen-reader users get
-    incorrect modal-state announcements; keyboard navigation may
-    escape modal context.
-  resolution_ref: null
-  notes: "UX area. Fix: aria-modal sweep across 6 modals. ~30 min."
+    Modals lacked ARIA dialog attributes. Screen-reader users got
+    incorrect modal-state announcements. Resolved on the two TOTP
+    modals (#totp-enroll-modal, #totp-disable-modal); the four
+    other production modals (api-key, profile, settings, finding-
+    edit, changelog-edit) keep the pre-existing gap and remain
+    out-of-scope for this fix.
+  resolution_ref: fix/totp-modal-hygiene-cluster
+  notes: "UX area. Scope-limited to the two TOTP modals to avoid
+    a cross-modal aria-sweep; the broader sweep stays as future
+    accessibility work referenced from RHA-v1 rha-007."
 
 - finding_id: rhav2-005
   source_doc: reverto-holistic-audit-v2
   severity: LOW
-  status: open
+  status: resolved
   title: "Stale TOTP secret + QR persists in DOM after Escape"
   description: |
     After dismissing TOTP enrollment modal via Escape, the secret
-    string + QR-code SVG remain in DOM. Subsequent screen-shares or
-    DevTools-inspections leak data that should be ephemeral.
-  resolution_ref: null
-  notes: "UX area. Bundles with rhav2-003 fix (TOTP modal cleanup)."
+    string + QR-code SVG remained in DOM. Resolved by adding
+    data-action="close" to #totp-enroll-cancel so the global Esc
+    handler routes through _closeTotpEnrollModal which clears
+    qr_svg innerHTML + secret-display textContent + code input +
+    error message.
+  resolution_ref: fix/totp-modal-hygiene-cluster
+  notes: "UX area. Bundled with rhav2-003 fix (same data-action
+    route)."
 
 - finding_id: rhav2-006
   source_doc: reverto-holistic-audit-v2
   severity: LOW
-  status: open
+  status: resolved
   title: "_startTotpEnrollment not double-click-protected"
   description: |
-    Enrollment button can be clicked multiple times before first
-    response arrives, generating multiple pending-state cookies.
-    Last-write-wins behavior, but minor confusion for user.
-  resolution_ref: null
-  notes: "UX area. Fix: button-disable during in-flight request.
-    ~5 min."
+    Enrollment button could be clicked multiple times before the
+    first response arrived, generating multiple pending-state
+    cookies on the server (last-write-wins). Resolved with
+    btn.disabled=true before the fetch + restore in finally so a
+    thrown error doesn't leave the button permanently disabled.
+    Button text swap to "Setting up…" gives the click-feedback
+    that mitigates rhav2-009 as a side effect.
+  resolution_ref: fix/totp-modal-hygiene-cluster
+  notes: "UX area. Mitigates rhav2-009 (no-loading-state) as
+    by-product of the button-text swap."
 
 - finding_id: rhav2-007
   source_doc: reverto-holistic-audit-v2
   severity: LOW
-  status: open
+  status: resolved
   title: "Manual-entry TOTP secret has no copy-button"
   description: |
-    Users who can't scan QR code must manually select + copy 32-char
-    base32 secret. UX-friction; clipboard-copy button would help.
-  resolution_ref: null
-  notes: "UX area. Fix: copy-button next to manual-entry secret.
-    ~5 min."
+    Users who couldn't scan QR had to manually select + copy a
+    32-char base32 secret. Resolved with a Copy button next to
+    the secret-display. navigator.clipboard.writeText for browsers
+    with permission; document.createRange selection-fallback for
+    browsers without clipboard permission (HTTP, missing user
+    gesture). 2-second feedback flash on the copy-feedback span.
+  resolution_ref: fix/totp-modal-hygiene-cluster
+  notes: "UX area. Fallback ensures the flow completes even on
+    permission denial — user gets 'Selected — press Ctrl+C' hint."
 
 - finding_id: rhav2-008
   source_doc: reverto-holistic-audit-v2
@@ -3009,14 +3028,16 @@ findings:
 - finding_id: rhav2-009
   source_doc: reverto-holistic-audit-v2
   severity: INFO
-  status: accepted
+  status: resolved
   title: "No loading-state on /auth/totp/setup request"
   description: |
-    Enrollment-button click triggers backend request without visible
-    loading-state. Mitigated once rhav2-006 (double-click-protection)
-    is fixed.
-  resolution_ref: null
-  notes: "UX area. ACCEPTED — mitigated by rhav2-006 fix."
+    Enrollment-button click triggered the backend request with no
+    visible loading-state. Mitigated as a side-effect of the
+    rhav2-006 fix: btn.textContent = 'Setting up…' during the
+    in-flight fetch gives users immediate "click registered"
+    feedback. Restored to original text in finally.
+  resolution_ref: fix/totp-modal-hygiene-cluster
+  notes: "UX area. Resolved by rhav2-006 button-text swap."
 
 - finding_id: rhav2-010
   source_doc: reverto-holistic-audit-v2
