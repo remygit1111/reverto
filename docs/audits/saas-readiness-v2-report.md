@@ -342,6 +342,8 @@ The breaker should only trigger on transient class errors.
 
 **Cross-reference.** r1-057 (circuit breaker wiring).
 
+**STATUS (2026-04-29 / `fix/breaker-permanent-vs-transient`): RESOLVED.** Resolved together with PT-v1 pt-038 + PT-v2 pt-055 — three audit-records, one underlying issue. The remediation took a slightly different shape than the suggested filter-list approach: rather than guard `record_failure()` itself with a narrow `isinstance` filter (which would have made the breaker primitive ccxt-aware), the breaker grew a `record_failure(*, permanent=bool)` keyword and a non-self-healing PERMANENT_OPEN state, while the call-site half lives in `exchanges/public_exchange.py::_is_permanent_error` (the only place that owns the ccxt → permanent/transient mapping). Permanent errors latch the breaker until operator-action (`reset()` or service restart); a one-shot Telegram alert via the `on_permanent_open` callback notifies the operator on first trip without spamming on retries. Pinned by 17 regression tests in `tests/test_circuit_breaker.py`.
+
 #### r2-010 — Exchange API-key format not validated at credential save (LOW)
 
 **What.** `save_keys()` at [core/credentials.py](core/credentials.py) accepts any non-empty strings for api_key + api_secret. Bitget and Kraken clients surface format errors only on first use, which is typically a bot-start event tens of seconds later — operator's save-to-error feedback loop is slow.

@@ -1444,12 +1444,12 @@ findings:
 - finding_id: r2-005
   source_doc: saas-readiness-v2-report
   severity: MEDIUM
-  status: open
+  status: resolved
   title: Circuit breaker treats permanent and transient errors identically
   description: |
     CircuitBreaker.record_failure increments on any exception. Permanent error trips breaker like transient timeout, blanket-blocking traffic for 60s.
-  resolution_ref: null
-  notes: ""
+  resolution_ref: fix/breaker-permanent-vs-transient
+  notes: "Third-audit recording of the pt-038/pt-055 issue. Resolved together with pt-038 + pt-055 in fix/breaker-permanent-vs-transient (2026-04-29). CircuitBreaker now supports permanent vs transient classification via record_failure(permanent=bool); see pt-038 notes for full details."
 
 - finding_id: r2-006
   source_doc: saas-readiness-v2-report
@@ -2190,11 +2190,12 @@ findings:
 - finding_id: pt-038
   source_doc: production-pentest-v1
   severity: MEDIUM
-  status: in_progress
+  status: resolved
   title: Circuit-breaker treats permanent and transient errors identically
   description: |
     record_failure increments on any exception. Pair-allowlist gates web routes but internal _bitget_client unprotected.
-  resolution_ref: null
+  resolution_ref: fix/breaker-permanent-vs-transient
+  notes: "Resolved together with pt-055 + r2-005 in fix/breaker-permanent-vs-transient (2026-04-29). CircuitBreaker now supports permanent vs transient classification via record_failure(permanent=bool); permanent-open state is non-self-healing (survives cooldown elapse + record_success) and triggers Telegram alert via on_permanent_open callback hook. Operator clears via reset() or service restart. Caller-side classifier _is_permanent_error in exchanges/public_exchange.py classifies ccxt.AuthenticationError (incl. PermissionDenied + AccountSuspended) and ccxt.BadSymbol as permanent; everything else stays transient (conservative bias). 17 regression tests in tests/test_circuit_breaker.py."
   notes: ""
 
 - finding_id: pt-039
@@ -2362,12 +2363,12 @@ findings:
 - finding_id: pt-055
   source_doc: production-pentest-v2
   severity: MEDIUM
-  status: in_progress
+  status: resolved
   title: Breaker doesn't discriminate transient/permanent errors
   description: |
     circuit_breaker.py increments on any exception. Pair allowlist gates web routes but internal direct calls might still trip on permanent errors.
-  resolution_ref: null
-  notes: "Carry-forward from pt-038"
+  resolution_ref: fix/breaker-permanent-vs-transient
+  notes: "Carry-forward from pt-038. Resolved together with pt-038 + r2-005 in fix/breaker-permanent-vs-transient (2026-04-29). CircuitBreaker now supports permanent vs transient classification via record_failure(permanent=bool); see pt-038 notes for full details."
 
 - finding_id: pt-056
   source_doc: production-pentest-v2
