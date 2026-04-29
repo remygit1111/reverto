@@ -10,6 +10,115 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Audit pt-038 / pt-055 / r2-005: ccxt exception classes that are
+# NOT self-healing — a verlopen API key, a revoked permission, an
+# account suspended by the exchange, or a typo'd pair name will
+# never resolve on its own. Treating these as transient (the pre-
+# fix behaviour) ran them through the threshold-based ``5 fails →
+# 60s cooldown → probe → fail → reopen`` cycle indefinitely; the
+# wrong remedy for a non-self-healing condition.
+#
+# Conservative bias: when in doubt, classify as transient. A
+# false-transient leads to noisy retries (recoverable); a false-
+# permanent pages an operator at 03:00 for nothing (annoying and
+# erodes trust in the alert).
+#
+# Hierarchy notes (verified against the installed ccxt):
+#   * AuthenticationError → ExchangeError. PermissionDenied and
+#     AccountSuspended are subclasses of AuthenticationError, so
+#     ``isinstance(exc, AuthenticationError)`` would catch all
+#     three; listing them explicitly here is documentation-as-
+#     code so a future reader sees the full set.
+#   * BadSymbol → BadRequest → ExchangeError. Pair-typo class.
+#   * NetworkError, RateLimitExceeded, OnMaintenance,
+#     DDoSProtection, RequestTimeout all live under NetworkError
+#     and stay TRANSIENT — the network can come back, the rate
+#     window expires, maintenance ends.
+_PERMANENT_CCXT_ERRORS: tuple[type[Exception], ...] = (
+    ccxt.AuthenticationError,
+    ccxt.PermissionDenied,
+    ccxt.AccountSuspended,
+    ccxt.BadSymbol,
+)
+
+
+def _is_permanent_error(exc: BaseException) -> bool:
+    """Classify an exception as permanent (operator-action required)
+    vs transient (self-healing).
+
+    Returns True for ``ccxt.AuthenticationError`` and its
+    subclasses + ``ccxt.BadSymbol``; False for everything else,
+    including non-ccxt exceptions (programming bugs,
+    KeyboardInterrupt, etc.). The conservative-bias default
+    means a bug in our own code never permanently trips the
+    breaker.
+
+    KRITIEK: this is the single owner of the permanent / transient
+    mapping. If a future ccxt version adds new auth-related
+    exception classes, update ``_PERMANENT_CCXT_ERRORS``; the
+    breaker primitive itself stays domain-agnostic.
+    """
+    return isinstance(exc, _PERMANENT_CCXT_ERRORS)
+
+
+def _make_permanent_open_callback(exchange_name: str):
+    """Build a one-shot callback that fires a Telegram alert when
+    the breaker for ``exchange_name`` first transitions into
+    PERMANENT_OPEN.
+
+    The callback is idempotent at the breaker layer (see
+    ``CircuitBreaker._enter_permanent_open``) — a verlopen API
+    key triggers ONE Telegram message per service lifetime, not
+    one per failed retry. Operator clears via ``breaker.reset()``
+    or by restarting the service after fixing the root cause.
+
+    The notifier import is lazy (inside the closure) so a
+    circular-import in ``notifications.telegram`` cannot break
+    module-load on this exchange wrapper. Notifier instantiation
+    can also raise (missing ``TELEGRAM_BOT_TOKEN`` /
+    ``TELEGRAM_CHAT_ID`` env-vars) — that path swallows the
+    ValueError and logs at INFO so a dev-mode deploy without
+    Telegram credentials does not surface a misleading
+    "exception" line.
+    """
+    def _callback(breaker_name: str, reason: str) -> None:
+        try:
+            from notifications.telegram import TelegramNotifier
+            try:
+                # No notify_on filter — circuit-breaker permanent
+                # open is operational severity, not bot-config-
+                # event-filterable.
+                notifier = TelegramNotifier()
+            except ValueError:
+                logger.info(
+                    "CircuitBreaker '%s' permanent-open: Telegram "
+                    "credentials not configured; skipping alert. "
+                    "Reason: %s",
+                    breaker_name, reason,
+                )
+                return
+            notifier.send(
+                "⚠️ <b>Circuit breaker PERMANENT OPEN</b>\n"
+                f"Exchange: {exchange_name}\n"
+                f"Breaker:  {breaker_name}\n"
+                f"Reason:   {reason}\n"
+                f"Action:   investigate API credentials or pair "
+                "config; restart the service or call "
+                "<code>breaker.reset()</code> to clear."
+            )
+        except Exception:  # noqa: BLE001
+            # Defence-in-depth: the CircuitBreaker class also
+            # wraps the callback in try/except. A notifier crash
+            # here MUST NOT propagate up the breaker call-stack
+            # and accidentally re-raise into the chart-route
+            # error path.
+            logger.exception(
+                "Failed to send permanent-open notification for %s",
+                exchange_name,
+            )
+    return _callback
+
+
 # Audit r1-057: one breaker per upstream exchange so a Bitget
 # outage doesn't trip the Kraken path too. Module-scope so every
 # PublicExchange instance for the same exchange name shares the
@@ -25,6 +134,13 @@ def _breaker_for(exchange_name: str) -> CircuitBreaker:
             name=f"public-{exchange_name}",
             failure_threshold=5,
             cooldown_seconds=60.0,
+            # Audit pt-038 / pt-055 / r2-005: notifier callback
+            # for permanent-open transitions. Lazy notifier
+            # construction inside the callback closure keeps
+            # module import cheap + dev-mode-friendly.
+            on_permanent_open=_make_permanent_open_callback(
+                exchange_name,
+            ),
         )
         _BREAKERS[exchange_name] = b
     return b
@@ -94,8 +210,14 @@ class PublicExchange(BaseExchange):
             )
         try:
             data = self.client.fetch_ticker(self._symbol(symbol))
-        except Exception:
-            breaker.record_failure()
+        except Exception as e:
+            # Audit pt-038 / pt-055 / r2-005: classify before
+            # reporting. Permanent errors (auth, bad-symbol) trip
+            # the breaker into PERMANENT_OPEN immediately, bypassing
+            # the threshold + cooldown auto-recovery. Non-ccxt
+            # exceptions classify as transient by conservative
+            # default — a bug in our code never trips permanent.
+            breaker.record_failure(permanent=_is_permanent_error(e))
             raise
         breaker.record_success()
 
@@ -133,8 +255,10 @@ class PublicExchange(BaseExchange):
             result = self.client.fetch_ohlcv(
                 self._symbol(symbol), timeframe, limit=limit,
             )
-        except Exception:
-            breaker.record_failure()
+        except Exception as e:
+            # Audit pt-038 / pt-055 / r2-005: classify before
+            # reporting. Same contract as get_ticker above.
+            breaker.record_failure(permanent=_is_permanent_error(e))
             raise
         breaker.record_success()
         return result
