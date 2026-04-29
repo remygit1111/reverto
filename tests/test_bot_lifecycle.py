@@ -579,3 +579,112 @@ def test_restart_budget_per_bot_isolated(_restart_history_clean, monkeypatch):
     # And the per-bot keying really did partition the dict.
     assert (1, "alpha") in webapp._BOT_RESTART_HISTORY
     assert (1, "beta") in webapp._BOT_RESTART_HISTORY
+
+
+# ── rha-003: _BOT_RESTART_HISTORY explicit growth ceiling ─────────────────
+
+
+class TestBotRestartHistoryCeiling:
+    """rha-003 regression — ``_record_bot_restart`` enforces a per-bot
+    absolute size cap on top of the implicit window-prune cap that
+    ``_attempt_bot_auto_restart`` already applies.
+
+    The window-prune (``RESTART_MAX_ATTEMPTS=3`` in
+    ``RESTART_WINDOW_SECONDS=300``) bounds the steady-state size, but
+    a future caller that bypasses the prune step would let the list
+    grow unbounded. The explicit ceiling is defence-in-depth so any
+    direct mutation of ``_BOT_RESTART_HISTORY`` via the canonical
+    helper is bounded regardless of caller discipline.
+    """
+
+    def test_record_appends_a_single_entry(self, _restart_history_clean):
+        from web import app as webapp
+
+        history = webapp._record_bot_restart(1, "alpha", 100.0)
+        assert history == [100.0]
+        # And the dict slot is populated.
+        assert webapp._BOT_RESTART_HISTORY[(1, "alpha")] == [100.0]
+
+    def test_record_grows_to_ceiling(self, _restart_history_clean):
+        """Below the ceiling the list grows naturally."""
+        from web import app as webapp
+
+        cap = webapp._BOT_RESTART_HISTORY_MAX_ENTRIES_PER_BOT
+        for i in range(cap):
+            webapp._record_bot_restart(1, "alpha", float(i))
+
+        history = webapp._BOT_RESTART_HISTORY[(1, "alpha")]
+        assert len(history) == cap
+        assert history[0] == 0.0
+        assert history[-1] == float(cap - 1)
+
+    def test_record_truncates_oldest_above_ceiling(self, _restart_history_clean):
+        """Past the cap, oldest entries are dropped — not newest. The
+        retention semantic matches a ringbuffer-of-recent-history."""
+        from web import app as webapp
+
+        cap = webapp._BOT_RESTART_HISTORY_MAX_ENTRIES_PER_BOT
+        # Record 1.5x the cap.
+        total = cap + cap // 2
+        for i in range(total):
+            webapp._record_bot_restart(1, "alpha", float(i))
+
+        history = webapp._BOT_RESTART_HISTORY[(1, "alpha")]
+        # Length capped at the ceiling.
+        assert len(history) == cap
+        # Newest entry preserved (index total-1 in the original sequence).
+        assert history[-1] == float(total - 1)
+        # Oldest entries beyond cap dropped (indices 0 .. (total-cap)-1).
+        # First retained entry is the (total-cap)th original.
+        assert history[0] == float(total - cap)
+
+    def test_record_per_bot_isolation(self, _restart_history_clean):
+        """Different (user_id, slug) keys keep independent lists; one
+        bot's overflow does not push another bot's history."""
+        from web import app as webapp
+
+        webapp._record_bot_restart(1, "alpha", 100.0)
+        webapp._record_bot_restart(1, "beta", 200.0)
+        webapp._record_bot_restart(2, "alpha", 300.0)
+
+        assert webapp._BOT_RESTART_HISTORY[(1, "alpha")] == [100.0]
+        assert webapp._BOT_RESTART_HISTORY[(1, "beta")] == [200.0]
+        assert webapp._BOT_RESTART_HISTORY[(2, "alpha")] == [300.0]
+
+    def test_record_preserves_list_identity_across_truncate(
+        self, _restart_history_clean,
+    ):
+        """In-place truncation (``del history[:-cap]``) preserves the
+        list identity so any caller holding a reference still sees
+        the truncated state. Pre-fix a rebind via slice would have
+        left the dict's stored list dangling at a different identity."""
+        from web import app as webapp
+
+        first = webapp._record_bot_restart(1, "alpha", 0.0)
+        cap = webapp._BOT_RESTART_HISTORY_MAX_ENTRIES_PER_BOT
+        for i in range(1, cap + 5):
+            webapp._record_bot_restart(1, "alpha", float(i))
+
+        # The list returned by the FIRST call must be the same object
+        # the dict stores after the truncate.
+        assert first is webapp._BOT_RESTART_HISTORY[(1, "alpha")]
+
+
+# ── rha-014: portal-side docstring counterpart ────────────────────────────
+
+
+def test_persist_silent_exit_reconcile_docstring_references_rha014():
+    """rha-014: the portal-side post-mortem reconcile must carry the
+    finding marker + name its engine-side counterpart so the
+    deliberate split survives future cleanup passes. The companion
+    test for ``StateIO.mark_stopped`` lives in ``test_state_io.py``."""
+    from web.app import BotInfo
+
+    doc = BotInfo._persist_silent_exit_reconcile.__doc__ or ""
+    assert "rha-014" in doc, (
+        "rha-014: _persist_silent_exit_reconcile docstring must "
+        "reference the finding for symmetry with mark_stopped."
+    )
+    assert "mark_stopped" in doc, (
+        "rha-014: docstring must name the engine-side counterpart."
+    )

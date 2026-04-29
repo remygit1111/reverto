@@ -132,6 +132,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 
 **Remediation.** Add a range check (`if not isinstance(on_disk, int) or on_disk < 1: return True`). Optional; current behaviour is safe by accident.
 
+**STATUS (2026-04-29 / `fix/rha-v1-info-cleanups`): RESOLVED at the higher-impact DB-schema surface.** A new `_read_schema_version` helper in `core/database.py` validates `PRAGMA user_version` reads with three layers of defence — type-check, range-check (`[0, 999]`), and forward-compatibility (`raw > SCHEMA_VERSION` rejected). Failures raise a new `SchemaVersionError` (subclass of `DatabaseMigrationError` so existing handlers keep working). The engine-side `_bot_needs_restart` site this finding originally flagged stays "safe by accident" — Pydantic's `Optional[int]` coercion on `BotStateModel` already filters non-int values, and the existing `on_disk != current_version` check already restarts on out-of-range integers — but the deeper fix moved to the DB layer because a corrupted PRAGMA value previously slipped through to the destructive-migration branch via the `or 0` fallback. Test pin: `tests/test_database.py::TestSchemaVersionValidation` (6 tests).
+
 #### rha-003 — `_BOT_RESTART_HISTORY` has no explicit growth ceiling (INFO)
 
 **What.** The in-memory restart-history dict in `web/app.py:175` is keyed by `(user_id, slug)` and never has its keys actively pruned (timestamps within each value list *are* pruned per call).
@@ -139,6 +141,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 **Impact.** Bounded by the number of registered bots, since `_attempt_bot_auto_restart` only fires from `_reconcile_bot_states_on_startup` walking `registry.all()`. Phase-1 single-operator: ≤10 bots. Phase-4+ multi-tenant: bounded by total bot-count which itself is rate-limited by `/api/bots` POST limits. Not a DoS vector.
 
 **Remediation.** When budget is fully pruned to empty, delete the key. Trivial cleanup, not urgent.
+
+**STATUS (2026-04-29 / `fix/rha-v1-info-cleanups`): RESOLVED.** New `_record_bot_restart(user_id, slug, timestamp)` helper in `web/app.py` is the single mutator for `_BOT_RESTART_HISTORY` and enforces an explicit per-bot ceiling (`_BOT_RESTART_HISTORY_MAX_ENTRIES_PER_BOT = 100`) via in-place prefix-truncation (`del history[:-cap]`). The implicit window-prune in `_attempt_bot_auto_restart` (RESTART_MAX_ATTEMPTS × RESTART_WINDOW_SECONDS) keeps steady-state usage well under the cap; the cap is defence-in-depth against a future caller that bypasses the prune step. In-place truncation preserves list identity so any caller holding a reference still sees the truncated state. Test pin: `tests/test_bot_lifecycle.py::TestBotRestartHistoryCeiling` (5 tests).
 
 ---
 
@@ -233,6 +237,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 
 **Remediation.** Either (a) add a code comment in `app.js` next to the `'error'` entry referencing the future extension hook, or (b) write a stub-state injection test that covers the `'error'` branch so the behaviour is at least pinned. Option (a) is cheaper and equivalent in correctness.
 
+**STATUS (2026-04-29 / `fix/rha-v1-info-cleanups`): RESOLVED via remediation (a) + (b) combined.** The `error` entry in `_BOT_BUTTON_STATE_RULES` is **already populated** with concrete `{disabled, title}` mappings for all three buttons (`start`, `stop`, `restart`) — landed during a Phase B PR before this finding was triaged. The comment block above the dict now carries an explicit `rha-013 resolution:` note explaining the forward-compat rationale + cross-reference to the regression test. Pinned by `tests/test_frontend_assets.py::TestBotButtonStateRules` (3 tests: error-state structure, running/stopped symmetry, comment marker presence) so a future "clean up unreachable code" sweep cannot quietly empty the entry back to `{}` or strip the rationale comment.
+
 ---
 
 ## Part 5: Code Hygiene Findings
@@ -309,6 +315,8 @@ No findings. Searched for `TODO:` / `FIXME:` / `HACK:` / `XXX:` / `temporary` / 
 **Why INFO.** The reconcile path adds the stopped_reason metadata that `mark_stopped` doesn't, so they aren't strictly redundant. But they share enough that a future change to the on-disk schema would need both updated.
 
 **Remediation.** Consolidate by extending `StateIO.mark_stopped(reason: Optional[str] = None)` and have the portal-side reconcile call it.
+
+**STATUS (2026-04-29 / `fix/rha-v1-info-cleanups`): RESOLVED via Scenario B (document, do not consolidate).** Both functions now carry rha-014 cross-reference docstrings explaining the deliberate split: `StateIO.mark_stopped` runs **engine-side** on graceful shutdown (atexit / SIGTERM) and leaves `stopped_at` / `stopped_reason` as `None`; `BotInfo._persist_silent_exit_reconcile` runs **portal-side** post-mortem when the bot died without its atexit hook (cgroup SIGKILL, OOM, hung heartbeat) and stamps both fields with the failure mode (`silent_exit` / `heartbeat_stale`). Consolidating them — even with an `Optional[reason]` parameter — would either lose the "graceful vs forced" distinction operators rely on for incident triage, or fabricate a `stopped_reason` on graceful shutdowns (poisoning audit-log greps). Pin tests: `tests/test_state_io.py::TestMarkStoppedVsSilentExitReconcile` (docstring marker + contract guard that mark_stopped does NOT stamp `stopped_at`) and `tests/test_bot_lifecycle.py::test_persist_silent_exit_reconcile_docstring_references_rha014`.
 
 #### rha-015 — Dutch comment in `requirements-ml.txt` (INFO)
 

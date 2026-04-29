@@ -5482,6 +5482,14 @@ async function nbSubmit() {
 // signal lands ("crashed" / "preflight_failed") the JS just resolves
 // to this entry without further changes here.
 //
+// rha-013 resolution: the entry is intentionally pre-populated with
+// concrete {disabled, title} mappings (NOT an empty {} placeholder)
+// so the moment the backend starts emitting state="error" the UI
+// surfaces the right disabled-state + tooltips without a JS change.
+// Pinned by tests/test_frontend_assets.py::TestBotButtonStateRules
+// so a future "clean up unreachable code" sweep cannot silently
+// empty this dict back to a structural-only placeholder.
+//
 // 'unknown' is what we render before fetchDetail() lands, so a stale
 // state from the previously-open bot does not flash.
 const _BOT_BUTTON_STATE_RULES = {
