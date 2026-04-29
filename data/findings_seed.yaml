@@ -1454,12 +1454,13 @@ findings:
 - finding_id: r2-006
   source_doc: saas-readiness-v2-report
   severity: MEDIUM
-  status: in_progress
+  status: deferred
   title: No per-connection rate-limit on WebSocket throughput
   description: |
     WS handlers have no @limiter (slowapi does not cover WS). Authenticated attacker can open many WS connections. Single-operator means self-DoS unrealistic.
   resolution_ref: null
-  notes: ""
+  notes: |
+    Deferred to Phase 4 (2026-04-29). Auditor description acknowledges self-DoS unrealistic in single-operator context. Daadwerkelijke vector is per-user WS connection count, niet frame-throughput (broadcasters in web/app.py zijn outbound-only). Een minimale in-memory connection-cap zou multi-worker semantiek breken — zelfde architectuurfout als r1-026. Captured in docs/phase-4.md sectie 2.4 als Phase-4 prerequisite. Re-evaluate when Phase 4 multi-tenant scope opens or when uvicorn workers > 1 in deploy.
 
 - finding_id: r2-007
   source_doc: saas-readiness-v2-report
