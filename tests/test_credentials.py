@@ -32,19 +32,19 @@ class TestUserKey:
     def test_user_key_auto_created(self, tmp_store):
         key_path = paths.user_fernet_key_path(1)
         assert not key_path.exists()
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        credentials.save_keys("bitget", "ak", "sc", user_id=1, _skip_format_validation=True)
         assert key_path.exists()
         assert len(key_path.read_bytes()) > 0
 
     def test_user_key_reused_across_calls(self, tmp_store):
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        credentials.save_keys("bitget", "ak", "sc", user_id=1, _skip_format_validation=True)
         first = paths.user_fernet_key_path(1).read_bytes()
-        credentials.save_keys("kraken", "ak2", "sc2", user_id=1)
+        credentials.save_keys("kraken", "ak2", "sc2", user_id=1, _skip_format_validation=True)
         second = paths.user_fernet_key_path(1).read_bytes()
         assert first == second, "per-user key must not rotate between calls"
 
     def test_user_key_is_mode_0600(self, tmp_store):
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        credentials.save_keys("bitget", "ak", "sc", user_id=1, _skip_format_validation=True)
         key_path = paths.user_fernet_key_path(1)
         mode = key_path.stat().st_mode & 0o777
         assert mode == 0o600, f"key mode is {oct(mode)}, expected 0600"
@@ -52,7 +52,10 @@ class TestUserKey:
 
 class TestSaveAndGet:
     def test_roundtrip(self, tmp_store):
-        credentials.save_keys("bitget", "my-api-key", "my-secret", user_id=1)
+        credentials.save_keys(
+            "bitget", "my-api-key", "my-secret",
+            user_id=1, _skip_format_validation=True,
+        )
         got = credentials.get_keys("bitget", user_id=1)
         # Audit r1-012: get_keys returns a stable shape with
         # ``passphrase`` always present. An empty string signals
@@ -68,8 +71,8 @@ class TestSaveAndGet:
         assert credentials.get_keys("bitget", user_id=1) is None
 
     def test_multiple_exchanges(self, tmp_store):
-        credentials.save_keys("bitget", "b-key", "b-sec", user_id=1)
-        credentials.save_keys("kraken", "k-key", "k-sec", user_id=1)
+        credentials.save_keys("bitget", "b-key", "b-sec", user_id=1, _skip_format_validation=True)
+        credentials.save_keys("kraken", "k-key", "k-sec", user_id=1, _skip_format_validation=True)
         assert credentials.get_keys("bitget", user_id=1) == {
             "api_key": "b-key", "api_secret": "b-sec", "passphrase": "",
         }
@@ -80,6 +83,7 @@ class TestSaveAndGet:
     def test_ciphertext_is_actually_encrypted(self, tmp_store):
         credentials.save_keys(
             "bitget", "plain-text-key", "plain-text-secret", user_id=1,
+            _skip_format_validation=True,
         )
         enc_path = paths.exchange_creds_path(1, "bitget")
         raw = enc_path.read_bytes()
@@ -93,14 +97,14 @@ class TestHasKeys:
         assert credentials.has_keys("bitget", user_id=1) is False
 
     def test_true_after_save(self, tmp_store):
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        credentials.save_keys("bitget", "ak", "sc", user_id=1, _skip_format_validation=True)
         assert credentials.has_keys("bitget", user_id=1) is True
         assert credentials.has_keys("kraken", user_id=1) is False
 
 
 class TestDeleteKeys:
     def test_delete_existing(self, tmp_store):
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        credentials.save_keys("bitget", "ak", "sc", user_id=1, _skip_format_validation=True)
         assert credentials.delete_keys("bitget", user_id=1) is True
         assert credentials.get_keys("bitget", user_id=1) is None
         assert credentials.has_keys("bitget", user_id=1) is False
@@ -109,8 +113,8 @@ class TestDeleteKeys:
         assert credentials.delete_keys("bitget", user_id=1) is False
 
     def test_delete_leaves_other_entries(self, tmp_store):
-        credentials.save_keys("bitget", "b", "B", user_id=1)
-        credentials.save_keys("kraken", "k", "K", user_id=1)
+        credentials.save_keys("bitget", "b", "B", user_id=1, _skip_format_validation=True)
+        credentials.save_keys("kraken", "k", "K", user_id=1, _skip_format_validation=True)
         credentials.delete_keys("bitget", user_id=1)
         assert credentials.get_keys("bitget", user_id=1) is None
         assert credentials.get_keys("kraken", user_id=1) == {
@@ -123,23 +127,23 @@ class TestListExchanges:
         assert credentials.list_exchanges_with_keys(user_id=1) == []
 
     def test_after_save(self, tmp_store):
-        credentials.save_keys("kraken", "k", "K", user_id=1)
-        credentials.save_keys("bitget", "b", "B", user_id=1)
+        credentials.save_keys("kraken", "k", "K", user_id=1, _skip_format_validation=True)
+        credentials.save_keys("bitget", "b", "B", user_id=1, _skip_format_validation=True)
         # Sorted alphabetically — deterministic UI output.
         assert credentials.list_exchanges_with_keys(user_id=1) == [
             "bitget", "kraken",
         ]
 
     def test_after_delete(self, tmp_store):
-        credentials.save_keys("bitget", "b", "B", user_id=1)
-        credentials.save_keys("kraken", "k", "K", user_id=1)
+        credentials.save_keys("bitget", "b", "B", user_id=1, _skip_format_validation=True)
+        credentials.save_keys("kraken", "k", "K", user_id=1, _skip_format_validation=True)
         credentials.delete_keys("bitget", user_id=1)
         assert credentials.list_exchanges_with_keys(user_id=1) == ["kraken"]
 
 
 class TestDecryptFailure:
     def test_tampered_ciphertext_returns_none(self, tmp_store):
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        credentials.save_keys("bitget", "ak", "sc", user_id=1, _skip_format_validation=True)
         path = paths.exchange_creds_path(1, "bitget")
         # Flip the first byte to break the Fernet MAC.
         data = bytearray(path.read_bytes())
@@ -164,15 +168,15 @@ class TestPerUserIsolation:
     lookup for user 2 naturally misses user 1's blob."""
 
     def test_user_1_and_user_2_have_different_keys(self, tmp_store):
-        credentials.save_keys("bitget", "a", "b", user_id=1)
-        credentials.save_keys("bitget", "c", "d", user_id=2)
+        credentials.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
+        credentials.save_keys("bitget", "c", "d", user_id=2, _skip_format_validation=True)
         key1 = paths.user_fernet_key_path(1).read_bytes()
         key2 = paths.user_fernet_key_path(2).read_bytes()
         assert key1 != key2
 
     def test_get_keys_isolates_across_users(self, tmp_store):
-        credentials.save_keys("bitget", "u1-ak", "u1-sc", user_id=1)
-        credentials.save_keys("bitget", "u2-ak", "u2-sc", user_id=2)
+        credentials.save_keys("bitget", "u1-ak", "u1-sc", user_id=1, _skip_format_validation=True)
+        credentials.save_keys("bitget", "u2-ak", "u2-sc", user_id=2, _skip_format_validation=True)
 
         u1 = credentials.get_keys("bitget", user_id=1)
         u2 = credentials.get_keys("bitget", user_id=2)
@@ -180,8 +184,8 @@ class TestPerUserIsolation:
         assert u2 == {"api_key": "u2-ak", "api_secret": "u2-sc", "passphrase": ""}
 
     def test_list_exchanges_scoped_per_user(self, tmp_store):
-        credentials.save_keys("bitget", "a", "b", user_id=1)
-        credentials.save_keys("kraken", "c", "d", user_id=2)
+        credentials.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
+        credentials.save_keys("kraken", "c", "d", user_id=2, _skip_format_validation=True)
         assert credentials.list_exchanges_with_keys(user_id=1) == ["bitget"]
         assert credentials.list_exchanges_with_keys(user_id=2) == ["kraken"]
 
@@ -189,10 +193,13 @@ class TestPerUserIsolation:
         """Swap user 2's .enc to point at user 1's ciphertext, then try
         to read it with user 2's key. The decrypt must fail (different
         Fernet keys) and get_keys must return None rather than leak."""
-        credentials.save_keys("bitget", "secret-one", "secret-sec", user_id=1)
+        credentials.save_keys(
+            "bitget", "secret-one", "secret-sec",
+            user_id=1, _skip_format_validation=True,
+        )
         # Ensure user 2 has their own key on disk so get_keys under
         # user 2 doesn't generate a fresh one after we plant the blob.
-        credentials.save_keys("kraken", "x", "y", user_id=2)
+        credentials.save_keys("kraken", "x", "y", user_id=2, _skip_format_validation=True)
 
         u1_blob = paths.exchange_creds_path(1, "bitget").read_bytes()
         u2_path = paths.exchange_creds_path(2, "bitget")
@@ -258,7 +265,10 @@ class TestCredentialProviderInterface:
             def __init__(self):
                 self.calls: list[tuple] = []
 
-            def save_keys(self, exchange, api_key, api_secret, user_id, *, passphrase=""):
+            def save_keys(
+                self, exchange, api_key, api_secret, user_id,
+                *, passphrase="", _skip_format_validation=False,
+            ):
                 self.calls.append(
                     ("save_keys", exchange, user_id, passphrase),
                 )
@@ -297,7 +307,8 @@ class TestCredentialProviderInterface:
             credentials.set_default_provider(stub)
             credentials.save_keys(
                 "bitget", "k", "s", user_id=9, passphrase="pp",
-            )
+            _skip_format_validation=True,
+        )
             result = credentials.get_keys("bitget", user_id=9)
         finally:
             credentials.set_default_provider(original)

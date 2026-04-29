@@ -52,6 +52,66 @@ if [ ! -f "${BACKUP_DIR}/reverto.db" ]; then
 fi
 
 # ──────────────────────────────────────────────────────────────
+# Audit r2-011: schema-version compatibility check.
+#
+# The MANIFEST stamps "Schema version: <N>" at backup time
+# (backup.sh L158, audit r3-008). On restore, refuse if the
+# backup was taken from a NEWER code-version than this checkout
+# expects — schema migrations are additive but not all of them
+# are idempotent under downgrade, so silently restoring a
+# forward-version backup risks leaving the DB in a state the
+# running code does not understand.
+#
+# Older backups (taken by code that pre-dates the stamp) carry
+# no schema-version line; in that case we warn but do not block.
+# Operators have explicit confirmation prompt below to gate the
+# restore regardless.
+# ──────────────────────────────────────────────────────────────
+
+CURRENT_SCHEMA_VERSION="unknown"
+_RESTORE_PY=".venv/bin/python3"
+if [ ! -x "${_RESTORE_PY}" ]; then
+    _RESTORE_PY=$(command -v python3 || true)
+fi
+if [ -n "${_RESTORE_PY}" ] && [ -x "${_RESTORE_PY}" ]; then
+    CURRENT_SCHEMA_VERSION=$("${_RESTORE_PY}" -c \
+        "import sys; sys.path.insert(0, '.'); from core.database import SCHEMA_VERSION; print(SCHEMA_VERSION)" \
+        2>/dev/null || echo "unknown")
+fi
+
+BACKUP_SCHEMA_VERSION="unknown"
+if [ -f "${BACKUP_DIR}/MANIFEST.txt" ]; then
+    BACKUP_SCHEMA_VERSION=$(awk -F': ' \
+        '/^Schema version:/ {print $2; exit}' \
+        "${BACKUP_DIR}/MANIFEST.txt" 2>/dev/null || echo "unknown")
+fi
+
+if [ "${BACKUP_SCHEMA_VERSION}" = "unknown" ]; then
+    echo "WARNING: backup MANIFEST has no schema-version stamp."
+    echo "         (Pre-r3-008 backup; compatibility cannot be verified."
+    echo "         Proceeding under operator confirmation below.)"
+elif [ "${CURRENT_SCHEMA_VERSION}" = "unknown" ]; then
+    echo "WARNING: cannot read current schema version (no python3?)."
+    echo "         Skipping compatibility check; operator confirmation"
+    echo "         below is the only gate."
+elif [ "${BACKUP_SCHEMA_VERSION}" -gt "${CURRENT_SCHEMA_VERSION}" ] 2>/dev/null; then
+    echo "ERROR: backup schema version ${BACKUP_SCHEMA_VERSION} is" >&2
+    echo "       newer than the current code expects" >&2
+    echo "       (${CURRENT_SCHEMA_VERSION}). Refusing to restore." >&2
+    echo "" >&2
+    echo "       Roll forward the code (git pull) to a checkout that" >&2
+    echo "       knows schema v${BACKUP_SCHEMA_VERSION} before" >&2
+    echo "       restoring this backup." >&2
+    exit 1
+elif [ "${BACKUP_SCHEMA_VERSION}" -lt "${CURRENT_SCHEMA_VERSION}" ] 2>/dev/null; then
+    echo "NOTE: backup schema version ${BACKUP_SCHEMA_VERSION} is older"
+    echo "      than the current code (${CURRENT_SCHEMA_VERSION})."
+    echo "      Restore will succeed; init_db() will run any additive"
+    echo "      migrations between v${BACKUP_SCHEMA_VERSION} and"
+    echo "      v${CURRENT_SCHEMA_VERSION} on the next make start."
+fi
+
+# ──────────────────────────────────────────────────────────────
 # Safety: portal must be stopped. If the PID file names a live
 # process, refuse — restoring under a live portal would let the
 # engine commit a WAL frame on top of the restored DB and end

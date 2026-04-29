@@ -21,6 +21,7 @@ import asyncio
 import logging
 import time
 
+import ccxt
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 import web.app as webapp
@@ -159,6 +160,38 @@ async def api_ticker(
             raw = await asyncio.to_thread(
                 _bitget_client.fetch_ticker, normalized.replace("/", ""),
             )
+    except (ccxt.NetworkError, asyncio.TimeoutError):
+        # pd-009: transient class — DDoSProtection, RateLimitExceeded,
+        # ExchangeNotAvailable, OnMaintenance, RequestTimeout, plus
+        # asyncio's own timeout. Surface as 503 so the SPA's retry
+        # logic backs off instead of flagging a hard failure.
+        logger.warning(
+            "ticker fetch transient failure for pair=%s",
+            normalized, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Market data temporarily unavailable. Retry shortly.",
+        )
+    except ccxt.BadSymbol:
+        # pd-009: permanent — caller asked for a pair the exchange
+        # does not list. 400 makes the client failure visible.
+        logger.warning("ticker bad symbol pair=%s", normalized)
+        raise HTTPException(
+            status_code=400,
+            detail="Unknown trading pair.",
+        )
+    except ccxt.ExchangeError:
+        # pd-009: permanent exchange-side error (auth, malformed
+        # request, etc.). Stays at 502 — operator triages via
+        # logs, wire stays generic per audit r3-001.
+        logger.exception(
+            "ticker exchange error for pair=%s",
+            normalized,
+        )
+        raise HTTPException(
+            status_code=502, detail="ticker fetch failed",
+        )
     except Exception:
         # Audit r3-001: don't echo the ccxt exception detail. Mirrors
         # the pd-001 / r2-001 template — full trace via logger.exception
@@ -166,12 +199,15 @@ async def api_ticker(
         # can carry URL fragments, response-body snippets, or exchange-
         # internal codes; on a public domain those are unnecessary
         # fingerprinting surface.
+        # pd-009: catchall now reserved for genuinely unexpected
+        # exceptions (programming errors, missing dependency).
+        # logger.exception attaches the full traceback for postmortem.
         logger.exception(
-            "ticker fetch failed for pair=%s",
+            "ticker fetch unexpected failure for pair=%s",
             normalized,
         )
         raise HTTPException(
-            status_code=502, detail="ticker fetch failed",
+            status_code=500, detail="ticker fetch failed",
         )
 
     # ccxt's ticker dict has ``last``/``close`` for the mark price,
@@ -269,14 +305,41 @@ async def api_chart(
         raw = await asyncio.to_thread(
             client.get_ohlcv, normalized, timeframe, limit,
         )
-    except Exception:
+    except (ccxt.NetworkError, asyncio.TimeoutError):
+        # pd-009: transient — let the client retry.
+        logger.warning(
+            "chart ohlcv transient failure pair=%s tf=%s limit=%s",
+            normalized, timeframe, limit, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Market data temporarily unavailable. Retry shortly.",
+        )
+    except ccxt.BadSymbol:
+        # pd-009: caller asked for a pair the exchange doesn't list.
+        logger.warning(
+            "chart ohlcv bad symbol pair=%s tf=%s",
+            normalized, timeframe,
+        )
+        raise HTTPException(status_code=400, detail="Unknown trading pair.")
+    except ccxt.ExchangeError:
+        # pd-009: permanent exchange-side error.
         # Audit r3-001: scrub upstream exception detail from the wire.
         logger.exception(
-            "chart ohlcv fetch failed pair=%s tf=%s limit=%s",
+            "chart ohlcv exchange error pair=%s tf=%s limit=%s",
             normalized, timeframe, limit,
         )
         raise HTTPException(
             status_code=502, detail="Exchange unavailable",
+        )
+    except Exception:
+        # pd-009: catchall reserved for genuinely unexpected errors.
+        logger.exception(
+            "chart ohlcv unexpected failure pair=%s tf=%s limit=%s",
+            normalized, timeframe, limit,
+        )
+        raise HTTPException(
+            status_code=500, detail="Exchange unavailable",
         )
 
     payload = [
@@ -385,14 +448,40 @@ async def api_candles(
         raw = await webapp._fetch_ohlcv_range(
             client, normalized, timeframe, start_ms, end_ms,
         )
-    except Exception:
+    except (ccxt.NetworkError, asyncio.TimeoutError):
+        # pd-009: transient — let the client retry.
+        logger.warning(
+            "candles range transient failure pair=%s tf=%s span=%sms",
+            normalized, timeframe, end_ms - start_ms, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Market data temporarily unavailable. Retry shortly.",
+        )
+    except ccxt.BadSymbol:
+        logger.warning(
+            "candles range bad symbol pair=%s tf=%s",
+            normalized, timeframe,
+        )
+        raise HTTPException(status_code=400, detail="Unknown trading pair.")
+    except ccxt.ExchangeError:
+        # pd-009: permanent exchange-side error.
         # Audit r3-001: scrub upstream exception detail from the wire.
         logger.exception(
-            "candles range fetch failed pair=%s tf=%s span=%sms",
+            "candles range exchange error pair=%s tf=%s span=%sms",
             normalized, timeframe, end_ms - start_ms,
         )
         raise HTTPException(
             status_code=502, detail="Exchange unavailable",
+        )
+    except Exception:
+        # pd-009: catchall reserved for genuinely unexpected errors.
+        logger.exception(
+            "candles range unexpected failure pair=%s tf=%s span=%sms",
+            normalized, timeframe, end_ms - start_ms,
+        )
+        raise HTTPException(
+            status_code=500, detail="Exchange unavailable",
         )
 
     payload = [

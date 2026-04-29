@@ -267,6 +267,8 @@ except OSError:
 
 **Category.** MONITORING.
 
+**STATUS (2026-04-29 / `fix/validation-hygiene-cluster`): RESOLVED via design-intent documentation.** The asymmetry between `_SLUG_RE` (post-lowercase narrow charset) and `_BOT_SLUG_RE` (URL-path superset) is intentional, not drift — `slugify()` lowercases input first, so the narrow regex matches the post-lowercase result. Widening `_SLUG_RE` to match `_BOT_SLUG_RE` would change the on-disk filesystem layout for every mixed-case input. A new "pd-007 design note" comment block above the two regex declarations in `web/app.py` explains the lifecycle (sanitisation → URL validation) so a future "consistency" PR cannot quietly harmonise them. Pinned by `tests/test_validation_hygiene.py::TestSlugRegexDesignIntent` (4 tests covering the narrow-charset post-lowercase contract, the URL-path superset, the `slugify()` two-stage pipeline, and the design-note presence).
+
 #### pd-008 — Chart pair allowlist conservative (ACCEPTED)
 
 **What.** Hardcoded `{"BTC/USD", "BTC/USDT"}` ([web/app.py:2008](web/app.py#L2008)). Adding a new pair requires a code change + redeploy.
@@ -303,6 +305,8 @@ except Exception as e:
 Client response stays safe; operator visibility gets richer.
 
 **Category.** MONITORING.
+
+**STATUS (2026-04-29 / `fix/validation-hygiene-cluster`): RESOLVED.** The three upstream-fetch try-blocks in `web/routes/chart.py` (`/api/ticker`, `/api/chart`, `/api/candles`) now classify by ccxt exception class: `ccxt.NetworkError` / `asyncio.TimeoutError` → 503 + `logger.warning` (transient, retry-able); `ccxt.BadSymbol` → 400 + `logger.warning` (caller error, not exchange-side); `ccxt.ExchangeError` → 502 + `logger.exception` (permanent exchange-side, scrubbed wire detail per audit r3-001); other `Exception` → 500 + `logger.exception` (genuinely unexpected, full traceback for postmortem). The `/api/price` `except Exception` at line 98 stays as-is because its fallback-to-bot-state path is the deliberate UX contract — the wire detail there is a 503 only after the fallback fails. Pinned by `tests/test_validation_hygiene.py::TestChartRouteExceptionSplit` (5 tests).
 
 #### pd-010 — No stack-trace leaks; shape consistent (ACCEPTED)
 
