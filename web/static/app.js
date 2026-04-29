@@ -8780,6 +8780,20 @@ async function _renderTotpStatusInProfile() {
 }
 
 async function _startTotpEnrollment() {
+  // rhav2-006: double-click protection. The Enable button drives a
+  // POST that mints a fresh pending-secret cookie server-side; a
+  // re-entry mid-flight overwrites the first secret with a second
+  // and the rendered QR may not match the active pending state. The
+  // disabled+text swap also gives users immediate "click registered"
+  // feedback (mitigates rhav2-009 absence-of-loading-state).
+  const btn = document.getElementById('profile-totp-enable-btn');
+  if (btn && btn.disabled) return;
+  const prevBtnText = btn ? btn.textContent : null;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Setting up…';
+  }
+
   const errBox = document.getElementById('totp-verify-error');
   if (errBox) {
     errBox.classList.add('hidden');
@@ -8802,6 +8816,14 @@ async function _startTotpEnrollment() {
     console.warn('[reverto] /auth/totp/setup error:', e);
     alert('Network error during TOTP setup. Please try again.');
     return;
+  } finally {
+    // Reset the trigger button regardless of success/fail. If the
+    // button was removed mid-flight (route change, tab close) this
+    // is a no-op.
+    if (btn) {
+      btn.disabled = false;
+      if (prevBtnText !== null) btn.textContent = prevBtnText;
+    }
   }
 
   // Render the server-supplied SVG QR. innerHTML is safe here because
@@ -8819,6 +8841,49 @@ async function _startTotpEnrollment() {
   }
   document.getElementById('totp-enroll-modal').classList.add('show');
   if (codeInput) codeInput.focus();
+}
+
+// rhav2-007: copy-button for the manual-entry secret. 32-char base32
+// is awkward to type and ambiguous-to-read; a one-click copy
+// removes that friction. Falls back to range-selection when the
+// clipboard API is unavailable (HTTP, missing permission) so the
+// user can still finish the flow with Ctrl+C.
+async function _copyTotpSecret() {
+  const secretEl = document.getElementById('totp-secret-display');
+  const feedback = document.getElementById('totp-secret-copy-feedback');
+  if (!secretEl) return;
+  const secret = secretEl.textContent || '';
+  if (!secret) return;
+
+  const flashFeedback = (text) => {
+    if (!feedback) return;
+    feedback.textContent = text;
+    feedback.classList.remove('hidden');
+    setTimeout(() => {
+      if (feedback) feedback.classList.add('hidden');
+    }, 2000);
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(secret);
+      flashFeedback('Copied!');
+      return;
+    } catch (e) {
+      // Fall through to selection-fallback.
+    }
+  }
+  // Selection fallback for browsers without clipboard permission.
+  try {
+    const range = document.createRange();
+    range.selectNode(secretEl);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    flashFeedback('Selected — press Ctrl+C');
+  } catch (e) {
+    flashFeedback('Copy failed — select manually');
+  }
 }
 
 async function _handleTotpVerify(event) {
@@ -8965,6 +9030,10 @@ function _wireTotpUiHandlers() {
   if (verifyForm) verifyForm.addEventListener('submit', _handleTotpVerify);
   const disableForm = document.getElementById('totp-disable-form');
   if (disableForm) disableForm.addEventListener('submit', _handleTotpDisable);
+
+  // rhav2-007: copy-button for the manual-entry secret.
+  const copyBtn = document.getElementById('totp-secret-copy-btn');
+  if (copyBtn) copyBtn.addEventListener('click', _copyTotpSecret);
 }
 
 
