@@ -50,6 +50,7 @@ class TestSaveKeysWithPassphrase:
     def test_round_trip_preserves_passphrase(self, tmp_store):
         credentials.save_keys(
             "bitget", "api-k", "api-s", user_id=1, passphrase="my-pass",
+            _skip_format_validation=True,
         )
         got = credentials.get_keys("bitget", user_id=1)
         assert got == {
@@ -61,7 +62,7 @@ class TestSaveKeysWithPassphrase:
     def test_save_without_passphrase_returns_empty_field(self, tmp_store):
         # Kraken-style: no passphrase. Storage + readback must still
         # produce the stable three-key shape with passphrase = "".
-        credentials.save_keys("kraken", "k-k", "k-s", user_id=1)
+        credentials.save_keys("kraken", "k-k", "k-s", user_id=1, _skip_format_validation=True)
         got = credentials.get_keys("kraken", user_id=1)
         assert got == {"api_key": "k-k", "api_secret": "k-s", "passphrase": ""}
 
@@ -69,6 +70,7 @@ class TestSaveKeysWithPassphrase:
         credentials.save_keys(
             "bitget", "ak", "sc", user_id=1,
             passphrase="plaintext-passphrase-must-not-leak",
+            _skip_format_validation=True,
         )
         raw = paths.exchange_creds_path(1, "bitget").read_bytes()
         assert b"plaintext-passphrase-must-not-leak" not in raw
@@ -81,6 +83,7 @@ class TestGetBitgetPassphrase:
     def test_prefers_credentials_store(self, tmp_store, caplog):
         credentials.save_keys(
             "bitget", "ak", "sc", user_id=1, passphrase="store-value",
+            _skip_format_validation=True,
         )
         # Env set to something different — helper must ignore it when
         # the store has a value (no deprecation-warning in this path).
@@ -121,7 +124,7 @@ class TestGetBitgetPassphrase:
     def test_empty_store_passphrase_falls_back(self, tmp_store):
         # Credentials saved but without a passphrase field → store
         # returns "" → helper treats it as absent and falls through.
-        credentials.save_keys("bitget", "ak", "sc", user_id=1)
+        credentials.save_keys("bitget", "ak", "sc", user_id=1, _skip_format_validation=True)
         os.environ["BITGET_PASSPHRASE"] = "env-wins"
         try:
             assert credentials.get_bitget_passphrase(user_id=1) == "env-wins"
@@ -157,11 +160,17 @@ def admin_client():
 
 class TestExchangeEndpointAcceptsPassphrase:
     def test_bitget_with_passphrase_saved(self, tmp_store, admin_client):
+        # r2-010: realistic-length alphanumerics so the format
+        # validator on the public endpoint accepts the body. Pre-
+        # r2-010 fixtures used "ak-bitget" / "sc-bitget" which the
+        # heuristic now (correctly) rejects as malformed.
+        BITGET_KEY = "ak" + "0" * 30  # 32 alphanumeric chars
+        BITGET_SECRET = "sc" + "0" * 62  # 64 alphanumeric chars
         r = admin_client.post(
             "/api/exchanges/bitget/keys",
             json={
-                "api_key": "ak-bitget",
-                "api_secret": "sc-bitget",
+                "api_key": BITGET_KEY,
+                "api_secret": BITGET_SECRET,
                 "passphrase": "endpoint-pass",
             },
         )
@@ -171,8 +180,8 @@ class TestExchangeEndpointAcceptsPassphrase:
         admin = user_store.get_user_by_username("admin")
         stored = credentials.get_keys("bitget", user_id=admin.id)
         assert stored == {
-            "api_key": "ak-bitget",
-            "api_secret": "sc-bitget",
+            "api_key": BITGET_KEY,
+            "api_secret": BITGET_SECRET,
             "passphrase": "endpoint-pass",
         }
 
@@ -190,14 +199,22 @@ class TestExchangeEndpointAcceptsPassphrase:
     def test_kraken_without_passphrase_succeeds(self, tmp_store, admin_client):
         # Kraken has no passphrase; endpoint must accept body without
         # the field rather than insist on one.
+        # r2-010: realistic-length base64 placeholders so the format
+        # validator on the public endpoint accepts the body.
+        KRAKEN_KEY = "K" + "x" * 55  # 56 base64 chars
+        KRAKEN_SECRET = "S" + "x" * 87  # 88 base64 chars
         r = admin_client.post(
             "/api/exchanges/kraken/keys",
-            json={"api_key": "k", "api_secret": "K"},
+            json={"api_key": KRAKEN_KEY, "api_secret": KRAKEN_SECRET},
         )
         assert r.status_code == 200, r.text
         admin = user_store.get_user_by_username("admin")
         stored = credentials.get_keys("kraken", user_id=admin.id)
-        assert stored == {"api_key": "k", "api_secret": "K", "passphrase": ""}
+        assert stored == {
+            "api_key": KRAKEN_KEY,
+            "api_secret": KRAKEN_SECRET,
+            "passphrase": "",
+        }
 
     def test_passphrase_over_max_length_rejected(self, tmp_store, admin_client):
         # pd-006: Pydantic max_length on passphrase is 64. A 65-char
@@ -223,6 +240,7 @@ class TestRotationPreservesPassphrase:
         # cleanly under the new key.
         credentials.save_keys(
             "bitget", "ak", "sc", user_id=1, passphrase="rotate-me",
+            _skip_format_validation=True,
         )
         credentials.rotate_fernet_key(user_id=1)
         stored = credentials.get_keys("bitget", user_id=1)

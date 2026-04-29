@@ -234,9 +234,16 @@ def migrate_credentials() -> int:
 
     moved = 0
     for exchange, payload in plaintext.items():
+        # r2-010: skip format-validation on the migrate path —
+        # these credentials were already accepted by the pre-r2-010
+        # save path, so the heuristic check would only false-flag
+        # legacy keys that don't match the modern format pattern
+        # (e.g. shorter pre-rotation Bitget keys). Operators rotating
+        # via the portal go through the validated public path.
         save_keys(
             exchange, payload["api_key"], payload["api_secret"],
             user_id=USER_ID,
+            _skip_format_validation=True,
         )
         print(f"  converted {exchange} → credentials/{USER_ID}/{exchange}.enc")
         moved += 1

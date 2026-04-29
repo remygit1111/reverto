@@ -38,7 +38,7 @@ class TestRotationLock:
 
     def test_second_rotation_refused_while_first_holds_lock(self, routed_store):
         key = routed_store
-        creds.save_keys("bitget", "a", "b", user_id=1)
+        creds.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
 
         # Acquire the lock manually — simulating another in-progress rotation.
         cm = creds._rotation_lock(key)
@@ -53,7 +53,7 @@ class TestRotationLock:
         """After a successful rotate the lock file is gone, so a second
         rotate succeeds."""
         key = routed_store
-        creds.save_keys("bitget", "a", "b", user_id=1)
+        creds.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
 
         creds.rotate_fernet_key(user_id=1)
         # Immediate second call must succeed.
@@ -68,7 +68,7 @@ class TestTimestampedBackups:
 
     def test_each_rotation_creates_a_fresh_backup(self, routed_store):
         key = routed_store
-        creds.save_keys("bitget", "a", "b", user_id=1)
+        creds.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
 
         creds.rotate_fernet_key(user_id=1)
         time.sleep(1.1)  # ensure the timestamp strftime differs
@@ -86,7 +86,7 @@ class TestBackupRetention:
 
     def test_cleanup_removes_only_old_backups(self, routed_store):
         key = routed_store
-        creds.save_keys("bitget", "a", "b", user_id=1)
+        creds.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
 
         # Create a rotate + one fake "old" backup file.
         creds.rotate_fernet_key(user_id=1)
@@ -111,7 +111,7 @@ class TestCrashRecovery:
         """Regression pin: the rotation flips the key file first so a
         crash between the two replaces is recoverable from the .bak."""
         key = routed_store
-        creds.save_keys("bitget", "a", "b", user_id=1)
+        creds.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
         enc_path = paths.exchange_creds_path(1, "bitget")
         original_key = key.read_bytes()
 

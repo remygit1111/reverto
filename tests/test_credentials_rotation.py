@@ -34,8 +34,8 @@ class TestRotateFernetKey:
         """After rotate, get_keys must return the same plaintext values
         under the new per-user Fernet key."""
         key = routed_store
-        creds.save_keys("bitget", "api_abc", "secret_xyz", user_id=1)
-        creds.save_keys("kraken", "k_api", "k_secret", user_id=1)
+        creds.save_keys("bitget", "api_abc", "secret_xyz", user_id=1, _skip_format_validation=True)
+        creds.save_keys("kraken", "k_api", "k_secret", user_id=1, _skip_format_validation=True)
 
         # Sanity: before rotate. get_keys returns a stable shape
         # including ``passphrase`` (empty here — no Bitget passphrase
@@ -67,7 +67,7 @@ class TestRotateFernetKey:
 
     def test_backup_file_created(self, routed_store):
         key = routed_store
-        creds.save_keys("bitget", "a", "b", user_id=1)
+        creds.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
         old_key_bytes = key.read_bytes()
 
         result = creds.rotate_fernet_key(user_id=1)
@@ -88,7 +88,7 @@ class TestRotateFernetKey:
     def test_ciphertext_actually_changes(self, routed_store):
         """After rotate, the stored .enc bytes must differ — if they
         don't we silently didn't re-encrypt."""
-        creds.save_keys("bitget", "a", "b", user_id=1)
+        creds.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
         enc_path = paths.exchange_creds_path(1, "bitget")
         ct_before = enc_path.read_bytes()
 
@@ -98,8 +98,8 @@ class TestRotateFernetKey:
         assert ct_before != ct_after
 
     def test_result_summary_shape(self, routed_store):
-        creds.save_keys("bitget", "a", "b", user_id=1)
-        creds.save_keys("kraken", "c", "d", user_id=1)
+        creds.save_keys("bitget", "a", "b", user_id=1, _skip_format_validation=True)
+        creds.save_keys("kraken", "c", "d", user_id=1, _skip_format_validation=True)
         result = creds.rotate_fernet_key(user_id=1)
         assert result["keys_rotated"] == ["bitget", "kraken"]
         assert "rotated_at" in result
@@ -109,8 +109,8 @@ class TestRotateFernetKey:
     def test_rotating_user_1_leaves_user_2_alone(self, routed_store):
         """Per-user scoping: rotating user 1's key must NOT touch the
         user 2 tree. This is the isolation invariant Phase-2 added."""
-        creds.save_keys("bitget", "a1", "s1", user_id=1)
-        creds.save_keys("bitget", "a2", "s2", user_id=2)
+        creds.save_keys("bitget", "a1", "s1", user_id=1, _skip_format_validation=True)
+        creds.save_keys("bitget", "a2", "s2", user_id=2, _skip_format_validation=True)
         u2_key_before = paths.user_fernet_key_path(2).read_bytes()
         u2_enc_before = paths.exchange_creds_path(2, "bitget").read_bytes()
 
