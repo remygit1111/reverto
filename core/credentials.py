@@ -61,6 +61,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from abc import ABC, abstractmethod
@@ -94,6 +95,93 @@ _BASE_DIR = Path(__file__).parent.parent
 # sees this interface.
 
 
+# ── r2-010: API-key format validation ─────────────────────────────────────
+#
+# Pre-fix ``save_keys`` accepted any non-empty strings and the format
+# error only surfaced on the first authenticated exchange call —
+# typically a bot-start event tens of seconds after the operator
+# pressed Save. The save-to-error feedback loop was slow and the
+# error message came from ccxt rather than from the save handler.
+#
+# Heuristic length-bounds catch the typical typo modes (truncated
+# paste, wrong field pasted into the wrong input, partial copy)
+# without locking us in to a specific format the exchange might
+# evolve. The patterns are deliberately generous — exchanges have
+# rotated their key formats more than once over the last few years
+# and we'd rather fail-open on a future format than fail-closed on a
+# legitimate key.
+#
+# Wire-up: ``FernetCredentialProvider.save_keys`` calls
+# ``_validate_api_key_format`` before the encrypt step; failure
+# raises ``CredentialFormatError`` (a ``ValueError`` subclass) with
+# a hint about the expected shape and the actual length, so the
+# operator has enough to diagnose the typo without leaking the key.
+
+# Bitget API key — observed shape: alphanumeric, ~32-64 characters.
+# Older keys were 32; newer Bitget v2 keys observed at 36-50.
+_BITGET_API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9]{16,128}$")
+# Bitget API secret — also alphanumeric, similar length range.
+_BITGET_API_SECRET_PATTERN = re.compile(r"^[A-Za-z0-9]{16,128}$")
+# Kraken API key — 56-character base64 (A-Z a-z 0-9 + /).
+# Pattern accepts the 40-128 range to absorb format drift.
+_KRAKEN_API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9+/=]{40,128}$")
+# Kraken API secret — 88-character base64. Same generous bounds.
+_KRAKEN_API_SECRET_PATTERN = re.compile(r"^[A-Za-z0-9+/=]{40,256}$")
+
+
+class CredentialFormatError(ValueError):
+    """Raised when an exchange API key/secret pair does not match the
+    expected format heuristic. See r2-010.
+
+    Subclass of ``ValueError`` so existing call-sites that catch
+    ``ValueError`` (Pydantic body validators, route 400-handlers)
+    keep working without code changes.
+    """
+
+
+def _validate_api_key_format(
+    exchange: str, api_key: str, api_secret: str,
+) -> None:
+    """Heuristic format check for exchange API key/secret pairs.
+
+    r2-010: catches obvious typos at credential-save time rather
+    than at first authenticated exchange call. Patterns are
+    intentionally permissive (16-128 chars, alphanumeric or base64)
+    so a future format-rotation by the exchange does NOT lock out
+    legitimate operators — the goal is to catch truncation /
+    wrong-field-pasted / partial-copy mistakes, not to enforce a
+    schema.
+
+    Unknown exchanges fall through silently; the validator is
+    additive and extends to new exchanges by adding a branch.
+    """
+    if exchange == "bitget":
+        if not _BITGET_API_KEY_PATTERN.match(api_key):
+            raise CredentialFormatError(
+                f"Bitget API key does not match expected format "
+                f"(16-128 alphanumerics). Got {len(api_key)} chars. "
+                f"Verify you copied the full key from the Bitget UI."
+            )
+        if not _BITGET_API_SECRET_PATTERN.match(api_secret):
+            raise CredentialFormatError(
+                f"Bitget API secret does not match expected format "
+                f"(16-128 alphanumerics). Got {len(api_secret)} chars."
+            )
+    elif exchange == "kraken":
+        if not _KRAKEN_API_KEY_PATTERN.match(api_key):
+            raise CredentialFormatError(
+                f"Kraken API key does not match expected format "
+                f"(40-128 base64 chars). Got {len(api_key)} chars."
+            )
+        if not _KRAKEN_API_SECRET_PATTERN.match(api_secret):
+            raise CredentialFormatError(
+                f"Kraken API secret does not match expected format "
+                f"(40-256 base64 chars). Got {len(api_secret)} chars."
+            )
+    # Unknown exchange — pass through unvalidated. Adding a future
+    # exchange means appending a branch above.
+
+
 class CredentialProvider(ABC):
     """Abstract backend for storing and retrieving exchange API
     credentials on a per-user basis.
@@ -115,11 +203,16 @@ class CredentialProvider(ABC):
         user_id: int,
         *,
         passphrase: str = "",
+        _skip_format_validation: bool = False,
     ) -> None:
         """Persist ``(api_key, api_secret, optional passphrase)`` for
         ``(user_id, exchange)``. Atomic — a crash mid-write leaves
         either the prior payload intact or the new one fully written,
-        never a half-written blob."""
+        never a half-written blob.
+
+        ``_skip_format_validation`` is the test-only escape hatch
+        described on ``FernetCredentialProvider.save_keys``; production
+        routes never set it."""
 
     @abstractmethod
     def get_keys(
@@ -242,6 +335,7 @@ class FernetCredentialProvider(CredentialProvider):
         user_id: int,
         *,
         passphrase: str = "",
+        _skip_format_validation: bool = False,
     ) -> None:
         """Versleutel en schrijf een api_key + api_secret (+ optional
         passphrase) voor ``(user_id, exchange)`` naar
@@ -257,7 +351,22 @@ class FernetCredentialProvider(CredentialProvider):
         stored" — get_keys then returns ``passphrase=""`` and the
         consumer-facing helper ``get_bitget_passphrase`` falls through
         to its env-var migration path.
+
+        Audit r2-010: format-validate the api_key + api_secret BEFORE
+        the encrypt step. A typo / truncation / wrong-field paste now
+        raises ``CredentialFormatError`` at save-time instead of
+        surfacing as a ccxt auth error tens of seconds later on the
+        first exchange call. ``_skip_format_validation`` is an
+        internal escape hatch for the test suite — many fixtures use
+        placeholder values like ``"ak"`` / ``"sc"`` that the heuristic
+        validator rightly rejects, but those tests exercise rotation /
+        migration / I/O paths, not the format check itself. Production
+        routes never set this flag; the leading underscore + keyword-
+        only marker on the signature signal "test-only".
         """
+        if not _skip_format_validation:
+            _validate_api_key_format(exchange, api_key, api_secret)
+
         f = self._user_fernet(user_id)
         payload_dict: dict[str, str] = {
             "api_key": api_key,
@@ -574,10 +683,12 @@ def save_keys(
     user_id: int,
     *,
     passphrase: str = "",
+    _skip_format_validation: bool = False,
 ) -> None:
     _default_provider.save_keys(
         exchange, api_key, api_secret, user_id,
         passphrase=passphrase,
+        _skip_format_validation=_skip_format_validation,
     )
 
 

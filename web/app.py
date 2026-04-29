@@ -1131,6 +1131,26 @@ def _log_to_bot_log(user_id: int, slug: str, line: str) -> None:
         )
 
 
+# pd-007 design note: the project deliberately uses two slug regexes
+# with non-identical character classes. They cover different stages
+# of the slug lifecycle and harmonising them would be a regression:
+#
+#   * ``_SLUG_RE`` is a SANITISATION mask for free-form wizard input.
+#     ``slugify()`` first lowercases the input + replaces spaces with
+#     underscores, THEN strips anything outside ``[a-z0-9_]``. The
+#     narrow charset matches the post-lowercase result; widening it
+#     would change the on-disk filesystem layout for any slug a user
+#     enters with mixed case.
+#   * ``_BOT_SLUG_RE`` is a VALIDATION mask for slugs that arrive on
+#     URL paths (path-parameter handlers across web/routes/*). It
+#     accepts the wider ``[A-Za-z0-9_-]`` superset because the slug
+#     it sees was generated elsewhere — by ``slugify()`` (narrow), by
+#     a YAML-import flow (legacy hyphenated slugs), or directly on
+#     disk (operator-edited config). The validator is purely
+#     "is this URL-safe and not a path-traversal attempt".
+#
+# The asymmetry is design-intent, not drift. Pinned by
+# ``tests/test_slug_regex_harmonization.py``.
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
 # Re-exported from core.ids so the engine, the web routes, and the
 # route-level validators all agree on one canonical shape for
@@ -1141,6 +1161,7 @@ _DEAL_ID_RE = DEAL_ID_RE
 # Validator for slugs that come straight off the URL — the slugify()
 # helper above cleans wizard input, but path-parameter slugs must be
 # checked before they hit Path() construction to block `../` escapes.
+# Wider charset than _SLUG_RE on purpose — see the design note above.
 _BOT_SLUG_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 

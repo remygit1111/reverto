@@ -21,6 +21,7 @@ import sys
 os.environ["REVERTO_API_KEY"] = "testkey-for-pytest"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import ccxt
 import pytest
 from fastapi.testclient import TestClient
 
@@ -325,10 +326,15 @@ class TestTickerEndpoint:
     def test_ticker_upstream_failure_returns_502(
         self, session, monkeypatch,
     ):
-        """A ccxt-level exception maps to 502 — the SPA surfaces a
-        sidebar em-dash without a user-visible 5xx alarm."""
+        """A ccxt-level permanent exchange error maps to 502 — the
+        SPA surfaces a sidebar em-dash without a user-visible 5xx
+        alarm. pd-009: ``ccxt.ExchangeError`` is the permanent class
+        (auth, malformed request, exchange-side bug); transient
+        ``ccxt.NetworkError`` would route to 503 instead, and a
+        generic ``RuntimeError`` (genuine programming bug) would
+        route to 500."""
         def _boom(*a, **kw):
-            raise RuntimeError("exchange down")
+            raise ccxt.ExchangeError("exchange down")
         monkeypatch.setattr(
             webapp._bitget_client, "fetch_ticker", _boom,
         )
@@ -522,12 +528,20 @@ class TestChartExceptionScrub:
     def test_ticker_endpoint_does_not_leak_exception_detail(
         self, session, monkeypatch,
     ):
-        """``/api/ticker/{pair}`` — chart.py:163 site (ticker fetch)."""
+        """``/api/ticker/{pair}`` — chart.py:163 site (ticker fetch).
+
+        pd-009: ``ccxt.ExchangeError`` is the permanent-failure
+        class that routes to 502 with scrubbed wire detail per
+        audit r3-001. ``RuntimeError`` (a genuine programming bug)
+        would route to 500 under the new split — tested separately
+        if needed; here we exercise the realistic ccxt path so the
+        wire-scrub contract is validated against an actual exchange
+        error."""
         from web.routes import chart as chart_routes
         chart_routes._ticker_cache.clear()
 
         def _boom(*a, **kw):
-            raise RuntimeError(_LEAK_SENTINEL)
+            raise ccxt.ExchangeError(_LEAK_SENTINEL)
 
         # Replace fetch_ticker on the shared bitget client.
         monkeypatch.setattr(webapp._bitget_client, "fetch_ticker", _boom)
@@ -551,8 +565,9 @@ class TestChartExceptionScrub:
         chart_routes._chart_cache.clear()
         chart_routes._candles_cost_budget.reset()
 
+        # pd-009: ccxt.ExchangeError is the permanent class → 502.
         def _boom(self, pair, timeframe, limit):
-            raise RuntimeError(_LEAK_SENTINEL)
+            raise ccxt.ExchangeError(_LEAK_SENTINEL)
 
         monkeypatch.setattr(
             public_exchange.PublicExchange, "get_ohlcv", _boom,
@@ -575,8 +590,9 @@ class TestChartExceptionScrub:
         chart_routes._candles_cache.clear()
         chart_routes._candles_cost_budget.reset()
 
+        # pd-009: ccxt.ExchangeError is the permanent class → 502.
         async def _boom(*a, **kw):
-            raise RuntimeError(_LEAK_SENTINEL)
+            raise ccxt.ExchangeError(_LEAK_SENTINEL)
 
         monkeypatch.setattr(webapp, "_fetch_ohlcv_range", _boom)
 

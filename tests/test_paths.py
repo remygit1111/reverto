@@ -185,7 +185,7 @@ class TestIntegrationWithCredentials:
         # for that side.
         monkeypatch.setattr(credentials, "_BASE_DIR", _sandboxed_base)
 
-        credentials.save_keys("bitget", "ak", "sc", user_id=7)
+        credentials.save_keys("bitget", "ak", "sc", user_id=7, _skip_format_validation=True)
         enc = paths.exchange_creds_path(7, "bitget")
         key = paths.user_fernet_key_path(7)
 

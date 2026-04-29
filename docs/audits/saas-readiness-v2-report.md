@@ -260,6 +260,8 @@ Deep-read of [paper/paper_engine.py](paper/paper_engine.py) (1683 lines) + [pape
 
 **Cross-reference.** pd-044 (orphan .tmp cleanup) already handles the fallout; this is just documentation.
 
+**STATUS (2026-04-29 / `fix/validation-hygiene-cluster`): RESOLVED.** `StateIO.write` in `paper/state_io.py` now carries an "Atomicity contract (audit r2-007)" docstring section that documents the POSIX guarantees (atomic rename, power-loss safety, partial-write invisibility) and enumerates the layouts where the contract weakens (NFS / SMB protocol-version-dependent; Windows pre-Server-2012 with `ERROR_ALREADY_EXISTS`; FUSE / overlayfs depending on backing store). Forward-points at distributed consensus (etcd / consul) as the right Phase-4 multi-host replacement. Pinned by `tests/test_validation_hygiene.py::TestStateIoPosixDocstring` (3 tests covering POSIX mention, ≥2 of {NFS, Windows, FUSE} caveats, and the audit-ID reference).
+
 #### r2-008 — Manual-trigger sentinel micro-race window (LOW)
 
 **What.** `_check_manual_trigger()` at [paper/paper_engine.py:984-1005](paper/paper_engine.py#L984-L1005) unlinks the trigger file, then opens a deal. If the portal writes a new trigger between unlink and open, that intent is lost until the next 10s poll cycle.
@@ -350,6 +352,8 @@ The breaker should only trigger on transient class errors.
 
 **Category.** LOW · **MONITORING**.
 
+**STATUS (2026-04-29 / `fix/validation-hygiene-cluster`): RESOLVED.** `core/credentials.py` gains a `_validate_api_key_format(exchange, api_key, api_secret)` helper that enforces heuristic format bounds per exchange — Bitget keys/secrets must be 16-128 alphanumerics; Kraken keys 40-128 base64; Kraken secrets 40-256 base64. The bounds are deliberately generous so a future format-rotation by the exchange does NOT lock out legitimate operators — the validator catches typo modes (truncation, wrong-field paste, partial copy), not schema drift. Failure raises a new `CredentialFormatError` (subclass of `ValueError` so existing `except ValueError` handlers keep catching it). Wired into `FernetCredentialProvider.save_keys` BEFORE the encrypt step, so a typo never reaches the filesystem; unknown exchanges pass through silently for extensibility. Pinned by `tests/test_validation_hygiene.py::TestApiKeyFormatValidator` (8 tests covering subclass relationship, short / special-char / realistic / boundary inputs, unknown-exchange pass-through, and end-to-end save_keys wire-up).
+
 ### Area 16 — Backup & restore
 
 [scripts/backup.sh](scripts/backup.sh) captures DB (SQLite online-backup), `credentials/`, `keys/`, with 7-daily / 28-weekly / 90-monthly retention (Sunday + 1st-of-month detection). Pre-restore snapshot preserved in [scripts/restore.sh](scripts/restore.sh). Permissions preserved (0600 files, 0700 dirs). Runbook documents cron + restore flow.
@@ -365,6 +369,8 @@ The breaker should only trigger on transient class errors.
 **Remediation.** Add one line to backup.sh: `sqlite3 "${DB_PATH}" 'PRAGMA user_version' >> MANIFEST.txt`. ~30 second fix.
 
 **Category.** LOW · **MONITORING**.
+
+**STATUS (2026-04-29 / `fix/validation-hygiene-cluster`): RESOLVED — completing the half-applied fix.** The MANIFEST schema-version stamp itself landed earlier under audit r3-008 (`scripts/backup.sh` line ~158: `Schema version: ${SCHEMA_VERSION_VALUE}`). The companion compatibility check on `scripts/restore.sh` was missing — pre-fix the manifest was *displayed* but never compared against `core.database.SCHEMA_VERSION`, so an operator could silently restore a forward-version backup onto an older codebase. The new check at the top of `restore.sh`: parses the manifest's `Schema version:` line, resolves the running code's `SCHEMA_VERSION` via the project venv's python, and **refuses with `exit 1` if the backup version is newer**. Older backups produce a NOTE describing the additive forward-migration that `init_db()` will run; pre-r3-008 backups (no stamp) produce a WARNING but do not block (operator confirmation prompt downstream is the gate). Pinned by `tests/test_validation_hygiene.py::TestRestoreSchemaVersionCheck` (5 tests covering manifest read, current-version resolution, future-version refusal, missing-stamp warning, and the audit-ID marker).
 
 ### Area 17 — Deploy & rollback procedures
 
