@@ -232,6 +232,8 @@ Client-side: [web/static/app.js:5331](web/static/app.js#L5331) constructs `new W
 
 **Cross-reference.** None in prior audits; first surfaced in v2.
 
+**STATUS (2026-04-29 / `cleanup/r2-006-defer-to-phase-4`): DEFERRED.** Per-user WS connection cap deferred to Phase 4 multi-tenant kickoff. Process-local enforcement is multi-worker-incoherent (`uvicorn --workers 4` × per-worker cap of 10 = 40 effective, defeating the limit), so a stop-gap implementation now would reproduce the same architectural fault as the already-deferred r1-026 slowapi in-memory limiter. Captured in `docs/phase-4.md` sectie 2.4 with resolution direction (Redis-backed counter + close-code 4429) + re-evaluation triggers (Phase 4 scope opens, or `--workers > 1`).
+
 ### Area 14 — Bot lifecycle ★ first deep-read in the audit series
 
 Deep-read of [paper/paper_engine.py](paper/paper_engine.py) (1683 lines) + [paper/state_io.py](paper/state_io.py) + [paper/close_handler.py](paper/close_handler.py) + [live/live_engine.py](live/live_engine.py) + [live/order_reconciliation.py](live/order_reconciliation.py) + guards ([liquidation](core/liquidation_guard.py), [drawdown](core/drawdown_guard.py), [schedule](core/schedule_guard.py)).
