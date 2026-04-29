@@ -154,6 +154,8 @@ else:
 
 **Remediation.** `if not password:` instead of `if password is None:`, so an empty env-var falls through to the interactive prompt.
 
+**STATUS (resolved earlier; documented under `fix/docs-and-setup-cleanups` 2026-04-29):** `scripts/setup_admin.py` now reads `password = os.environ.get("REVERTO_ADMIN_PW") or None` so an empty string is treated as "not provided" and falls through to the interactive `getpass` prompt. Test pins live in `tests/test_setup_admin.py::TestSetupAdminEnvVarHandling` (5 tests covering empty / unset / short / happy-path / mismatch). The pre-fix length-check error message has also been rewritten to reference the centralised `PASSWORD_MIN_LENGTH = 12` (audit v26-03 consolidation).
+
 ### v26-08 — Rate limiter IP-only (INFO)
 
 Already documented inline at `web/app.py:1165`. Behind an nginx/caddy reverse proxy every request looks like it comes from `127.0.0.1`, which collapses all users into a single rate-limit bucket. Phase-3b task to add X-Forwarded-For parsing with a trusted-proxy allowlist.
@@ -454,6 +456,8 @@ Combining 1 + 2: I cannot develop or validate a fix without Python 3.13 reproduc
 ### v26-24 — Phase-3 doc body is stale
 
 Preface says "secties hieronder die dat proces beschrijven zijn historisch" but §7 still reads as present-tense auth architecture ("password hashes in `.auth.json`"). Prune or clearly strike through the paragraphs overtaken by Phase-3a.
+
+**STATUS (2026-04-29 / `fix/docs-and-setup-cleanups`): RESOLVED via strike-through.** `docs/phase-3.md` §2 now wraps the two worst-offender claims ("password hashes + session-epoch blijven in `.auth.json`" + "De huidige `logs/.auth.json` wordt gesplitst in per-user bestanden") in markdown `~~ ... ~~` strikethrough, with inline `_(v26-24: historical — ...)_` notes pointing at the Phase-3a replacement (DB columns on `users`). Section-level "Historical note (v26-24)" headers added in earlier work continue to cover §1, §3, §4, §5, §7. Audit-trail preservation: the original body text remains visible (just visually struck) so a reader chasing audit history still sees the pre-Phase-3a design verbatim. Test pin: `tests/test_docs_and_setup_cleanups.py::test_phase3_md_strikethrough_on_obsolete_auth_json_claims`.
 
 ---
 
