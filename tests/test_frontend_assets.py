@@ -787,3 +787,172 @@ class TestTotpSecretCopyButton:
         end = js.find("\nfunction ", wireup_start + 1)
         wireup_body = js[wireup_start:end if end > 0 else len(js)]
         assert "_copyTotpSecret" in wireup_body
+
+
+class TestModalAccessibility:
+    """rha-006 + rha-007 + rhav2-004 broader sweep.
+
+    Three concerns share a single wireup pass in app.js:
+
+    * rha-006 — auto-focus the right element when a modal opens, and
+      restore focus to the trigger button when it closes.
+    * rha-007 — Tab / Shift-Tab cycle within the modal, never escape
+      to the page underneath.
+    * rhav2-004 broader sweep — every ``modal-overlay`` carries the
+      ARIA dialog triple (``role="dialog"`` + ``aria-modal="true"`` +
+      ``aria-labelledby``), not just the TOTP modals that landed in
+      ``fix/totp-modal-hygiene-cluster``.
+
+    Tests are source-grep checks: there is no JS harness, so we
+    assert the helpers exist + are wired + the markup carries the
+    attributes. Behaviour is verified end-to-end by an operator-side
+    smoke test (Tab cycles, Esc restores) — see PR description.
+    """
+
+    def test_all_modals_have_aria_dialog_attributes(self):
+        """rhav2-004: every .modal-overlay's inner .modal-card carries
+        ``role="dialog"`` + ``aria-modal="true"`` + ``aria-labelledby``.
+        Pre-fix only the two TOTP modals had them; this guard makes
+        sure a future modal-add can't silently regress the broader
+        sweep."""
+        import re
+
+        html = _INDEX_HTML.read_text(encoding="utf-8")
+        modal_ids = re.findall(
+            r'<div\s+id="([^"]+-modal)"\s+class="modal-overlay"',
+            html,
+        )
+        # Floor-guard: 13 modals at the time of writing
+        # (api-key, profile, 2× totp, settings, deal-edit,
+        #  wizard-backtest, sweep, finding-detail, emergency-stop,
+        #  bulk-stop, bulk-restart, cl-edit). Any future add gets
+        # caught by the loop below; the floor only catches a
+        # regression that drops modals from the markup.
+        assert len(modal_ids) >= 11, (
+            f"Expected at least 11 .modal-overlay elements; "
+            f"found {len(modal_ids)}: {modal_ids}"
+        )
+
+        for modal_id in modal_ids:
+            anchor = f'<div id="{modal_id}" class="modal-overlay">'
+            start = html.find(anchor)
+            assert start != -1
+            # Slice up to the next opening modal-overlay (or end of
+            # file) so we only assert against this modal's block,
+            # not bleed into the next one.
+            next_modal = html.find(
+                '<div id="', start + len(anchor),
+            )
+            block = html[start:next_modal if next_modal > 0 else len(html)]
+
+            assert 'role="dialog"' in block, (
+                f"Modal {modal_id} missing role=\"dialog\" on its "
+                "modal-card. rhav2-004 broader sweep regression."
+            )
+            assert 'aria-modal="true"' in block, (
+                f"Modal {modal_id} missing aria-modal=\"true\" on "
+                "its modal-card. rhav2-004 broader sweep regression."
+            )
+            assert "aria-labelledby=" in block, (
+                f"Modal {modal_id} missing aria-labelledby on its "
+                "modal-card. rhav2-004 broader sweep regression."
+            )
+
+    def test_focus_helper_present_in_app_js(self):
+        """rha-006: ``_focusFirstElementInModal`` exists and waits one
+        animation frame so a still-laying-out modal does not get
+        focused before it is visible (browsers silently no-op a focus
+        on display:none)."""
+        js = _APP_JS.read_text(encoding="utf-8")
+        assert "_focusFirstElementInModal" in js, (
+            "rha-006: _focusFirstElementInModal helper missing."
+        )
+        # Locate the function body so the requestAnimationFrame
+        # check is scoped — a stray rAF elsewhere should not
+        # vacuously pass this test.
+        start = js.find("function _focusFirstElementInModal(")
+        assert start >= 0
+        end = js.find("\nfunction ", start + 1)
+        body = js[start:end if end > 0 else len(js)]
+        assert "requestAnimationFrame" in body, (
+            "rha-006: auto-focus must defer one frame via "
+            "requestAnimationFrame so the modal is laid out before "
+            "we focus into it."
+        )
+
+    def test_focus_trap_helper_present_in_app_js(self):
+        """rha-007: ``_trapFocusInModal`` exists and handles BOTH
+        Tab and Shift-Tab cycling. A trap that only handles forward-
+        Tab leaks focus on Shift-Tab from the first element."""
+        js = _APP_JS.read_text(encoding="utf-8")
+        assert "_trapFocusInModal" in js, (
+            "rha-007: _trapFocusInModal helper missing."
+        )
+        start = js.find("function _trapFocusInModal(")
+        assert start >= 0
+        end = js.find("\nfunction ", start + 1)
+        body = js[start:end if end > 0 else len(js)]
+        assert "shiftKey" in body, (
+            "rha-007: focus-trap must inspect shiftKey to handle "
+            "Shift-Tab wrapping at the first focusable element."
+        )
+        # Tab + the wrap-direction logic must both be present.
+        assert "'Tab'" in body or '"Tab"' in body
+        assert "preventDefault" in body, (
+            "rha-007: trap must preventDefault on the Tab event "
+            "that wraps, otherwise the browser also moves focus."
+        )
+
+    def test_focus_trap_wired_to_modals_at_init(self):
+        """rha-007: ``_wireAllModalFocusTraps`` runs once on
+        DOMContentLoaded so every modal in ``index.html`` gets its
+        MutationObserver before the user can open one."""
+        js = _APP_JS.read_text(encoding="utf-8")
+        assert "_wireAllModalFocusTraps" in js, (
+            "rha-007: _wireAllModalFocusTraps wireup function missing."
+        )
+        # Must be called from the DOMContentLoaded handler so the
+        # observers exist before the first modal-show. Locate the
+        # init block and assert the call-site is inside it.
+        init_start = js.find("document.addEventListener('DOMContentLoaded'")
+        assert init_start >= 0
+        init_end = js.find("\n});", init_start)
+        init_body = js[init_start:init_end if init_end > 0 else len(js)]
+        assert "_wireAllModalFocusTraps()" in init_body, (
+            "rha-007: _wireAllModalFocusTraps must be called from the "
+            "DOMContentLoaded handler."
+        )
+
+    def test_focus_restore_via_weakmap_of_triggers(self):
+        """rha-006 part 2: closing a modal returns focus to the
+        button that opened it. ``_modalTriggers`` (a WeakMap so a
+        removed modal's trigger is GC-eligible) records the trigger
+        when the MutationObserver detects the show, and
+        ``_restoreFocusAfterModalClose`` re-focuses it on hide."""
+        js = _APP_JS.read_text(encoding="utf-8")
+        assert "_modalTriggers" in js, (
+            "rha-006: _modalTriggers WeakMap missing — focus-restore "
+            "has no place to record the trigger."
+        )
+        assert "WeakMap" in js, (
+            "rha-006: trigger registry must be a WeakMap so a "
+            "detached modal element does not pin its trigger."
+        )
+        assert "_restoreFocusAfterModalClose" in js, (
+            "rha-006: _restoreFocusAfterModalClose helper missing — "
+            "the close path has no way to re-focus the trigger."
+        )
+        # The restore helper must guard against a trigger that has
+        # since been removed from the DOM (e.g. modal opened a
+        # confirmation that re-rendered the surrounding UI). Pre-
+        # guard, focusing a detached element silently no-ops AND
+        # leaves the user with focus on document.body.
+        start = js.find("function _restoreFocusAfterModalClose(")
+        assert start >= 0
+        end = js.find("\nfunction ", start + 1)
+        body = js[start:end if end > 0 else len(js)]
+        assert "document.body.contains" in body, (
+            "rha-006: focus-restore must check document.body.contains "
+            "before focusing the trigger — a re-rendered UI may have "
+            "detached it."
+        )
