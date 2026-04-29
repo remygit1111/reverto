@@ -196,6 +196,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 
 **Remediation.** Add an `_autoFocusFirstInput(modalEl)` helper called from each modal's `show*Modal()` function.
 
+**STATUS (2026-04-29 / `fix/modal-accessibility`): RESOLVED.** `_focusFirstElementInModal(modalEl)` centralised helper added in `web/static/app.js`, with priority-based selection (text-like inputs → textarea → select → first non-destructive button → any focusable element). `requestAnimationFrame` defers one frame so a still-laying-out modal does not silently no-op the focus call. Wired via `_wireAllModalFocusTraps()` + per-modal `MutationObserver` on the `show` class — every existing `modal.classList.add('show')` call-site triggers auto-focus without per-site code changes. Bonus: `_modalTriggers` (WeakMap) + `_restoreFocusAfterModalClose` return focus to the trigger button when the modal closes. Tests: `tests/test_frontend_assets.py::TestModalAccessibility::test_focus_helper_present_in_app_js` + `test_focus_restore_via_weakmap_of_triggers`.
+
 #### rha-007 — Modal focus-trap not implemented (LOW)
 
 **What.** `.modal-overlay` sets `z-index: 9999` (`style.css:825`) which prevents pointer interaction with the backdrop, but there is no JavaScript Tab-trap. A keyboard user inside a modal can Tab past the last input, out of the modal, and into the page chrome behind. Visually they see the modal but they're typing into elements they cannot see.
@@ -203,6 +205,8 @@ Eight PRs merged 2026-04-26. Reviewed each for orphan code, codebase-convention 
 **Impact.** Same accessibility class as rha-006. WCAG 2.4.3 (Focus Order) is technically violated when the modal is open.
 
 **Remediation.** Add a `keydown` handler that traps Tab/Shift+Tab cycles within the modal's focusable elements while the overlay is visible. Standard pattern, ~20 LOC.
+
+**STATUS (2026-04-29 / `fix/modal-accessibility`): RESOLVED.** `_trapFocusInModal(modalEl)` keydown handler added in `web/static/app.js`. Tab on the last focusable element wraps to the first; Shift-Tab on the first wraps to the last; both call `preventDefault` so the browser's default Tab does not also move focus. The trap is auto-attached on show + auto-detached on hide via a MutationObserver per modal (cleanup-fn pattern, no leaks). Tests: `tests/test_frontend_assets.py::TestModalAccessibility::test_focus_trap_helper_present_in_app_js` + `test_focus_trap_wired_to_modals_at_init`.
 
 ### Area UX3 — State / empty-state coverage
 
