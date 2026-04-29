@@ -2860,12 +2860,12 @@ findings:
 - finding_id: pt-101
   source_doc: production-pentest-v3
   severity: MEDIUM
-  status: open
+  status: resolved
   title: Bcrypt timing channel enables username enumeration
   description: |
     core.user_store.verify_password short-circuits to None at line 128-129 when the user is unknown, never running bcrypt. The resulting ~100ms response-time gap survives the equalising backoff sleep and lets a network attacker enumerate valid usernames via response timing. Single-tenant non-exploitable today (only "admin" exists) but a hard pre-Phase-4 must-fix once a signup endpoint or second user lands.
-  resolution_ref: null
-  notes: "Profile A (anonymous network attacker). White-box confirmed via grep on core/user_store.py:127-129. Contradicts v27-report.md 'Items verified clean' login-timing claim. Remediation: dummy bcrypt.checkpw against a constant fake hash on the unknown-user branch (~15 min)."
+  resolution_ref: fix/phase-4-readiness-security-cluster
+  notes: "Profile A (anonymous network attacker). White-box confirmed via grep on core/user_store.py:127-129. Contradicts v27-report.md 'Items verified clean' login-timing claim. Remediation: dummy bcrypt.checkpw against a constant fake hash on the unknown-user branch (~15 min). RESOLVED 2026-04-29: _DUMMY_BCRYPT_HASH (rounds=12) seeded at module import; verify_password now runs bcrypt.checkpw against it on every failure path. Smoke-tested ~260ms vs ~261ms parity; regression tests in tests/test_user_store.py::TestVerifyPassword."
 
 - finding_id: pt-102
   source_doc: production-pentest-v3
@@ -2900,25 +2900,30 @@ findings:
 - finding_id: pt-160
   source_doc: production-pentest-v3
   severity: INFO
-  status: open
+  status: resolved
   title: 429 Retry-After precision differs by user-existence
   description: |
     Same Phase-4 readiness gate as pt-101. Known-user 429 carries a timestamp-precise retry-after value; unknown-user 429 carries a worst-case-full-window value. The detail-string formatter normalised the user-facing message but the Retry-After HEADER still leaks the precision distinction. Two-decimal-points in seconds is enough for an attacker to distinguish.
-  resolution_ref: null
-  notes: "Profile A. Bundelbaar met pt-101 fix. ~5 min work — round Retry-After to 60s boundary on both paths. Closes the second user-enumeration channel that gates Phase-4 readiness."
+  resolution_ref: fix/phase-4-readiness-security-cluster
+  notes: "Profile A. Bundelbaar met pt-101 fix. ~5 min work — round Retry-After to 60s boundary on both paths. Closes the second user-enumeration channel that gates Phase-4 readiness. RESOLVED 2026-04-29: _round_retry_after_to_minute(seconds) helper added in web/routes/auth.py; applied to all three 429 paths (login known-user, login unknown-user, login/totp). Round-up semantics. Regression tests in tests/test_auth_rate_limit.py::TestRetryAfterRoundedToMinute."
 
 - finding_id: rhav2-001
   source_doc: reverto-holistic-audit-v2
   severity: LOW
-  status: open
+  status: resolved
   title: "audit.jsonl + audit.log world-readable (mode 644)"
   description: |
     Log files have mode 0644 — world-readable on the host. Bot user
     is the only realistic reader on single-tenant deploy, but defense-
     in-depth gap for future multi-user scenarios.
-  resolution_ref: null
+  resolution_ref: fix/phase-4-readiness-security-cluster
   notes: "Security area. Fix: chmod 0640 on audit.* + umask 0o077 on
-    log-rotate. ~5 min work."
+    log-rotate. ~5 min work. RESOLVED 2026-04-29: web/app.py audit-logger
+    setup now narrows umask to 0o077 + chmod 0o640 on audit.log; _audit()
+    JSONL writes apply the same umask + chmod 0o640 to audit.jsonl
+    (global) and per-user audit.jsonl. Operator post-deploy: chmod 0640
+    logs/audit.* logs/*/audit.jsonl on existing files. Regression test:
+    tests/test_audit_log.py::test_audit_jsonl_files_chmod_0640_on_create."
 
 - finding_id: rhav2-002
   source_doc: reverto-holistic-audit-v2

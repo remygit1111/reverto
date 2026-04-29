@@ -176,3 +176,35 @@ def test_audit_records_denied_result_for_failed_attempts(tmp_logs):
     assert entry["action"] == "emergency_stop"
     assert entry["result"] == "denied"
     assert entry["user_id"] == 2
+
+
+# ── Audit rhav2-001: file permissions on audit log writes ──────────────────
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file mode bits — Windows ACLs use a different model",
+)
+def test_audit_jsonl_files_chmod_0640_on_create(tmp_logs):
+    """Audit rhav2-001 (RHA-v2, LOW): newly-created audit.jsonl
+    files must land at mode 0o640 — owner read/write, group read,
+    no world bits — so they're not readable by other users on a
+    multi-tenant host. Pre-fix the umask of whoever ran the portal
+    determined the mode (often 0o022 → 0o644, world-readable).
+    """
+    webapp._audit(
+        "perm_check", "-", "session:alice", user_id=99,
+    )
+    global_jsonl = tmp_logs / "audit.jsonl"
+    user_jsonl = tmp_logs / "logs" / "99" / "audit.jsonl"
+    assert global_jsonl.exists()
+    assert user_jsonl.exists()
+    # Mask off the file-type bits — only the permission bits matter.
+    assert (global_jsonl.stat().st_mode & 0o777) == 0o640, (
+        f"global audit.jsonl mode = "
+        f"{oct(global_jsonl.stat().st_mode & 0o777)}, expected 0o640"
+    )
+    assert (user_jsonl.stat().st_mode & 0o777) == 0o640, (
+        f"per-user audit.jsonl mode = "
+        f"{oct(user_jsonl.stat().st_mode & 0o777)}, expected 0o640"
+    )

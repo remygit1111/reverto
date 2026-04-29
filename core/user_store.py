@@ -33,6 +33,7 @@ Security invariants:
 from __future__ import annotations
 
 import re
+import secrets
 from datetime import UTC, datetime
 from typing import Optional
 
@@ -110,6 +111,24 @@ PASSWORD_MIN_LENGTH = 12
 _BCRYPT_ROUNDS = 12
 
 
+# Audit pt-101: dummy bcrypt-hash used to equalise the cost of the
+# ``verify_password`` known-user vs unknown-user paths. Pre-fix the
+# unknown-user branch returned ``None`` immediately and skipped the
+# bcrypt round entirely — a network attacker measuring response time
+# could enumerate valid usernames via the ~100 ms gap between
+# bcrypt-cost (known user, wrong password) and no-bcrypt (unknown
+# user). The dummy is generated once at module-import time using the
+# SAME rounds as production hashes, so a checkpw against it costs the
+# same wall time as a checkpw against a real hash. The plaintext
+# (``token_bytes(32)``) is discarded immediately and is not
+# matchable — checkpw against the dummy ALWAYS returns False, which
+# is exactly what we want for the unknown-user code-path.
+_DUMMY_BCRYPT_HASH = bcrypt.hashpw(
+    secrets.token_bytes(32),
+    bcrypt.gensalt(rounds=_BCRYPT_ROUNDS),
+)
+
+
 def verify_password(username: str, plaintext: str) -> Optional[User]:
     """Verify a plaintext password against the stored bcrypt hash.
 
@@ -120,12 +139,31 @@ def verify_password(username: str, plaintext: str) -> Optional[User]:
       - hash is malformed / not bcrypt
       - password does not match
 
-    Uses ``bcrypt.checkpw`` for constant-time comparison. Does NOT
-    distinguish between failure modes to the caller — the endpoint
-    should respond with a generic 401 regardless.
+    Uses ``bcrypt.checkpw`` for constant-time comparison within a
+    single hash. Does NOT distinguish between failure modes to the
+    caller — the endpoint should respond with a generic 401
+    regardless.
+
+    Audit pt-101 (PT-v3, MEDIUM × HIGH): the unknown-user and
+    inactive-user branches now run a dummy ``bcrypt.checkpw`` against
+    ``_DUMMY_BCRYPT_HASH`` so their wall-time matches a known-user-
+    wrong-password attempt. Pre-fix the early ``return None`` made
+    response-time enumeration of valid usernames trivial; post-fix
+    the timing is constant whether the user exists or not. Single-
+    tenant Reverto today only has one username (``admin``) so the
+    enumeration was theoretical, but the fix is a hard pre-condition
+    for any signup endpoint or second-user seed (Phase-4 readiness).
     """
     user = get_user_by_username(username)
     if user is None or not user.active:
+        # Run dummy bcrypt to match the cost of the known-user path.
+        # bcrypt.checkpw against the dummy always returns False
+        # (token_bytes generated a random plaintext that nobody
+        # holds), but the wall-time matches a real verify, which is
+        # the whole point.
+        bcrypt.checkpw(
+            plaintext.encode("utf-8"), _DUMMY_BCRYPT_HASH,
+        )
         return None
     conn = get_db()
     row = conn.execute(
@@ -133,10 +171,20 @@ def verify_password(username: str, plaintext: str) -> Optional[User]:
         (user.id,),
     ).fetchone()
     if row is None:
+        # User row vanished between get_user_by_username and the
+        # SELECT — vanishingly rare but possible under aggressive
+        # admin-deletion. Run the dummy to keep timing aligned.
+        bcrypt.checkpw(
+            plaintext.encode("utf-8"), _DUMMY_BCRYPT_HASH,
+        )
         return None
     stored = row["password_hash"]
     if not stored:
         # NULL / empty — admin never provisioned via setup_admin.py.
+        # Same timing-equalisation rationale.
+        bcrypt.checkpw(
+            plaintext.encode("utf-8"), _DUMMY_BCRYPT_HASH,
+        )
         return None
     try:
         ok = bcrypt.checkpw(
@@ -146,7 +194,12 @@ def verify_password(username: str, plaintext: str) -> Optional[User]:
     except ValueError:
         # Malformed hash — treat as auth failure, log nothing
         # identifying the user so failed logins don't create a
-        # usernames-with-weird-hashes oracle in the logs.
+        # usernames-with-weird-hashes oracle in the logs. Note: a
+        # ValueError aborts the bcrypt call without paying the
+        # ~100 ms cost, so this branch is fast — but a malformed
+        # hash is an integrity event that should be vanishingly
+        # rare in practice (would require operator-level DB tamper),
+        # not a usable attacker primitive.
         return None
     if not ok:
         return None

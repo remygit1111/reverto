@@ -897,18 +897,52 @@ PYTHON_BIN = sys.executable
 _audit_logger = logging.getLogger("reverto.audit")
 _audit_logger.setLevel(logging.INFO)
 _audit_logger.propagate = False
+
+# Audit rhav2-001: audit log files must not be world- or group-readable
+# by users outside the deployment account. The previous configuration
+# inherited the umask of whoever ran the portal (often 0o022, leaving
+# files at 0o644 — readable by anyone in the same group, and on a
+# multi-tenant host that's a leak channel for usernames + IPs +
+# request ids). We narrow umask around every audit-file create and
+# explicitly chmod 0o640 after the file exists so the result is
+# deterministic regardless of process umask.
+_AUDIT_FILE_MODE = 0o640
+
+
+def _chmod_audit_file_if_exists(path: Path) -> None:
+    """Best-effort chmod 0o640 on an audit-log file. Failures are
+    logged at DEBUG and swallowed — a chmod that fails on an exotic
+    filesystem (Windows-mounted, FAT, container overlay) must not
+    break the audit write that just happened."""
+    try:
+        if path.exists():
+            os.chmod(path, _AUDIT_FILE_MODE)
+    except OSError as e:
+        logger.debug("audit chmod failed for %s: %s", path, e)
+
+
 if not _audit_logger.handlers:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _audit_handler = RotatingFileHandler(
-        LOG_DIR / "audit.log",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8",
-    )
+    # Narrow umask while the RotatingFileHandler creates audit.log so
+    # the file is group-readable but not world-readable from the
+    # moment it lands. The handler keeps its own fd open after this,
+    # but the explicit chmod below makes the final mode independent
+    # of whatever the running process's umask happens to be.
+    _prev_umask = os.umask(0o077)
+    try:
+        _audit_handler = RotatingFileHandler(
+            LOG_DIR / "audit.log",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+    finally:
+        os.umask(_prev_umask)
     _audit_handler.setFormatter(
         logging.Formatter("%(asctime)s | %(message)s", datefmt="%Y-%m-%dT%H:%M:%S%z")
     )
     _audit_logger.addHandler(_audit_handler)
+    _chmod_audit_file_if_exists(LOG_DIR / "audit.log")
 
 
 def _extract_client_ip(request: Optional[Request]) -> Optional[str]:
@@ -991,26 +1025,40 @@ def _audit(
         "request_id": _request_id_ctx.get(),
     }
     line = json.dumps(entry, separators=(",", ":")) + "\n"
+    # Audit rhav2-001: narrow umask while the JSONL files are
+    # opened-for-append so a fresh-create lands at 0o640. The
+    # follow-up chmod is the authoritative fix (umask only governs
+    # the create-time mode, not pre-existing files), but the
+    # umask-narrow closes a brief window where another process on
+    # the same host could open the file while it's still 0o644.
+    global_path = LOG_DIR / "audit.jsonl"
+    _prev_umask = os.umask(0o077)
     try:
-        with open(LOG_DIR / "audit.jsonl", "a", encoding="utf-8") as f:
-            f.write(line)
-    except OSError as e:
-        logger.debug("audit.jsonl write failed: %s", e)
-
-    # Per-user split — only when an explicit user_id was passed
-    # by the caller. Deriving user_id from ``key_hint`` string
-    # parsing would be fragile (session:<username> vs apikey:
-    # <hint> vs "-"), so we keep it opt-in at the call-site.
-    if user_id is not None:
         try:
-            user_dir = paths.user_logs_dir(user_id)
-            with open(user_dir / "audit.jsonl", "a", encoding="utf-8") as f:
+            with open(global_path, "a", encoding="utf-8") as f:
                 f.write(line)
+            _chmod_audit_file_if_exists(global_path)
         except OSError as e:
-            logger.debug(
-                "per-user audit.jsonl write failed for user=%d: %s",
-                user_id, e,
-            )
+            logger.debug("audit.jsonl write failed: %s", e)
+
+        # Per-user split — only when an explicit user_id was passed
+        # by the caller. Deriving user_id from ``key_hint`` string
+        # parsing would be fragile (session:<username> vs apikey:
+        # <hint> vs "-"), so we keep it opt-in at the call-site.
+        if user_id is not None:
+            try:
+                user_dir = paths.user_logs_dir(user_id)
+                user_path = user_dir / "audit.jsonl"
+                with open(user_path, "a", encoding="utf-8") as f:
+                    f.write(line)
+                _chmod_audit_file_if_exists(user_path)
+            except OSError as e:
+                logger.debug(
+                    "per-user audit.jsonl write failed for user=%d: %s",
+                    user_id, e,
+                )
+    finally:
+        os.umask(_prev_umask)
 
 
 def _log_to_bot_log(user_id: int, slug: str, line: str) -> None:
