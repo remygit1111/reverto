@@ -207,6 +207,8 @@ WCAG 2.1 AA requires `aria-modal` for dialogs. RHA-v1 noted this for general mod
 
 **STATUS:** PARTIALLY RESOLVED in `fix/totp-modal-hygiene-cluster`. Scope-limited to the two TOTP modals (`#totp-enroll-modal`, `#totp-disable-modal`) — both `.modal-card` divs now declare `role="dialog"` + `aria-modal="true"` + `aria-labelledby` against an explicit `id` on the title. The four other production modals (api-key, profile, settings, finding-edit, changelog-edit) keep the pre-existing gap and remain out-of-scope; the broader sweep stays as future accessibility work cross-referenced from RHA-v1 rha-007. Pinned by `tests/test_frontend_assets.py::TestTotpModalAriaDialog` (2 tests).
 
+**STATUS (2026-04-29 / `fix/modal-accessibility`): FULLY RESOLVED — broader sweep landed.** All 13 `.modal-overlay` blocks in `web/static/index.html` now carry `role="dialog"` + `aria-modal="true"` + `aria-labelledby` on their `.modal-card` (api-key, profile, totp-enroll, totp-disable, settings, deal-edit, wizard-backtest, sweep, finding-detail, emergency-stop, bulk-stop, bulk-restart, cl-edit). The 11 non-TOTP modals received new title-IDs as needed; existing TOTP attribution from `fix/totp-modal-hygiene-cluster` is preserved. Pinned by `tests/test_frontend_assets.py::TestModalAccessibility::test_all_modals_have_aria_dialog_attributes`.
+
 **rhav2-005 (LOW × MEDIUM) — Esc on enrollment-modal leaves stale secret + QR in DOM.**
 
 Same root cause as rhav2-003 (TOTP modals don't have `data-action="close"` on their Cancel buttons). Closing via Escape does NOT call `_closeTotpEnrollModal()`, so:
