@@ -174,6 +174,42 @@ RESTART_WINDOW_SECONDS = 300  # 5 minutes
 # unbounded across many short-lived bots.
 _BOT_RESTART_HISTORY: dict[tuple[int, str], list[float]] = {}
 
+# rha-003: explicit per-bot growth ceiling. The
+# ``_attempt_bot_auto_restart`` flow already self-limits via the
+# (RESTART_MAX_ATTEMPTS=3) × (RESTART_WINDOW_SECONDS=300) gate, but
+# the implicit cap leaves no defence-in-depth if a future caller
+# bypasses the prune-then-append pattern. ``_record_bot_restart``
+# below is the single mutator and enforces this ceiling regardless.
+# 100 entries per bot is generous against the typical prune cycle
+# (3 entries clamp inside a 5-minute window) while still bounding
+# any pathological caller that forgot to prune.
+_BOT_RESTART_HISTORY_MAX_ENTRIES_PER_BOT = 100
+
+
+def _record_bot_restart(
+    user_id: int, slug: str, timestamp: float,
+) -> list[float]:
+    """Append a restart-timestamp for ``(user_id, slug)`` and enforce
+    the per-bot growth ceiling. Returns the post-mutation history list
+    so callers can read length / contents without a second dict lookup.
+
+    rha-003 single source-of-truth for ``_BOT_RESTART_HISTORY``
+    mutation. Callers are expected to do their own window-pruning
+    BEFORE invoking this helper (see ``_attempt_bot_auto_restart``);
+    this function only guarantees the absolute size cap, not the
+    rolling-window semantics.
+    """
+    key = (user_id, slug)
+    history = _BOT_RESTART_HISTORY.setdefault(key, [])
+    history.append(timestamp)
+    if len(history) > _BOT_RESTART_HISTORY_MAX_ENTRIES_PER_BOT:
+        # In-place truncation of the prefix so the list identity is
+        # preserved — any caller holding a reference to the list
+        # (e.g. the dict-stored value) sees the truncation without a
+        # rebind.
+        del history[:-_BOT_RESTART_HISTORY_MAX_ENTRIES_PER_BOT]
+    return history
+
 
 def _bot_needs_restart(state: dict, current_version: int) -> bool:
     """Return True if a running bot should be auto-restarted because
@@ -269,8 +305,13 @@ async def _attempt_bot_auto_restart(bot) -> bool:
         _persist_stopped_reason_field(bot.state_file, "restart_budget_exceeded")
         return False
 
-    history.append(now)
+    # Write back the window-pruned history first (caller-owned prune
+    # semantics), then append via the rha-003 ceiling-enforcing
+    # helper. Order matters: setting the dict slot before
+    # ``_record_bot_restart`` makes ``setdefault`` see our pruned
+    # list and append into it in place — preserving list identity.
     _BOT_RESTART_HISTORY[key] = history
+    _record_bot_restart(bot.user_id, bot.slug, now)
 
     try:
         result = await restart_bot(bot.user_id, bot.slug)
@@ -1209,6 +1250,19 @@ class BotInfo:
         in-memory, so the API response is correct even if the disk
         write transiently fails (it just means the next read will
         repeat the reconcile until the disk write succeeds).
+
+        rha-014 — semantic counterpart of ``StateIO.mark_stopped()``
+        in ``paper/state_io.py``. Both write ``running=False`` +
+        ``current_price=0.0`` atomically, but they are deliberately
+        separate. ``mark_stopped`` runs in the **engine** on graceful
+        shutdown and leaves ``stopped_at``/``stopped_reason`` as
+        ``None``. This method runs in the **portal** post-mortem
+        when the engine never got to mark itself stopped (cgroup
+        SIGKILL / OOM / hung-heartbeat) and stamps both fields so
+        operators can grep audit logs for the failure mode.
+        Consolidating them would either lose the ``stopped_reason``
+        signal or falsely stamp graceful shutdowns with one. See
+        ``StateIO.mark_stopped`` docstring for the full rationale.
         """
         if self.state_file is None:
             return

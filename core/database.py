@@ -427,6 +427,82 @@ SCHEMA_VERSION = 9
 _LAST_DESTRUCTIVE_VERSION = 4
 
 
+# rha-002: bounds for ``PRAGMA user_version`` reads. SQLite stores
+# user_version as a signed 32-bit integer, so any value outside
+# [0, SCHEMA_VERSION] indicates either DB corruption or a forward-
+# version DB that this code does not know how to migrate. The upper
+# cap is generous (we accept "unknown future ≤ 999") but bounded so
+# a corrupted page returning a random integer (e.g. 2147483647)
+# fails closed instead of being treated as a future version.
+_SCHEMA_VERSION_MIN = 0
+_SCHEMA_VERSION_MAX = 999
+
+
+class SchemaVersionError(DatabaseMigrationError):
+    """Raised when ``PRAGMA user_version`` is out of range or beyond
+    what the running code can migrate from.
+
+    rha-002: pre-fix the inline ``conn.execute("PRAGMA user_version")
+    .fetchone()[0] or 0`` accepted any integer (or a non-integer that
+    truthiness-checked to itself), so a corrupted DB or a forward-
+    version snapshot would either crash deep in the migration logic
+    or silently treat a corrupted value as version 0 and trigger a
+    destructive migration on real data.
+
+    Subclass of ``DatabaseMigrationError`` so existing callers that
+    catch the broader migration error keep working — this just
+    refines the failure mode for telemetry / log triage.
+    """
+
+
+def _read_schema_version(conn: sqlite3.Connection) -> int:
+    """Read ``PRAGMA user_version`` with range validation.
+
+    Three layers of defence:
+
+    1. **Type-check** — SQLite returns ``int`` for this PRAGMA, but
+       a corrupted DB or a non-SQLite file masquerading as one could
+       in theory return ``None`` or a string. Refuse anything non-int.
+    2. **Bounds-check** — values outside ``[_SCHEMA_VERSION_MIN,
+       _SCHEMA_VERSION_MAX]`` are corruption signals (random integer
+       from a damaged page) rather than legitimate future versions.
+    3. **Forward-compatibility** — values strictly above
+       ``SCHEMA_VERSION`` mean the DB was migrated by a newer Reverto
+       than this checkout knows how to handle. Refuse to touch the DB
+       rather than risk a silent downgrade or destructive migration.
+
+    A fresh install reads ``0`` from PRAGMA user_version (SQLite's
+    default), which passes through here and lets ``_migrate_schema``
+    take the destructive-or-additive branch as appropriate.
+    """
+    raw = conn.execute("PRAGMA user_version").fetchone()[0]
+    if not isinstance(raw, int):
+        raise SchemaVersionError(
+            f"PRAGMA user_version returned non-integer ({type(raw).__name__}: "
+            f"{raw!r}). Database may be corrupted; restore from a backup.",
+        )
+    if raw < _SCHEMA_VERSION_MIN:
+        raise SchemaVersionError(
+            f"PRAGMA user_version is {raw}, below minimum "
+            f"{_SCHEMA_VERSION_MIN}. Database may be corrupted; restore "
+            f"from a backup.",
+        )
+    if raw > _SCHEMA_VERSION_MAX:
+        raise SchemaVersionError(
+            f"PRAGMA user_version is {raw}, above the sanity cap "
+            f"{_SCHEMA_VERSION_MAX}. This is almost certainly a "
+            f"corrupted page rather than a legitimate future version. "
+            f"Restore from a backup.",
+        )
+    if raw > SCHEMA_VERSION:
+        raise SchemaVersionError(
+            f"DB schema is at version {raw}, code expects {SCHEMA_VERSION}. "
+            f"This DB was migrated by a newer Reverto. Roll forward the "
+            f"code or restore a matching DB snapshot before continuing.",
+        )
+    return raw
+
+
 def _has_existing_owned_data(conn: sqlite3.Connection) -> bool:
     """True if any owned table already contains rows.
 
@@ -500,16 +576,13 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     if the new schema turns out to be wrong. Fresh installs (no
     owned-table rows) skip the guard — there is no data to destroy.
     """
-    current = conn.execute("PRAGMA user_version").fetchone()[0] or 0
+    # rha-002: range-validated read. Values outside the sane range or
+    # beyond ``SCHEMA_VERSION`` raise ``SchemaVersionError`` (a
+    # ``DatabaseMigrationError`` subclass) rather than slipping through
+    # to a destructive migration on a corrupted PRAGMA value.
+    current = _read_schema_version(conn)
     if current == SCHEMA_VERSION:
         return
-    if current > SCHEMA_VERSION:
-        # Future-you downgraded the code; we don't know the new tables.
-        # Refuse to touch the DB rather than lose data silently.
-        raise RuntimeError(
-            f"DB schema is at version {current}, code expects {SCHEMA_VERSION}. "
-            f"Roll forward the code or restore a matching DB snapshot.",
-        )
 
     # Path 1: destructive — only when the stored version predates the
     # last destructive schema change. Every migration ≤ v4 used the

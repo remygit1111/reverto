@@ -407,3 +407,63 @@ class TestStateIOConcurrency:
             f"reader saw illegal value(s): "
             f"{[v for v in reads if v not in legal]}"
         )
+
+
+# ── rha-014 — semantic difference between mark_stopped and silent-exit ─────
+
+
+class TestMarkStoppedVsSilentExitReconcile:
+    """rha-014 regression — pin the deliberate semantic split between
+    ``StateIO.mark_stopped`` (engine-side, graceful) and
+    ``Bot._persist_silent_exit_reconcile`` (portal-side, post-mortem).
+
+    Pre-rha-014 the two functions looked enough alike that a future
+    cleanup pass might consolidate them and lose the
+    ``stopped_at`` / ``stopped_reason`` fields that operators rely
+    on to distinguish "bot stopped cleanly" from "bot was killed".
+    Both docstrings now carry an rha-014 marker + cross-reference
+    so the divergence is intentional and grep-discoverable.
+    """
+
+    def test_mark_stopped_docstring_references_rha014(self):
+        """``StateIO.mark_stopped`` docstring must mention rha-014 +
+        the counterpart function so the next reader understands why
+        the duplication exists."""
+        doc = StateIO.mark_stopped.__doc__ or ""
+        assert "rha-014" in doc, (
+            "rha-014: StateIO.mark_stopped docstring must reference "
+            "the finding so a future cleanup-pass reads the rationale "
+            "before considering consolidation."
+        )
+        assert "_persist_silent_exit_reconcile" in doc, (
+            "rha-014: docstring must name the portal-side counterpart."
+        )
+
+    def test_mark_stopped_does_not_write_stopped_at(self, tmp_path):
+        """Graceful-shutdown writes ``running=False`` only — the
+        ``stopped_at`` / ``stopped_reason`` fields stay absent so the
+        portal can later distinguish clean shutdown from silent-exit.
+        This is the contract the rha-014 docstring documents; pin
+        it so a future "tidy up by stamping stopped_at everywhere"
+        change fails this test."""
+        import json as _json
+
+        state_file = tmp_path / "alpha.state.json"
+        state_file.write_text(
+            _json.dumps({"running": True, "current_price": 100.0}),
+            encoding="utf-8",
+        )
+        StateIO(state_file, "alpha").mark_stopped()
+        on_disk = _json.loads(state_file.read_text(encoding="utf-8"))
+        assert on_disk["running"] is False
+        assert on_disk["current_price"] == 0.0
+        # The fields the silent-exit path stamps must NOT appear
+        # on the graceful-shutdown path.
+        assert "stopped_at" not in on_disk, (
+            "rha-014: mark_stopped must not stamp stopped_at — that "
+            "field is reserved for the silent-exit reconcile path."
+        )
+        assert "stopped_reason" not in on_disk, (
+            "rha-014: mark_stopped must not stamp stopped_reason — "
+            "that field is reserved for the silent-exit reconcile path."
+        )

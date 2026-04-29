@@ -477,7 +477,16 @@ def test_migrate_refuses_future_schema(tmp_path):
     """If the stored version is NEWER than SCHEMA_VERSION we refuse
     to run — the code may be rolled back but the DB isn't, and
     silently touching a schema we don't understand is worse than
-    crashing at startup."""
+    crashing at startup.
+
+    rha-002: pre-fix this raised a bare ``RuntimeError`` with the
+    message "DB schema is at version ...". Post-fix the more
+    specific ``SchemaVersionError`` (subclass of
+    ``DatabaseMigrationError``) is raised so log triage can
+    distinguish forward-version refusal from generic migration
+    failure. The match-string still anchors on "schema is at
+    version" so a future error-message rephrase is caught here.
+    """
     future_db = tmp_path / "future.db"
     import sqlite3
     raw = sqlite3.connect(str(future_db))
@@ -486,7 +495,9 @@ def test_migrate_refuses_future_schema(tmp_path):
     raw.close()
 
     database.set_db_path(future_db)
-    with pytest.raises(RuntimeError, match="schema is at version"):
+    with pytest.raises(
+        database.SchemaVersionError, match="schema is at version",
+    ):
         database.init_db()
 
 
@@ -956,3 +967,82 @@ class TestDbPathVersioning:
         database.close_db()
         conn2 = database.get_db()
         assert id(conn1) != id(conn2)
+
+
+class TestSchemaVersionValidation:
+    """rha-002 regression — ``PRAGMA user_version`` is range-validated.
+
+    Pre-fix the inline read accepted any value from PRAGMA, including
+    corruption-shaped integers (random page bits) that would slip
+    through to the destructive-migration branch with ``current=0`` (via
+    the ``or 0`` fallback) and silently wipe owned-table data.
+
+    The new ``_read_schema_version`` helper raises
+    ``SchemaVersionError`` (a ``DatabaseMigrationError`` subclass) for
+    out-of-range / forward-version reads, so corruption fails closed
+    instead of triggering data loss.
+    """
+
+    def _set_pragma_user_version(self, value):
+        """Helper: set PRAGMA user_version to ``value`` on the autouse
+        DB without going through a sqlite3.execute that would parse
+        the parameter — the PRAGMA syntax requires a literal, and
+        we're testing values like 9999 that are valid SQL integers."""
+        conn = database.get_db()
+        conn.execute(f"PRAGMA user_version = {int(value)}")
+        conn.commit()
+
+    def test_negative_schema_version_rejected(self):
+        """A negative user_version is corruption — refuse it."""
+        self._set_pragma_user_version(-1)
+        conn = database.get_db()
+        with pytest.raises(database.SchemaVersionError):
+            database._read_schema_version(conn)
+
+    def test_too_high_schema_version_rejected(self):
+        """A value above _SCHEMA_VERSION_MAX is almost certainly a
+        corrupted page returning a random integer; refuse rather than
+        treat as a legitimate forward version."""
+        self._set_pragma_user_version(database._SCHEMA_VERSION_MAX + 1)
+        conn = database.get_db()
+        with pytest.raises(
+            database.SchemaVersionError,
+            match="above the sanity cap",
+        ):
+            database._read_schema_version(conn)
+
+    def test_future_schema_version_rejected(self):
+        """A value above SCHEMA_VERSION but within the sanity cap
+        means the DB was migrated by a newer Reverto. Refuse with a
+        message that points the operator at restoring or upgrading."""
+        self._set_pragma_user_version(database.SCHEMA_VERSION + 1)
+        conn = database.get_db()
+        with pytest.raises(
+            database.SchemaVersionError,
+            match="newer Reverto",
+        ):
+            database._read_schema_version(conn)
+
+    def test_current_schema_version_passes_through(self):
+        """The happy path: a value in [0, SCHEMA_VERSION] returns
+        unchanged. Idempotent on the autouse fixture's already-
+        migrated DB."""
+        # The autouse fixture already migrated to SCHEMA_VERSION.
+        conn = database.get_db()
+        assert database._read_schema_version(conn) == database.SCHEMA_VERSION
+
+    def test_zero_schema_version_passes_through(self):
+        """SQLite's default for a fresh DB is 0 — accept it so
+        first-time installs migrate normally."""
+        self._set_pragma_user_version(0)
+        conn = database.get_db()
+        assert database._read_schema_version(conn) == 0
+
+    def test_schema_version_error_subclasses_migration_error(self):
+        """``SchemaVersionError`` extends ``DatabaseMigrationError`` so
+        existing callers that catch the broader class keep handling
+        the new failure mode without code changes."""
+        assert issubclass(
+            database.SchemaVersionError,
+            database.DatabaseMigrationError,
+        )
