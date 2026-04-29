@@ -58,8 +58,8 @@ def _capture_send(notifier):
 class TestPersistentErrorSeverity:
     """Severity emoji + state label split by is_transient. Transient
     exhaustion renders as ⚠️ degraded because the engine is still
-    retrying; non-transient renders as ⛔ stopped because no further
-    retry will help."""
+    retrying; non-transient renders as ⛔ blocked (audit B-02) because
+    no further retry will help and operator intervention is needed."""
 
     def test_transient_exhausted_renders_as_degraded(self, notifier):
         cap = _capture_send(notifier)
@@ -69,7 +69,12 @@ class TestPersistentErrorSeverity:
         assert "Bot degraded" in body
         assert "⛔" not in body
 
-    def test_non_transient_renders_as_stopped(self, notifier):
+    def test_non_transient_renders_as_blocked(self, notifier):
+        """B-02: the non-transient label is 'blocked' (operator action
+        required) rather than 'stopped' — the engine subprocess is
+        technically still in its tick-loop when this notification
+        fires, just unable to make progress. 'Stopped' was misleading
+        because it conflated process-state with progress-state."""
         cap = _capture_send(notifier)
         notifier.notify_error_persistent(
             "RSI Paper Test",
@@ -81,8 +86,20 @@ class TestPersistentErrorSeverity:
         )
         body = cap["body"]
         assert "⛔" in body
-        assert "Bot stopped" in body
+        assert "Bot blocked" in body
         assert "⚠️" not in body
+        # B-02 regression guard: the previous "Bot stopped" label
+        # must not creep back. Compares case-insensitively because
+        # "stopped" anywhere in the body — even inside an Action
+        # hint — would re-introduce the ambiguity.
+        assert "stopped" not in body.lower(), (
+            "B-02 regression: the persistent-error notification used "
+            "to say 'Bot stopped', which was misleading because the "
+            "engine subprocess is still in its tick-loop when this "
+            "fires. The label is now 'Bot blocked'; if 'stopped' has "
+            "crept back into the body (label or otherwise) the audit "
+            "fix has regressed."
+        )
 
 
 class TestPersistentErrorFields:
