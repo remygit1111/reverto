@@ -47,6 +47,30 @@ def _disable_hibp_by_default(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_slowapi_between_tests():
+    """The /auth/totp/setup endpoint is rate-limited at 5/min and
+    the pt-130 regression tests fire setup + verify (or setup +
+    multiple verifies) per test. Without a reset between tests
+    the slowapi bucket bleeds across tests in this file and we'd
+    see 429s instead of the actual flow-status codes — same
+    pattern as test_auth_login_totp.py + test_auth_rate_limit.py.
+
+    Pre-pt-130 the existing tests in this file each fired only
+    one or two requests so the bleed never tripped the 5/min cap;
+    the new TestSessionEpochBumpOnTotpMutation tests are heavier
+    and forced this autouse-fixture addition."""
+    try:
+        webapp.limiter.reset()
+    except Exception:
+        pass
+    yield
+    try:
+        webapp.limiter.reset()
+    except Exception:
+        pass
+
+
 @pytest.fixture
 def auth_client():
     """TestClient with the seeded admin authenticated.
@@ -256,6 +280,132 @@ class TestTotpDisable:
         admin = user_store.get_user_by_id(1)
         assert admin.totp_enabled is False
         assert admin.totp_seed_encrypted is None
+
+
+# ── pt-130: session_epoch bump on TOTP-state mutation ────────────────────
+
+
+class TestSessionEpochBumpOnTotpMutation:
+    """Class-of-issue: pre-2FA session cookies must NOT survive
+    TOTP enrolment or disable. Closes pt-130.
+
+    Pre-fix the auditor verified that ``update_user_totp_seed``
+    did not bump ``session_epoch`` on either the enrolment-verify
+    or the disable path. A pre-enrolment stolen session cookie
+    (or simply the user's other browser tab) would survive the
+    user enabling 2FA and keep working until the session's 24h
+    TTL expired — defeating the user-visible expectation that
+    "I just enabled 2FA, my old sessions should now require it."
+
+    Post-fix both paths emit ``user_store.bump_session_epoch``
+    after the DB write, mirroring the password-change flow at
+    auth.py:737.
+
+    KRITIEK: ``/auth/login/totp`` (the second-factor step of the
+    login flow) MUST NOT bump the epoch — it doesn't call
+    ``update_user_totp_seed`` and bumping there would self-DoS the
+    freshly-minted session cookie. The third test in this class
+    pins that scope-boundary so a future "consistency" refactor
+    can't quietly extend the bump to the login path.
+    """
+
+    def test_totp_enrolment_bumps_session_epoch(self, auth_client):
+        """A successful enrolment-verify increments
+        ``session_epoch`` by one. Tested against the live
+        ``/auth/totp/setup`` + ``/auth/totp/verify`` round-trip
+        so middleware + dependency-resolve + audit-emit all
+        participate."""
+        before = user_store.get_session_epoch(1)
+        # Step 1: setup mints pending cookie + returns secret.
+        setup = auth_client.post("/auth/totp/setup")
+        assert setup.status_code == 200
+        secret = setup.json()["secret"]
+        # Step 2: derive a current code and verify it.
+        code = pyotp.TOTP(
+            secret,
+            digits=totp.DIGITS,
+            interval=totp.PERIOD_SECONDS,
+        ).now()
+        r = auth_client.post("/auth/totp/verify", json={"code": code})
+        assert r.status_code == 200, r.text
+
+        after = user_store.get_session_epoch(1)
+        assert after == before + 1, (
+            f"pt-130: enrolment-verify must bump session_epoch by "
+            f"exactly 1. Before={before}, after={after}. A pre-"
+            "enrolment stolen cookie survives this transition "
+            "without the bump."
+        )
+
+    def test_totp_disable_bumps_session_epoch(self, totp_user_client):
+        """A successful disable (dual-factor: password + valid
+        code) increments ``session_epoch`` by one. Same
+        invalidation reasoning as enrolment — disabling 2FA is
+        a security-state change."""
+        client, secret = totp_user_client
+        before = user_store.get_session_epoch(1)
+        code = pyotp.TOTP(
+            secret, digits=totp.DIGITS, interval=totp.PERIOD_SECONDS,
+        ).now()
+        r = client.post(
+            "/auth/totp/disable",
+            json={"current_password": _KNOWN_PW, "totp_code": code},
+        )
+        assert r.status_code == 200, r.text
+
+        after = user_store.get_session_epoch(1)
+        assert after == before + 1, (
+            f"pt-130: disable must bump session_epoch by exactly 1. "
+            f"Before={before}, after={after}. Without the bump, "
+            "pre-disable cookies survive the TOTP-removal."
+        )
+
+    def test_failed_enrolment_does_not_bump_session_epoch(
+        self, auth_client,
+    ):
+        """A failed enrolment-verify (wrong code) MUST NOT bump
+        — no DB state change happened, so no session
+        invalidation is warranted. Without this test a future
+        refactor could move the bump above the
+        ``update_user_totp_seed`` call and silently invalidate
+        sessions on every typo."""
+        before = user_store.get_session_epoch(1)
+        # Mint pending cookie via setup, then submit a wrong code.
+        setup = auth_client.post("/auth/totp/setup")
+        assert setup.status_code == 200
+        r = auth_client.post(
+            "/auth/totp/verify", json={"code": "000000"},
+        )
+        assert r.status_code == 401
+        # DB unchanged, so epoch must be unchanged too.
+        assert user_store.get_session_epoch(1) == before
+        # And TOTP is NOT enabled.
+        admin = user_store.get_user_by_id(1)
+        assert admin.totp_enabled is False
+
+    def test_failed_disable_does_not_bump_session_epoch(
+        self, totp_user_client,
+    ):
+        """Symmetrical guard: a disable that fails because of
+        wrong password OR wrong TOTP code must NOT bump. The
+        DB write is gated on dual-factor success, so an audit-
+        positive epoch increment without a state change would
+        be a misleading signal."""
+        client, _ = totp_user_client
+        before = user_store.get_session_epoch(1)
+        # Wrong password.
+        r = client.post(
+            "/auth/totp/disable",
+            json={
+                "current_password": "wrong-password",
+                "totp_code": "123456",
+            },
+        )
+        assert r.status_code == 401
+        assert user_store.get_session_epoch(1) == before
+        # And TOTP is still enabled.
+        admin = user_store.get_user_by_id(1)
+        assert admin.totp_enabled is True
 
 
 # ── 4. Pending-TOTP cookie helpers ─────────────────────────────────────────
