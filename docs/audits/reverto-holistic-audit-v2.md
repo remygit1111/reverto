@@ -179,6 +179,8 @@ Cross-references: RHA-v1 rha-007 (no focus trap — same modals); PT-v3 not reac
 
 **Remediation:** add `data-action="close"` to `#totp-enroll-cancel` and `#totp-disable-cancel`, OR add an explicit Esc-listener within `_wireTotpUiHandlers` that calls the typed close-helpers. ~15 minutes work + 1 regression test.
 
+**STATUS:** RESOLVED in `fix/totp-modal-hygiene-cluster`. Added `data-action="close"` to both Cancel buttons; the existing global Escape handler at `app.js:312-329` now finds them and dispatches `.click()` which fires `_closeTotpDisableModal` / `_closeTotpEnrollModal` respectively. Both helpers were already correctly clearing sensitive state — the missing piece was the routing. Pinned by `tests/test_frontend_assets.py::TestTotpModalEscClosesViaCleanup` (2 tests, source-grep on the Cancel-button line).
+
 ---
 
 ## Part 4: UX Findings
@@ -199,6 +201,8 @@ WCAG 2.1 AA requires `aria-modal` for dialogs. RHA-v1 noted this for general mod
 
 **Remediation:** retrofit `aria-modal="true" role="dialog" aria-labelledby="<heading-id>"` onto all `.modal-overlay > .modal-card` blocks. Single sweep across 6 modals. ~30 minutes + visual regression check.
 
+**STATUS:** PARTIALLY RESOLVED in `fix/totp-modal-hygiene-cluster`. Scope-limited to the two TOTP modals (`#totp-enroll-modal`, `#totp-disable-modal`) — both `.modal-card` divs now declare `role="dialog"` + `aria-modal="true"` + `aria-labelledby` against an explicit `id` on the title. The four other production modals (api-key, profile, settings, finding-edit, changelog-edit) keep the pre-existing gap and remain out-of-scope; the broader sweep stays as future accessibility work cross-referenced from RHA-v1 rha-007. Pinned by `tests/test_frontend_assets.py::TestTotpModalAriaDialog` (2 tests).
+
 **rhav2-005 (LOW × MEDIUM) — Esc on enrollment-modal leaves stale secret + QR in DOM.**
 
 Same root cause as rhav2-003 (TOTP modals don't have `data-action="close"` on their Cancel buttons). Closing via Escape does NOT call `_closeTotpEnrollModal()`, so:
@@ -212,6 +216,8 @@ Mostly cosmetic — a non-attacker user wouldn't notice. Becomes a defence-in-de
 
 **Remediation:** same as rhav2-003 — add `data-action="close"` to the cancel buttons.
 
+**STATUS:** RESOLVED in `fix/totp-modal-hygiene-cluster`. Bundled with rhav2-003 (same single-line change on `#totp-enroll-cancel`); the existing `_closeTotpEnrollModal` helper was already clearing both `qr_svg` innerHTML and secret-display textContent, so adding the data-action attribute completes the routing.
+
 **rhav2-006 (LOW × LOW) — `_startTotpEnrollment` not double-click-protected.**
 
 `_startTotpEnrollment` fetches `/auth/totp/setup` without disabling the trigger button during the request. A user double-clicking "Enable TOTP" fires two POSTs in rapid succession. Server-side: each POST mints a fresh secret + overwrites the pending cookie with the second secret. Net effect: the QR shown to the user is from the second response, but the modal-render uses the response of whichever fetch resolved first — race-condition, displayed QR may not match the active pending secret.
@@ -223,6 +229,8 @@ Mitigated in practice because:
 
 Still a paper-cut. Should disable the button between click and response.
 
+**STATUS:** RESOLVED in `fix/totp-modal-hygiene-cluster`. `_startTotpEnrollment` now reads the `#profile-totp-enable-btn` element at function entry, returns immediately if `btn.disabled` (re-entry guard), then sets `btn.disabled = true` + swaps `btn.textContent = 'Setting up…'` before the fetch. Restoration runs in `finally` so a thrown error doesn't leave the button permanently disabled. The text-swap doubles as loading-state feedback, which mitigates rhav2-009 (see below). Pinned by `tests/test_frontend_assets.py::TestTotpEnrollDoubleClickProtection`.
+
 ### Area UX2 — TOTP login-flow
 
 **rhav2-007 (LOW × MEDIUM) — Manual-entry secret has no copy-button.**
@@ -232,6 +240,8 @@ Still a paper-cut. Should disable the button between click and response.
 Adjacent UI affordances exist already — `#profile-api-copy` button next to `#profile-api-key`. Same pattern applies here. No copy-button on TOTP secret.
 
 **Remediation:** add `<button id="totp-secret-copy">Copy</button>` next to the secret-display, with a 2-line `_handler` similar to `copyProfileApiKey`. ~5 minutes.
+
+**STATUS:** RESOLVED in `fix/totp-modal-hygiene-cluster`. Added `#totp-secret-copy-btn` next to the manual-entry secret. Handler `_copyTotpSecret` uses `navigator.clipboard.writeText` with a `document.createRange` selection-fallback for browsers that block the clipboard API (HTTP, missing user-gesture). 2-second feedback flash on `#totp-secret-copy-feedback`. Pinned by `tests/test_frontend_assets.py::TestTotpSecretCopyButton` (3 tests covering markup, handler-shape, wireup).
 
 ### Area UX3 — TOTP disable-flow
 
@@ -255,6 +265,8 @@ alert('TOTP has been disabled for this account.');
 **rhav2-009 (INFO × LOW) — No loading-state on `/auth/totp/setup` fetch.**
 
 A click on "Enable TOTP" → POST /auth/totp/setup → server-side QR-rendering takes ~50-100ms. No spinner, no button-disable, no skeleton. User who clicks once then sees "nothing happened for 100ms" might click again (see rhav2-006 race-condition). Minor.
+
+**STATUS:** RESOLVED (mitigated as side-effect of rhav2-006) in `fix/totp-modal-hygiene-cluster`. The button-text swap to "Setting up…" during the in-flight fetch gives users immediate "click registered" feedback. Restored to original text in `finally`. No separate spinner or skeleton needed for a 50-100ms request.
 
 ---
 

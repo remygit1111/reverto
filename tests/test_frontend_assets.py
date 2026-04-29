@@ -636,3 +636,154 @@ def test_login_error_div_outside_both_login_forms():
         "#login-error sits inside #login-totp-form. It would be hidden "
         "during the password step. Move it after both </form> tags."
     )
+
+
+# ── TOTP modal hygiene cluster (RHA-v2 rhav2-003..007) ────────────────────
+
+
+def _slice_modal_card(html: str, modal_id: str) -> str:
+    """Return the substring from ``id="modal_id"`` to the matching
+    ``</div></div>`` boundary. Heuristic — works because TOTP modals
+    are simple `.modal-overlay > .modal-card > content` shape and
+    the SPA never nests a third-level modal inside one of them."""
+    start = html.find(f'id="{modal_id}"')
+    assert start >= 0, f"missing modal id={modal_id!r} in index.html"
+    # Cut at the next sibling-modal opener as a safety boundary.
+    return html[start:start + 3500]
+
+
+class TestTotpModalAriaDialog:
+    """rhav2-004: TOTP modals must declare role=dialog + aria-modal +
+    aria-labelledby. Pre-fix the modals announced as plain divs to
+    screen readers, no focus-trap hint, no titled label."""
+
+    def test_enroll_modal_has_aria_dialog_attrs(self):
+        html = _INDEX_HTML.read_text(encoding="utf-8")
+        block = _slice_modal_card(html, "totp-enroll-modal")
+        assert 'role="dialog"' in block, (
+            "rhav2-004: #totp-enroll-modal .modal-card must declare "
+            "role='dialog' for screen-reader announce."
+        )
+        assert 'aria-modal="true"' in block
+        assert 'aria-labelledby="totp-enroll-title"' in block
+        # The labelledby target must exist.
+        assert 'id="totp-enroll-title"' in block
+
+    def test_disable_modal_has_aria_dialog_attrs(self):
+        html = _INDEX_HTML.read_text(encoding="utf-8")
+        block = _slice_modal_card(html, "totp-disable-modal")
+        assert 'role="dialog"' in block
+        assert 'aria-modal="true"' in block
+        assert 'aria-labelledby="totp-disable-title"' in block
+        assert 'id="totp-disable-title"' in block
+
+
+class TestTotpModalEscClosesViaCleanup:
+    """rhav2-003 + rhav2-005: pressing Escape on a TOTP modal must
+    route through the typed close-helpers (clear typed password,
+    clear secret + QR), not the global fallback that just removes
+    the .show class. Pinning the wiring here: the Cancel buttons
+    must carry data-action="close" so the global Escape handler
+    finds them and dispatches a click — which in turn fires the
+    cleanup logic in _closeTotpEnrollModal / _closeTotpDisableModal."""
+
+    def test_enroll_cancel_button_has_data_action_close(self):
+        html = _INDEX_HTML.read_text(encoding="utf-8")
+        block = _slice_modal_card(html, "totp-enroll-modal")
+        # The Cancel button line must carry data-action="close" so the
+        # global Esc handler recognises it as the close-target.
+        assert 'id="totp-enroll-cancel"' in block
+        # Restrict the search to the line containing the Cancel id so
+        # we know the data-action attribute is on THAT button.
+        cancel_line = next(
+            line for line in block.splitlines()
+            if 'id="totp-enroll-cancel"' in line
+        )
+        assert 'data-action="close"' in cancel_line, (
+            "rhav2-005: #totp-enroll-cancel needs data-action='close' "
+            "so the global Esc handler routes through "
+            "_closeTotpEnrollModal — pre-fix Esc removed only the "
+            ".show class, leaving the rendered QR + secret in the DOM."
+        )
+
+    def test_disable_cancel_button_has_data_action_close(self):
+        html = _INDEX_HTML.read_text(encoding="utf-8")
+        block = _slice_modal_card(html, "totp-disable-modal")
+        assert 'id="totp-disable-cancel"' in block
+        cancel_line = next(
+            line for line in block.splitlines()
+            if 'id="totp-disable-cancel"' in line
+        )
+        assert 'data-action="close"' in cancel_line, (
+            "rhav2-003: #totp-disable-cancel needs data-action='close' "
+            "so the global Esc handler routes through "
+            "_closeTotpDisableModal — pre-fix Esc left the typed "
+            "password value in the DOM."
+        )
+
+
+class TestTotpEnrollDoubleClickProtection:
+    """rhav2-006: _startTotpEnrollment must disable the trigger
+    button while the /auth/totp/setup fetch is in-flight to prevent
+    a double-click from minting two pending-secret cookies in rapid
+    succession (last-write-wins on the server-side cookie)."""
+
+    def test_start_enrollment_disables_button_during_fetch(self):
+        js = _APP_JS.read_text(encoding="utf-8")
+        # Locate the function body and assert button-disable + restore
+        # both appear within it.
+        start = js.find("async function _startTotpEnrollment(")
+        assert start >= 0
+        # Body extends until the next top-level function or async
+        # function declaration.
+        end_a = js.find("\nasync function ", start + 1)
+        end_b = js.find("\nfunction ", start + 1)
+        end = min(x for x in (end_a, end_b) if x > 0)
+        body = js[start:end]
+        assert "btn.disabled = true" in body, (
+            "rhav2-006: _startTotpEnrollment must set btn.disabled=true "
+            "before the fetch to prevent re-entry."
+        )
+        # Reset must run in finally so a thrown error doesn't leave
+        # the button permanently disabled.
+        assert "finally" in body
+        assert "btn.disabled = false" in body
+
+
+class TestTotpSecretCopyButton:
+    """rhav2-007: the manual-entry secret needs a one-click copy
+    button. Clipboard API + selection fallback for browsers without
+    permission. 32-char base32 is awkward to type and ambiguous to
+    read — a copy button removes the friction."""
+
+    def test_copy_button_present_in_html(self):
+        html = _INDEX_HTML.read_text(encoding="utf-8")
+        assert 'id="totp-secret-copy-btn"' in html
+        assert 'id="totp-secret-copy-feedback"' in html
+
+    def test_copy_handler_uses_clipboard_with_selection_fallback(self):
+        js = _APP_JS.read_text(encoding="utf-8")
+        assert "_copyTotpSecret" in js, (
+            "rhav2-007: _copyTotpSecret handler missing"
+        )
+        # Body must reference both the clipboard API + the
+        # range-selection fallback so users without permission can
+        # still finish the enrollment.
+        start = js.find("async function _copyTotpSecret(")
+        assert start >= 0
+        end = js.find("\nfunction ", start + 1)
+        body = js[start:end if end > 0 else len(js)]
+        assert "navigator.clipboard.writeText" in body
+        assert "createRange" in body
+
+    def test_copy_button_wired_in_handlers_init(self):
+        js = _APP_JS.read_text(encoding="utf-8")
+        # The wireup function must reference the copy-button id so
+        # the click event is bound at init time.
+        assert "totp-secret-copy-btn" in js
+        # And the wire-up must call _copyTotpSecret as the listener.
+        wireup_start = js.find("function _wireTotpUiHandlers(")
+        assert wireup_start >= 0
+        end = js.find("\nfunction ", wireup_start + 1)
+        wireup_body = js[wireup_start:end if end > 0 else len(js)]
+        assert "_copyTotpSecret" in wireup_body
