@@ -4302,11 +4302,6 @@ function _rmRenderPhase(phase) {
   if (effortItem) metaItems.push(effortItem);
   const auditItem = _rmRenderMetaItem('Audit:', phase.audit_checkpoint);
   if (auditItem) metaItems.push(auditItem);
-  const dateLabel = _rmFormatDate(phase.published_at);
-  if (dateLabel) {
-    const dateItem = _rmRenderMetaItem('Published:', dateLabel);
-    if (dateItem) metaItems.push(dateItem);
-  }
   if (metaItems.length > 0) {
     const meta = document.createElement('div');
     meta.className = 'roadmap-meta';
