@@ -34,7 +34,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=97">
+<link rel="stylesheet" href="/static/style.css?v=98">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/roadmap.css?v=1">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
@@ -78,6 +78,13 @@
     <span id="state-ws-dot" class="live-dot"></span>
     <span id="state-ws-label" class="log-status-text">connecting…</span>
   </span>
+  <!-- Login button — shown only in body.is-public (logged-out
+       visitor on a public route). Lives in the same header zone
+       as the profile-btn so the auth-state swap is one element
+       toggle. CSS in style.css controls visibility. -->
+  <button id="nav-login-btn" type="button" class="hbtn hbtn-theme btn-accent nav-login-btn" hidden>
+    Log in
+  </button>
   <button id="profile-btn" type="button" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">
     <span id="profile-initial">A</span>
   </button>
@@ -639,8 +646,12 @@
   <button class="tab" id="nav-workspace-btn">Workspace</button>
   <button class="tab" id="nav-bots-btn">Bots</button>
   <button class="tab" id="nav-backtests-btn">Backtest History</button>
-  <button class="tab" id="nav-roadmap-btn">Roadmap</button>
-  <button class="tab" id="nav-changelog-btn">Changelog</button>
+  <!-- data-public marks tabs that work without an authenticated
+       session. body.is-public hides every other tab so a logged-
+       out visitor at /#roadmap (or /#changelog) sees a minimal
+       nav rather than the login-form. -->
+  <button class="tab" id="nav-roadmap-btn" data-public>Roadmap</button>
+  <button class="tab" id="nav-changelog-btn" data-public>Changelog</button>
   <button class="tab" id="nav-admin-btn" data-admin-only hidden>Admin</button>
 </nav>
 
@@ -1996,6 +2007,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=220"></script>
+<script src="/static/app.js?v=221"></script>
 </body>
 </html>

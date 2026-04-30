@@ -166,8 +166,67 @@ function _handle401() {
   }
   // Strip the chrome (main nav, header buttons, state indicators) so
   // the login screen is the only thing visible. CSS hides everything
-  // except the REVERTO logo when body carries .is-login.
+  // except the REVERTO logo when body carries .is-login. Drop
+  // is-public if it was set — a logged-out user clicking the Log-in
+  // button transitions out of public-shell into the login-form.
   document.body.classList.add('is-login');
+  document.body.classList.remove('is-public');
+}
+
+
+// ── Public-shell mode ─────────────────────────────────────────────────────
+//
+// Hash routes that work without authentication. A logged-out
+// visitor who lands on one of these URLs gets the public-shell
+// (minimal nav with only [data-public] tabs + Log-in button)
+// instead of the login-form. The login-form remains the default
+// for visitors who land at `/` without a hash.
+//
+// /api/roadmap is in web.app._PUBLIC_PATHS so the JSON fetch
+// behind the SPA tab works for unauthenticated clients;
+// /api/changelog received the same treatment in this PR (was
+// previously logged-in-only by accident, not by design).
+const PUBLIC_HASH_ROUTES = new Set(['#roadmap', '#changelog']);
+
+function _isPublicHashRoute() {
+  return PUBLIC_HASH_ROUTES.has(window.location.hash);
+}
+
+function _enterPublicShell() {
+  // The mirror image of _handle401's "set is-login + show login"
+  // pattern, for unauthenticated visitors on a public route.
+  // Sets body.is-public so the CSS reveals Roadmap + Changelog
+  // tabs + the Log-in button while hiding everything else, then
+  // delegates to the existing hash router so the requested tab
+  // renders.
+  document.body.classList.add('is-public');
+  document.body.classList.remove('is-login');
+  // Make sure the login-form view is hidden — it shares the
+  // .page class with the SPA tabs and the SPA shell defaults
+  // it active in HTML. Rendering the login view AND the
+  // requested public tab simultaneously would produce a
+  // confusing double-page paint.
+  const login = document.getElementById('view-login');
+  if (login) {
+    login.classList.remove('active');
+    login.classList.add('hidden');
+  }
+  _routeFromHash();
+}
+
+function _showLoginFormFromPublic() {
+  // Triggered by the header Log-in button. Reuses _handle401's
+  // flow byte-for-byte — it already swaps to is-login + reveals
+  // #view-login + drops is-public.
+  _handle401();
+  // Focus the username field for usability. The setTimeout
+  // mirrors the focus pattern used by other modal handlers
+  // throughout the file (avoids racing the CSS transition that
+  // reveals the form).
+  setTimeout(() => {
+    const u = document.getElementById('login-username');
+    if (u) u.focus();
+  }, 30);
 }
 
 async function handleLoginSubmit(e) {
@@ -8979,6 +9038,15 @@ function renderWizardOverlays() {
 
 // ── Event wiring (vervangt alle inline onclick=) ─────────────────────────────
 function setupEventListeners() {
+  // Public-shell Log-in button. Visible only when body.is-public
+  // is set (see _enterPublicShell); hidden by default via the
+  // [hidden] attribute + CSS guard. Clicking it transitions the
+  // visitor into the login-form (body.is-login).
+  const loginBtn = document.getElementById('nav-login-btn');
+  if (loginBtn) {
+    loginBtn.addEventListener('click', _showLoginFormFromPublic);
+  }
+
   // Profile dropdown button + menu entries
   $('profile-btn').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -9820,20 +9888,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   _wireAllModalFocusTraps();
 
   // Gate: require a valid session cookie before bringing up the SPA.
+  // Three outcomes after the auth check:
+  //   * authed                    → standard SPA boot (below)
+  //   * unauthed + public hash    → public-shell (Roadmap /
+  //                                 Changelog visible without auth)
+  //   * unauthed + non-public hash → login-form (existing default)
   const authed = await checkAuthStatus();
   if (!authed) {
-    _handle401();
+    if (_isPublicHashRoute()) {
+      _enterPublicShell();
+    } else {
+      _handle401();
+    }
     // Anti-flash gate (paired with the visibility:hidden rule in
-    // index.html): reveal body AFTER _handle401() has stripped the
-    // protected chrome and shown the login view. Doing it before
-    // would re-introduce the flash we're trying to prevent.
+    // index.html): reveal body AFTER the chrome decision has been
+    // applied. Doing it before would re-introduce the flash we're
+    // trying to prevent.
     document.body.classList.add('auth-checked');
     return;
   }
-  // Authed — make sure the chrome is visible (a previous _handle401
-  // call from a stale tab on the same page could have left the
-  // .is-login class on body).
+  // Authed — make sure the chrome is visible. A previous
+  // _handle401 / _enterPublicShell call from a stale tab on the
+  // same page could have left either class on body; clear both
+  // so the standard logged-in styling takes effect cleanly.
   document.body.classList.remove('is-login');
+  document.body.classList.remove('is-public');
 
   // Admin-only nav items (e.g. the "Admin" tab) stay hidden in HTML
   // via the `hidden` attribute and only reveal once the auth check
