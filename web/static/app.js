@@ -2578,6 +2578,21 @@ function goChangelog(fromPop = false) {
   loadChangelog();
 }
 
+// Roadmap is the second public-facing tab (alongside Changelog).
+// Mirrors goChangelog byte-for-byte except it doesn't gate on
+// auth — a logged-out visitor can hit /#roadmap and see the
+// timeline. The /api/roadmap endpoint is in _PUBLIC_PATHS, so
+// the loadRoadmap() fetch below works without a session cookie.
+function goRoadmap(fromPop = false) {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-roadmap-btn');
+  showPage('roadmap');
+  clearInterval(overviewInterval);
+  overviewInterval = null;
+  if (!fromPop) _pushHistory('roadmap', '#roadmap');
+  loadRoadmap();
+}
+
 function goAdmin(fromPop = false, subRoute = null) {
   _resetHeaderForTopLevel();
   _setActiveTab('nav-admin-btn');
@@ -2590,6 +2605,7 @@ function goAdmin(fromPop = false, subRoute = null) {
   }
   _showAdminSubpage(subRoute);
   if (subRoute === 'changelog-manage') loadAdminChangelog();
+  if (subRoute === 'roadmap-manage') loadAdminRoadmap();
   if (subRoute === 'bots') loadAdminBotsOverview();
   if (subRoute === 'findings') loadAdminFindings();
 }
@@ -2600,16 +2616,19 @@ function _showAdminSubpage(name) {
   // top-level tabs.
   const index = $('admin-index');
   const subCl = $('admin-changelog-manage');
+  const subRm = $('admin-roadmap-manage');
   const subBots = $('admin-bots-overview');
   const subFindings = $('admin-findings');
   if (!index) return;
-  const subs = [subCl, subBots, subFindings].filter(Boolean);
+  const subs = [subCl, subRm, subBots, subFindings].filter(Boolean);
   const showIndex = !(
-    name === 'changelog-manage' || name === 'bots' || name === 'findings'
+    name === 'changelog-manage' || name === 'roadmap-manage'
+    || name === 'bots' || name === 'findings'
   );
   index.classList.toggle('hidden', !showIndex);
   subs.forEach((el) => el.classList.add('hidden'));
   if (name === 'changelog-manage' && subCl) subCl.classList.remove('hidden');
+  if (name === 'roadmap-manage' && subRm) subRm.classList.remove('hidden');
   if (name === 'bots' && subBots) subBots.classList.remove('hidden');
   if (name === 'findings' && subFindings) subFindings.classList.remove('hidden');
 }
@@ -4134,6 +4153,541 @@ async function _clDeleteAction(entryId) {
   loadAdminChangelog();
 }
 
+
+// ── Roadmap — public timeline ────────────────────────────────────────────
+// Renders /api/roadmap inside the Roadmap tab. body_html is rendered
+// + bleach-sanitised server-side (core.markdown_render) so we drop it
+// straight into innerHTML — same trust boundary as changelog.
+
+const _RM_STATUS_LABELS = {
+  pending: 'Pending',
+  active: 'Active',
+  done: 'Done',
+};
+
+function _rmFormatDate(ts) {
+  if (!ts) return null;
+  return String(ts).split(' ')[0];
+}
+
+function _rmStatusBadge(status) {
+  const safe = String(status || '').replace(/[^a-z]/g, '');
+  const label = _RM_STATUS_LABELS[safe] || safe || '—';
+  const badge = document.createElement('span');
+  badge.className = `roadmap-badge roadmap-badge--${safe}`;
+  badge.textContent = label;
+  return badge;
+}
+
+function _rmRenderMetaItem(label, value) {
+  if (!value) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'roadmap-meta-item';
+  const labelEl = document.createElement('span');
+  labelEl.className = 'roadmap-meta-item-label';
+  labelEl.textContent = label + ' ';
+  const valueEl = document.createElement('span');
+  valueEl.textContent = value;
+  wrap.appendChild(labelEl);
+  wrap.appendChild(valueEl);
+  return wrap;
+}
+
+function _rmRenderPhase(phase) {
+  const article = document.createElement('article');
+  const safeStatus = String(phase.status || 'pending').replace(/[^a-z]/g, '');
+  article.className = `roadmap-phase roadmap-phase--${safeStatus}`;
+
+  // Timeline dot — positioned absolutely via CSS at the card's
+  // vertical level. Status modifier on the parent picks the
+  // colour; the dot inherits it via the descendant selector in
+  // roadmap.css.
+  const dot = document.createElement('div');
+  dot.className = 'roadmap-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  article.appendChild(dot);
+
+  const header = document.createElement('div');
+  header.className = 'roadmap-phase-header';
+  const title = document.createElement('h3');
+  title.className = 'roadmap-phase-title';
+  title.textContent = phase.display_name || phase.phase_key || '—';
+  header.appendChild(title);
+  header.appendChild(_rmStatusBadge(phase.status));
+  article.appendChild(header);
+
+  if (phase.summary) {
+    const summary = document.createElement('div');
+    summary.className = 'roadmap-phase-summary';
+    summary.textContent = phase.summary;
+    article.appendChild(summary);
+  }
+
+  // "Currently working on" highlight only when the phase is active.
+  if (phase.status === 'active' && phase.in_progress_note) {
+    const note = document.createElement('div');
+    note.className = 'roadmap-progress-note';
+    const noteLabel = document.createElement('span');
+    noteLabel.className = 'roadmap-progress-note-label';
+    noteLabel.textContent = 'Currently working on';
+    const noteBody = document.createElement('span');
+    noteBody.textContent = phase.in_progress_note;
+    note.appendChild(noteLabel);
+    note.appendChild(noteBody);
+    article.appendChild(note);
+  }
+
+  // Effort + audit-checkpoint meta block.
+  const metaItems = [];
+  const effortItem = _rmRenderMetaItem('Effort:', phase.effort_estimate);
+  if (effortItem) metaItems.push(effortItem);
+  const auditItem = _rmRenderMetaItem('Audit:', phase.audit_checkpoint);
+  if (auditItem) metaItems.push(auditItem);
+  const dateLabel = _rmFormatDate(phase.published_at);
+  if (dateLabel) {
+    const dateItem = _rmRenderMetaItem('Published:', dateLabel);
+    if (dateItem) metaItems.push(dateItem);
+  }
+  if (metaItems.length > 0) {
+    const meta = document.createElement('div');
+    meta.className = 'roadmap-meta';
+    metaItems.forEach((m) => meta.appendChild(m));
+    article.appendChild(meta);
+  }
+
+  // Body markdown — collapsible. Hidden by default; toggled
+  // via a "Read more" / "Show less" button so the timeline
+  // stays scannable. Skip the toggle entirely when there's no
+  // body to render.
+  if (phase.body_html) {
+    const body = document.createElement('div');
+    body.className = 'roadmap-phase-body';
+    body.hidden = true;
+    // innerHTML is safe: body_html is emitted by bleach on the
+    // server (tags/attrs allow-list enforced). See
+    // core/markdown_render.py.
+    body.innerHTML = phase.body_html;
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'roadmap-phase-toggle';
+    toggle.textContent = 'Read more';
+    toggle.addEventListener('click', () => {
+      const hidden = body.hidden;
+      body.hidden = !hidden;
+      toggle.textContent = hidden ? 'Show less' : 'Read more';
+    });
+
+    article.appendChild(toggle);
+    article.appendChild(body);
+  }
+
+  return article;
+}
+
+async function loadRoadmap() {
+  const statusEl = $('roadmap-status');
+  const timelineEl = $('roadmap-timeline');
+  const phasesEl = $('roadmap-phases');
+  if (!statusEl || !timelineEl || !phasesEl) return;
+  phasesEl.innerHTML = '';
+  statusEl.classList.remove('hidden');
+  statusEl.textContent = 'Loading…';
+  timelineEl.hidden = true;
+  try {
+    const r = await fetch('/api/roadmap');
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    const data = await r.json();
+    const phases = Array.isArray(data.phases) ? data.phases : [];
+    if (phases.length === 0) {
+      // Empty-state placeholder. Operator sees this immediately
+      // post-deploy before populating; public visitors see it
+      // when nothing is published yet. Intentional copy choice
+      // — the absence is itself information.
+      statusEl.textContent =
+        'The roadmap is being prepared — check back soon.';
+      timelineEl.hidden = true;
+      return;
+    }
+    statusEl.classList.add('hidden');
+    timelineEl.hidden = false;
+    const frag = document.createDocumentFragment();
+    phases.forEach((p) => frag.appendChild(_rmRenderPhase(p)));
+    phasesEl.appendChild(frag);
+  } catch (e) {
+    statusEl.textContent = 'Failed to load roadmap.';
+  }
+}
+
+
+// ── Roadmap — admin CRUD + drag-and-drop reorder ─────────────────────────
+// Lists every phase (drafts + published) as a draggable <li> list.
+// Drag-and-drop uses the HTML5 drag API — no library imports. The
+// per-row sort_order input is the keyboard-accessible fallback so
+// admins without a mouse (or older browsers without drag support)
+// can still reorder.
+
+let _roadmapEditingId = null;
+let _roadmapDragSrcId = null;
+
+async function loadAdminRoadmap() {
+  const statusEl = $('admin-roadmap-status');
+  const listEl = $('admin-roadmap-list');
+  if (!statusEl || !listEl) return;
+  listEl.innerHTML = '';
+  listEl.hidden = true;
+  statusEl.classList.remove('hidden');
+  statusEl.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/admin/roadmap');
+    if (r.status === 401) { _handle401(); return; }
+    if (r.status === 403) {
+      statusEl.textContent = 'Admin access required.';
+      return;
+    }
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    const data = await r.json();
+    const phases = Array.isArray(data.phases) ? data.phases : [];
+    if (phases.length === 0) {
+      statusEl.textContent =
+        'No phases yet. Click "+ New phase" to add the first one.';
+      return;
+    }
+    statusEl.classList.add('hidden');
+    listEl.hidden = false;
+    phases.forEach((p) => listEl.appendChild(_rmRenderAdminRow(p)));
+  } catch (e) {
+    statusEl.textContent = 'Failed to load phases.';
+  }
+}
+
+function _rmRenderAdminRow(phase) {
+  const li = document.createElement('li');
+  li.className = 'roadmap-admin-row';
+  li.dataset.phaseId = String(phase.id);
+  li.draggable = true;
+
+  // Drag handle — visual cue + draggable target. The whole row
+  // is also draggable so an operator can grab it anywhere.
+  const handle = document.createElement('span');
+  handle.className = 'roadmap-admin-handle';
+  handle.textContent = '⋮⋮';
+  handle.title = 'Drag to reorder';
+  handle.setAttribute('aria-hidden', 'true');
+  li.appendChild(handle);
+
+  const key = document.createElement('span');
+  key.className = 'roadmap-admin-row-key';
+  key.textContent = phase.phase_key || '';
+  li.appendChild(key);
+
+  const name = document.createElement('span');
+  name.className = 'roadmap-admin-row-name';
+  name.textContent = phase.display_name || '—';
+  li.appendChild(name);
+
+  const safeStatus = String(phase.status || 'pending').replace(/[^a-z]/g, '');
+  const status = document.createElement('span');
+  status.className = `roadmap-admin-row-status roadmap-admin-row-status--${safeStatus}`;
+  status.textContent = (_RM_STATUS_LABELS[safeStatus] || safeStatus).toUpperCase();
+  li.appendChild(status);
+
+  const pubBadge = document.createElement('span');
+  pubBadge.className = 'roadmap-admin-row-publish '
+    + (phase.is_published
+       ? 'roadmap-admin-row-publish--published'
+       : 'roadmap-admin-row-publish--draft');
+  pubBadge.textContent = phase.is_published ? 'Published' : 'Draft';
+  li.appendChild(pubBadge);
+
+  // Direct sort_order input — drag-and-drop fallback for
+  // keyboard / no-mouse / older-browser users. On change, we
+  // PATCH /api/admin/roadmap/{id} with the new sort_order, then
+  // reload the list so the visual order matches the server.
+  const sortInput = document.createElement('input');
+  sortInput.type = 'number';
+  sortInput.step = '10';
+  sortInput.className = 'roadmap-admin-row-sort';
+  sortInput.value = String(phase.sort_order || 0);
+  sortInput.title = 'Sort order (drag-and-drop fallback)';
+  sortInput.addEventListener('change', () => {
+    _rmPatchSortOrder(phase.id, parseInt(sortInput.value, 10));
+  });
+  li.appendChild(sortInput);
+
+  const actions = document.createElement('span');
+  actions.className = 'roadmap-admin-row-actions';
+
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.className = 'hbtn hbtn-theme';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', () => openRoadmapEditModal(phase));
+  actions.appendChild(editBtn);
+
+  const pubBtn = document.createElement('button');
+  pubBtn.type = 'button';
+  if (phase.is_published) {
+    pubBtn.className = 'hbtn hbtn-theme';
+    pubBtn.textContent = 'Unpublish';
+    pubBtn.addEventListener('click', () => _rmPublishAction(phase.id, false));
+  } else {
+    pubBtn.className = 'hbtn hbtn-theme btn-accent';
+    pubBtn.textContent = 'Publish';
+    pubBtn.addEventListener('click', () => _rmPublishAction(phase.id, true));
+  }
+  actions.appendChild(pubBtn);
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.className = 'hbtn hbtn-theme btn-danger';
+  delBtn.textContent = 'Delete';
+  delBtn.addEventListener('click', () => _rmDeleteAction(phase.id));
+  actions.appendChild(delBtn);
+
+  li.appendChild(actions);
+
+  // Drag-and-drop wiring. dragstart records the source row id;
+  // dragover / drop reorder the DOM in place + send the new
+  // order to the server. dataTransfer carries the id so a future
+  // refactor that drags between lists can still pick it up.
+  li.addEventListener('dragstart', (e) => {
+    _roadmapDragSrcId = phase.id;
+    li.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', String(phase.id)); }
+      catch (_) { /* IE fallback path; ignore */ }
+    }
+  });
+  li.addEventListener('dragend', () => {
+    li.classList.remove('dragging');
+    document.querySelectorAll('.roadmap-admin-row.drop-target')
+      .forEach((el) => el.classList.remove('drop-target'));
+    _roadmapDragSrcId = null;
+  });
+  li.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    li.classList.add('drop-target');
+  });
+  li.addEventListener('dragleave', () => {
+    li.classList.remove('drop-target');
+  });
+  li.addEventListener('drop', (e) => {
+    e.preventDefault();
+    li.classList.remove('drop-target');
+    const srcId = _roadmapDragSrcId;
+    if (!srcId || srcId === phase.id) return;
+    const list = li.parentNode;
+    const srcLi = list.querySelector(`[data-phase-id="${srcId}"]`);
+    if (!srcLi) return;
+    list.insertBefore(srcLi, li);
+    _rmPersistOrder();
+  });
+
+  return li;
+}
+
+async function _rmPersistOrder() {
+  const list = $('admin-roadmap-list');
+  if (!list) return;
+  const ids = Array.from(list.querySelectorAll('[data-phase-id]'))
+    .map((el) => parseInt(el.dataset.phaseId, 10))
+    .filter((n) => Number.isFinite(n));
+  if (ids.length === 0) return;
+  try {
+    const r = await fetch('/api/admin/roadmap/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!r.ok) {
+      console.warn('reorder failed:', r.status);
+    }
+  } catch (e) {
+    console.warn('reorder errored:', e);
+  }
+  loadAdminRoadmap();
+}
+
+async function _rmPatchSortOrder(phaseId, newSort) {
+  if (!Number.isFinite(newSort)) return;
+  try {
+    const r = await fetch(`/api/admin/roadmap/${phaseId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sort_order: newSort }),
+    });
+    if (!r.ok) console.warn('sort_order patch failed:', r.status);
+  } catch (e) {
+    console.warn('sort_order patch errored:', e);
+  }
+  loadAdminRoadmap();
+}
+
+function openRoadmapEditModal(phase) {
+  const modal = $('roadmap-edit-modal');
+  if (!modal) return;
+  _roadmapEditingId = phase ? phase.id : null;
+  $('roadmap-modal-title').textContent =
+    phase ? `Edit phase #${phase.id}` : 'New roadmap phase';
+  // phase_key is the only field that isn't editable on update —
+  // disable when editing, allow on create.
+  const keyInput = $('roadmap-modal-key-input');
+  keyInput.value = phase ? (phase.phase_key || '') : '';
+  keyInput.disabled = !!phase;
+  $('roadmap-modal-name-input').value = phase ? (phase.display_name || '') : '';
+  $('roadmap-modal-summary-input').value = phase ? (phase.summary || '') : '';
+  $('roadmap-modal-status').value = phase ? (phase.status || 'pending') : 'pending';
+  $('roadmap-modal-sort-input').value = phase ? String(phase.sort_order || 10) : '10';
+  $('roadmap-modal-effort-input').value = phase ? (phase.effort_estimate || '') : '';
+  $('roadmap-modal-note-input').value = phase ? (phase.in_progress_note || '') : '';
+  $('roadmap-modal-audit-input').value = phase ? (phase.audit_checkpoint || '') : '';
+  $('roadmap-modal-body-input').value = phase ? (phase.body_md || '') : '';
+  const err = $('roadmap-modal-error');
+  err.classList.add('hidden');
+  err.textContent = '';
+  modal.classList.add('show');
+  setTimeout(() => {
+    if (phase) $('roadmap-modal-name-input').focus();
+    else keyInput.focus();
+  }, 30);
+}
+
+function closeRoadmapEditModal() {
+  const modal = $('roadmap-edit-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  _roadmapEditingId = null;
+}
+
+function _rmShowModalError(msg) {
+  const err = $('roadmap-modal-error');
+  if (!err) return;
+  err.textContent = msg;
+  err.classList.remove('hidden');
+}
+
+function _rmCollectModalPayload() {
+  const sortRaw = $('roadmap-modal-sort-input').value;
+  const sortVal = parseInt(sortRaw, 10);
+  return {
+    phase_key: ($('roadmap-modal-key-input').value || '').trim(),
+    display_name: ($('roadmap-modal-name-input').value || '').trim(),
+    summary: ($('roadmap-modal-summary-input').value || '').trim(),
+    status: $('roadmap-modal-status').value,
+    sort_order: Number.isFinite(sortVal) ? sortVal : 10,
+    effort_estimate: ($('roadmap-modal-effort-input').value || '').trim(),
+    in_progress_note: ($('roadmap-modal-note-input').value || '').trim(),
+    audit_checkpoint: ($('roadmap-modal-audit-input').value || '').trim(),
+    body_md: $('roadmap-modal-body-input').value || '',
+  };
+}
+
+function _rmValidateModalPayload(p, isCreate) {
+  if (isCreate && !p.phase_key) return 'Phase key is required.';
+  if (isCreate && !/^[a-z0-9-]+$/.test(p.phase_key)) {
+    return 'Phase key must be lowercase letters, digits, dashes only.';
+  }
+  if (!p.display_name) return 'Display name is required.';
+  if (!p.summary) return 'Summary is required.';
+  if (!['pending', 'active', 'done'].includes(p.status)) {
+    return 'Invalid status.';
+  }
+  return null;
+}
+
+async function _roadmapSaveModal(publish) {
+  const payload = _rmCollectModalPayload();
+  const isCreate = _roadmapEditingId === null;
+  const err = _rmValidateModalPayload(payload, isCreate);
+  if (err) { _rmShowModalError(err); return; }
+
+  // On update, drop phase_key from the payload — the route
+  // model ignores it anyway, but keeping the wire payload
+  // honest helps future debugging.
+  if (!isCreate) delete payload.phase_key;
+
+  try {
+    let savedId;
+    if (isCreate) {
+      const r = await fetch('/api/admin/roadmap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        _rmShowModalError(await _rmErrorMessage(r));
+        return;
+      }
+      const body = await r.json();
+      savedId = body.id;
+    } else {
+      const r = await fetch(`/api/admin/roadmap/${_roadmapEditingId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        _rmShowModalError(await _rmErrorMessage(r));
+        return;
+      }
+      savedId = _roadmapEditingId;
+    }
+
+    if (publish) {
+      const pr = await fetch(
+        `/api/admin/roadmap/${savedId}/publish`,
+        { method: 'POST' },
+      );
+      if (!pr.ok) {
+        _rmShowModalError(await _rmErrorMessage(pr));
+        return;
+      }
+    }
+
+    closeRoadmapEditModal();
+    loadAdminRoadmap();
+  } catch (e) {
+    _rmShowModalError('Network error — please try again.');
+  }
+}
+
+async function _rmErrorMessage(response) {
+  try {
+    const j = await response.json();
+    if (j && j.detail) return String(j.detail);
+  } catch (e) { /* fall through */ }
+  return `Request failed (status ${response.status}).`;
+}
+
+async function _rmPublishAction(phaseId, publish) {
+  const path = publish
+    ? `/api/admin/roadmap/${phaseId}/publish`
+    : `/api/admin/roadmap/${phaseId}/unpublish`;
+  try {
+    const r = await fetch(path, { method: 'POST' });
+    if (!r.ok) console.warn('roadmap publish action failed:', r.status);
+  } catch (e) {
+    console.warn('roadmap publish errored:', e);
+  }
+  loadAdminRoadmap();
+}
+
+async function _rmDeleteAction(phaseId) {
+  if (!window.confirm('Delete this phase? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`/api/admin/roadmap/${phaseId}`, {
+      method: 'DELETE',
+    });
+    if (!r.ok && r.status !== 204) console.warn('delete failed:', r.status);
+  } catch (e) {
+    console.warn('delete errored:', e);
+  }
+  loadAdminRoadmap();
+}
+
 // ── New bot single-page form ─────────────────────────────────────────────────
 // Short inline help shown under the indicator type dropdown so a new
 // operator knows what each filter does without leaving the wizard.
@@ -5606,6 +6160,7 @@ function _routeFromHash() {
     case 'deals':     goDeals(true); break;
     case 'workspace': goWorkspace(true); break;
     case 'backtests': goBacktests(true); break;
+    case 'roadmap':   goRoadmap(true); break;
     case 'changelog': goChangelog(true); break;
     case 'admin':     goAdmin(true); break;
     case 'overview':  goOverview(true); break;
@@ -8478,6 +9033,8 @@ function setupEventListeners() {
   if (wsAddChart) wsAddChart.addEventListener('click', _handleWorkspaceAddChartPanel);
   const wsAddDeals = $('workspace-add-deals');
   if (wsAddDeals) wsAddDeals.addEventListener('click', _handleWorkspaceAddOpenDealsPanel);
+  const navRoadmapBtn = $('nav-roadmap-btn');
+  if (navRoadmapBtn) navRoadmapBtn.addEventListener('click', () => goRoadmap());
   const navClBtn = $('nav-changelog-btn');
   if (navClBtn) navClBtn.addEventListener('click', () => goChangelog());
   const navAdminBtn = $('nav-admin-btn');
@@ -8486,6 +9043,11 @@ function setupEventListeners() {
   if (adminCard) adminCard.addEventListener('click', (e) => {
     e.preventDefault();
     goAdmin(false, 'changelog-manage');
+  });
+  const adminRoadmapCard = $('admin-card-roadmap');
+  if (adminRoadmapCard) adminRoadmapCard.addEventListener('click', (e) => {
+    e.preventDefault();
+    goAdmin(false, 'roadmap-manage');
   });
   const adminBotsCard = $('admin-card-bots');
   if (adminBotsCard) adminBotsCard.addEventListener('click', (e) => {
@@ -8497,6 +9059,17 @@ function setupEventListeners() {
     e.preventDefault();
     goAdmin(false, 'findings');
   });
+  // Roadmap modal buttons — wired here so the create / edit
+  // handlers exist regardless of how the user reached the
+  // admin tab.
+  const rmCancel = $('roadmap-modal-cancel');
+  if (rmCancel) rmCancel.addEventListener('click', closeRoadmapEditModal);
+  const rmDraft = $('roadmap-modal-save-draft');
+  if (rmDraft) rmDraft.addEventListener('click', () => _roadmapSaveModal(false));
+  const rmPublish = $('roadmap-modal-save-publish');
+  if (rmPublish) rmPublish.addEventListener('click', () => _roadmapSaveModal(true));
+  const rmNewBtn = $('admin-roadmap-new-btn');
+  if (rmNewBtn) rmNewBtn.addEventListener('click', () => openRoadmapEditModal(null));
   // Findings filter dropdowns + modal buttons.
   ['findings-filter-status', 'findings-filter-severity', 'findings-filter-source'].forEach((id) => {
     const el = $(id);
@@ -9304,6 +9877,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'deals':    goDeals(true); break;
       case 'workspace': goWorkspace(true); break;
       case 'backtests': goBacktests(true); break;
+      case 'roadmap':  goRoadmap(true); break;
       case 'changelog': goChangelog(true); break;
       case 'admin':    goAdmin(true, s.sub || null); break;
       case 'overview':

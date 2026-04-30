@@ -2286,6 +2286,14 @@ _PUBLIC_PATHS = {
     # login-TOTP cookie that /auth/login set.
     "/auth/login/totp",
     "/auth/logout",
+    # Roadmap PR: the public roadmap endpoint serves logged-out
+    # visitors. The route handler itself takes no auth dependency
+    # and is rate-limited at 30/minute via slowapi to mitigate
+    # scraping if the page goes viral. The admin counterparts at
+    # /api/admin/roadmap/* are NOT in this set — they keep the
+    # standard middleware gate + their own _require_admin_user
+    # dependency.
+    "/api/roadmap",
 }
 
 
@@ -3438,6 +3446,7 @@ from web.routes import dashboard as _dashboard_routes  # noqa: E402
 from web.routes import deals as _deals_routes  # noqa: E402
 from web.routes import drawdown as _drawdown_routes  # noqa: E402
 from web.routes import exchanges as _exchanges_routes  # noqa: E402
+from web.routes import roadmap as _roadmap_routes  # noqa: E402
 
 app.include_router(_admin_routes.router)
 app.include_router(_admin_bots_routes.router)
@@ -3451,6 +3460,7 @@ app.include_router(_dashboard_routes.router)
 app.include_router(_deals_routes.router)
 app.include_router(_drawdown_routes.router)
 app.include_router(_exchanges_routes.router)
+app.include_router(_roadmap_routes.router)
 
 
 def run_portal(host="0.0.0.0", port=8080):
