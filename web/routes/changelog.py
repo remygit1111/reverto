@@ -121,9 +121,22 @@ def _entry_to_admin_json(entry: dict) -> dict:
 
 @router.get("/api/changelog")
 @limiter.limit("120/minute")
-async def api_changelog_public(
-    request: Request, user: User = Depends(_request_user),
-):
+async def api_changelog_public(request: Request):
+    """Public changelog list. Drops the prior
+    ``Depends(_request_user)`` dependency (operator decision
+    2026-04-30 + ``fix/public-shell-for-logged-out-users``):
+    release notes are meant for everyone, including unauthenticated
+    visitors arriving at the SPA's ``/#changelog`` tab.
+
+    Safety: ``list_published()`` filters drafts at the store layer
+    and ``_entry_to_public_json`` strips admin-only fields
+    (``description`` raw markdown, ``is_published``,
+    ``created_at``), so anonymous callers only ever receive what
+    a logged-in user would have received pre-fix. Drafts and
+    admin metadata stay invisible.
+
+    Mirrors the public-roadmap endpoint pattern at
+    ``web/routes/roadmap.py::api_roadmap_public``."""
     entries = changelog_store.list_published(limit=50)
     return {"entries": [_entry_to_public_json(e) for e in entries]}
 

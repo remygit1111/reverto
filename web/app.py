@@ -2294,6 +2294,16 @@ _PUBLIC_PATHS = {
     # standard middleware gate + their own _require_admin_user
     # dependency.
     "/api/roadmap",
+    # Public-shell PR (operator decision 2026-04-30): /api/changelog
+    # is meant for everyone — release notes are not internal info.
+    # Was logged-in-only by accident (the earlier route signature
+    # carried Depends(_request_user) by oversight, not by design).
+    # The route now drops that dependency; list_published() already
+    # filters drafts and the public response shape strips admin
+    # fields, so anonymous access only ever returns the same
+    # entries a logged-in user would see. Admin counterparts at
+    # /api/admin/changelog/* keep the standard gate.
+    "/api/changelog",
 }
 
 
