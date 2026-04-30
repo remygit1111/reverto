@@ -108,12 +108,21 @@ def second_admin_client():
 # ── Auth gates ────────────────────────────────────────────────────────────
 
 class TestAuthGates:
-    def test_public_api_requires_session(self):
+    def test_public_api_no_session_required(self):
+        """Operator decision 2026-04-30 (`fix/public-shell-for-
+        logged-out-users`): /api/changelog is meant for everyone,
+        not just logged-in users. Pre-fix it required a session
+        cookie because the route carried Depends(_request_user).
+        Post-fix the dependency is gone and the path is in
+        web.app._PUBLIC_PATHS, so anonymous callers reach it
+        cleanly. Drafts + admin fields are still filtered server-
+        side — see tests/test_public_shell.py for the contract
+        guards on that side."""
         client = TestClient(webapp.app)
         client.cookies.clear()
         r = client.get("/api/changelog")
-        # /api/* gets JSON 401, not a redirect.
-        assert r.status_code == 401
+        assert r.status_code == 200, r.text
+        assert "entries" in r.json()
 
     def test_admin_api_refuses_non_admin(self, non_admin_client):
         r = non_admin_client.get("/api/admin/changelog")

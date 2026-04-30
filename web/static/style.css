@@ -151,6 +151,52 @@ body.is-login #hdr-context {
   display: none;
 }
 
+/* ── Public-shell mode: logged-out visitor on a public route ──
+   Distinct from is-login (full login-form, no nav) and the
+   default logged-in state (full app, all tabs). Activated by
+   the DOMContentLoaded handler in app.js when the auth check
+   fails AND the URL hash is in PUBLIC_HASH_ROUTES.
+
+   The nav-bar is visible but only [data-public] tabs appear;
+   the profile dropdown is hidden (no logged-in user); the
+   header Log-in button replaces the dropdown in the same
+   right-aligned zone. Clicking Log in triggers the existing
+   _handle401 path which swaps body.is-public → body.is-login
+   and reveals #view-login. */
+
+/* Hide non-public nav tabs in public mode. The :not(.nav-login-btn)
+   guard is defensive — the login button does not live in
+   #main-nav, but if a future refactor moves it there, the rule
+   keeps working. */
+body.is-public #main-nav .tab:not([data-public]) {
+  display: none !important;
+}
+
+/* The state-ws indicator + heading-pair / price / pill / uptime
+   are all logged-in-only chrome. Mirror the is-login hides for
+   public mode so the header reads as "minimal landing page"
+   rather than "logged-in app with a stray Log-in button". */
+body.is-public #hdr-pair,
+body.is-public #hdr-price,
+body.is-public #hdr-pill,
+body.is-public #hdr-uptime,
+body.is-public .state-ws-indicator,
+body.is-public #profile-btn,
+body.is-public #profile-menu {
+  display: none !important;
+}
+
+/* The Log-in button is hidden by default (HTML `hidden`
+   attribute) and revealed only in is-public mode. Logged-in
+   users never see it; logged-out users on the default route
+   (no public hash) never see it either — they get the full
+   login-form via is-login instead. */
+body.is-public .nav-login-btn {
+  /* Override the [hidden] attribute. inline-flex matches the
+     existing .hbtn / .hbtn-theme button presentation. */
+  display: inline-flex !important;
+}
+
 .logo {
   font-family: var(--mono);
   font-size: 13px;
