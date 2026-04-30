@@ -36,6 +36,7 @@
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/style.css?v=97">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
+<link rel="stylesheet" href="/static/roadmap.css?v=1">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
 <!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
      curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A -->
@@ -638,6 +639,7 @@
   <button class="tab" id="nav-workspace-btn">Workspace</button>
   <button class="tab" id="nav-bots-btn">Bots</button>
   <button class="tab" id="nav-backtests-btn">Backtest History</button>
+  <button class="tab" id="nav-roadmap-btn">Roadmap</button>
   <button class="tab" id="nav-changelog-btn">Changelog</button>
   <button class="tab" id="nav-admin-btn" data-admin-only hidden>Admin</button>
 </nav>
@@ -806,6 +808,23 @@
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Roadmap (public, no auth required)                                  -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="view-roadmap" class="page">
+  <div class="roadmap-page">
+    <div class="section-title">Roadmap</div>
+    <div class="roadmap-intro">
+      What's active, what's coming next, and what's already shipped.
+    </div>
+    <div id="roadmap-status" class="roadmap-empty">Loading…</div>
+    <div id="roadmap-timeline" class="roadmap-timeline" hidden>
+      <div class="roadmap-line" aria-hidden="true"></div>
+      <div id="roadmap-phases" class="roadmap-phases"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
 <!-- VIEW: Changelog                                                           -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-changelog" class="page">
@@ -828,6 +847,13 @@
           <div class="cl-admin-card-title">Manage Changelog</div>
           <div class="cl-admin-card-desc">
             Create, edit, publish and delete changelog entries.
+          </div>
+        </a>
+        <a class="card cl-admin-card" id="admin-card-roadmap" href="#admin/roadmap-manage">
+          <div class="cl-admin-card-title">Manage Roadmap</div>
+          <div class="cl-admin-card-desc">
+            Create, edit, reorder and publish roadmap phases.
+            Public visitors see published phases at /roadmap.
           </div>
         </a>
         <a class="card cl-admin-card" id="admin-card-bots" href="#admin/bots">
@@ -914,6 +940,23 @@
           </tbody>
         </table>
       </div>
+    </div>
+    <!-- Roadmap — admin sub-page. List view is a draggable
+         <ul> rather than a <table>: drag-and-drop sort-order is
+         the primary interaction, and operators inserting a phase
+         between two others is the common edit. -->
+    <div id="admin-roadmap-manage" class="admin-subpage hidden">
+      <div class="cl-breadcrumb">
+        <a href="#admin" class="admin-back-link">&larr; Back to Admin</a>
+      </div>
+      <div class="cl-admin-header">
+        <div class="section-title">Roadmap — admin</div>
+        <button class="hbtn hbtn-theme btn-accent" id="admin-roadmap-new-btn" type="button">
+          + New phase
+        </button>
+      </div>
+      <div id="admin-roadmap-status" class="cl-empty">Loading…</div>
+      <ul id="admin-roadmap-list" class="roadmap-admin-list" hidden></ul>
     </div>
     <!-- Audit findings tracker — admin sub-page. The seed at
          data/findings_seed.yaml populates 240 rows on first boot;
@@ -1109,6 +1152,63 @@
       <button type="button" class="hbtn hbtn-theme" id="cl-modal-cancel">Cancel</button>
       <button type="button" class="hbtn hbtn-theme" id="cl-modal-save-draft">Save as draft</button>
       <button type="button" class="hbtn hbtn-theme btn-accent" id="cl-modal-save-publish">Save &amp; publish</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- MODAL: Roadmap phase editor (new + edit)                                  -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="roadmap-edit-modal" class="modal-overlay">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="roadmap-modal-title">
+    <div class="modal-title" id="roadmap-modal-title">Roadmap phase</div>
+
+    <label class="profile-label" for="roadmap-modal-key-input">
+      Phase key
+      <span class="roadmap-key-hint">(immutable; lowercase letters, digits, dashes)</span>
+    </label>
+    <input id="roadmap-modal-key-input" class="modal-input" type="text" maxlength="50" placeholder="phase-3a">
+
+    <label class="profile-label" for="roadmap-modal-name-input">Display name</label>
+    <input id="roadmap-modal-name-input" class="modal-input" type="text" maxlength="200">
+
+    <label class="profile-label" for="roadmap-modal-summary-input">Summary (one line)</label>
+    <input id="roadmap-modal-summary-input" class="modal-input" type="text" maxlength="500">
+
+    <label class="profile-label" for="roadmap-modal-status">Status</label>
+    <select id="roadmap-modal-status" class="modal-input">
+      <option value="pending">Pending</option>
+      <option value="active">Active</option>
+      <option value="done">Done</option>
+    </select>
+
+    <label class="profile-label" for="roadmap-modal-sort-input">
+      Sort order
+      <span class="roadmap-key-hint">(used as drag-and-drop fallback; multiples of 10)</span>
+    </label>
+    <input id="roadmap-modal-sort-input" class="modal-input" type="number" step="10" value="10">
+
+    <label class="profile-label" for="roadmap-modal-effort-input">Effort estimate</label>
+    <input id="roadmap-modal-effort-input" class="modal-input" type="text" maxlength="200" placeholder="~2 weeks">
+
+    <label class="profile-label" for="roadmap-modal-note-input">
+      In-progress note
+      <span class="roadmap-key-hint">(shown only when status = Active)</span>
+    </label>
+    <input id="roadmap-modal-note-input" class="modal-input" type="text" maxlength="500">
+
+    <label class="profile-label" for="roadmap-modal-audit-input">Audit checkpoint</label>
+    <input id="roadmap-modal-audit-input" class="modal-input" type="text" maxlength="500" placeholder="e.g. PT-v3 + RHA-v2 review">
+
+    <label class="profile-label" for="roadmap-modal-body-input">Body (markdown)</label>
+    <textarea id="roadmap-modal-body-input" class="modal-input cl-textarea" rows="10" maxlength="20000"></textarea>
+
+    <div id="roadmap-modal-error" class="login-error hidden"></div>
+
+    <div class="modal-actions">
+      <button type="button" class="hbtn hbtn-theme" id="roadmap-modal-cancel">Cancel</button>
+      <button type="button" class="hbtn hbtn-theme" id="roadmap-modal-save-draft">Save as draft</button>
+      <button type="button" class="hbtn hbtn-theme btn-accent" id="roadmap-modal-save-publish">Save &amp; publish</button>
     </div>
   </div>
 </div>
@@ -1896,6 +1996,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=219"></script>
+<script src="/static/app.js?v=220"></script>
 </body>
 </html>

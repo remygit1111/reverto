@@ -286,13 +286,16 @@ class TestSchemaTotpColumn:
     before each test in this class, so the assertions reflect what
     a freshly-migrated install looks like."""
 
-    def test_schema_version_is_nine(self):
-        """SCHEMA_VERSION constant + PRAGMA user_version both
-        reflect the v9 bump."""
+    def test_schema_version_is_at_least_nine(self):
+        """SCHEMA_VERSION + PRAGMA user_version both reflect the
+        v9 bump that introduced ``users.totp_seed_encrypted``.
+        The exact pin loosened from ``== 9`` to ``>= 9`` when v10
+        landed (additive: roadmap_phases table); the totp-column
+        contract is unaffected by versions ≥ 9."""
         conn = get_db()
         stored = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert SCHEMA_VERSION == 9
-        assert stored == 9
+        assert SCHEMA_VERSION >= 9
+        assert stored == SCHEMA_VERSION
 
     def test_users_table_has_totp_seed_column(self):
         conn = get_db()
