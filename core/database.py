@@ -265,6 +265,38 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_changelog_entries_published "
     "ON changelog_entries(is_published, published_at DESC)",
+    # v10 additive: roadmap phases surfaced on /roadmap, managed via
+    # /admin → Roadmap. Unowned table (no user_id FK) — like
+    # changelog, an entry is a property of the product, not of a
+    # tenant. ``phase_key`` is the immutable machine identifier
+    # (e.g. "phase-3a"); ``sort_order`` is operator-controlled via
+    # drag-and-drop (multiples of 10 to allow inserting between
+    # later without renumbering all). status CHECK constraint
+    # mirrors the application-layer VALID_STATUSES — defence in
+    # depth for direct-SQL writes.
+    """
+    CREATE TABLE IF NOT EXISTS roadmap_phases (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        phase_key         TEXT NOT NULL UNIQUE,
+        display_name      TEXT NOT NULL,
+        summary           TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending','active','done')),
+        sort_order        INTEGER NOT NULL DEFAULT 0,
+        body_md           TEXT NOT NULL DEFAULT '',
+        effort_estimate   TEXT NOT NULL DEFAULT '',
+        in_progress_note  TEXT NOT NULL DEFAULT '',
+        audit_checkpoint  TEXT NOT NULL DEFAULT '',
+        is_published      INTEGER NOT NULL DEFAULT 0,
+        created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        published_at      TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_roadmap_published "
+    "ON roadmap_phases(is_published, sort_order)",
+    "CREATE INDEX IF NOT EXISTS idx_roadmap_status "
+    "ON roadmap_phases(status, sort_order)",
     # v7 additive: workspace dashboard layouts. One row per
     # (user_id, name). ``layout_json`` is opaque to the backend —
     # the frontend owns the panel schema; backend only validates
@@ -416,8 +448,17 @@ def get_db() -> sqlite3.Connection:
 #     not enrolled"), no data wiped. The fresh-install schema above
 #     declares the v9 shape directly so a clean install never takes
 #     the ALTER path.
-#   * == 9 → no-op.
-SCHEMA_VERSION = 9
+#   * < 10 → ADDITIVE: introduces the ``roadmap_phases`` table
+#     backing the public ``/roadmap`` page + admin SPA tab. Like
+#     ``changelog_entries`` it is unowned (no user_id FK). No
+#     existing rows are touched; ``_SCHEMA_STATEMENTS`` runs every
+#     ``init_db()`` with ``CREATE TABLE IF NOT EXISTS`` semantics
+#     so the new table is created lazily on the next boot. The
+#     destructive guard explicitly does NOT trigger — v5 was the
+#     last destructive boundary and additive jumps fully above it
+#     run silently.
+#   * == 10 → no-op.
+SCHEMA_VERSION = 10
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,
