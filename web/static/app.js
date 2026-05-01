@@ -9610,6 +9610,39 @@ function _wireTotpUiHandlers() {
   // rhav2-007: copy-button for the manual-entry secret.
   const copyBtn = document.getElementById('totp-secret-copy-btn');
   if (copyBtn) copyBtn.addEventListener('click', _copyTotpSecret);
+
+  // Auto-submit each TOTP form when the 6th digit lands. The codes
+  // are always exactly 6 digits, so making the operator press
+  // Enter (or click Verify) is busywork. The setTimeout(0) defers
+  // the requestSubmit() to the next tick so the input event has
+  // fully committed the typed value before the submit handler
+  // reads input.value. requestSubmit() (instead of click() on the
+  // button) fires the form's 'submit' event, which the handlers
+  // above are already wired to — same code path as Enter / button.
+  _wireTotpAutoSubmit('login-totp-code',  'login-totp-form');
+  _wireTotpAutoSubmit('totp-code-input',  'totp-verify-form');
+  _wireTotpAutoSubmit('totp-disable-code', 'totp-disable-form');
+}
+
+function _wireTotpAutoSubmit(inputId, formId) {
+  const input = document.getElementById(inputId);
+  const form = document.getElementById(formId);
+  if (!input || !form) return;
+  input.addEventListener('input', () => {
+    const v = (input.value || '').trim();
+    if (/^\d{6}$/.test(v)) {
+      setTimeout(() => {
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        } else {
+          // requestSubmit is supported in every browser since 2021
+          // (Safari 16, Chrome 76, Firefox 75). The fallback is
+          // defense-in-depth for ancient WebViews.
+          form.dispatchEvent(new Event('submit', { cancelable: true }));
+        }
+      }, 0);
+    }
+  });
 }
 
 
