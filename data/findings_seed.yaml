@@ -19,7 +19,7 @@
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
 # pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
-# pt-v3=5, rhav2=14. Total: 299.
+# pt-v3=5, rhav2=14, pt-v4-au=9. Total: 308.
 #
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
@@ -3105,3 +3105,100 @@ findings:
   notes: "Cross-cutting area. Cross-references PT-v3 pt-130. Fix:
     session_epoch bump matrix in security-model.md (15 min). Pair
     with pt-130 actual bump fix."
+
+# ── pt-v4-au-pentest (PT-v4-AU-001 … PT-v4-AU-009) ───────────────────────────
+#
+# Internal pentest batch covering authentication and session
+# management. AI-driven adversarial code review by Claude Code on
+# 2026-05-01. 9 findings (0 CRITICAL, 0 HIGH, 1 MEDIUM, 3 LOW, 5 INFO).
+# See docs/pentests/PT-v4-AU-findings.md for the full report.
+
+- finding_id: PT-v4-AU-001
+  source_doc: pt-v4-au-pentest
+  severity: MEDIUM
+  status: open
+  title: scripts/totp_admin_reset.py does not bump session_epoch
+  description: |
+    The pt-130 fix established the invariant that any TOTP enable/disable action must bump session_epoch to invalidate existing sessions. The in-app endpoints implement this correctly. However, the admin-recovery script scripts/totp_admin_reset.py was missed during pt-150 follow-up and resets a user's TOTP secret without bumping session_epoch. In any post-compromise recovery scenario where an admin invokes this script, the original attacker's session remains valid until the cookie expires naturally.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AU-002
+  source_doc: pt-v4-au-pentest
+  severity: LOW
+  status: open
+  title: /auth/totp/verify does not check user.totp_enabled before commit
+  description: |
+    The TOTP verify endpoint commits a verified secret without checking whether the user already has TOTP enabled. Combined with PT-v4-AU-001, this allows an attacker who held a valid session before an admin-TOTP-reset to silently re-install a TOTP secret post-recovery. Non-exploitable in isolation; concerning in combination with the missed session-epoch bump.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AU-003
+  source_doc: pt-v4-au-pentest
+  severity: LOW
+  status: open
+  title: /auth/totp/disable failures don't increment failed_login_count
+  description: |
+    The per-account rate-limit (failed_login_count) is the load-bearing secondary control on auth-related endpoints, fired before bcrypt cost is incurred. /auth/totp/disable does not increment this counter on failure, leaving the endpoint without per-account cooldown. Defense-in-depth gap rather than direct vulnerability — the endpoint requires both password and current TOTP, but a slow-burn attacker can exhaust attempts against a stolen password without triggering the cooldown that would otherwise lock the account.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AU-004
+  source_doc: pt-v4-au-pentest
+  severity: LOW
+  status: open
+  title: /auth/logout does not emit an audit event
+  description: |
+    Login emits structured audit events (success and failure paths). Logout does not. For incident-response timeline reconstruction, logout-without-explicit-event makes it harder to distinguish "user logged out cleanly" from "session naturally expired" from "attacker bumped session_epoch via password change to invalidate the original session". Audit-trail gap, not an exploitation vector.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AU-005
+  source_doc: pt-v4-au-pentest
+  severity: INFO
+  status: open
+  title: AuthMiddleware /static/ prefix bypass not path-normalized
+  description: |
+    The AuthMiddleware allows requests under /static/ to bypass auth via prefix match (path.startswith("/static/")). The check does not normalize encoded paths (%2f, %2e%2e, etc) before matching. While Starlette's routing layer rejects directory-traversal at the router level, the middleware's prefix check happens before that. Theoretical concern more than practical — no path-traversal attack succeeds in practice — but the principle of normalize-before-compare is worth applying.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AU-006
+  source_doc: pt-v4-au-pentest
+  severity: INFO
+  status: open
+  title: /api/auth/change-password allows no-op rotation (new == current)
+  description: |
+    The change-password endpoint validates that the new password meets policy and that the current password is correct, but does not check that new != current. A user can submit their existing password as the "new" password, triggering a session_epoch bump (logging out other sessions) without actually rotating credentials. Edge-case usability annoyance rather than security issue, but worth noting.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AU-007
+  source_doc: pt-v4-au-pentest
+  severity: INFO
+  status: open
+  title: bcrypt 72-byte truncation not enforced at the boundary
+  description: |
+    bcrypt silently truncates passwords to 72 bytes. The change-password and login endpoints do not pre-validate password length before passing to bcrypt, meaning users with passwords longer than 72 bytes have their input silently truncated. Two passwords differing only after byte 72 hash to the same value. The Pydantic max-length on the password field is currently set to a value that allows >72-byte input. Edge-case affecting users with very long passphrases. Industry practice is to either (a) reject >72 bytes at validation, (b) pre-hash with SHA-256 to bring any input below 72 bytes, or (c) document the limit clearly.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AU-008
+  source_doc: pt-v4-au-pentest
+  severity: INFO
+  status: open
+  title: HIBP fail-mode behavior on is_password_pwned not verified
+  description: |
+    core/password_breach.py implements is_password_pwned to check passwords against the Have I Been Pwned API. The pentest did not deeply review this module (out of immediate auth-stack scope). Recommendation for operator follow-up: verify behavior when the HIBP API is unreachable. Fail-open (allow registration on API error) is the typical implementation but trades availability for security; fail-closed (reject registration when uncertain) is stricter. Either is acceptable as a deliberate choice, neither is acceptable as an unintended default.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AU-009
+  source_doc: pt-v4-au-pentest
+  severity: INFO
+  status: open
+  title: REVERTO_SECRET_KEY ephemeral fallback does not fail-closed
+  description: |
+    web/app.py generates a random REVERTO_SECRET_KEY at startup if the env-var is not set, with a warning logged. This makes development convenient but means a misconfigured production deploy generates a fresh secret every restart, invalidating all existing sessions silently. A fail-closed alternative would refuse to start unless the secret is explicitly set, with a clear error message directing the operator to set REVERTO_SECRET_KEY. Operational concern rather than direct vulnerability — but a forgotten env-var causes mysterious "everyone is logged out" symptoms during incidents.
+  resolution_ref: null
+  notes: ""
