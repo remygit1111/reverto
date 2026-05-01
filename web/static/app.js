@@ -4384,6 +4384,48 @@ async function loadRoadmap() {
 let _roadmapEditingId = null;
 let _roadmapDragSrcId = null;
 
+// Force-rewrite the static marketing site's roadmap.json +
+// changelog.json snapshots. Auto-export already runs on every
+// publish/unpublish/edit (see core/marketing_export.py); this
+// button is the manual recovery path when a snapshot has drifted
+// from the DB.
+async function regenerateMarketingSnapshots() {
+  const btn = $('admin-regen-snapshots-btn');
+  const statusEl = $('admin-regen-snapshots-status');
+  if (!btn || !statusEl) return;
+
+  btn.disabled = true;
+  statusEl.hidden = false;
+  statusEl.textContent = 'Regenerating snapshots…';
+
+  try {
+    const r = await fetch('/api/admin/marketing/regenerate', {
+      method: 'POST',
+      credentials: 'same-origin',
+    });
+    let data = {};
+    try { data = await r.json(); } catch (_) { /* tolerate empty */ }
+    const results = (data && data.results) || {};
+    if (r.ok) {
+      statusEl.textContent = 'Snapshots regenerated successfully.';
+    } else if (r.status === 207) {
+      statusEl.textContent =
+        'Partial: roadmap=' + (results.roadmap ? 'ok' : 'failed') +
+        ', changelog=' + (results.changelog ? 'ok' : 'failed') +
+        '. Check server logs.';
+    } else if (r.status === 500) {
+      statusEl.textContent =
+        'Both snapshots failed. Check server logs (likely a permissions issue on /var/www/reverto-marketing/data/).';
+    } else {
+      statusEl.textContent = 'Unexpected response (HTTP ' + r.status + ').';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Request failed: ' + (e && e.message ? e.message : e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function loadAdminRoadmap() {
   const statusEl = $('admin-roadmap-status');
   const listEl = $('admin-roadmap-list');
@@ -9133,6 +9175,8 @@ function setupEventListeners() {
   if (rmPublish) rmPublish.addEventListener('click', () => _roadmapSaveModal(true));
   const rmNewBtn = $('admin-roadmap-new-btn');
   if (rmNewBtn) rmNewBtn.addEventListener('click', () => openRoadmapEditModal(null));
+  const regenBtn = $('admin-regen-snapshots-btn');
+  if (regenBtn) regenBtn.addEventListener('click', regenerateMarketingSnapshots);
   // Findings filter dropdowns + modal buttons.
   ['findings-filter-status', 'findings-filter-severity', 'findings-filter-source'].forEach((id) => {
     const el = $(id);
