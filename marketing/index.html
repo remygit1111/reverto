@@ -1,48 +1,99 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reverto — Coming Soon</title>
-    <style>
-        body {
-            font-family: system-ui, -apple-system, sans-serif;
-            background: #1a1a1a;
-            color: #e0e0e0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-        }
-        .container {
-            text-align: center;
-            padding: 2rem;
-        }
-        h1 {
-            color: #00d4aa;
-            font-size: 3rem;
-            margin: 0;
-            letter-spacing: 0.1em;
-        }
-        p {
-            margin-top: 1rem;
-            color: #888;
-        }
-        a {
-            color: #00d4aa;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Reverto is a Bitcoin-only DCA bot trading platform. Currently in paper trading, hardening toward live trading and a multi-tenant SaaS launch.">
+  <meta property="og:title" content="Reverto &mdash; Bitcoin DCA bot platform">
+  <meta property="og:description" content="A Bitcoin-only DCA bot trading platform built for one pair traded well.">
+  <title>Reverto &mdash; Bitcoin DCA bot platform</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/css/marketing.css?v=1">
 </head>
 <body>
-    <div class="container">
-        <h1>REVERTO</h1>
-        <p>Marketing site under construction.</p>
-        <p><a href="https://app.reverto.bot/">Go to app &rarr;</a></p>
+  <nav class="marketing-nav">
+    <a href="/" class="brand">REVERTO</a>
+    <div class="nav-links">
+      <a href="/roadmap.html" class="nav-link">Roadmap</a>
+      <a href="/changelog.html" class="nav-link">Changelog</a>
+      <a href="#about" class="nav-link">About</a>
     </div>
+    <a href="https://app.reverto.bot/" class="login-btn">Log in</a>
+  </nav>
+
+  <section class="hero">
+    <h1>REVERTO</h1>
+    <p class="tagline">Built for Bitcoin.</p>
+    <p class="lede">
+      A Bitcoin-only DCA bot trading platform built around a
+      single conviction: most retail traders don&rsquo;t need two
+      hundred trading pairs. They need one pair traded well.
+    </p>
+    <div class="hero-cta">
+      <a href="/roadmap.html" class="btn btn-primary">View Roadmap</a>
+      <a href="/changelog.html" class="btn btn-secondary">Recent Changes</a>
+    </div>
+  </section>
+
+  <section id="about" class="about">
+    <h2>About Reverto</h2>
+
+    <h3>What Reverto does</h3>
+    <p>
+      Reverto runs Dollar-Cost-Averaging strategies on BTC/USD
+      inverse perpetual contracts. The platform supports paper
+      trading today, with live trading on Bitget mainnet shipping
+      next. Each strategy is a configured bot &mdash; you set the
+      entry conditions, the take-profit and stop-loss logic, the
+      DCA grid, and Reverto runs it for you.
+    </p>
+    <p>
+      The focus on a single trading pair means everything else
+      can be deeper: better backtesting, more careful risk
+      modelling, more thorough security review. The roadmap
+      reflects that priority.
+    </p>
+
+    <h3>Who builds Reverto</h3>
+    <p>
+      Reverto is built by Remy, a developer working evenings
+      and structured pockets of time. The platform started in
+      April 2026 and is currently in paper-trading production
+      at reverto.bot, hardening toward live trading and
+      eventually a multi-tenant SaaS launch.
+    </p>
+    <p>
+      The development style is documented openly: every change
+      ships through a changelog, every roadmap commitment is
+      visible, every security finding is tracked through
+      resolution. There&rsquo;s no marketing team behind this
+      &mdash; what you see is what&rsquo;s built.
+    </p>
+
+    <h3>What Reverto isn&rsquo;t</h3>
+    <p>
+      Reverto isn&rsquo;t a casino. It doesn&rsquo;t do leveraged
+      degen plays, it doesn&rsquo;t promise returns, it
+      doesn&rsquo;t list every shitcoin that exists. The
+      strategies it supports are mechanical and risk-bounded by
+      design.
+    </p>
+    <p>
+      Reverto isn&rsquo;t a custody service. Your exchange API
+      keys connect your accounts at Bitget or Kraken to
+      Reverto&rsquo;s strategy engine. Reverto never holds your
+      Bitcoin &mdash; that stays in your exchange account, behind
+      your withdrawal-address whitelist and your own 2FA.
+    </p>
+    <p>
+      Reverto isn&rsquo;t financial advice. The strategies are
+      tools, not recommendations. Run them on capital you
+      understand and can afford to lose.
+    </p>
+  </section>
+
+  <footer class="marketing-footer">
+    <p>Reverto &mdash; built for Bitcoin. <a href="https://app.reverto.bot/">app.reverto.bot</a></p>
+  </footer>
 </body>
 </html>

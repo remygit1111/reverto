@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Reverto changelog &mdash; recent updates and improvements.">
+  <meta property="og:title" content="Changelog &mdash; Reverto">
+  <meta property="og:description" content="Recent updates and improvements to Reverto.">
+  <title>Changelog &mdash; Reverto</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/css/marketing.css?v=1">
+</head>
+<body>
+  <nav class="marketing-nav">
+    <a href="/" class="brand">REVERTO</a>
+    <div class="nav-links">
+      <a href="/roadmap.html" class="nav-link">Roadmap</a>
+      <a href="/changelog.html" class="nav-link active">Changelog</a>
+      <a href="/#about" class="nav-link">About</a>
+    </div>
+    <a href="https://app.reverto.bot/" class="login-btn">Log in</a>
+  </nav>
+
+  <main class="page-content">
+    <header class="page-header">
+      <h1>Changelog</h1>
+      <p class="subtitle">Recent updates and improvements.</p>
+    </header>
+
+    <div id="changelog-status" class="page-status">Loading changelog&hellip;</div>
+    <div id="changelog-list" class="cl-entries" hidden></div>
+  </main>
+
+  <footer class="marketing-footer">
+    <p>Reverto &mdash; built for Bitcoin. <a href="https://app.reverto.bot/">app.reverto.bot</a></p>
+  </footer>
+
+  <script src="/js/render.js?v=1"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => { loadChangelog(); });
+  </script>
+</body>
+</html>
