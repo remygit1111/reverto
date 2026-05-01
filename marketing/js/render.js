@@ -1,5 +1,5 @@
-/* render.js — vanilla JS render logic for the static marketing
-   site at https://reverto.bot.
+/* render.js — vanilla JS render logic + theme toggle for the
+   static marketing site at https://reverto.bot.
 
    Loads /data/roadmap.json and /data/changelog.json (written by
    the FastAPI app's snapshot-export hooks; see
@@ -16,6 +16,40 @@
    server (core/markdown_render.py) and are safe to drop into
    innerHTML directly. Adding a client-side sanitiser would
    duplicate the trust boundary without strengthening it. */
+
+
+/* ── Theme toggle ─────────────────────────────────────────────── */
+/* Initial theme application happens in an inline <script> in the
+   <head> of every marketing page (before the stylesheet loads) to
+   avoid a flash of wrong theme on initial paint. This module only
+   handles the runtime toggle: click the button → flip the
+   data-theme attribute on <html> → persist to localStorage.
+
+   localStorage key: reverto-theme. Same name as the app uses, but
+   marketing.bot and app.reverto.bot are different origins so the
+   storage is not shared — naming is for consistency only. */
+
+function toggleTheme() {
+  const root = document.documentElement;
+  const current = root.dataset.theme || 'dark';
+  const next = (current === 'dark') ? 'light' : 'dark';
+  root.dataset.theme = next;
+  try {
+    localStorage.setItem('reverto-theme', next);
+  } catch (e) {
+    // localStorage unavailable (private mode, sandboxed iframe,
+    // disk-quota etc) — toggle still works for the session even
+    // without persistence.
+    if (typeof console !== 'undefined') {
+      console.warn('Theme preference not persisted:', e);
+    }
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.addEventListener('click', toggleTheme);
+});
 
 
 /* ── Roadmap ──────────────────────────────────────────────────── */
