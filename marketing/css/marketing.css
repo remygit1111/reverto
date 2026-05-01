@@ -1,0 +1,589 @@
+/* marketing.css — standalone styling for the static reverto.bot
+   marketing site.
+
+   Self-contained: ships its own design tokens (mirrors a subset
+   of web/static/style.css :root) so the marketing files do not
+   depend on the app's stylesheet. Roadmap-timeline + changelog-
+   entry rules are ported from web/static/roadmap.css and
+   web/static/changelog.css, adapted for standalone HTML pages
+   (no SPA tab containers). */
+
+
+/* ── Reset ──────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+
+/* ── Design tokens (subset of app's style.css :root) ────────────── */
+:root {
+  --bg:       #1e1e1e;
+  --surface:  #252526;
+  --surface2: #2d2d30;
+  --border:   #3c3c3c;
+  --accent:   #00d4aa;
+  --red:      #ff4d6d;
+  --amber:    #ffb347;
+  --blue:     #5b8dee;
+  --text:     #d4d4d4;
+  --muted:    #8a8a8a;
+  --mono:     'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --sans:     'IBM Plex Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+:focus:not(:focus-visible) { outline: none; }
+
+
+/* ── Base ───────────────────────────────────────────────────────── */
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1, h2, h3, h4 { color: var(--text); font-weight: 600; }
+
+
+/* ── Top nav ────────────────────────────────────────────────────── */
+.marketing-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 24px;
+  background: rgba(30, 30, 30, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.marketing-nav .brand {
+  font-family: var(--mono);
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+  text-decoration: none;
+}
+.marketing-nav .brand:hover { text-decoration: none; }
+.nav-links {
+  display: flex;
+  gap: 22px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.nav-link {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 4px 0;
+  border-bottom: 1px solid transparent;
+  transition: color .15s, border-color .15s;
+}
+.nav-link:hover { color: var(--text); text-decoration: none; }
+.nav-link.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.login-btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 6px 14px;
+  text-decoration: none;
+  transition: background .15s, color .15s;
+}
+.login-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
+  text-decoration: none;
+}
+
+
+/* ── Hero ───────────────────────────────────────────────────────── */
+.hero {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 96px 24px 64px;
+  text-align: center;
+}
+.hero h1 {
+  font-family: var(--mono);
+  font-size: 64px;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+.hero .tagline {
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 32px;
+}
+.hero .lede {
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--text);
+  margin-bottom: 36px;
+}
+.hero-cta {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+
+/* ── Buttons ────────────────────────────────────────────────────── */
+.btn {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 10px 20px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.btn:hover { text-decoration: none; }
+.btn-primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.btn-primary:hover {
+  background: transparent;
+  color: var(--accent);
+}
+.btn-secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn-secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+
+/* ── About section ──────────────────────────────────────────────── */
+.about {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 64px 24px 96px;
+}
+.about h2 {
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 32px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.about h3 {
+  font-size: 18px;
+  margin-top: 32px;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+.about h3:first-of-type { margin-top: 0; }
+.about p {
+  margin-bottom: 14px;
+  color: var(--text);
+}
+
+
+/* ── Page content (roadmap + changelog pages) ───────────────────── */
+.page-content {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+}
+.page-header {
+  margin-bottom: 32px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.page-header h1 {
+  font-family: var(--mono);
+  font-size: 28px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.page-header .subtitle {
+  color: var(--muted);
+  font-size: 14px;
+}
+.page-status {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 13px;
+  text-align: center;
+  padding: 48px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+
+/* ── Roadmap timeline (ported from app's roadmap.css) ───────────── */
+.roadmap-timeline {
+  position: relative;
+  min-height: 120px;
+  padding: 16px 0;
+}
+.roadmap-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  background: var(--border);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.roadmap-phases {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  position: relative;
+}
+.roadmap-phase {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 18px;
+  width: calc(50% - 32px);
+  margin-left: auto;
+  box-sizing: border-box;
+}
+.roadmap-phase--pending { border-left: 3px solid var(--muted); }
+.roadmap-phase--active  { border-left: 3px solid var(--accent); }
+.roadmap-phase--done    { border-left: 3px solid var(--blue); }
+
+.roadmap-phase-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.roadmap-phase-title {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text);
+}
+.roadmap-phase-summary {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.roadmap-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.roadmap-badge--pending {
+  color: var(--muted);
+  border-color: var(--muted);
+  background: transparent;
+}
+.roadmap-badge--active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(0, 212, 170, 0.08);
+}
+.roadmap-badge--done {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: rgba(91, 141, 238, 0.08);
+}
+
+.roadmap-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.roadmap-meta-item { font-family: var(--mono); }
+.roadmap-meta-item-label {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+.roadmap-progress-note {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 179, 71, 0.08);
+  border-left: 2px solid var(--amber);
+  border-radius: 3px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+}
+.roadmap-progress-note-label {
+  display: block;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--amber);
+  font-family: var(--mono);
+  margin-bottom: 4px;
+}
+
+.roadmap-phase-body {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.roadmap-phase-body p   { margin: 0 0 8px 0; }
+.roadmap-phase-body ul  { margin: 0 0 8px 0; padding-left: 22px; }
+.roadmap-phase-body code {
+  background: var(--surface2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.roadmap-phase-toggle {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 0 0 0;
+  cursor: pointer;
+}
+.roadmap-phase-toggle:hover { text-decoration: underline; }
+
+.roadmap-dot {
+  position: absolute;
+  top: 18px;
+  left: -42px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+  border: 2px solid var(--bg);
+  z-index: 1;
+}
+.roadmap-phase--active .roadmap-dot { background: var(--accent); }
+.roadmap-phase--done   .roadmap-dot { background: var(--blue); }
+
+@media (min-width: 768px) {
+  .roadmap-phase:nth-child(odd) {
+    margin-left: 0;
+    margin-right: auto;
+  }
+  .roadmap-phase:nth-child(odd) .roadmap-dot {
+    left: auto;
+    right: -42px;
+  }
+}
+@media (max-width: 767px) {
+  .roadmap-line {
+    left: 16px;
+    transform: none;
+  }
+  .roadmap-phase {
+    width: calc(100% - 36px);
+    margin-left: 36px;
+    margin-right: 0;
+  }
+  .roadmap-phase .roadmap-dot { left: -28px; }
+}
+
+
+/* ── Changelog (ported from app's changelog.css) ────────────────── */
+.cl-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.cl-entry {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 18px;
+}
+.cl-entry-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.cl-entry-title {
+  font-size: 16px;
+  color: var(--text);
+  margin: 0;
+}
+.cl-entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.cl-entry-date { letter-spacing: .04em; }
+
+.cl-entry-body        { color: var(--text); line-height: 1.55; font-size: 13px; }
+.cl-entry-body p      { margin: 0 0 8px; }
+.cl-entry-body p:last-child { margin-bottom: 0; }
+.cl-entry-body h1,
+.cl-entry-body h2,
+.cl-entry-body h3,
+.cl-entry-body h4     { margin: 12px 0 6px; font-size: 14px; }
+.cl-entry-body ul,
+.cl-entry-body ol     { margin: 0 0 8px 22px; }
+.cl-entry-body code   {
+  font-family: var(--mono);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+.cl-entry-body pre {
+  font-family: var(--mono);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+.cl-entry-body pre code { background: none; border: none; padding: 0; }
+.cl-entry-body blockquote {
+  border-left: 3px solid var(--border);
+  padding: 2px 0 2px 12px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.cl-entry-body a { color: var(--accent); }
+
+.cl-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.cl-badge-feature {
+  color: var(--blue);
+  background: rgba(91, 141, 238, 0.12);
+  border-color: var(--blue);
+}
+.cl-badge-fix {
+  color: var(--accent);
+  background: rgba(0, 212, 170, 0.12);
+  border-color: var(--accent);
+}
+.cl-badge-improvement {
+  color: var(--muted);
+  background: var(--surface2);
+  border-color: var(--border);
+}
+.cl-badge-security {
+  color: var(--red);
+  background: rgba(255, 77, 109, 0.12);
+  border-color: var(--red);
+}
+
+
+/* ── Footer ─────────────────────────────────────────────────────── */
+.marketing-footer {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+.marketing-footer a { color: var(--muted); }
+.marketing-footer a:hover { color: var(--accent); }
+
+
+/* ── Maintenance fallback ──────────────────────────────────────── */
+body.maintenance {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.maintenance-content {
+  text-align: center;
+  padding: 32px;
+  max-width: 480px;
+}
+.maintenance-content h1 {
+  font-family: var(--mono);
+  font-size: 36px;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+.maintenance-content p { color: var(--muted); margin-bottom: 12px; }
+
+
+/* ── Mobile-friendly nav fallback ──────────────────────────────── */
+@media (max-width: 600px) {
+  .marketing-nav {
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    gap: 10px;
+  }
+  .nav-links { gap: 14px; }
+  .hero { padding: 64px 20px 40px; }
+  .hero h1 { font-size: 44px; }
+}

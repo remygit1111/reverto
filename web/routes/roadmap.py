@@ -44,7 +44,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from core import roadmap_store
+from core import marketing_export, roadmap_store
 from core.markdown_render import render_markdown
 from core.user import User
 from web.app import _audit, _request_user, limiter
@@ -52,6 +52,24 @@ from web.app import _audit, _request_user, limiter
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["roadmap"])
+
+
+# ── Marketing-snapshot best-effort hook ────────────────────────────────────
+# Called after every mutation that can change the public timeline
+# (publish / unpublish / patch / delete / reorder). The export
+# function already swallows every failure internally and returns
+# False; the outer try/except is defense-in-depth so a regression
+# in marketing_export (NameError, ImportError, etc.) cannot
+# bubble up and turn a 200 DB-mutation into a 500 because of a
+# best-effort side channel.
+def _snapshot_marketing_roadmap() -> None:
+    try:
+        marketing_export.write_roadmap_snapshot()
+    except Exception:
+        logger.exception(
+            "Marketing roadmap snapshot raised (non-fatal — DB "
+            "mutation already committed)"
+        )
 
 
 # ── Admin gate ─────────────────────────────────────────────────────────────
@@ -316,6 +334,7 @@ async def api_admin_roadmap_update(
         "roadmap_api_update", user.username, f"id={phase_id}",
         user_id=user.id,
     )
+    _snapshot_marketing_roadmap()
     phase = roadmap_store.get_phase(phase_id)
     return _phase_to_admin_json(phase)
 
@@ -349,6 +368,7 @@ async def api_admin_roadmap_reorder(
         "roadmap_api_reorder", user.username,
         f"count={len(body.ids)}", user_id=user.id,
     )
+    _snapshot_marketing_roadmap()
     return {"ok": True, "count": len(body.ids)}
 
 
@@ -365,6 +385,7 @@ async def api_admin_roadmap_publish(
         "roadmap_api_publish", user.username, f"id={phase_id}",
         user_id=user.id,
     )
+    _snapshot_marketing_roadmap()
     phase = roadmap_store.get_phase(phase_id)
     return _phase_to_admin_json(phase)
 
@@ -382,6 +403,7 @@ async def api_admin_roadmap_unpublish(
         "roadmap_api_unpublish", user.username, f"id={phase_id}",
         user_id=user.id,
     )
+    _snapshot_marketing_roadmap()
     phase = roadmap_store.get_phase(phase_id)
     return _phase_to_admin_json(phase)
 
@@ -399,4 +421,5 @@ async def api_admin_roadmap_delete(
         "roadmap_api_delete", user.username, f"id={phase_id}",
         user_id=user.id,
     )
+    _snapshot_marketing_roadmap()
     return JSONResponse(content=None, status_code=204)

@@ -62,6 +62,20 @@ def _isolate_reverto_db(tmp_path_factory):
     yield
     _database.close_db()
 
+
+@pytest.fixture(autouse=True)
+def _isolate_marketing_export(tmp_path_factory, monkeypatch):
+    """Redirect ``core.marketing_export`` writes to a per-test tmp
+    directory so the publish/unpublish/edit hooks added in PR 2 do
+    not try to write to ``/var/www/reverto-marketing/data/`` (which
+    does not exist on Reverto-Dev or in CI). Without this, every
+    existing publish-endpoint test would log a noisy PermissionError
+    even though the wrapper swallows the failure.
+    """
+    snapshot_dir = tmp_path_factory.mktemp("reverto_marketing")
+    monkeypatch.setenv("REVERTO_MARKETING_DATA_DIR", str(snapshot_dir))
+    yield snapshot_dir
+
 # ── Helpers — beschikbaar in alle testbestanden via conftest ──────────────────
 
 def make_order(price, size=0.001, order_type="base", order_number=1):

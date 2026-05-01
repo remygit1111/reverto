@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from core import changelog_store
+from core import changelog_store, marketing_export
 from core.markdown_render import render_markdown
 from core.user import User
 from web.app import _audit, _request_user, limiter
@@ -36,6 +36,22 @@ from web.app import _audit, _request_user, limiter
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["changelog"])
+
+
+# ── Marketing-snapshot best-effort hook ────────────────────────────────────
+# Mirrors ``web.routes.roadmap._snapshot_marketing_roadmap``. Called
+# after every mutation that can change the published changelog so
+# the static marketing site at reverto.bot stays in sync. The
+# export function already swallows internal failures; the outer
+# try/except is defense-in-depth.
+def _snapshot_marketing_changelog() -> None:
+    try:
+        marketing_export.write_changelog_snapshot()
+    except Exception:
+        logger.exception(
+            "Marketing changelog snapshot raised (non-fatal — DB "
+            "mutation already committed)"
+        )
 
 
 # ── Admin gate ─────────────────────────────────────────────────────────────
@@ -205,6 +221,7 @@ async def api_admin_changelog_update(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     _audit("changelog_api_update", user.username, f"id={entry_id}", user_id=user.id)
+    _snapshot_marketing_changelog()
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
 
@@ -219,6 +236,7 @@ async def api_admin_changelog_publish(
     if not changelog_store.publish_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
     _audit("changelog_api_publish", user.username, f"id={entry_id}", user_id=user.id)
+    _snapshot_marketing_changelog()
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
 
@@ -233,6 +251,7 @@ async def api_admin_changelog_unpublish(
     if not changelog_store.unpublish_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
     _audit("changelog_api_unpublish", user.username, f"id={entry_id}", user_id=user.id)
+    _snapshot_marketing_changelog()
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
 
@@ -247,4 +266,5 @@ async def api_admin_changelog_delete(
     if not changelog_store.delete_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
     _audit("changelog_api_delete", user.username, f"id={entry_id}", user_id=user.id)
+    _snapshot_marketing_changelog()
     return JSONResponse(content=None, status_code=204)

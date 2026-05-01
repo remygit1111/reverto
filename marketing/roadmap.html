@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Reverto roadmap &mdash; what's active, what's coming next, and what's already shipped.">
+  <meta property="og:title" content="Roadmap &mdash; Reverto">
+  <meta property="og:description" content="What's active, what's coming next, and what's already shipped on Reverto.">
+  <title>Roadmap &mdash; Reverto</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/css/marketing.css?v=1">
+</head>
+<body>
+  <nav class="marketing-nav">
+    <a href="/" class="brand">REVERTO</a>
+    <div class="nav-links">
+      <a href="/roadmap.html" class="nav-link active">Roadmap</a>
+      <a href="/changelog.html" class="nav-link">Changelog</a>
+      <a href="/#about" class="nav-link">About</a>
+    </div>
+    <a href="https://app.reverto.bot/" class="login-btn">Log in</a>
+  </nav>
+
+  <main class="page-content">
+    <header class="page-header">
+      <h1>Roadmap</h1>
+      <p class="subtitle">What&rsquo;s active, what&rsquo;s coming next, and what&rsquo;s already shipped.</p>
+    </header>
+
+    <div id="roadmap-status" class="page-status">Loading roadmap&hellip;</div>
+    <div class="roadmap-timeline" id="roadmap-timeline" hidden>
+      <div class="roadmap-line" aria-hidden="true"></div>
+      <div class="roadmap-phases" id="roadmap-phases"></div>
+    </div>
+  </main>
+
+  <footer class="marketing-footer">
+    <p>Reverto &mdash; built for Bitcoin. <a href="https://app.reverto.bot/">app.reverto.bot</a></p>
+  </footer>
+
+  <script src="/js/render.js?v=1"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => { loadRoadmap(); });
+  </script>
+</body>
+</html>
