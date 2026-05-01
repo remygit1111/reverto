@@ -3456,6 +3456,7 @@ from web.routes import dashboard as _dashboard_routes  # noqa: E402
 from web.routes import deals as _deals_routes  # noqa: E402
 from web.routes import drawdown as _drawdown_routes  # noqa: E402
 from web.routes import exchanges as _exchanges_routes  # noqa: E402
+from web.routes import marketing as _marketing_routes  # noqa: E402
 from web.routes import roadmap as _roadmap_routes  # noqa: E402
 
 app.include_router(_admin_routes.router)
@@ -3470,6 +3471,7 @@ app.include_router(_dashboard_routes.router)
 app.include_router(_deals_routes.router)
 app.include_router(_drawdown_routes.router)
 app.include_router(_exchanges_routes.router)
+app.include_router(_marketing_routes.router)
 app.include_router(_roadmap_routes.router)
 
 

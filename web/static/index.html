@@ -962,10 +962,17 @@
       </div>
       <div class="cl-admin-header">
         <div class="section-title">Roadmap — admin</div>
-        <button class="hbtn hbtn-theme btn-accent" id="admin-roadmap-new-btn" type="button">
-          + New phase
-        </button>
+        <div class="cl-actions">
+          <button class="hbtn hbtn-theme" id="admin-regen-snapshots-btn" type="button"
+                  title="Force-rewrite roadmap.json + changelog.json on the marketing site (reverto.bot). Auto-export already runs on every publish/unpublish/edit; use this if a snapshot has drifted.">
+            Regenerate marketing snapshots
+          </button>
+          <button class="hbtn hbtn-theme btn-accent" id="admin-roadmap-new-btn" type="button">
+            + New phase
+          </button>
+        </div>
       </div>
+      <div id="admin-regen-snapshots-status" class="cl-empty" hidden></div>
       <div id="admin-roadmap-status" class="cl-empty">Loading…</div>
       <ul id="admin-roadmap-list" class="roadmap-admin-list" hidden></ul>
     </div>
@@ -2007,6 +2014,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=222"></script>
+<script src="/static/app.js?v=223"></script>
 </body>
 </html>
