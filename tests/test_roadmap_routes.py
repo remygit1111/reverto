@@ -90,41 +90,37 @@ def _create_payload(**overrides):
     return payload
 
 
-# ── Public /api/roadmap (no auth) ─────────────────────────────────────────
+# ── Public-shape /api/roadmap (session-required after PR 3) ──────────────
 
 
 class TestPublicEndpoint:
-    """KRITIEK: /api/roadmap MUST work for unauthenticated
-    clients. Pinned by these tests so a future refactor that
-    drags ``Depends(_request_user)`` onto the route signature
-    fails CI."""
+    """KRITIEK: /api/roadmap is session-required (PR 3 of the
+    marketing-app split removed it from ``_PUBLIC_PATHS``). The
+    response shape still strips admin-only fields so a future
+    re-opening to anonymous callers would not regress the
+    admin/public boundary."""
 
-    def test_no_auth_required(self):
+    def test_anonymous_returns_401(self):
         client = TestClient(webapp.app)
         client.cookies.clear()
         r = client.get("/api/roadmap")
-        # NOT 401 — the middleware lets this through via
-        # _PUBLIC_PATHS.
-        assert r.status_code == 200, r.text
-        assert "phases" in r.json()
+        # PR 3 re-gated this — was 200 during the public-shell
+        # phase. The marketing site at reverto.bot reads the
+        # /data/roadmap.json snapshot instead.
+        assert r.status_code == 401, r.text
 
-    def test_returns_empty_phases_on_fresh_install(self):
-        client = TestClient(webapp.app)
-        client.cookies.clear()
-        r = client.get("/api/roadmap")
+    def test_returns_empty_phases_on_fresh_install(self, admin_client):
+        r = admin_client.get("/api/roadmap")
         assert r.status_code == 200
         assert r.json() == {"phases": []}
 
     def test_drafts_omitted(self, admin_client):
-        # Create a draft via the store (no publish).
         roadmap_store.create_phase(
             phase_key="draft-1",
             display_name="Draft phase",
             summary="Should not surface publicly",
         )
-        client = TestClient(webapp.app)
-        client.cookies.clear()
-        r = client.get("/api/roadmap")
+        r = admin_client.get("/api/roadmap")
         assert r.status_code == 200
         assert r.json()["phases"] == []
 
@@ -135,12 +131,13 @@ class TestPublicEndpoint:
             summary="Visible to public.",
         )
         roadmap_store.publish_phase(pid)
-        client = TestClient(webapp.app)
-        client.cookies.clear()
-        r = client.get("/api/roadmap")
+        r = admin_client.get("/api/roadmap")
         assert r.status_code == 200
         phase = r.json()["phases"][0]
-        # Admin-only fields stripped from public shape.
+        # Admin-only fields stripped from public shape (the
+        # admin-side endpoint at /api/admin/roadmap returns the
+        # full row with id / is_published / created_at /
+        # updated_at).
         assert "id" not in phase
         assert "is_published" not in phase
         assert "created_at" not in phase
@@ -158,9 +155,7 @@ class TestPublicEndpoint:
             body_md="**bold** then\n\n- item one\n- item two",
         )
         roadmap_store.publish_phase(pid)
-        client = TestClient(webapp.app)
-        client.cookies.clear()
-        r = client.get("/api/roadmap")
+        r = admin_client.get("/api/roadmap")
         phase = r.json()["phases"][0]
         # Pre-rendered HTML for safe innerHTML drop on the SPA.
         assert "<strong>bold</strong>" in phase["body_html"]

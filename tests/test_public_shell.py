@@ -1,30 +1,21 @@
-"""Tests for the public-shell mode (logged-out access to
-``/#roadmap`` + ``/#changelog``).
+"""Regression guards: the public-shell mode is GONE.
 
-Closes the bug discovered after ``feature/roadmap-spa`` deploy:
-a logged-out visitor at ``/#roadmap`` saw the login-form
-because ``body.is-login`` was set unconditionally on auth-fail
-and the nav was hidden via CSS. The public-shell fix introduces
-a third auth-mode state (``body.is-public``) that reveals only
-public tabs + a Log-in button for visitors arriving at a public
-hash route.
+Background: between feature/roadmap-spa and the marketing-app
+split, the app supported a third auth-mode state
+(``body.is-public``) that revealed Roadmap + Changelog tabs to
+logged-out visitors at ``/#roadmap`` and ``/#changelog``. PR 3
+of the marketing-app split removed that mode entirely — public
+content moved to the static marketing site at
+``https://reverto.bot``. The app at ``app.reverto.bot`` is now
+session-required end-to-end.
 
-These tests pin the contract at three layers:
-
-* **Backend public-paths** (``_PUBLIC_PATHS`` includes both
-  ``/api/roadmap`` AND ``/api/changelog``). The middleware lets
-  these requests through without a session cookie.
-* **Endpoint behaviour** (anonymous ``GET /api/changelog`` and
-  ``GET /api/roadmap`` return 200 + filter drafts + omit admin-
-  only fields).
-* **Frontend markup** (``data-public`` is set on Roadmap and
-  Changelog nav buttons; the ``#nav-login-btn`` element exists
-  for the public-shell to reveal).
-
-Frontend behaviour beyond markup (CSS rule application, JS
-class-toggle on auth result) is verified by the operator's
-post-deploy smoke-test scenarios documented in the PR
-description — the test suite has no JS-level harness.
+This file inverts the original public-shell pin tests into
+"public-shell stays gone" guards. The security-relevant ones
+(_PUBLIC_PATHS exclusion + 401 on anonymous) are the load-
+bearing assertions; the markup / JS / CSS pins are kept
+shallow because their original purpose (revealing public tabs)
+no longer exists, but the absence-pins protect against an
+accidental re-introduction.
 """
 
 from __future__ import annotations
@@ -39,349 +30,164 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from fastapi.testclient import TestClient
 
-from core import changelog_store
 from web import app as webapp
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-# ── Backend: _PUBLIC_PATHS contains the two routes ────────────────────────
+# ── Backend: _PUBLIC_PATHS no longer exposes the JSON endpoints ──────────
 
 
-class TestPublicPaths:
+class TestPublicPathsExcludeRoadmapChangelog:
     """The auth-middleware gates every request except those in
-    ``_PUBLIC_PATHS``. For the public-shell to function, both
-    ``/api/roadmap`` (added in feature/roadmap-spa) and
-    ``/api/changelog`` (added in this PR) must be in the set."""
+    ``_PUBLIC_PATHS``. PR 3 removed ``/api/roadmap`` and
+    ``/api/changelog`` from the set so anonymous callers get
+    401 again. The marketing site at reverto.bot does NOT use
+    these endpoints — it reads JSON snapshots written by
+    ``core.marketing_export`` to ``/var/www/reverto-marketing/
+    data/``."""
 
-    def test_roadmap_endpoint_is_public(self):
-        """Pre-existing pin from feature/roadmap-spa — verified
-        still passes after the public-shell PR."""
-        assert "/api/roadmap" in webapp._PUBLIC_PATHS
+    def test_roadmap_endpoint_is_not_public(self):
+        assert "/api/roadmap" not in webapp._PUBLIC_PATHS, (
+            "/api/roadmap must require auth — the marketing site "
+            "reads from /data/roadmap.json (file snapshot), not "
+            "the API. Re-adding to _PUBLIC_PATHS would re-open the "
+            "anonymous-shell hole that PR 3 closed."
+        )
 
-    def test_changelog_endpoint_is_public(self):
-        """NEW: this PR adds /api/changelog to _PUBLIC_PATHS so
-        the SPA tab #changelog has content for logged-out
-        visitors. Pre-fix the route required a session cookie
-        even though semantically it returns the same data a
-        logged-in user would see."""
-        assert "/api/changelog" in webapp._PUBLIC_PATHS
-
-
-# ── Endpoint behaviour: anonymous access to changelog ────────────────────
+    def test_changelog_endpoint_is_not_public(self):
+        assert "/api/changelog" not in webapp._PUBLIC_PATHS, (
+            "/api/changelog must require auth — same reasoning as "
+            "the roadmap endpoint."
+        )
 
 
-class TestAnonymousChangelogAccess:
-    """Anonymous ``GET /api/changelog`` must:
-    1. Return 200 (not 401, not 303 redirect).
-    2. Filter drafts — only ``is_published = 1`` entries surface.
-    3. Strip admin-only fields from the response shape.
-    """
+# ── Endpoint behaviour: anonymous returns 401 ────────────────────────────
+
+
+class TestAnonymousAccessRejected:
 
     def _anon_client(self):
         client = TestClient(webapp.app)
         client.cookies.clear()
         return client
 
-    def test_anonymous_get_returns_200(self):
-        """Pre-fix this returned 401 because the route had a
-        ``Depends(_request_user)`` dependency. Post-fix the
-        dependency is removed and the path is in
-        ``_PUBLIC_PATHS``."""
-        client = self._anon_client()
-        r = client.get("/api/changelog")
-        assert r.status_code == 200, r.text
-        assert "entries" in r.json()
-
-    def test_anonymous_does_not_see_drafts(self):
-        """Even though the endpoint is now public, drafts MUST
-        stay hidden. ``list_published()`` already filters at the
-        store layer; this test pins that contract end-to-end."""
-        # Create a draft only — never published.
-        changelog_store.create_entry(
-            "Secret upcoming feature", "body", "feature",
-        )
-        client = self._anon_client()
-        r = client.get("/api/changelog")
-        assert r.status_code == 200
-        assert r.json()["entries"] == [], (
-            "Drafts must NOT leak via the now-public /api/changelog. "
-            "list_published() filters at the store layer; this guard "
-            "catches a regression that swaps to list_all()."
+    def test_anonymous_get_changelog_returns_401(self):
+        r = self._anon_client().get("/api/changelog")
+        assert r.status_code == 401, (
+            "Pre-PR-3 this returned 200 because the endpoint was "
+            "in _PUBLIC_PATHS. Now session-required."
         )
 
-    def test_anonymous_does_not_see_admin_fields(self):
-        """The public response shape (``_entry_to_public_json``)
-        strips ``is_published``, ``created_at``, raw markdown
-        ``description`` (admin uses ``description_html``-pre-
-        rendered + raw round-trip; public sees only the rendered
-        HTML). Pin so a future shape-edit doesn't accidentally
-        expose admin metadata to anonymous callers."""
-        eid = changelog_store.create_entry(
-            "Public entry", "body **bold**", "feature",
+    def test_anonymous_get_roadmap_returns_401(self):
+        r = self._anon_client().get("/api/roadmap")
+        assert r.status_code == 401, (
+            "Pre-PR-3 this returned 200 because the endpoint was "
+            "in _PUBLIC_PATHS. Now session-required."
         )
-        changelog_store.publish_entry(eid)
-        client = self._anon_client()
-        r = client.get("/api/changelog")
-        assert r.status_code == 200
-        entry = r.json()["entries"][0]
-        # Public shape carries: id, title, category, published_at,
-        # description_html. NOT is_published, NOT created_at, NOT
-        # raw description (markdown), NOT source_commit_sha.
-        assert "is_published" not in entry, (
-            "is_published is admin-only — must not surface in "
-            "the public response shape."
-        )
-        assert "created_at" not in entry, (
-            "created_at is admin-only — must not surface."
-        )
-        assert "description" not in entry, (
-            "Raw markdown description is admin-only — public "
-            "callers receive description_html (pre-rendered + "
-            "sanitised) instead."
-        )
-        # Public-visible fields ARE present.
-        assert entry["title"] == "Public entry"
-        assert "<strong>bold</strong>" in entry["description_html"]
 
 
-# ── Endpoint behaviour: anonymous access to roadmap (regression) ─────────
+# ── Frontend markup: public-shell DOM removed ────────────────────────────
 
 
-class TestAnonymousRoadmapAccess:
-    """Pre-existing roadmap public-access tests live in
-    ``test_roadmap_routes.py``; these are quick regression
-    pins that verify the public-shell PR didn't disturb them
-    (e.g. by accidentally adding an auth dependency that worked
-    via the middleware bypass)."""
-
-    def test_anonymous_roadmap_returns_200(self):
-        client = TestClient(webapp.app)
-        client.cookies.clear()
-        r = client.get("/api/roadmap")
-        assert r.status_code == 200
-        assert "phases" in r.json()
-
-
-# ── Frontend markup: index.html carries the public-shell hooks ───────────
-
-
-class TestPublicShellMarkup:
-    """The public-shell behaviour is driven by three frontend
-    markers in ``web/static/index.html``:
-
-    * ``data-public`` attribute on Roadmap + Changelog nav
-      buttons — the CSS rule
-      ``body.is-public #main-nav .tab:not([data-public])`` hides
-      every other tab.
-    * ``#nav-login-btn`` element with the ``hidden`` attribute
-      and the ``nav-login-btn`` class — revealed by the CSS rule
-      ``body.is-public .nav-login-btn { display: inline-flex }``.
-    * ``data-public`` MUST NOT be on the Admin tab — admins
-      reach their tools via the standard logged-in flow.
-
-    The CSS rule and the JS class-toggle are verified by the
-    operator's smoke-test (incognito → /#roadmap should render
-    the public-shell). These tests pin only the markup
-    invariants the JS depends on.
-    """
+class TestPublicShellMarkupRemoved:
+    """The ``data-public`` / ``nav-login-btn`` / ``view-roadmap`` /
+    ``view-changelog`` markers used to drive the public-shell.
+    PR 3 stripped them. These pins catch an accidental
+    re-introduction (e.g. someone copy-pasting from an old
+    branch)."""
 
     def _read_index(self):
         return (_REPO_ROOT / "web" / "static" / "index.html").read_text(
             encoding="utf-8",
         )
 
-    def test_roadmap_nav_button_has_data_public(self):
+    def test_no_data_public_attributes(self):
         html = self._read_index()
-        # Locate the Roadmap nav button line and assert the attr.
-        # The exact attribute syntax is ``data-public`` (no value)
-        # since the CSS selector uses presence-only matching.
-        assert 'id="nav-roadmap-btn" data-public' in html, (
-            "Roadmap tab must carry the data-public attribute so "
-            "the public-shell CSS rule reveals it for logged-out "
-            "visitors."
+        assert "data-public" not in html, (
+            "data-public was the public-shell tab marker — none "
+            "of the in-app tabs should still carry it."
         )
 
-    def test_changelog_nav_button_has_data_public(self):
+    def test_no_nav_login_button(self):
         html = self._read_index()
-        assert 'id="nav-changelog-btn" data-public' in html, (
-            "Changelog tab must carry the data-public attribute "
-            "for the public-shell CSS rule."
+        assert 'id="nav-login-btn"' not in html, (
+            "The Log-in button only existed for the public-shell "
+            "(logged-out visitors transitioning to the login "
+            "form). With the public-shell gone, every logged-out "
+            "visitor lands directly on #view-login — no button "
+            "needed."
         )
 
-    def test_admin_nav_button_does_not_have_data_public(self):
-        """Defence-in-depth: admins reach their tab via logged-in
-        flow. The Admin tab uses ``data-admin-only`` (gated on
-        user_id=1), NOT ``data-public``. Confusing the two would
-        either leak the admin tab to anonymous visitors (bad) or
-        hide it from admins (annoying)."""
+    def test_no_public_roadmap_view(self):
         html = self._read_index()
-        # Locate the admin button line.
-        admin_line = next(
-            (line for line in html.splitlines()
-             if 'id="nav-admin-btn"' in line),
-            None,
-        )
-        assert admin_line is not None, "Admin nav button missing"
-        assert "data-public" not in admin_line, (
-            "Admin tab must NOT carry data-public — admins use "
-            "data-admin-only + the standard logged-in flow."
+        assert 'id="view-roadmap"' not in html, (
+            "view-roadmap was the public timeline render target. "
+            "Public roadmap now lives at https://reverto.bot/"
+            "roadmap.html."
         )
 
-    def test_nav_login_button_present_and_hidden(self):
-        """The Log-in button must exist in the DOM with the
-        ``hidden`` attribute (HTML-level hide). CSS reveals it
-        only in body.is-public; the HTML default keeps the
-        button invisible for logged-in users + visitors arriving
-        at the default route (where the login-form takes the
-        screen)."""
+    def test_no_public_changelog_view(self):
         html = self._read_index()
-        assert 'id="nav-login-btn"' in html, (
-            "Log-in button missing from the DOM — the public-"
-            "shell has no way to authenticate visitors."
-        )
-        # Locate the line — the ``hidden`` attribute must appear
-        # on the same element so first-paint hides it before any
-        # CSS / JS runs.
-        login_line = next(
-            (line for line in html.splitlines()
-             if 'id="nav-login-btn"' in line),
-            None,
-        )
-        assert login_line is not None
-        assert "hidden" in login_line, (
-            "nav-login-btn must carry the HTML `hidden` attribute "
-            "so the button is invisible at first paint. CSS in "
-            "is-public mode overrides via display: inline-flex."
-        )
-        assert "nav-login-btn" in login_line, (
-            "nav-login-btn must carry the .nav-login-btn class — "
-            "the body.is-public CSS rule selects on this class to "
-            "reveal the button."
+        assert 'id="view-changelog"' not in html, (
+            "view-changelog was the public list render target. "
+            "Public changelog now lives at https://reverto.bot/"
+            "changelog.html."
         )
 
 
-# ── Frontend behaviour: app.js carries the public-shell wiring ───────────
+# ── Frontend behaviour: app.js no longer carries public-shell helpers ────
 
 
-class TestPublicShellJsWiring:
-    """Source-grep guards on app.js. The public-shell mode lives
-    or dies by three JS pieces:
-
-    1. ``PUBLIC_HASH_ROUTES`` set with at least ``#roadmap`` and
-       ``#changelog``.
-    2. An auth-fail branch that checks for public hash before
-       falling through to ``_handle401`` (otherwise logged-out
-       visitors at ``/#roadmap`` still see the login-form).
-    3. A click handler on ``#nav-login-btn`` that swaps to
-       is-login mode.
-    """
+class TestPublicShellJsRemoved:
 
     def _read_app_js(self):
         return (_REPO_ROOT / "web" / "static" / "app.js").read_text(
             encoding="utf-8",
         )
 
-    def test_public_hash_routes_includes_both(self):
+    def test_no_public_hash_routes_set(self):
         js = self._read_app_js()
-        assert "PUBLIC_HASH_ROUTES" in js, (
-            "PUBLIC_HASH_ROUTES set missing — the auth-fail branch "
-            "has no way to decide between login-form and public-"
-            "shell."
-        )
-        assert "'#roadmap'" in js and "'#changelog'" in js, (
-            "PUBLIC_HASH_ROUTES must include both #roadmap and "
-            "#changelog so logged-out visitors at either URL get "
-            "the public-shell instead of the login-form."
+        assert "PUBLIC_HASH_ROUTES" not in js, (
+            "PUBLIC_HASH_ROUTES drove the public-shell branching. "
+            "Removed in PR 3 — the auth-fail path now goes "
+            "straight to _handle401 / login form."
         )
 
-    def test_auth_fail_branch_uses_public_hash_check(self):
-        """The DOMContentLoaded handler's auth-fail path must
-        consult ``_isPublicHashRoute()`` (or equivalent) and
-        call ``_enterPublicShell()`` for public routes. Without
-        this branching, every unauthenticated visitor gets the
-        login-form regardless of URL — exactly the regression
-        this PR fixes."""
+    def test_no_public_shell_helpers(self):
         js = self._read_app_js()
-        assert "_isPublicHashRoute" in js, (
-            "_isPublicHashRoute helper missing — the auth-fail "
-            "branch can't distinguish public from default routes."
-        )
-        assert "_enterPublicShell" in js, (
-            "_enterPublicShell helper missing — public routes "
-            "have nowhere to land after auth fails."
-        )
-
-    def test_login_button_handler_wired(self):
-        """``setupEventListeners`` (or equivalent init) must
-        attach a click handler to ``#nav-login-btn`` that
-        transitions out of public-shell into the login-form.
-        Without the wiring, the Log-in button is a dead
-        element."""
-        js = self._read_app_js()
-        assert "_showLoginFormFromPublic" in js, (
-            "Log-in button handler missing — clicking the button "
-            "would do nothing."
-        )
-        assert "nav-login-btn" in js, (
-            "nav-login-btn id must appear in app.js so the click "
-            "listener can attach to the element."
-        )
-
-    def test_public_shell_clears_is_login_class(self):
-        """``_enterPublicShell`` must remove ``is-login`` if it
-        was previously set (e.g. a stale tab transitioning from
-        login-form to public-shell). Otherwise the login-form
-        chrome leaks into the public-shell view."""
-        js = self._read_app_js()
-        # Locate the _enterPublicShell function body.
-        start = js.find("function _enterPublicShell(")
-        assert start >= 0
-        end = js.find("\nfunction ", start + 1)
-        body = js[start:end if end > 0 else len(js)]
-        assert "is-public" in body and "is-login" in body, (
-            "_enterPublicShell must mention both classes — set "
-            "is-public and clear is-login. Without the clear, a "
-            "transition from login-form to public-shell keeps "
-            "the login chrome hidden by the stale class."
-        )
+        for name in ("_isPublicHashRoute", "_enterPublicShell",
+                     "_showLoginFormFromPublic"):
+            assert name not in js, (
+                f"{name} was a public-shell helper, removed in PR 3."
+            )
 
 
-# ── style.css carries the body.is-public rules ───────────────────────────
+# ── style.css: body.is-public rules removed ──────────────────────────────
 
 
-class TestPublicShellCss:
+class TestPublicShellCssRemoved:
 
     def _read_style(self):
         return (_REPO_ROOT / "web" / "static" / "style.css").read_text(
             encoding="utf-8",
         )
 
-    def test_is_public_hides_non_public_tabs(self):
+    def test_no_is_public_rules(self):
         css = self._read_style()
-        assert "body.is-public #main-nav .tab:not([data-public])" in css, (
-            "body.is-public must hide every nav tab except the "
-            "ones marked data-public. Without this rule the full "
-            "nav leaks to logged-out visitors."
-        )
-
-    def test_is_public_reveals_login_button(self):
-        css = self._read_style()
-        # Two valid styles for the rule body — using a class
-        # selector or descendant. Either is fine; the test
-        # asserts the class is referenced.
-        assert "body.is-public .nav-login-btn" in css, (
-            "body.is-public must reveal the Log-in button via a "
-            "rule overriding the HTML `hidden` attribute."
-        )
-
-    def test_is_public_hides_profile_button(self):
-        """Logged-out visitors have no profile to show; the
-        profile-btn must collapse alongside the rest of the
-        logged-in chrome in public-shell mode."""
-        css = self._read_style()
-        assert "body.is-public #profile-btn" in css, (
-            "body.is-public must hide #profile-btn — there's no "
-            "profile to display for an anonymous visitor."
-        )
+        # Match the actual selectors. The descriptive comment
+        # that mentions "body.is-public ... removed in PR 3" is
+        # allowed; it's a plain comment, not a selector. To
+        # check for actual rules we look for the selector
+        # combinator pattern.
+        bad_selectors = [
+            "body.is-public #",
+            "body.is-public .",
+            "body.is-public[",
+        ]
+        for sel in bad_selectors:
+            assert sel not in css, (
+                f"CSS selector starting with {sel!r} found — "
+                "body.is-public rules were removed in PR 3."
+            )
