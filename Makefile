@@ -93,18 +93,34 @@ deploy:
 # Reverto-Dev (WSL2), SSH to the VPS first:
 #     ssh bot@<vps> 'cd ~/reverto && git pull && make deploy-marketing'
 #
-# Excludes README.md and any .git* metadata so they don't end up served
-# at https://reverto.bot/README.md.
+# KRITIEK: the data/ subdirectory at /var/www/reverto-marketing/data/ is
+# owned by bot:bot (the FastAPI process writes JSON snapshots there via
+# core/marketing_export.py). Touching its ownership would break auto-
+# export. PR 3 of the marketing-app split fixed a latent bug where the
+# original recursive `chown -R caddy:caddy` would walk into data/ and
+# break that on every redeploy. The current target excludes data/ from
+# both the rsync and the chown/chmod walks via `-path ... -prune`.
+#
+# README.md and .git* are excluded from rsync so they don't end up
+# served at https://reverto.bot/README.md.
 deploy-marketing:
 	@echo "Deploying marketing site to /var/www/reverto-marketing/..."
 	rsync -av --delete \
 		--exclude=README.md \
 		--exclude='.git*' \
+		--exclude='data' \
 		marketing/ /var/www/reverto-marketing/
-	sudo chown -R caddy:caddy /var/www/reverto-marketing
-	sudo find /var/www/reverto-marketing -type d -exec chmod 755 {} \;
-	sudo find /var/www/reverto-marketing -type f -exec chmod 644 {} \;
-	@echo "Marketing site deployed."
+	@# Chown only the static files — data/ stays bot:bot.
+	sudo find /var/www/reverto-marketing \
+		-path /var/www/reverto-marketing/data -prune \
+		-o \( -type d -o -type f \) -exec chown caddy:caddy {} \;
+	sudo find /var/www/reverto-marketing \
+		-path /var/www/reverto-marketing/data -prune \
+		-o -type d -exec chmod 755 {} \;
+	sudo find /var/www/reverto-marketing \
+		-path /var/www/reverto-marketing/data -prune \
+		-o -type f -exec chmod 644 {} \;
+	@echo "Marketing site deployed (data/ ownership preserved as bot:bot)."
 
 # ── Rollback — audit r1-038 ─────────────────────────────────────────────────
 # Scripted rollback of the production portal. Resets HEAD by N commits

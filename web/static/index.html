@@ -34,7 +34,7 @@
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/style.css?v=99">
+<link rel="stylesheet" href="/static/style.css?v=100">
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/roadmap.css?v=1">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
@@ -78,13 +78,6 @@
     <span id="state-ws-dot" class="live-dot"></span>
     <span id="state-ws-label" class="log-status-text">connecting…</span>
   </span>
-  <!-- Login button — shown only in body.is-public (logged-out
-       visitor on a public route). Lives in the same header zone
-       as the profile-btn so the auth-state swap is one element
-       toggle. CSS in style.css controls visibility. -->
-  <button id="nav-login-btn" type="button" class="hbtn hbtn-theme btn-accent nav-login-btn" hidden>
-    Log in
-  </button>
   <button id="profile-btn" type="button" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">
     <span id="profile-initial">A</span>
   </button>
@@ -646,12 +639,6 @@
   <button class="tab" id="nav-workspace-btn">Workspace</button>
   <button class="tab" id="nav-bots-btn">Bots</button>
   <button class="tab" id="nav-backtests-btn">Backtest History</button>
-  <!-- data-public marks tabs that work without an authenticated
-       session. body.is-public hides every other tab so a logged-
-       out visitor at /#roadmap (or /#changelog) sees a minimal
-       nav rather than the login-form. -->
-  <button class="tab" id="nav-roadmap-btn" data-public>Roadmap</button>
-  <button class="tab" id="nav-changelog-btn" data-public>Changelog</button>
   <button class="tab" id="nav-admin-btn" data-admin-only hidden>Admin</button>
 </nav>
 
@@ -816,34 +803,6 @@
     </div>
   </div>
   <div id="workspace-grid" class="grid-stack"></div>
-</div>
-
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- VIEW: Roadmap (public, no auth required)                                  -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<div id="view-roadmap" class="page">
-  <div class="roadmap-page">
-    <div class="section-title">Roadmap</div>
-    <div class="roadmap-intro">
-      What's active, what's coming next, and what's already shipped.
-    </div>
-    <div id="roadmap-status" class="roadmap-empty">Loading…</div>
-    <div id="roadmap-timeline" class="roadmap-timeline" hidden>
-      <div class="roadmap-line" aria-hidden="true"></div>
-      <div id="roadmap-phases" class="roadmap-phases"></div>
-    </div>
-  </div>
-</div>
-
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- VIEW: Changelog                                                           -->
-<!-- ══════════════════════════════════════════════════════════════════════════ -->
-<div id="view-changelog" class="page">
-  <div class="cl-page">
-    <div class="section-title">What's new</div>
-    <div id="cl-status" class="cl-empty">Loading…</div>
-    <div id="cl-entries" class="cl-entries"></div>
-  </div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
@@ -2014,6 +1973,6 @@
      the top-level function declarations are visible to app.js's
      call sites at runtime. -->
 <script src="/static/chart_module.js?v=15"></script>
-<script src="/static/app.js?v=223"></script>
+<script src="/static/app.js?v=224"></script>
 </body>
 </html>

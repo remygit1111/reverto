@@ -137,22 +137,22 @@ def _entry_to_admin_json(entry: dict) -> dict:
 
 @router.get("/api/changelog")
 @limiter.limit("120/minute")
-async def api_changelog_public(request: Request):
-    """Public changelog list. Drops the prior
-    ``Depends(_request_user)`` dependency (operator decision
-    2026-04-30 + ``fix/public-shell-for-logged-out-users``):
-    release notes are meant for everyone, including unauthenticated
-    visitors arriving at the SPA's ``/#changelog`` tab.
+async def api_changelog_public(
+    request: Request,
+    user: User = Depends(_request_user),
+):
+    """Changelog list for the in-app SPA (logged-in only).
 
-    Safety: ``list_published()`` filters drafts at the store layer
-    and ``_entry_to_public_json`` strips admin-only fields
-    (``description`` raw markdown, ``is_published``,
-    ``created_at``), so anonymous callers only ever receive what
-    a logged-in user would have received pre-fix. Drafts and
-    admin metadata stay invisible.
+    Was anonymous-accessible during the public-shell phase
+    (operator decision 2026-04-30). PR 3 of the marketing-app
+    split re-gated it: logged-out visitors now read release
+    notes on the static marketing site at https://reverto.bot,
+    fed by ``core.marketing_export``.
 
-    Mirrors the public-roadmap endpoint pattern at
-    ``web/routes/roadmap.py::api_roadmap_public``."""
+    The response shape still strips admin-only fields via
+    ``_entry_to_public_json`` so the admin/public boundary
+    holds even if a future change re-opens this to anonymous
+    callers."""
     entries = changelog_store.list_published(limit=50)
     return {"entries": [_entry_to_public_json(e) for e in entries]}
 

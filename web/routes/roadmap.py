@@ -238,14 +238,23 @@ def _phase_to_admin_json(phase: dict) -> dict:
 
 @router.get("/api/roadmap")
 @limiter.limit("30/minute")
-async def api_roadmap_public(request: Request):
-    """Public roadmap timeline. Logged-out users can call this.
+async def api_roadmap_public(
+    request: Request,
+    user: User = Depends(_request_user),
+):
+    """Roadmap timeline for the in-app SPA (logged-in only).
 
-    Registered in ``web.app._PUBLIC_PATHS`` so the auth
-    middleware passes the request through without a session
-    cookie. Rate-limited at 30/minute (the SPA polls at most
-    once per page-render; the cap mitigates a viral-link
-    scraping spike without restricting normal use).
+    Used to be in ``web.app._PUBLIC_PATHS`` for the public-shell
+    PR; PR 3 of the marketing-app split removed that and re-
+    added the session-cookie requirement. Logged-out visitors
+    now read the roadmap on the static marketing site at
+    https://reverto.bot, which is fed by snapshot writes in
+    ``core.marketing_export`` rather than by this endpoint.
+
+    The response shape still strips admin-only fields via
+    ``_phase_to_public_json`` so a future re-opening of the
+    endpoint to anonymous callers (unlikely but possible) would
+    not regress the admin/public boundary.
     """
     phases = roadmap_store.list_published(limit=100)
     return {"phases": [_phase_to_public_json(p) for p in phases]}
