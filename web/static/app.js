@@ -166,68 +166,10 @@ function _handle401() {
   }
   // Strip the chrome (main nav, header buttons, state indicators) so
   // the login screen is the only thing visible. CSS hides everything
-  // except the REVERTO logo when body carries .is-login. Drop
-  // is-public if it was set — a logged-out user clicking the Log-in
-  // button transitions out of public-shell into the login-form.
+  // except the REVERTO logo when body carries .is-login.
   document.body.classList.add('is-login');
-  document.body.classList.remove('is-public');
 }
 
-
-// ── Public-shell mode ─────────────────────────────────────────────────────
-//
-// Hash routes that work without authentication. A logged-out
-// visitor who lands on one of these URLs gets the public-shell
-// (minimal nav with only [data-public] tabs + Log-in button)
-// instead of the login-form. The login-form remains the default
-// for visitors who land at `/` without a hash.
-//
-// /api/roadmap is in web.app._PUBLIC_PATHS so the JSON fetch
-// behind the SPA tab works for unauthenticated clients;
-// /api/changelog received the same treatment in this PR (was
-// previously logged-in-only by accident, not by design).
-const PUBLIC_HASH_ROUTES = new Set(['#roadmap', '#changelog']);
-
-function _isPublicHashRoute() {
-  return PUBLIC_HASH_ROUTES.has(window.location.hash);
-}
-
-function _enterPublicShell() {
-  // The mirror image of _handle401's "set is-login + show login"
-  // pattern, for unauthenticated visitors on a public route.
-  // Sets body.is-public so the CSS reveals Roadmap + Changelog
-  // tabs + the Log-in button while hiding everything else, then
-  // delegates to the existing hash router so the requested tab
-  // renders.
-  document.body.classList.add('is-public');
-  document.body.classList.remove('is-login');
-  // Make sure the login-form view is hidden — it shares the
-  // .page class with the SPA tabs and the SPA shell defaults
-  // it active in HTML. Rendering the login view AND the
-  // requested public tab simultaneously would produce a
-  // confusing double-page paint.
-  const login = document.getElementById('view-login');
-  if (login) {
-    login.classList.remove('active');
-    login.classList.add('hidden');
-  }
-  _routeFromHash();
-}
-
-function _showLoginFormFromPublic() {
-  // Triggered by the header Log-in button. Reuses _handle401's
-  // flow byte-for-byte — it already swaps to is-login + reveals
-  // #view-login + drops is-public.
-  _handle401();
-  // Focus the username field for usability. The setTimeout
-  // mirrors the focus pattern used by other modal handlers
-  // throughout the file (avoids racing the CSS transition that
-  // reveals the form).
-  setTimeout(() => {
-    const u = document.getElementById('login-username');
-    if (u) u.focus();
-  }, 30);
-}
 
 async function handleLoginSubmit(e) {
   if (e && e.preventDefault) e.preventDefault();
@@ -2619,38 +2561,12 @@ function goNewBot() {
   fetchWizardChartData();
 }
 
-// ── Changelog + Admin SPA tabs ───────────────────────────────────────────────
-// Both pages used to be server-rendered escape-hatches (full page-load
-// out of the SPA); the SPA-integration refactor turns them into
-// first-class tabs that route entirely via showPage() + the JSON API
-// endpoints in web/routes/changelog.py.
-
-function goChangelog(fromPop = false) {
-  _resetHeaderForTopLevel();
-  _setActiveTab('nav-changelog-btn');
-  showPage('changelog');
-  // The overview poller is pointless while the user is reading
-  // release notes; pause it so the network stays quiet.
-  clearInterval(overviewInterval);
-  overviewInterval = null;
-  if (!fromPop) _pushHistory('changelog', '#changelog');
-  loadChangelog();
-}
-
-// Roadmap is the second public-facing tab (alongside Changelog).
-// Mirrors goChangelog byte-for-byte except it doesn't gate on
-// auth — a logged-out visitor can hit /#roadmap and see the
-// timeline. The /api/roadmap endpoint is in _PUBLIC_PATHS, so
-// the loadRoadmap() fetch below works without a session cookie.
-function goRoadmap(fromPop = false) {
-  _resetHeaderForTopLevel();
-  _setActiveTab('nav-roadmap-btn');
-  showPage('roadmap');
-  clearInterval(overviewInterval);
-  overviewInterval = null;
-  if (!fromPop) _pushHistory('roadmap', '#roadmap');
-  loadRoadmap();
-}
+// ── Admin SPA tabs ───────────────────────────────────────────────────────
+// The Roadmap + Changelog tabs used to live here as logged-in nav
+// entries (and briefly as public-shell tabs for logged-out visitors).
+// PR 3 (marketing-app split) removed both: public-facing roadmap +
+// changelog now live at https://reverto.bot, and operators reach the
+// admin editing UI via #admin/{roadmap,changelog}-manage below.
 
 function goAdmin(fromPop = false, subRoute = null) {
   _resetHeaderForTopLevel();
@@ -3679,11 +3595,12 @@ function _dispatchWorkspaceBotState(slug, data) {
   }
 }
 
-// ── Changelog — public listing ───────────────────────────────────────────
-// Renders /api/changelog inside the Changelog tab. description_html is
-// rendered and bleach-sanitised server-side (core.markdown_render) so
-// we drop it straight into innerHTML — adding a client-side sanitiser
-// would duplicate the trust boundary without strengthening it.
+// ── Changelog — admin shared helpers ─────────────────────────────────────
+// The public changelog (rendered to logged-out visitors) moved to the
+// static marketing site at https://reverto.bot in PR 3 (marketing-app
+// split). The label / date / badge helpers below survive because the
+// admin Changelog tab (#admin/changelog-manage) reuses them in
+// _clRenderAdminRow.
 
 const _CL_CATEGORY_LABELS = {
   feature: 'Feature',
@@ -3707,63 +3624,6 @@ function _clCategoryBadge(category) {
   badge.className = `cl-badge cl-badge-${safe}`;
   badge.textContent = label;
   return badge;
-}
-
-function _clRenderEntry(entry) {
-  const article = document.createElement('article');
-  article.className = 'card cl-entry';
-
-  const header = document.createElement('div');
-  header.className = 'cl-entry-header';
-  const title = document.createElement('h2');
-  title.className = 'cl-entry-title';
-  title.textContent = entry.title || '';
-  const meta = document.createElement('div');
-  meta.className = 'cl-entry-meta';
-  meta.appendChild(_clCategoryBadge(entry.category));
-  const date = document.createElement('span');
-  date.className = 'cl-entry-date';
-  date.textContent = _clFormatDate(entry.published_at);
-  meta.appendChild(date);
-  header.appendChild(title);
-  header.appendChild(meta);
-
-  const body = document.createElement('div');
-  body.className = 'cl-entry-body';
-  // innerHTML is safe here: description_html is emitted by bleach on
-  // the server (tags/attrs allow-list enforced). See
-  // core/markdown_render.py.
-  body.innerHTML = entry.description_html || '';
-
-  article.appendChild(header);
-  article.appendChild(body);
-  return article;
-}
-
-async function loadChangelog() {
-  const statusEl = $('cl-status');
-  const listEl = $('cl-entries');
-  if (!statusEl || !listEl) return;
-  listEl.innerHTML = '';
-  statusEl.classList.remove('hidden');
-  statusEl.textContent = 'Loading…';
-  try {
-    const r = await fetch('/api/changelog');
-    if (r.status === 401) { _handle401(); return; }
-    if (!r.ok) throw new Error(`status ${r.status}`);
-    const data = await r.json();
-    const entries = Array.isArray(data.entries) ? data.entries : [];
-    if (entries.length === 0) {
-      statusEl.textContent = 'No updates yet.';
-      return;
-    }
-    statusEl.classList.add('hidden');
-    const frag = document.createDocumentFragment();
-    entries.forEach((e) => frag.appendChild(_clRenderEntry(e)));
-    listEl.appendChild(frag);
-  } catch (e) {
-    statusEl.textContent = 'Failed to load changelog.';
-  }
 }
 
 // ── Admin — Audit findings tracker ───────────────────────────────────────
@@ -4213,165 +4073,17 @@ async function _clDeleteAction(entryId) {
 }
 
 
-// ── Roadmap — public timeline ────────────────────────────────────────────
-// Renders /api/roadmap inside the Roadmap tab. body_html is rendered
-// + bleach-sanitised server-side (core.markdown_render) so we drop it
-// straight into innerHTML — same trust boundary as changelog.
+// ── Roadmap — admin shared helpers ───────────────────────────────────────
+// The public roadmap (rendered to logged-out visitors) moved to the
+// static marketing site at https://reverto.bot in PR 3 (marketing-app
+// split). _RM_STATUS_LABELS survives because _rmRenderAdminRow below
+// uses it for the status column.
 
 const _RM_STATUS_LABELS = {
   pending: 'Pending',
   active: 'Active',
   done: 'Done',
 };
-
-function _rmFormatDate(ts) {
-  if (!ts) return null;
-  return String(ts).split(' ')[0];
-}
-
-function _rmStatusBadge(status) {
-  const safe = String(status || '').replace(/[^a-z]/g, '');
-  const label = _RM_STATUS_LABELS[safe] || safe || '—';
-  const badge = document.createElement('span');
-  badge.className = `roadmap-badge roadmap-badge--${safe}`;
-  badge.textContent = label;
-  return badge;
-}
-
-function _rmRenderMetaItem(label, value) {
-  if (!value) return null;
-  const wrap = document.createElement('div');
-  wrap.className = 'roadmap-meta-item';
-  const labelEl = document.createElement('span');
-  labelEl.className = 'roadmap-meta-item-label';
-  labelEl.textContent = label + ' ';
-  const valueEl = document.createElement('span');
-  valueEl.textContent = value;
-  wrap.appendChild(labelEl);
-  wrap.appendChild(valueEl);
-  return wrap;
-}
-
-function _rmRenderPhase(phase) {
-  const article = document.createElement('article');
-  const safeStatus = String(phase.status || 'pending').replace(/[^a-z]/g, '');
-  article.className = `roadmap-phase roadmap-phase--${safeStatus}`;
-
-  // Timeline dot — positioned absolutely via CSS at the card's
-  // vertical level. Status modifier on the parent picks the
-  // colour; the dot inherits it via the descendant selector in
-  // roadmap.css.
-  const dot = document.createElement('div');
-  dot.className = 'roadmap-dot';
-  dot.setAttribute('aria-hidden', 'true');
-  article.appendChild(dot);
-
-  const header = document.createElement('div');
-  header.className = 'roadmap-phase-header';
-  const title = document.createElement('h3');
-  title.className = 'roadmap-phase-title';
-  title.textContent = phase.display_name || phase.phase_key || '—';
-  header.appendChild(title);
-  header.appendChild(_rmStatusBadge(phase.status));
-  article.appendChild(header);
-
-  if (phase.summary) {
-    const summary = document.createElement('div');
-    summary.className = 'roadmap-phase-summary';
-    summary.textContent = phase.summary;
-    article.appendChild(summary);
-  }
-
-  // "Currently working on" highlight only when the phase is active.
-  if (phase.status === 'active' && phase.in_progress_note) {
-    const note = document.createElement('div');
-    note.className = 'roadmap-progress-note';
-    const noteLabel = document.createElement('span');
-    noteLabel.className = 'roadmap-progress-note-label';
-    noteLabel.textContent = 'Currently working on';
-    const noteBody = document.createElement('span');
-    noteBody.textContent = phase.in_progress_note;
-    note.appendChild(noteLabel);
-    note.appendChild(noteBody);
-    article.appendChild(note);
-  }
-
-  // Effort + audit-checkpoint meta block.
-  const metaItems = [];
-  const effortItem = _rmRenderMetaItem('Effort:', phase.effort_estimate);
-  if (effortItem) metaItems.push(effortItem);
-  const auditItem = _rmRenderMetaItem('Audit:', phase.audit_checkpoint);
-  if (auditItem) metaItems.push(auditItem);
-  if (metaItems.length > 0) {
-    const meta = document.createElement('div');
-    meta.className = 'roadmap-meta';
-    metaItems.forEach((m) => meta.appendChild(m));
-    article.appendChild(meta);
-  }
-
-  // Body markdown — collapsible. Hidden by default; toggled
-  // via a "Read more" / "Show less" button so the timeline
-  // stays scannable. Skip the toggle entirely when there's no
-  // body to render.
-  if (phase.body_html) {
-    const body = document.createElement('div');
-    body.className = 'roadmap-phase-body';
-    body.hidden = true;
-    // innerHTML is safe: body_html is emitted by bleach on the
-    // server (tags/attrs allow-list enforced). See
-    // core/markdown_render.py.
-    body.innerHTML = phase.body_html;
-
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'roadmap-phase-toggle';
-    toggle.textContent = 'Read more';
-    toggle.addEventListener('click', () => {
-      const hidden = body.hidden;
-      body.hidden = !hidden;
-      toggle.textContent = hidden ? 'Show less' : 'Read more';
-    });
-
-    article.appendChild(toggle);
-    article.appendChild(body);
-  }
-
-  return article;
-}
-
-async function loadRoadmap() {
-  const statusEl = $('roadmap-status');
-  const timelineEl = $('roadmap-timeline');
-  const phasesEl = $('roadmap-phases');
-  if (!statusEl || !timelineEl || !phasesEl) return;
-  phasesEl.innerHTML = '';
-  statusEl.classList.remove('hidden');
-  statusEl.textContent = 'Loading…';
-  timelineEl.hidden = true;
-  try {
-    const r = await fetch('/api/roadmap');
-    if (!r.ok) throw new Error(`status ${r.status}`);
-    const data = await r.json();
-    const phases = Array.isArray(data.phases) ? data.phases : [];
-    if (phases.length === 0) {
-      // Empty-state placeholder. Operator sees this immediately
-      // post-deploy before populating; public visitors see it
-      // when nothing is published yet. Intentional copy choice
-      // — the absence is itself information.
-      statusEl.textContent =
-        'The roadmap is being prepared — check back soon.';
-      timelineEl.hidden = true;
-      return;
-    }
-    statusEl.classList.add('hidden');
-    timelineEl.hidden = false;
-    const frag = document.createDocumentFragment();
-    phases.forEach((p) => frag.appendChild(_rmRenderPhase(p)));
-    phasesEl.appendChild(frag);
-  } catch (e) {
-    statusEl.textContent = 'Failed to load roadmap.';
-  }
-}
 
 
 // ── Roadmap — admin CRUD + drag-and-drop reorder ─────────────────────────
@@ -6256,8 +5968,6 @@ function _routeFromHash() {
     case 'deals':     goDeals(true); break;
     case 'workspace': goWorkspace(true); break;
     case 'backtests': goBacktests(true); break;
-    case 'roadmap':   goRoadmap(true); break;
-    case 'changelog': goChangelog(true); break;
     case 'admin':     goAdmin(true); break;
     case 'overview':  goOverview(true); break;
     default:          goOverview(true); break;
@@ -9075,15 +8785,6 @@ function renderWizardOverlays() {
 
 // ── Event wiring (vervangt alle inline onclick=) ─────────────────────────────
 function setupEventListeners() {
-  // Public-shell Log-in button. Visible only when body.is-public
-  // is set (see _enterPublicShell); hidden by default via the
-  // [hidden] attribute + CSS guard. Clicking it transitions the
-  // visitor into the login-form (body.is-login).
-  const loginBtn = document.getElementById('nav-login-btn');
-  if (loginBtn) {
-    loginBtn.addEventListener('click', _showLoginFormFromPublic);
-  }
-
   // Profile dropdown button + menu entries
   $('profile-btn').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -9138,10 +8839,6 @@ function setupEventListeners() {
   if (wsAddChart) wsAddChart.addEventListener('click', _handleWorkspaceAddChartPanel);
   const wsAddDeals = $('workspace-add-deals');
   if (wsAddDeals) wsAddDeals.addEventListener('click', _handleWorkspaceAddOpenDealsPanel);
-  const navRoadmapBtn = $('nav-roadmap-btn');
-  if (navRoadmapBtn) navRoadmapBtn.addEventListener('click', () => goRoadmap());
-  const navClBtn = $('nav-changelog-btn');
-  if (navClBtn) navClBtn.addEventListener('click', () => goChangelog());
   const navAdminBtn = $('nav-admin-btn');
   if (navAdminBtn) navAdminBtn.addEventListener('click', () => goAdmin());
   const adminCard = $('admin-card-changelog');
@@ -9927,18 +9624,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   _wireAllModalFocusTraps();
 
   // Gate: require a valid session cookie before bringing up the SPA.
-  // Three outcomes after the auth check:
-  //   * authed                    → standard SPA boot (below)
-  //   * unauthed + public hash    → public-shell (Roadmap /
-  //                                 Changelog visible without auth)
-  //   * unauthed + non-public hash → login-form (existing default)
+  // Two outcomes after the auth check:
+  //   * authed   → standard SPA boot (below)
+  //   * unauthed → login-form via _handle401
+  // (Public roadmap / changelog used to live here as a third outcome;
+  // they moved to the static marketing site at https://reverto.bot in
+  // PR 3 of the marketing-app split.)
   const authed = await checkAuthStatus();
   if (!authed) {
-    if (_isPublicHashRoute()) {
-      _enterPublicShell();
-    } else {
-      _handle401();
-    }
+    _handle401();
     // Anti-flash gate (paired with the visibility:hidden rule in
     // index.html): reveal body AFTER the chrome decision has been
     // applied. Doing it before would re-introduce the flash we're
@@ -9947,11 +9641,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   // Authed — make sure the chrome is visible. A previous
-  // _handle401 / _enterPublicShell call from a stale tab on the
-  // same page could have left either class on body; clear both
-  // so the standard logged-in styling takes effect cleanly.
+  // _handle401 call from a stale tab on the same page could have
+  // left is-login on body; clear it so the standard logged-in
+  // styling takes effect cleanly.
   document.body.classList.remove('is-login');
-  document.body.classList.remove('is-public');
 
   // Admin-only nav items (e.g. the "Admin" tab) stay hidden in HTML
   // via the `hidden` attribute and only reveal once the auth check
@@ -9995,8 +9688,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'deals':    goDeals(true); break;
       case 'workspace': goWorkspace(true); break;
       case 'backtests': goBacktests(true); break;
-      case 'roadmap':  goRoadmap(true); break;
-      case 'changelog': goChangelog(true); break;
       case 'admin':    goAdmin(true, s.sub || null); break;
       case 'overview':
       default:         goOverview(true); break;

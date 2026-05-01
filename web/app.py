@@ -2286,24 +2286,15 @@ _PUBLIC_PATHS = {
     # login-TOTP cookie that /auth/login set.
     "/auth/login/totp",
     "/auth/logout",
-    # Roadmap PR: the public roadmap endpoint serves logged-out
-    # visitors. The route handler itself takes no auth dependency
-    # and is rate-limited at 30/minute via slowapi to mitigate
-    # scraping if the page goes viral. The admin counterparts at
-    # /api/admin/roadmap/* are NOT in this set — they keep the
-    # standard middleware gate + their own _require_admin_user
-    # dependency.
-    "/api/roadmap",
-    # Public-shell PR (operator decision 2026-04-30): /api/changelog
-    # is meant for everyone — release notes are not internal info.
-    # Was logged-in-only by accident (the earlier route signature
-    # carried Depends(_request_user) by oversight, not by design).
-    # The route now drops that dependency; list_published() already
-    # filters drafts and the public response shape strips admin
-    # fields, so anonymous access only ever returns the same
-    # entries a logged-in user would see. Admin counterparts at
-    # /api/admin/changelog/* keep the standard gate.
-    "/api/changelog",
+    # Note: /api/roadmap and /api/changelog used to live here as
+    # public-shell endpoints (logged-out visitors saw them inside
+    # the SPA at /#roadmap + /#changelog). PR 3 of the marketing-
+    # app split moved that public surface to the static site at
+    # https://reverto.bot — the marketing pages read from JSON
+    # snapshots written by core/marketing_export.py. The /api
+    # routes themselves still exist but are now session-required;
+    # they back the in-app SPA (logged-in only) and the admin
+    # counterparts at /api/admin/{roadmap,changelog}/*.
 }
 
 
