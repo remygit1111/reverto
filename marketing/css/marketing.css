@@ -29,6 +29,21 @@
   --sans:     'IBM Plex Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
+/* Light theme — values mirror web/static/style.css [data-theme="light"]
+   for the subset of tokens marketing uses. The accent / red / amber /
+   blue tokens are theme-invariant in the app and stay that way here.
+   The app's brightness sub-variants (data-brightness="dimmed|normal|
+   bright") are deliberately NOT ported — marketing has only a
+   theme toggle, no brightness ladder. */
+[data-theme="light"] {
+  --bg:       #f0f2f5;
+  --surface:  #ffffff;
+  --surface2: #f7f8fa;
+  --border:   #dde1e9;
+  --text:     #1a2233;
+  --muted:    #8a94a6;
+}
+
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -66,7 +81,7 @@ h1, h2, h3, h4 { color: var(--text); font-weight: 600; }
   justify-content: space-between;
   gap: 16px;
   padding: 14px 24px;
-  background: rgba(30, 30, 30, 0.92);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
 }
@@ -117,6 +132,33 @@ h1, h2, h3, h4 { color: var(--text); font-weight: 600; }
   color: var(--bg);
   text-decoration: none;
 }
+
+/* Theme-toggle button — sits between the nav-links and Log-in.
+   Only one of the two icon glyphs is visible at any given time;
+   the [data-theme] attribute on <html> picks which. */
+.theme-toggle-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.theme-toggle-btn:hover {
+  background: var(--surface2);
+  color: var(--text);
+  border-color: var(--text);
+}
+.theme-toggle-btn .theme-icon {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+}
+[data-theme="dark"]  .theme-icon-light { display: none; }
+[data-theme="light"] .theme-icon-dark  { display: none; }
 
 
 /* ── Hero ───────────────────────────────────────────────────────── */

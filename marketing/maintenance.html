@@ -5,7 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reverto &mdash; Temporarily Unavailable</title>
   <link rel="icon" href="/favicon.ico">
-  <link rel="stylesheet" href="/css/marketing.css?v=1">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('reverto-theme');
+        document.documentElement.dataset.theme = (t === 'light') ? 'light' : 'dark';
+      } catch (e) {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/css/marketing.css?v=2">
 </head>
 <body class="maintenance">
   <main class="maintenance-content">
