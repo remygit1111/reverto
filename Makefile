@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin deploy rollback backup restore
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin deploy deploy-marketing rollback backup restore
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -84,6 +84,27 @@ deploy:
 	@echo "    - Bij schema-migration prompts: zie docs/runbook.md"
 	@echo "      sectie 'Schema migrations' voor de opt-in flow"
 	@echo ""
+
+# ── Deploy marketing site (reverto.bot, static) ─────────────────────────────
+# Rsyncs marketing/ to /var/www/reverto-marketing/ on the production VPS,
+# sets ownership to caddy:caddy, and applies 755/644 permissions.
+#
+# Run this ON the VPS (the sudo chown/chmod calls are local). From
+# Reverto-Dev (WSL2), SSH to the VPS first:
+#     ssh bot@<vps> 'cd ~/reverto && git pull && make deploy-marketing'
+#
+# Excludes README.md and any .git* metadata so they don't end up served
+# at https://reverto.bot/README.md.
+deploy-marketing:
+	@echo "Deploying marketing site to /var/www/reverto-marketing/..."
+	rsync -av --delete \
+		--exclude=README.md \
+		--exclude='.git*' \
+		marketing/ /var/www/reverto-marketing/
+	sudo chown -R caddy:caddy /var/www/reverto-marketing
+	sudo find /var/www/reverto-marketing -type d -exec chmod 755 {} \;
+	sudo find /var/www/reverto-marketing -type f -exec chmod 644 {} \;
+	@echo "Marketing site deployed."
 
 # ── Rollback — audit r1-038 ─────────────────────────────────────────────────
 # Scripted rollback of the production portal. Resets HEAD by N commits
