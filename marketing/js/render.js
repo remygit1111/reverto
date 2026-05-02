@@ -262,3 +262,34 @@ async function loadChangelog() {
     statusEl.textContent = 'Failed to load the changelog. Please try again later.';
   }
 }
+
+
+/* ── Page dispatcher ──────────────────────────────────────────
+   Each marketing page sets <body data-page="..."> to declare
+   which init function should run on DOMContentLoaded. This
+   replaces inline <script> tags that previously called the
+   init function directly, allowing strict CSP `script-src
+   'self'` without breaking page-specific bootstrapping.
+
+   To add a new page: add the data-page value to <body>, add
+   the case here. The init function must be defined in this
+   file's module scope so the typeof check finds it.
+*/
+document.addEventListener('DOMContentLoaded', () => {
+  const page = document.body.dataset.page;
+  switch (page) {
+    case 'changelog':
+      if (typeof loadChangelog === 'function') {
+        loadChangelog();
+      }
+      break;
+    case 'roadmap':
+      if (typeof loadRoadmap === 'function') {
+        loadRoadmap();
+      }
+      break;
+    // index.html and maintenance.html have no init function
+    // and don't need a data-page attribute. They render
+    // statically.
+  }
+});
