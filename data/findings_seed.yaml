@@ -19,7 +19,7 @@
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
 # pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
-# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6. Total: 314.
+# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11. Total: 334.
 #
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
@@ -1465,7 +1465,7 @@ findings:
 - finding_id: r2-007
   source_doc: saas-readiness-v2-report
   severity: LOW
-  status: in_progress
+  status: resolved
   title: POSIX atomic-rename assumption undocumented in StateIO
   description: |
     StateIO uses .tmp + Path.replace() pattern relying on POSIX atomic rename. NFS/SMB or non-POSIX filesystems may break atomicity.
@@ -1672,7 +1672,7 @@ findings:
   status: open
   title: State-file .tmp collision between engine and portal reconcile
   description: |
-    Both paper/state_io.py and web/app.py use the same state_file.with_suffix(".tmp") path. Concurrent writes can truncate each other before atomic replace. Self-healing on next read_state.
+    Both paper/state_io.py and web/app.py use the same state_file.with_suffix(".tmp") path. Concurrent writes can truncate each other before atomic replace. Recovery is NOT self-healing — torn JSON triggers json.loads failure → _default_state(), losing all balance + deal history. Race window is narrow (only fires when portal reconciles a silent-exit while engine's last write hasn't completed) but consequence is high. Updated 2026-05-02 per PT-v4-FS-003 (NEW ANGLE).
   resolution_ref: null
   notes: ""
 
@@ -2061,7 +2061,7 @@ findings:
 - finding_id: pt-025
   source_doc: production-pentest-v1
   severity: HIGH
-  status: open
+  status: resolved
   title: XFF-spoof rate-limit bypass if Caddy appends instead of overwrites
   description: |
     Code comment states reverse proxy MUST overwrite X-Forwarded-For. Caddy v2 default APPENDS. Attacker prepends spoofed IP. Per-username brute-force protection partially mitigates.
@@ -3277,5 +3277,259 @@ findings:
   title: User-scoped data paths over-engineered with belt-and-braces filtering (positive observation)
   description: |
     Pentest probed all 6 IDOR vectors (B2.1-B2.6) and found that every user-scoped query consistently filters by session-derived user_id. SQL queries on deals, chart_annotations, backtest_runs, dashboards all show the WHERE user_id = ? pattern. Bot operations source user_id from session.user.id, never from request body. This is a positive finding documenting the strong baseline. No action required — recorded for future auditors so they don't waste time re-probing the same vectors.
+  resolution_ref: null
+  notes: ""
+
+# ── pt-v4-fs-pentest (PT-v4-FS-001 … PT-v4-FS-009) ────────────────────────────
+#
+# Internal pentest batch covering filesystem & file operations.
+# AI-driven adversarial code review by Claude Code on 2026-05-02.
+# 9 findings (0 CRITICAL, 0 HIGH, 1 MEDIUM, 5 LOW, 3 INFO).
+# See docs/pentests/PT-v4-FS-findings.md for the full report.
+#
+# Notable verified controls during this pentest:
+# - core/paths.py user-id discipline structurally prevents
+#   path-traversal (str(int) cannot contain /, .., or separators)
+# - _BOT_SLUG_RE coverage: every fs-touching endpoint either
+#   regex-validates the slug or uses registry.get(user_id, slug)
+#   which only resolves slugify()-cleaned keys
+# - credentials/ and credentials/<uid>/ both 0700; key files 0600
+#   verified via ensure_secret_file_mode after every write
+# - StateIO.cleanup_orphan_tmps name-prefix discipline correct
+# - cleanup_orphaned_tmp_files handles symlink edge (unlink doesn't
+#   follow) and directory-named-.tmp edge correctly
+# - bot.read_state size-cap closes TOCTOU between stat() and read
+# - _rotation_lock per-user fcntl on keys/<uid>.key.lock
+#
+# Tracker hygiene as part of this PR:
+# - r2-007 flipped to resolved (POSIX atomic-rename docstring is in
+#   paper/state_io.py:244-275 at HEAD)
+# - rha-001 description rewritten — "self-healing" claim was
+#   misleading; actual recovery is "engine resets to defaults,
+#   losing balance + deal history"
+# - pd-044 stays resolved; FS-004 documents the keys/ scope gap
+# - pd-036 stays accepted; FS-005 documents multi-exchange gap
+
+- finding_id: PT-v4-FS-001
+  source_doc: pt-v4-fs-pentest
+  severity: MEDIUM
+  status: open
+  title: DELETE /api/bots/{slug} does not clean up logs/state/sentinel files; new bot with same slug inherits old state
+  description: |
+    bots.py:521-542 DELETE endpoint only removes config/bots/<uid>/<slug>.yaml. Files NOT removed: logs/<uid>/<slug>.{log,state.json,state.lock,manual_trigger,deal_edit_*,deal_close_*,deal_cancel_*}, ml/<uid>/results_<slug>.json, plus DB rows in deals/orders/chart_annotations/backtest_runs. Functional bug: a user who deletes then recreates a bot with the same slug gets the engine to rehydrate from the OLD state.json — inheriting old balance, open deals, drawdown peak, DCA overrides, PnL history. Confusing for paper bots; potentially dangerous for live bots where new config might mismatch inherited open-deal state. Suggested fix: a single purge_bot(user_id, slug) helper in core/paths.py that removes all bot-scoped files + DB rows, called from the DELETE handler.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-FS-002
+  source_doc: pt-v4-fs-pentest
+  severity: LOW
+  status: open
+  title: _ensure_dir silently swallows chmod failures and follows symlinks
+  description: |
+    core/paths.py:40-49 _ensure_dir uses Path.mkdir(parents=True, exist_ok=True, mode=mode), which (a) follows symlinks during the existence check (mkdir on an existing-symlink is a no-op even if target is wrong perms) and (b) the subsequent path.chmod(mode) is wrapped in `except OSError: pass` which swallows failures silently. Matches today's recurring permission pain (Caddy log root-owned, ProtectSystem strict, deploy-marketing). If keys/ or credentials/<uid>/ already exists with wrong perms from a previous deploy and chmod fails, secrets land in an over-permissive dir without any warning. Suggested fix: log chmod failure at WARNING level and emit a structured audit-event so bootstrap-permission-drift is visible.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-FS-003
+  source_doc: pt-v4-fs-pentest
+  severity: LOW
+  status: open
+  title: state-file .tmp collision recovery is "lose all state", not "self-healing" (NEW ANGLE on rha-001)
+  description: |
+    NEW ANGLE on existing finding rha-001. The "self-healing on next read_state" claim is misleading. Actual recovery: torn JSON triggers json.loads failure → _default_state() — engine resets to defaults, losing all balance + deal history. Race window is narrow (only fires when portal reconciles a silent-exit while engine's last write hasn't completed), but consequence is high. The rha-001 description has been updated as part of this PR. The structural fix (separate .tmp paths for engine and portal) is still needed; tracking under rha-001.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-FS-004
+  source_doc: pt-v4-fs-pentest
+  severity: LOW
+  status: open
+  title: keys/ directory not swept by orphan .tmp cleanup (Extension of pd-044)
+  description: |
+    Extension of resolved finding pd-044 (orphaned .tmp cleanup at startup). The cleanup_orphaned_tmp_files helper at core/cleanup.py:25-73 sweeps logs/ and credentials/ but not keys/. If a Fernet rotation crashes after creating keys/<uid>.key.tmp but before os.replace, the orphaned .tmp file persists indefinitely. Not a security issue (the .tmp is mode 0600 same as the live key), but disk hygiene gap. Suggested fix: add keys/ to the directories sweep list.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-FS-005
+  source_doc: pt-v4-fs-pentest
+  severity: LOW
+  status: open
+  title: Multi-exchange Fernet rotation has partial-crash recoverability gap (NEW ANGLE on pd-036)
+  description: |
+    Extension of accepted finding pd-036 (key rotation atomic under fcntl lock). The "key-first then each .enc" sequence at credentials.py:532-598 is atomic for SINGLE-exchange users but has a partial-crash window for MULTI-exchange users. After key replaces (step 5), the rotation iterates over each exchange's .enc file. A crash mid-iteration leaves user with: NEW key + some .enc files re-encrypted (decryptable) + some .enc files still encrypted with OLD key (non-decryptable, perceived as corrupt). Recovery requires manual operator intervention. Suggested mitigation: write all new .enc files as .enc.tmp first, fsync, then atomic-rename ALL of them after the key replace — bringing partial-crash window down to "all-new or all-old, never mixed". Or simpler: log the partial-rotation state to audit-trail so operator can detect and roll forward/back.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-FS-006
+  source_doc: pt-v4-fs-pentest
+  severity: LOW
+  status: open
+  title: No fsync before os.replace in atomic write paths (durability gap)
+  description: |
+    Across credentials.py, marketing_export.py, paper/state_io.py, and web/app.py, the .tmp + os.replace pattern writes data and renames without fsync. On power-loss between write and rename, the rename may be durable while the data isn't yet on disk — readers after power-on would see an empty or zero-length file. Also missing: parent-directory fsync after rename (rename durability requires it on Linux). Real-world impact rare on a stable VPS; matters for flaky-storage scenarios or unexpected power-events. Suggested fix: add fsync(fd) before close + os.fsync of parent dir after rename in a centralized atomic_write helper.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-FS-007
+  source_doc: pt-v4-fs-pentest
+  severity: INFO
+  status: open
+  title: No max-bots-per-user limit (potential disk-fill DoS for malicious users)
+  description: |
+    There is no hard cap on how many bots a single authenticated user can create. Each bot creates ~7 files (config, log, state, lock, manual_trigger, pid, ml results) plus DB rows. With rate-limit at 20 bot-creates/min, a malicious user could create ~28k bots/day. Per-bot disk footprint at idle is small (~few KB), but multiplied by 28k = ~140MB/day. Not exploitable without authentication and not a current threat (single-tenant), but worth limiting before SaaS launch. Suggested limit: configurable max_bots_per_user (default e.g. 50 for free tier, configurable per role). Also: log_size capping per bot (currently bot logs grow unbounded).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-FS-008
+  source_doc: pt-v4-fs-pentest
+  severity: INFO
+  status: open
+  title: Bot logs grow unbounded (no log-size cap at engine subprocess)
+  description: |
+    Bot subprocess writes to logs/<uid>/<slug>.log without any size cap. Long-running bots accumulate log indefinitely. Operator-facing concern (disk-fill on the VPS), not a security issue. For comparison, Caddy logs are capped at 100MiB with rotation. Suggested fix: add log-rotation to engine subprocess, or wrap stdout/stderr through a size-capped redirector at start_bot time.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-FS-009
+  source_doc: pt-v4-fs-pentest
+  severity: INFO
+  status: open
+  title: Filesystem surface structurally well-defended (positive observation)
+  description: |
+    Pentest probed all 10 attack-vector categories (C1-C10). Path-traversal and permission-boundary surfaces are structurally well-defended: every paths.py helper takes int user_id (str(int) cannot contain /), every slug-consuming endpoint either regex-validates or uses registry.get with slugify-cleaned keys, credentials and keys directories have correct 0700/0600 modes verified via ensure_secret_file_mode after every write. The cleanup helpers handle symlink edges correctly. Findings cluster around (a) cleanup-hygiene gaps that became functional bugs (FS-001, FS-004, FS-005) and (b) durability gaps (FS-006) that matter on flaky storage but rarely on stable VPS. No path traversal, symlink-following with cross-tenant impact, or permission bypass with practical exploit was found.
+  resolution_ref: null
+  notes: ""
+
+# ── pt-v4-nw-pentest (PT-v4-NW-001 … PT-v4-NW-011) ────────────────────────────
+#
+# Internal pentest batch covering network surface, headers, CORS,
+# CSRF, rate limiting, cookies, WebSocket auth, redirects, Caddy config.
+# AI-driven adversarial code review by Claude Code on 2026-05-02.
+# 11 findings (0 CRITICAL, 0 HIGH, 2 MEDIUM, 3 LOW, 6 INFO).
+# See docs/pentests/PT-v4-NW-findings.md for the full report.
+#
+# Notable verified controls during this pentest:
+# - Today's reverto.bot CSP fix (Caddyfile:16) is exemplary —
+#   default-src 'self', no 'unsafe-inline' anywhere, OWASP extras
+#   (base-uri, form-action), frame-ancestors 'none'
+# - XFF overwrite at Caddyfile:50 (header_up X-Forwarded-For
+#   {client_ip}) — resolves pt-025 (was OPEN HIGH, flipped this PR)
+# - No CORSMiddleware (eliminates entire class of misconfig)
+# - Login dual rate-limit (per-IP slowapi + per-account DB sliding
+#   window) handles brute-force and bcrypt-DoS
+# - Double-submit CSRF cookie pattern correctly implemented
+# - WebSocket auth via _ws_extract_user_id with explicit close
+#   codes (4401/4403)
+#
+# Tracker hygiene as part of this PR:
+# - pt-025 flipped open → resolved (Caddyfile fix verified at HEAD)
+
+- finding_id: PT-v4-NW-001
+  source_doc: pt-v4-nw-pentest
+  severity: MEDIUM
+  status: open
+  title: app.reverto.bot CSP missing base-uri and form-action directives
+  description: |
+    web/app.py:2189-2226 sets CSP for app.reverto.bot but lacks 'base-uri 'self'' and 'form-action 'self''. Today's reverto.bot Caddy CSP HAS both. The asymmetry is the wrong direction — the more sensitive site (authenticated portal, admin endpoints, exchange credentials) has WEAKER CSP than the marketing site. With any HTML-injection primitive, missing base-uri enables relative-URL hijack via injected <base> tag, and missing form-action enables credential exfiltration via attacker-controlled form submission. Suggested fix: add both directives to the FastAPI CSP middleware to match reverto.bot's strictness.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-002
+  source_doc: pt-v4-nw-pentest
+  severity: LOW
+  status: open
+  title: app.reverto.bot Caddy block has no header directive (5xx maintenance.html lacks security headers)
+  description: |
+    ops/caddy/Caddyfile app.reverto.bot vhost has reverse_proxy + handle_errors + log but no header { ... } directive. Consequence: when Caddy serves maintenance.html during a 5xx fallback, no security headers are attached (CSP, HSTS, X-Frame-Options, etc.). The FastAPI middleware doesn't apply because Caddy is serving directly. Window is rare (only during backend outages) but exposes maintenance page to clickjacking, MITM downgrade, etc. Suggested fix: add header { } block to app.reverto.bot vhost matching the reverto.bot block.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-003
+  source_doc: pt-v4-nw-pentest
+  severity: LOW
+  status: open
+  title: app.reverto.bot leaks Server header (no -Server in Caddy block)
+  description: |
+    ops/caddy/Caddyfile reverto.bot has -Server in its header block; app.reverto.bot doesn't (and has no header block at all — see NW-002). The 'Server: Caddy' header is exposed on every app.reverto.bot response. Information disclosure of low impact, but inconsistent with the marketing-site fix today. Suggested fix: add -Server to the app.reverto.bot header block (NW-002 fix would naturally include this).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-004
+  source_doc: pt-v4-nw-pentest
+  severity: MEDIUM
+  status: open
+  title: No global request-body size limit (memory DoS via large POST)
+  description: |
+    _read_body_with_cap is only applied on bots-config endpoints (POST /api/bots, PUT config). Other endpoints — /auth/login, /api/admin/*, /api/dashboard/layout, /api/db/annotations, etc. — read the full body before Pydantic field-length checks fire. A 1GB POST to /auth/login allocates 1GB before Pydantic's max_length=512 rejects it. Caddy lacks request_body { max_size }. Memory-DoS amplifiable across IPs. Suggested fix: (a) Caddy global request_body { max_size 1MB } as defense-in-depth, plus (b) extend _read_body_with_cap to all body-accepting endpoints, or (c) FastAPI middleware that rejects oversized bodies before route handlers.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-005
+  source_doc: pt-v4-nw-pentest
+  severity: LOW
+  status: open
+  title: WebSocket origin check not enforced
+  description: |
+    ws_logs endpoint at web/app.py:3111+ relies on cookie-based session auth via _ws_extract_user_id but does NOT validate the Origin header. FastAPI/Starlette doesn't auto-check WS Origin. Cross-origin WebSocket attacks possible: a malicious site can establish a WS connection from the victim's browser (cookie included via SameSite=Strict-relaxed-on-WS-upgrade behavior in some browsers). Mitigated by SameSite=Strict on session cookie but defense-in-depth deserves explicit Origin validation. Suggested fix: in _ws_extract_user_id (or a separate _ws_validate_origin), check websocket.headers.get("origin") matches https://app.reverto.bot.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-006
+  source_doc: pt-v4-nw-pentest
+  severity: INFO
+  status: open
+  title: HSTS sent by both Caddy and FastAPI (duplicate header risk)
+  description: |
+    reverto.bot Caddy sets Strict-Transport-Security; app.reverto.bot FastAPI sets it too. If a future Caddy config also sets it on app.reverto.bot (e.g. via NW-002 fix), the header would appear twice. Most browsers handle duplicate HSTS gracefully (use first or strictest), but RFC-compliant proxies may reject. Suggested fix: pick a single source of truth — either Caddy or FastAPI for app.reverto.bot, not both.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-007
+  source_doc: pt-v4-nw-pentest
+  severity: INFO
+  status: open
+  title: Permissions-Policy denial-list inconsistent between Caddy and FastAPI
+  description: |
+    reverto.bot Caddy and app.reverto.bot FastAPI both set Permissions-Policy. Compare lists: are the denied features identical? If not, future divergence is bug surface. Suggested fix: define the denial-list once (e.g. constant in core/security_headers.py) and reference from both vhost contexts. Also: HEAD-of-time inventory shows the lists ARE currently identical, so this is forward-bug-prevention, not a current bug.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-008
+  source_doc: pt-v4-nw-pentest
+  severity: INFO
+  status: open
+  title: No TrustedHostMiddleware (defense-in-depth gap)
+  description: |
+    FastAPI app has no TrustedHostMiddleware configured. Caddy routes by Host (only forwards reverto.bot/app.reverto.bot to the backend), so direct exploitation requires bypassing Caddy. However, defense-in-depth: if Caddy is misconfigured or replaced, FastAPI accepts any Host header. Could enable Host-header poisoning attacks (e.g. password-reset link generation if implemented). Suggested fix: add TrustedHostMiddleware allowing ['app.reverto.bot', 'localhost'] in production.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-009
+  source_doc: pt-v4-nw-pentest
+  severity: INFO
+  status: open
+  title: app.reverto.bot CSP allows https://unpkg.com without subresource integrity
+  description: |
+    web/app.py:2225 CSP includes script-src https://unpkg.com (Lightweight Charts library). No subresource-integrity (SRI) hashes on the <script> tag in templates. If unpkg.com is compromised or the library is updated to malicious content, every Reverto user runs the bad code. Risk is low (unpkg.com is run by NPM, and the library is pinned-version) but is the classic "trust forever" CSP gap. Suggested fix: pin the library version in CSP (script-src 'sha384-XYZ='...) OR self-host the library (eliminates the dependency entirely). The latter is cleaner.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-010
+  source_doc: pt-v4-nw-pentest
+  severity: INFO
+  status: open
+  title: No TLS 1.0/1.1 disable verification in Caddy config
+  description: |
+    Caddyfile uses Caddy's automatic TLS without explicit tls block. Caddy v2 defaults to TLS 1.2+ (which is correct), but the absence of explicit tls { protocols tls1.2 tls1.3 } in the config means a future Caddy upgrade or operator change could silently weaken this. Suggested fix: explicit tls { protocols tls1.2 tls1.3 } in both vhost blocks for forward-bug-prevention.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-NW-011
+  source_doc: pt-v4-nw-pentest
+  severity: INFO
+  status: open
+  title: HTTP-layer surface well-defended (positive observation)
+  description: |
+    Pentest probed all 11 attack-vector categories (N1-N11). Findings cluster on (a) Caddy app-side configuration parity gap (NW-001 to NW-003) and (b) body-size governance (NW-004) — both fixable in one Caddy edit + one middleware edit. No CRITICAL, no HIGH. CSRF, cookie security, rate limiting, WebSocket auth, redirect handling all hold up under scrutiny. Today's reverto.bot CSP fix scores cleanly against OWASP CSP cheat sheet. The XFF overwrite resolves the previously-OPEN-HIGH pt-025 finding. The dual rate-limit on login (per-IP + per-account) is well-engineered.
   resolution_ref: null
   notes: ""
