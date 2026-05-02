@@ -5,9 +5,11 @@ behavior beyond CSS aesthetics:
 
 * The theme-toggle button exists on every visitor-facing page
   and carries an aria-label so screen readers can announce it.
-* The flash-of-wrong-theme prevention script runs in <head>
-  BEFORE the stylesheet — moving it after, or removing it,
-  reintroduces the dark-to-light flicker on initial paint.
+* The flash-of-wrong-theme prevention script (now externalized
+  to /js/theme-init.js for strict-CSP compliance) is referenced
+  in <head> BEFORE the stylesheet, with no defer/async — moving
+  it after, deferring it, or removing it reintroduces the
+  dark-to-light flicker on initial paint.
 * The light-theme override block exists in marketing.css so
   the toggle has somewhere to flip to.
 
@@ -63,23 +65,71 @@ def test_theme_toggle_button_present(page):
 
 
 @pytest.mark.parametrize("page", _THEME_PAGES)
-def test_theme_flash_script_runs_before_stylesheet(page):
+def test_theme_init_script_runs_before_stylesheet(page):
     html = _read(page)
-    # The inline script sets document.documentElement.dataset.theme
-    # synchronously from localStorage; the stylesheet read of
-    # [data-theme="light"] then matches without any flicker.
-    assert 'localStorage.getItem(\'reverto-theme\')' in html, (
-        f"{page} missing the localStorage-read inline script — "
+    # The external /js/theme-init.js sets
+    # document.documentElement.dataset.theme synchronously from
+    # localStorage; the stylesheet read of [data-theme="light"]
+    # then matches without any flicker.
+    script_pos = html.find('theme-init.js')
+    css_pos = html.find('marketing.css')
+    assert script_pos != -1, (
+        f"{page} missing the theme-init.js script reference — "
         "light-theme visitors will see a flash of dark on "
         "initial paint."
     )
-    script_pos = html.find('localStorage.getItem(\'reverto-theme\')')
-    css_pos = html.find('marketing.css')
-    assert script_pos != -1 and css_pos != -1
+    assert css_pos != -1, f"{page} missing the marketing.css link"
     assert script_pos < css_pos, (
-        f"{page}: theme-flash <script> must appear BEFORE the "
+        f"{page}: theme-init.js <script> must appear BEFORE the "
         "stylesheet <link> so document.documentElement.dataset."
         "theme is set by the time CSS resolves [data-theme=...]."
+    )
+
+
+@pytest.mark.parametrize("page", _THEME_PAGES)
+def test_theme_init_script_is_synchronous(page):
+    # defer/async would let the stylesheet evaluate before
+    # data-theme is set, reintroducing the flash. Pin against
+    # both attributes appearing on the theme-init.js tag.
+    html = _read(page)
+    for line in html.splitlines():
+        if 'theme-init.js' in line:
+            assert 'defer' not in line, (
+                f"{page}: theme-init.js must not have defer — "
+                "it would defeat the flash-prevention purpose."
+            )
+            assert 'async' not in line, (
+                f"{page}: theme-init.js must not have async — "
+                "it would defeat the flash-prevention purpose."
+            )
+            break
+    else:
+        pytest.fail(
+            f"{page}: theme-init.js script tag not found — "
+            "covered separately by the runs-before-stylesheet "
+            "test, but flagged here too for clarity."
+        )
+
+
+def test_theme_init_file_exists_with_iife():
+    init_file = _MARKETING / "js" / "theme-init.js"
+    assert init_file.exists(), (
+        "marketing/js/theme-init.js missing — the four "
+        "marketing HTMLs reference it from <head>."
+    )
+    content = init_file.read_text(encoding="utf-8")
+    assert 'localStorage.getItem' in content, (
+        "theme-init.js missing localStorage.getItem call — "
+        "the IIFE wouldn't read the user's theme choice."
+    )
+    assert 'reverto-theme' in content, (
+        "theme-init.js missing the 'reverto-theme' key — the "
+        "render.js toggle writes to that key, so reading any "
+        "other key would desync the two."
+    )
+    assert 'data-theme' in content or 'dataset.theme' in content, (
+        "theme-init.js doesn't appear to set data-theme — "
+        "without it, CSS [data-theme=\"light\"] never matches."
     )
 
 
