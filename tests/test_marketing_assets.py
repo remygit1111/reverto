@@ -21,6 +21,7 @@ accidental removal.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -131,6 +132,29 @@ def test_theme_init_file_exists_with_iife():
         "theme-init.js doesn't appear to set data-theme — "
         "without it, CSS [data-theme=\"light\"] never matches."
     )
+
+
+_INLINE_SCRIPT_PAGES = ("index.html", "roadmap.html", "changelog.html",
+                        "maintenance.html")
+
+
+@pytest.mark.parametrize("page", _INLINE_SCRIPT_PAGES)
+def test_no_inline_scripts_in_marketing_pages(page):
+    # All <script> tags in marketing/*.html must carry a `src=`
+    # attribute. An inline script (no src) would be blocked by
+    # strict CSP `script-src 'self'` once the Caddy headers
+    # land, silently breaking page-specific bootstrapping. The
+    # theme-init and page-init scripts have already been moved
+    # to /js/theme-init.js and the render.js dispatcher; this
+    # test pins that no future change reintroduces an inline.
+    html = _read(page)
+    script_tags = re.findall(r'<script\b[^>]*>', html)
+    for tag in script_tags:
+        assert 'src=' in tag, (
+            f"{page}: inline <script> found — must externalize "
+            f"to a file under /js/ for strict-CSP compliance. "
+            f"Offending tag: {tag}"
+        )
 
 
 def test_marketing_css_has_light_theme_block():
