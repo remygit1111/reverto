@@ -1,0 +1,68 @@
+# Marketing site — static HTML/CSS/JS served from disk.
+# This is the public-facing reverto.bot domain. No auth, no
+# Python, no DB access. Caddy serves files directly.
+reverto.bot {
+	root * /var/www/reverto-marketing
+	file_server
+	encode gzip
+
+	# Security headers. Match the protections on app.reverto.bot
+	# where applicable, with stricter CSP since the marketing
+	# site has no inline scripts (verified via
+	# tests/test_marketing_assets.py::test_no_inline_scripts_in_marketing_pages)
+	# and no third-party CDN dependencies.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=()"
+		# Remove the default Server header for a tiny privacy bump
+		-Server
+	}
+
+	# 5xx fallback — same maintenance page as the app
+	# serves for consistency
+	handle_errors {
+		@5xx expression `{err.status_code} >= 500`
+		handle @5xx {
+			root * /var/www/reverto-marketing
+			rewrite * /maintenance.html
+			file_server
+		}
+	}
+
+	log {
+		output file /var/log/caddy/marketing.log {
+			roll_size 100MiB
+			roll_keep 10
+		}
+	}
+}
+
+# Reverto application — the existing FastAPI service. This
+# is the same backend that previously served reverto.bot;
+# it now serves app.reverto.bot exclusively.
+app.reverto.bot {
+	reverse_proxy localhost:8080 {
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-For {client_ip}
+	}
+
+	handle_errors {
+		@5xx expression `{err.status_code} >= 500`
+		handle @5xx {
+			root * /home/bot/reverto/web/static
+			rewrite * /maintenance.html
+			file_server
+		}
+	}
+
+	log {
+		output file /var/log/caddy/reverto.log {
+			roll_size 100MiB
+			roll_keep 10
+		}
+	}
+}
