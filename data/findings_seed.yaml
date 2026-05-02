@@ -19,7 +19,7 @@
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
 # pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
-# pt-v3=5, rhav2=14, pt-v4-au=9. Total: 308.
+# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6. Total: 314.
 #
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
@@ -2850,12 +2850,12 @@ findings:
 - finding_id: B-03
   source_doc: v27-backlog
   severity: MEDIUM
-  status: open
+  status: resolved
   title: ml/nightly_pipeline._persist_results writes without user_id in path
   description: |
     Spotted while fixing v26-18 — ml/nightly_pipeline._persist_results(bot_slug, results) writes to ml/results_<slug>.json without user_id, so multi-tenant overlapping bot-slugs collide. Direction: ml/results_<user_id>_<slug>.json or ml/<user_id>/results_<slug>.json, consistent with the Phase-2 user-scoped layout in core/paths.py. v26-18 fixed the input-config path of the same file; this is the output-result path needing the same treatment.
-  resolution_ref: null
-  notes: ""
+  resolution_ref: fix/r1-049-ml-pipeline-user-scope
+  notes: "Confirmed resolved during PT-v4-AZ pentest (2026-05-02). Duplicate of r1-049 — both findings describe the same issue. Code in ml/nightly_pipeline.py:390 uses paths.user_ml_results_path(user_id, slug). Fix landed in commit 54b3b79."
 
 # ── production-pentest-v3 (5 entries — Phase B auth-stack adversarial review) ─
 
@@ -3200,5 +3200,82 @@ findings:
   title: REVERTO_SECRET_KEY ephemeral fallback does not fail-closed
   description: |
     web/app.py generates a random REVERTO_SECRET_KEY at startup if the env-var is not set, with a warning logged. This makes development convenient but means a misconfigured production deploy generates a fresh secret every restart, invalidating all existing sessions silently. A fail-closed alternative would refuse to start unless the secret is explicitly set, with a clear error message directing the operator to set REVERTO_SECRET_KEY. Operational concern rather than direct vulnerability — but a forgotten env-var causes mysterious "everyone is logged out" symptoms during incidents.
+  resolution_ref: null
+  notes: ""
+
+# ── pt-v4-az-pentest (PT-v4-AZ-001 … PT-v4-AZ-006) ───────────────────────────
+#
+# Internal pentest batch covering authorization & access control.
+# AI-driven adversarial code review by Claude Code on 2026-05-02.
+# 6 findings (0 CRITICAL, 0 HIGH, 0 MEDIUM, 2 LOW, 4 INFO).
+# See docs/pentests/PT-v4-AZ-findings.md for the full report.
+#
+# Notable verified controls during this pentest:
+# - WebSocket per-socket _user_map discipline correct (Audit
+#   v26-16's filtering claim verified in code)
+# - _request_user re-fetches role from DB on every request, so
+#   role demotion is immediate (better than session_epoch bump)
+# - All IDOR vectors B2.1-B2.6 sourced user_id from session,
+#   never request input
+# - Confirmed B-03 resolved (duplicate of r1-049; status flipped
+#   in this same PR)
+
+- finding_id: PT-v4-AZ-001
+  source_doc: pt-v4-az-pentest
+  severity: LOW
+  status: open
+  title: _audit() argument-order swap across 12 callsites in changelog/roadmap/marketing
+  description: |
+    Audit-log integrity issue across 12 _audit() callsites in web/routes/changelog.py, web/routes/roadmap.py, and web/routes/marketing.py. user.username is in the slug-position and the entry/phase id is in the actor-position, so the resulting JSONL has slug=<username> and user=id=<entryid>. The same swap was explicitly fixed in admin_findings.py per its own comment, but the sibling files still have it. Not an authz bypass — slug field of the JSONL contains usernames, user field contains id=N. Mechanical fix.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AZ-002
+  source_doc: pt-v4-az-pentest
+  severity: INFO
+  status: open
+  title: WebSocket connection-time auth not explicitly verified separately from delivery-time filtering
+  description: |
+    Audit v26-16 fixed delivery-filtering by owner_user_id and target_user_id, and the per-socket _user_map discipline holds. However, the connection-establishment path was not separately scrutinized for an auth check before the user_map entry is created. Risk is low because the WebSocket endpoint inherits from FastAPI dependency injection that requires session, but a future refactor that bypasses dependency injection (e.g. raw ASGI handler) would silently lose this gate. Worth a regression test that pins "anonymous WS connection returns 401 before any payload is sent."
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AZ-003
+  source_doc: pt-v4-az-pentest
+  severity: INFO
+  status: open
+  title: Two admin-gate patterns coexist (Depends-style and manual-helper-style)
+  description: |
+    The codebase has two equivalent but stylistically different admin gates: _require_admin_user (used as Depends() in changelog.py, roadmap.py, marketing.py, admin_findings.py) and _require_admin (manual helper called from each handler in admin_bots.py). Functionally equivalent at HEAD — both check user.role == 'admin' — but the manual style is forward-bug-surface: a future route author in admin_bots.py could forget the call, while the Depends() pattern is impossible to forget once added to the route signature. Easy consolidation: convert admin_bots.py to use _require_admin_user with Depends().
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AZ-004
+  source_doc: pt-v4-az-pentest
+  severity: INFO
+  status: open
+  title: Dual admin-gate naming (_require_admin vs _require_admin_user)
+  description: |
+    Sibling concern to PT-v4-AZ-003. Even if both patterns stay, the function names should match: either both _require_admin or both _require_admin_user. Current divergence makes grep-based audit ("find all admin-gated endpoints") harder. Cosmetic-but-meaningful for auditability.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AZ-005
+  source_doc: pt-v4-az-pentest
+  severity: LOW
+  status: open
+  title: AnnotationBody accepts unbounded bot_slug/type/timeframe/label/color strings
+  description: |
+    web/routes/deals.py:465 AnnotationBody Pydantic model has bot_slug/type/timeframe/label/color fields without max-length constraints. No cross-tenant exposure (rows scope by session user.id), but it lets an authenticated user store arbitrary key/value blobs on chart_annotations. Forward-coupling risk if any downstream code path ever uses bot_slug in a filesystem operation — current code paths are read-only against the database, so no exploitation path today. Defense-in-depth fix: add max_length to each field (slug regex same as bots, label/color reasonable bounds).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-AZ-006
+  source_doc: pt-v4-az-pentest
+  severity: INFO
+  status: open
+  title: User-scoped data paths over-engineered with belt-and-braces filtering (positive observation)
+  description: |
+    Pentest probed all 6 IDOR vectors (B2.1-B2.6) and found that every user-scoped query consistently filters by session-derived user_id. SQL queries on deals, chart_annotations, backtest_runs, dashboards all show the WHERE user_id = ? pattern. Bot operations source user_id from session.user.id, never from request body. This is a positive finding documenting the strong baseline. No action required — recorded for future auditors so they don't waste time re-probing the same vectors.
   resolution_ref: null
   notes: ""
