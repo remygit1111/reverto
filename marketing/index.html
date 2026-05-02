@@ -14,21 +14,11 @@
   <link rel="icon" type="image/png" sizes="128x128" href="/favicon-128.png">
   <link rel="icon" type="image/png" sizes="256x256" href="/favicon-256.png">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <script>
-    // Apply theme BEFORE the stylesheet loads so light-theme
-    // visitors don't see a flash of dark on initial paint.
-    // Default = dark; localStorage opt-in for light. Wrapped in
-    // try/catch because localStorage can be disabled (private
-    // mode, sandbox, quota) and we still want a usable page.
-    (function () {
-      try {
-        var t = localStorage.getItem('reverto-theme');
-        document.documentElement.dataset.theme = (t === 'light') ? 'light' : 'dark';
-      } catch (e) {
-        document.documentElement.dataset.theme = 'dark';
-      }
-    })();
-  </script>
+  <!-- Apply theme BEFORE the stylesheet loads to prevent flash.
+       Externalized to /js/theme-init.js to comply with strict
+       CSP. Must be synchronous (no defer/async) so data-theme
+       is set before CSS evaluates. -->
+  <script src="/js/theme-init.js?v=1"></script>
   <link rel="stylesheet" href="/css/marketing.css?v=2">
 </head>
 <body>
