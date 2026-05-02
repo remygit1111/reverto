@@ -5,16 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reverto &mdash; Temporarily Unavailable</title>
   <link rel="icon" href="/favicon.ico">
-  <script>
-    (function () {
-      try {
-        var t = localStorage.getItem('reverto-theme');
-        document.documentElement.dataset.theme = (t === 'light') ? 'light' : 'dark';
-      } catch (e) {
-        document.documentElement.dataset.theme = 'dark';
-      }
-    })();
-  </script>
+  <!-- Apply theme BEFORE the stylesheet loads to prevent flash.
+       Externalized to /js/theme-init.js to comply with strict
+       CSP. Must be synchronous (no defer/async) so data-theme
+       is set before CSS evaluates. -->
+  <script src="/js/theme-init.js?v=1"></script>
   <link rel="stylesheet" href="/css/marketing.css?v=2">
 </head>
 <body class="maintenance">
