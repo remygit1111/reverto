@@ -3427,31 +3427,31 @@ findings:
 - finding_id: PT-v4-NW-001
   source_doc: pt-v4-nw-pentest
   severity: MEDIUM
-  status: open
+  status: resolved
   title: app.reverto.bot CSP missing base-uri and form-action directives
   description: |
-    web/app.py:2189-2226 sets CSP for app.reverto.bot but lacks 'base-uri 'self'' and 'form-action 'self''. Today's reverto.bot Caddy CSP HAS both. The asymmetry is the wrong direction — the more sensitive site (authenticated portal, admin endpoints, exchange credentials) has WEAKER CSP than the marketing site. With any HTML-injection primitive, missing base-uri enables relative-URL hijack via injected <base> tag, and missing form-action enables credential exfiltration via attacker-controlled form submission. Suggested fix: add both directives to the FastAPI CSP middleware to match reverto.bot's strictness.
-  resolution_ref: null
+    web/app.py:2189-2226 sets CSP for app.reverto.bot but lacks 'base-uri 'self'' and 'form-action 'self''. Today's reverto.bot Caddy CSP HAS both. The asymmetry is the wrong direction — the more sensitive site (authenticated portal, admin endpoints, exchange credentials) has WEAKER CSP than the marketing site. With any HTML-injection primitive, missing base-uri enables relative-URL hijack via injected <base> tag, and missing form-action enables credential exfiltration via attacker-controlled form submission. Suggested fix: add both directives to the FastAPI CSP middleware to match reverto.bot's strictness. RESOLVED 2026-05-04: base-uri 'self' and form-action 'self' added to FastAPI CSP middleware in web/app.py.
+  resolution_ref: chore/pt-v4-nw-app-headers-parity
   notes: ""
 
 - finding_id: PT-v4-NW-002
   source_doc: pt-v4-nw-pentest
   severity: LOW
-  status: open
+  status: resolved
   title: app.reverto.bot Caddy block has no header directive (5xx maintenance.html lacks security headers)
   description: |
-    ops/caddy/Caddyfile app.reverto.bot vhost has reverse_proxy + handle_errors + log but no header { ... } directive. Consequence: when Caddy serves maintenance.html during a 5xx fallback, no security headers are attached (CSP, HSTS, X-Frame-Options, etc.). The FastAPI middleware doesn't apply because Caddy is serving directly. Window is rare (only during backend outages) but exposes maintenance page to clickjacking, MITM downgrade, etc. Suggested fix: add header { } block to app.reverto.bot vhost matching the reverto.bot block.
-  resolution_ref: null
+    ops/caddy/Caddyfile app.reverto.bot vhost has reverse_proxy + handle_errors + log but no header { ... } directive. Consequence: when Caddy serves maintenance.html during a 5xx fallback, no security headers are attached (CSP, HSTS, X-Frame-Options, etc.). The FastAPI middleware doesn't apply because Caddy is serving directly. Window is rare (only during backend outages) but exposes maintenance page to clickjacking, MITM downgrade, etc. Suggested fix: add header { } block to app.reverto.bot vhost matching the reverto.bot block. RESOLVED 2026-05-04: header { } block added to app.reverto.bot Caddy vhost in ops/caddy/Caddyfile, mirroring the reverto.bot block (HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, -Server). CSP intentionally omitted from Caddy — FastAPI middleware is canonical for that header.
+  resolution_ref: chore/pt-v4-nw-app-headers-parity
   notes: ""
 
 - finding_id: PT-v4-NW-003
   source_doc: pt-v4-nw-pentest
   severity: LOW
-  status: open
+  status: resolved
   title: app.reverto.bot leaks Server header (no -Server in Caddy block)
   description: |
-    ops/caddy/Caddyfile reverto.bot has -Server in its header block; app.reverto.bot doesn't (and has no header block at all — see NW-002). The 'Server: Caddy' header is exposed on every app.reverto.bot response. Information disclosure of low impact, but inconsistent with the marketing-site fix today. Suggested fix: add -Server to the app.reverto.bot header block (NW-002 fix would naturally include this).
-  resolution_ref: null
+    ops/caddy/Caddyfile reverto.bot has -Server in its header block; app.reverto.bot doesn't (and has no header block at all — see NW-002). The 'Server: Caddy' header is exposed on every app.reverto.bot response. Information disclosure of low impact, but inconsistent with the marketing-site fix today. Suggested fix: add -Server to the app.reverto.bot header block (NW-002 fix would naturally include this). RESOLVED 2026-05-04: -Server directive added to app.reverto.bot header block (part of NW-002 fix).
+  resolution_ref: chore/pt-v4-nw-app-headers-parity
   notes: ""
 
 - finding_id: PT-v4-NW-004
@@ -3477,21 +3477,21 @@ findings:
 - finding_id: PT-v4-NW-006
   source_doc: pt-v4-nw-pentest
   severity: INFO
-  status: open
+  status: accepted
   title: HSTS sent by both Caddy and FastAPI (duplicate header risk)
   description: |
     reverto.bot Caddy sets Strict-Transport-Security; app.reverto.bot FastAPI sets it too. If a future Caddy config also sets it on app.reverto.bot (e.g. via NW-002 fix), the header would appear twice. Most browsers handle duplicate HSTS gracefully (use first or strictest), but RFC-compliant proxies may reject. Suggested fix: pick a single source of truth — either Caddy or FastAPI for app.reverto.bot, not both.
   resolution_ref: null
-  notes: ""
+  notes: "Operator-decision 2026-05-04: dual HSTS emission (Caddy + FastAPI) accepted as defense-in-depth. Browsers handle duplicate HSTS headers correctly per RFC 6797 (use-strictest semantics). Layered defense weighs heavier than single-source-of-truth here — if Caddy is bypassed or misconfigured, FastAPI still emits HSTS for the authenticated portal."
 
 - finding_id: PT-v4-NW-007
   source_doc: pt-v4-nw-pentest
   severity: INFO
-  status: open
+  status: resolved
   title: Permissions-Policy denial-list inconsistent between Caddy and FastAPI
   description: |
-    reverto.bot Caddy and app.reverto.bot FastAPI both set Permissions-Policy. Compare lists: are the denied features identical? If not, future divergence is bug surface. Suggested fix: define the denial-list once (e.g. constant in core/security_headers.py) and reference from both vhost contexts. Also: HEAD-of-time inventory shows the lists ARE currently identical, so this is forward-bug-prevention, not a current bug.
-  resolution_ref: null
+    reverto.bot Caddy and app.reverto.bot FastAPI both set Permissions-Policy. Compare lists: are the denied features identical? If not, future divergence is bug surface. Suggested fix: define the denial-list once (e.g. constant in core/security_headers.py) and reference from both vhost contexts. Also: HEAD-of-time inventory shows the lists ARE currently identical, so this is forward-bug-prevention, not a current bug. RESOLVED 2026-05-04: regression test test_permissions_policy_identical_across_caddy_and_fastapi in tests/test_security_headers.py asserts identical lists across reverto.bot Caddy, app.reverto.bot Caddy, and FastAPI middleware.
+  resolution_ref: chore/pt-v4-nw-app-headers-parity
   notes: ""
 
 - finding_id: PT-v4-NW-008
@@ -3517,11 +3517,11 @@ findings:
 - finding_id: PT-v4-NW-010
   source_doc: pt-v4-nw-pentest
   severity: INFO
-  status: open
+  status: resolved
   title: No TLS 1.0/1.1 disable verification in Caddy config
   description: |
-    Caddyfile uses Caddy's automatic TLS without explicit tls block. Caddy v2 defaults to TLS 1.2+ (which is correct), but the absence of explicit tls { protocols tls1.2 tls1.3 } in the config means a future Caddy upgrade or operator change could silently weaken this. Suggested fix: explicit tls { protocols tls1.2 tls1.3 } in both vhost blocks for forward-bug-prevention.
-  resolution_ref: null
+    Caddyfile uses Caddy's automatic TLS without explicit tls block. Caddy v2 defaults to TLS 1.2+ (which is correct), but the absence of explicit tls { protocols tls1.2 tls1.3 } in the config means a future Caddy upgrade or operator change could silently weaken this. Suggested fix: explicit tls { protocols tls1.2 tls1.3 } in both vhost blocks for forward-bug-prevention. RESOLVED 2026-05-04: explicit tls { protocols tls1.2 tls1.3 } block added to both reverto.bot and app.reverto.bot vhosts in ops/caddy/Caddyfile.
+  resolution_ref: chore/pt-v4-nw-app-headers-parity
   notes: ""
 
 - finding_id: PT-v4-NW-011
