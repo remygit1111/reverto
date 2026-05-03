@@ -19,8 +19,8 @@
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
 # pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
+
 # pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11. Total: 334.
-#
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
 # narrative still says "PRE-EXISTING" / "still open" but the codebase
@@ -3533,3 +3533,4 @@ findings:
     Pentest probed all 11 attack-vector categories (N1-N11). Findings cluster on (a) Caddy app-side configuration parity gap (NW-001 to NW-003) and (b) body-size governance (NW-004) — both fixable in one Caddy edit + one middleware edit. No CRITICAL, no HIGH. CSRF, cookie security, rate limiting, WebSocket auth, redirect handling all hold up under scrutiny. Today's reverto.bot CSP fix scores cleanly against OWASP CSP cheat sheet. The XFF overwrite resolves the previously-OPEN-HIGH pt-025 finding. The dual rate-limit on login (per-IP + per-account) is well-engineered.
   resolution_ref: null
   notes: ""
+
