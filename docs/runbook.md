@@ -199,6 +199,17 @@ Audit r1-037 resolution: the static HTML + auto-reload logic live
 in the repo today. The reverse-proxy wiring is a VPS-3 step; the
 page is otherwise inert in the current single-host setup.
 
+### Status: Caddy is live (2026-05-03)
+
+The "Post-VPS-3" target setup below is now production reality. App
+runs at app.reverto.bot, marketing at reverto.bot, both fronted by
+Caddy with TLS, security headers, and the 5xx maintenance.html
+fallback wired up.
+
+The current `ops/caddy/Caddyfile` (symlinked to `/etc/caddy/Caddyfile`
+on the VPS) is the source of truth — the snippet below is historical
+context only. For the actual config, see the file directly.
+
 ### Pre-VPS-3 (current setup)
 
 The file is present in the repo but **not currently served** —

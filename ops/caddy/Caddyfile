@@ -1,3 +1,15 @@
+# Source-of-truth Caddyfile for Reverto.
+#
+# /etc/caddy/Caddyfile on the production VPS is a symlink to this
+# file (set up 2026-05-03). Deploy flow:
+#   1. PR + merge to main
+#   2. On VPS: `make deploy` (pulls)
+#   3. `sudo systemctl reload caddy` (applies)
+# No manual /etc/caddy/Caddyfile copy needed — the symlink picks
+# up changes automatically.
+#
+# See docs/runbook.md "Caddy reverse proxy" for fuller context.
+
 # Marketing site — static HTML/CSS/JS served from disk.
 # This is the public-facing reverto.bot domain. No auth, no
 # Python, no DB access. Caddy serves files directly.
