@@ -2222,7 +2222,23 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # implementations or subdomain-takeover scenarios no
             # longer have an open WS channel to abuse.
             "connect-src 'self' https://unpkg.com; "
-            "frame-ancestors 'none'"
+            "frame-ancestors 'none'; "
+            # Audit PT-v4-NW-001 — added 2026-05-04. Two OWASP-
+            # recommended hardening directives that the marketing-side
+            # reverto.bot Caddy CSP already had; the app-side CSP
+            # asymmetry was the wrong direction (more sensitive site
+            # had weaker CSP). With any HTML-injection primitive on
+            # app.reverto.bot, ``base-uri 'self'`` blocks an injected
+            # ``<base href="https://attacker">`` tag from hijacking
+            # every relative URL on the page (script srcs, form
+            # actions, link hrefs); ``form-action 'self'`` blocks
+            # injected ``<form action="https://attacker">`` from
+            # exfiltrating credentials + CSRF tokens via attacker-
+            # controlled submission endpoints. Both are defence-in-
+            # depth on top of the existing strict ``script-src``,
+            # but the strictest CSP wins when XSS surfaces unexpectedly.
+            "base-uri 'self'; "
+            "form-action 'self'"
         )
         response.headers["X-Frame-Options"]        = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
