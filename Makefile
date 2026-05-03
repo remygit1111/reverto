@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin deploy deploy-marketing rollback backup restore
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin seed-findings deploy deploy-marketing rollback backup restore
 
 # ── Standaard target ──────────────────────────────────────────────────────────
 help:
@@ -54,6 +54,20 @@ restart: stop
 
 status:
 	@bash status.sh
+
+# ── Audit-findings tracker sync ───────────────────────────────────────────────
+# Idempotent re-import van data/findings_seed.yaml naar de audit_findings
+# DB-tabel via INSERT OR IGNORE. Operator-edits via de admin-UI (status,
+# notes, resolution_ref) blijven behouden — het script raakt alleen
+# nieuwe finding_ids aan. Veilig om herhaald te draaien.
+#
+# Wordt automatisch aangeroepen door `make deploy` zodat YAML-toevoegingen
+# (nieuwe pentest-batch) na een `git pull` direct in de admin-UI verschijnen.
+seed-findings:
+	@echo ""
+	@echo "  [seed-findings] Syncing data/findings_seed.yaml → audit_findings DB…"
+	@$(PYTHON) scripts/seed_audit_findings.py
+	@echo ""
 
 # ── Remote deployment (Reverto-Server) ───────────────────────────────────────
 # Workflow: dev op Reverto-Dev merged PR naar main, deploy vanaf Dev via:
