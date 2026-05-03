@@ -6,6 +6,13 @@ reverto.bot {
 	file_server
 	encode gzip
 
+	# Explicit protocol pin (PT-v4-NW-010) — Caddy v2 defaults to
+	# TLS 1.2+ but pinning prevents silent weakening on future
+	# upgrade or operator config drift.
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
 	# Security headers. Match the protections on app.reverto.bot
 	# where applicable, with stricter CSP since the marketing
 	# site has no inline scripts (verified via
@@ -45,6 +52,45 @@ reverto.bot {
 # is the same backend that previously served reverto.bot;
 # it now serves app.reverto.bot exclusively.
 app.reverto.bot {
+	# Explicit protocol pin (PT-v4-NW-010) — Caddy v2 defaults to
+	# TLS 1.2+ but pinning prevents silent weakening on future
+	# upgrade or operator config drift.
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	# Security headers — mirror of the reverto.bot block (PT-v4-NW-002,
+	# PT-v4-NW-003). Without this directive, the 5xx maintenance.html
+	# fallback (served directly by Caddy) lacked CSP/HSTS/X-Frame-Options,
+	# and every proxied response leaked Server: Caddy.
+	#
+	# Content-Security-Policy is intentionally OMITTED here — the FastAPI
+	# SecurityHeadersMiddleware is the canonical CSP source for app.reverto.bot
+	# because it manages the inline-script-hash whitelist for the auth-checked
+	# safety-net script in index.html. A Caddy-level CSP would either
+	# duplicate or conflict. During a rare 5xx maintenance.html fallback
+	# (FastAPI down), browsers see all OTHER hardening headers but no CSP —
+	# accepted operator-decision: a static maintenance page with no JS surface
+	# doesn't need CSP enforcement.
+	#
+	# HSTS stays dual-emitted (Caddy + FastAPI) — defence-in-depth per
+	# PT-v4-NW-006 (accepted by operator-decision 2026-05-04). RFC 6797
+	# specifies use-strictest semantics for duplicate HSTS headers, so
+	# layered defence is the correct trade-off vs single-source-of-truth.
+	#
+	# Permissions-Policy MUST stay byte-identical to the reverto.bot block
+	# AND to the FastAPI SecurityHeadersMiddleware list — pinned by
+	# tests/test_security_headers.py::test_permissions_policy_identical_across_caddy_and_fastapi.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=()"
+		# Remove the default Server header for a tiny privacy bump
+		-Server
+	}
+
 	reverse_proxy localhost:8080 {
 		header_up X-Forwarded-Proto https
 		header_up X-Forwarded-For {client_ip}
