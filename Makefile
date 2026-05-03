@@ -120,7 +120,12 @@ deploy:
 # served at https://reverto.bot/README.md.
 deploy-marketing:
 	@echo "Deploying marketing site to /var/www/reverto-marketing/..."
-	rsync -av --delete \
+	@# Use -rlt instead of -av to avoid copying ownership/group attrs
+	@# (target dir is caddy:caddy, source is bot:bot — would fail
+	@# without sudo). Ownership is set explicitly via the chown step
+	@# below. sudo on rsync is needed because the receiver writes
+	@# .tmp files into the caddy-owned target dir.
+	sudo rsync -rlt --delete \
 		--exclude=README.md \
 		--exclude='.git*' \
 		--exclude='data' \
