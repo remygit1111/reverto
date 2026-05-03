@@ -286,6 +286,11 @@ async def _attempt_bot_auto_restart(bot) -> bool:
     Restart-storm protection is therefore scoped to a single portal
     lifetime; a fresh portal starts every bot's budget at zero.
     """
+    # Audit PT-v4-EI-006 — auto-restart attempts emit audit events
+    # on three signals: attempted, budget-exceeded, and exception.
+    # Operators investigating "why did bot X stop accepting events"
+    # can now query audit.jsonl for bot_auto_restart_* and see the
+    # full restart history without parsing portal.log.
     key = (bot.user_id, bot.slug)
     now = time.time()
     history = _BOT_RESTART_HISTORY.get(key, [])
@@ -300,6 +305,13 @@ async def _attempt_bot_auto_restart(bot) -> bool:
             bot.user_id, bot.slug,
             RESTART_MAX_ATTEMPTS, RESTART_WINDOW_SECONDS,
         )
+        _audit(
+            "bot_auto_restart_budget_exceeded",
+            bot.slug,
+            f"attempts={len(history)}",
+            user_id=bot.user_id,
+            result="error",
+        )
         # Surface the give-up via state.json so the UI (and the next
         # read_state call) can see why the portal stopped trying.
         _persist_stopped_reason_field(bot.state_file, "restart_budget_exceeded")
@@ -313,6 +325,13 @@ async def _attempt_bot_auto_restart(bot) -> bool:
     _BOT_RESTART_HISTORY[key] = history
     _record_bot_restart(bot.user_id, bot.slug, now)
 
+    _audit(
+        "bot_auto_restart_attempted",
+        bot.slug,
+        f"attempt={len(history) + 1}",
+        user_id=bot.user_id,
+    )
+
     try:
         result = await restart_bot(bot.user_id, bot.slug)
     except Exception as e:
@@ -320,11 +339,25 @@ async def _attempt_bot_auto_restart(bot) -> bool:
             "Bot %s/%s auto-restart raised: %s",
             bot.user_id, bot.slug, e,
         )
+        _audit(
+            "bot_auto_restart_failed",
+            bot.slug,
+            type(e).__name__,
+            user_id=bot.user_id,
+            result="error",
+        )
         return False
     if not result.get("ok"):
         logger.warning(
             "Bot %s/%s auto-restart returned failure: %s",
             bot.user_id, bot.slug, result.get("error") or result,
+        )
+        _audit(
+            "bot_auto_restart_failed",
+            bot.slug,
+            str(result.get("error") or "unknown")[:200],
+            user_id=bot.user_id,
+            result="failure",
         )
         return False
     logger.info(
