@@ -19,7 +19,7 @@
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
 # pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
-# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11, pt-v4-mk=8. Total: 342.
+# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11, pt-v4-mk=8, pt-v4-ei=10. Total: 352.
 #
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
@@ -1679,20 +1679,20 @@ findings:
 - finding_id: rha-002
   source_doc: reverto-holistic-audit-v1
   severity: INFO
-  status: open
+  status: resolved
   title: Schema-version is read from disk without range validation
   description: |
-    _bot_needs_restart accepts any integer from on-disk state_schema_version. Self-healing via fresh restart that writes correct STATE_SCHEMA_VERSION.
+    _bot_needs_restart accepts any integer from on-disk state_schema_version. Self-healing via fresh restart that writes correct STATE_SCHEMA_VERSION. RESOLVED 2026-05-04 per PT-v4-EI verification: core/database.py _read_schema_version implements three-layer defence (type-check, bounds-check via _SCHEMA_VERSION_MIN/MAX, forward-compatibility refusal). Docstring documents each layer.
   resolution_ref: null
   notes: ""
 
 - finding_id: rha-003
   source_doc: reverto-holistic-audit-v1
   severity: INFO
-  status: open
+  status: resolved
   title: _BOT_RESTART_HISTORY has no explicit growth ceiling
   description: |
-    In-memory restart-history dict never actively prunes keys. Bounded in practice by registered bot count; not a DoS vector.
+    In-memory restart-history dict never actively prunes keys. Bounded in practice by registered bot count; not a DoS vector. RESOLVED 2026-05-04 per PT-v4-EI verification: web/app.py _BOT_RESTART_HISTORY_MAX_ENTRIES_PER_BOT = 100 enforced via _record_bot_restart single-mutator. Docstring explicitly references 'rha-003 single source-of-truth'.
   resolution_ref: null
   notes: ""
 
@@ -3643,5 +3643,149 @@ findings:
   title: Marketing surface structurally well-defended (positive observation)
   description: |
     Pentest probed all 10 attack-vector categories (M1-M10). Marketing/app split is structurally well-defended: three-layer XSS defence (markdown-it html=False + bleach allow-list + strict CSP, each independently sufficient), single-source sanitisation discipline (no parallel renderers), correct draft filtering at the SQL store layer, correct admin/public field-strip via _phase_to_public + _entry_to_public (with the body_md asymmetry noted in MK-001), atomic snapshot writes, no public/admin response field-leak vector found. Findings cluster around defense-in-depth (MK-001, MK-002), observability (MK-003), and polish (MK-004 to MK-007). No structural weaknesses identified.
+  resolution_ref: null
+  notes: ""
+
+# ── pt-v4-ei-pentest (PT-v4-EI-001 … PT-v4-EI-010) ────────────────────────────
+#
+# Internal pentest batch covering edge cases and integration boundaries:
+# bot subprocess lifecycle, engine ↔ portal integration, Telegram
+# notifications, backup/restore flows, schema migrations, and
+# cross-component error handling.
+# AI-driven adversarial code review by Claude Code on 2026-05-04.
+# 10 findings (0 CRITICAL, 0 HIGH, 1 MEDIUM, 4 LOW, 5 INFO).
+# See docs/pentests/PT-v4-EI-findings.md for the full report.
+#
+# This is the FINAL batch in the PT-v4 series. Series total across
+# 6 batches (AU, AZ, FS, NW, MK, EI): 0 CRITICAL, 0 HIGH, 5 MEDIUM,
+# 17 LOW, 27 INFO. Reverto's single-tenant security posture is solid;
+# Phase-4 multi-tenant transition will re-open several findings
+# currently in "accepted/single-operator" status.
+#
+# Notable verified controls during this pentest:
+# - Bot lifecycle docstrings unusually rigorous —
+#   _persist_silent_exit_reconcile / StateIO.mark_stopped /
+#   _persist_stopped_reason_field each have multi-paragraph "do NOT
+#   consolidate" warnings. Future refactorers protected.
+# - Schema-version read defence-in-depth (type + bounds +
+#   forward-compat checks) at _read_schema_version — RESOLVES rha-002
+# - _BOT_RESTART_HISTORY growth ceiling at MAX_ENTRIES_PER_BOT=100
+#   enforced via single-mutator _record_bot_restart — RESOLVES rha-003
+# - Stop-bot timeout math explicitly derived at callsite
+#   (NOTIFY_DRAIN_TIMEOUT_S + _STOP_SAFETY_MARGIN_S)
+# - WAL-aware backup at TWO sites (backup.sh + _create_pre_migration_backup)
+# - 5 truth sources (registry, state.json, PID file, _pid_alive probe,
+#   DB deals) reconciled via BotInfo.read_state with documented trust
+#   hierarchy
+#
+# Tracker hygiene as part of this PR:
+# - rha-002 flipped open → resolved (3-layer defence in
+#   _read_schema_version verified at HEAD)
+# - rha-003 flipped open → resolved (MAX_ENTRIES_PER_BOT=100 enforced
+#   via _record_bot_restart, docstring explicitly references rha-003)
+#
+# Cross-batch series observation: documentation-vs-code drift is the
+# most common finding class across all 6 batches. Three findings
+# stale at HEAD before this PR (rha-002, rha-003, plus pt-025 already
+# flipped in PT-v4-NW); reconciliation pass recommended as future
+# operator-led sweep.
+
+- finding_id: PT-v4-EI-001
+  source_doc: pt-v4-ei-pentest
+  severity: LOW
+  status: open
+  title: backup.sh cp -r credentials not atomic against concurrent Fernet rotation
+  description: |
+    scripts/backup.sh:88-90 uses cp -r credentials, which is NOT atomic against concurrent rotation. The DB backup uses the WAL-aware sqlite3 .backup API for crash-consistency; credentials don't have an equivalent and could capture a half-rotated state if backup runs during multi-exchange Fernet rotation (extension territory of PT-v4-FS-005). Practical risk low (rotation rare; cron runs at 03:00 UTC), but design asymmetry worth closing. Suggested fix: take an exclusive flock on credentials/<uid>/ during cp, matching the lock the rotation flow already takes; OR snapshot via tar with --acl/--xattrs to a .tmp then rename.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-002
+  source_doc: pt-v4-ei-pentest
+  severity: MEDIUM
+  status: open
+  title: backup.sh .last_error monitoring contract only partially implemented
+  description: |
+    backup.sh:53-57 stamps a .last_error file ONLY on the DB-missing failure path. All other failure paths (sqlite3 .backup error, cp credentials error, MANIFEST write error, retention prune error) silently exit via set -e without updating the stamp. The cron-based monitoring contract documented in the script header is partially broken — operator-side cron monitoring (e.g. checking .last_error mtime) would miss most failure modes. Operator could go weeks with broken backups, only noticing on actual restore. Suggested fix: trap 'echo "$(date)" > "$BACKUP_DIR/.last_error"' EXIT followed by the existing exit logic, ensuring every non-zero exit stamps the file.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-003
+  source_doc: pt-v4-ei-pentest
+  severity: LOW
+  status: open
+  title: backup.sh has no concurrent-execution guard
+  description: |
+    scripts/backup.sh has no flock / lockfile / pid-check protecting against simultaneous executions. Cron at 03:00 UTC + manual operator backup at 03:00:30 UTC = two backups racing on credentials/ + writing same archive name (timestamps at minute precision could collide). Suggested fix: flock -xn /var/lock/reverto-backup.lock at script start; refuse with non-zero exit if lock unavailable.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-004
+  source_doc: pt-v4-ei-pentest
+  severity: LOW
+  status: open
+  title: state.json files and config/bots/ NOT in backup (NEW ANGLE on v26-14)
+  description: |
+    NEW ANGLE on existing finding v26-14 (DB + state.json dual-source). backup.sh captures DB + credentials + keys but NOT state.json files (logs/<uid>/<slug>/state.json) or bot configs (config/bots/<uid>/<slug>.yaml). On restore, the DB is re-hydrated but state.json files land back as whatever was on disk at restore time. Per-bot state (deals, balance, drawdown peak, DCA overrides) drifts with restored DB. Bot configs missing means a restored DB references bots whose config files don't exist on disk. Suggested fix: extend backup.sh to include logs/*/*.state.json + config/bots/ in the tar archive, OR document explicitly that state.json is engine-runtime state not part of backup contract (with operator-facing implications).
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-005
+  source_doc: pt-v4-ei-pentest
+  severity: LOW
+  status: open
+  title: TelegramNotifier notify-queue unbounded (forward-looking memory growth)
+  description: |
+    notifications/telegram.py TelegramNotifier has no upper bound on queued notifications during permanent Telegram API outage. If api.telegram.org is unreachable for hours, the engine continues queuing notifications (open/close/error events) without backpressure. Memory growth bounded only by bot tick rate × outage duration. Single-operator deploys won't hit this in practice; Phase-4 multi-tenant could see memory pressure under widespread outage. Suggested fix: bounded queue (e.g. 1000 items per notifier) with oldest-drop policy; emit one summary _audit() event when drop occurs so operator can see "Telegram down for 3 hours, X notifications dropped".
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-006
+  source_doc: pt-v4-ei-pentest
+  severity: INFO
+  status: open
+  title: Auto-restart attempts not emitted as audit events
+  description: |
+    web/app.py _attempt_bot_auto_restart logs to portal.log but does not emit a structured _audit() event. For incident-response timeline reconstruction, an attacker triggering a restart-storm (e.g. by killing the bot subprocess repeatedly) would generate restart-history but no audit trail. Same observability concern as PT-v4-AU-004 (logout no audit) and PT-v4-MK-003 (snapshot-failure no audit). Suggested fix: emit _audit("bot_auto_restart", user_id=user_id, slug=slug, attempt_number=N, reason=...) on every attempt; emit "bot_auto_restart_exhausted" when retry budget hits the cap.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-007
+  source_doc: pt-v4-ei-pentest
+  severity: INFO
+  status: open
+  title: Heartbeat backwards-compatibility may permanently mask crashed pre-heartbeat bots
+  description: |
+    web/app.py _heartbeat_is_stale at lines 121-145 returns False (NOT stale) when last_heartbeat field is missing OR has a garbled timestamp. Comment at line 127 acknowledges the backwards-compat reason. A bot that crashed under a pre-heartbeat build and was never restarted would have running=true + no last_heartbeat field forever — the reconcile path would consider it "still running" indefinitely. Practical exposure: the codebase has had heartbeat for many releases and the deploy-pipeline restarts engines on every git pull, so any pre-heartbeat state.json should have aged out. Defense-in-depth concern only. Suggested fix: log WARNING when running=true + no heartbeat field is read, so operator notices pre-heartbeat bots that survived multiple deploys.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-008
+  source_doc: pt-v4-ei-pentest
+  severity: INFO
+  status: open
+  title: Notification ordering not guaranteed (open-before-close not enforced)
+  description: |
+    Bot opens deal at T=0 + queues open-notify; closes deal at T=5s + queues close-notify. If TelegramNotifier sends asynchronously and the open-notify takes longer (slow Telegram API), the user could see CLOSE-notification arrive before OPEN-notification. Confusing for users tracking events in real time but no security or data-integrity impact. Suggested fix: per-bot serialised notification queue (FIFO), OR include a timestamp + sequence number in the message body so user can order them locally.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-009
+  source_doc: pt-v4-ei-pentest
+  severity: INFO
+  status: open
+  title: MANIFEST stamps schema-version but not app version (git SHA)
+  description: |
+    scripts/backup.sh stamps PRAGMA user_version (schema version) into MANIFEST.txt per r3-008. App version (git SHA) is NOT stamped. If the app is upgraded between backup-time and restore-time, the schema might match (no migration in between) but the application logic differs — a backup taken at SHA X restored to SHA Y could expect deal_store invariants that no longer hold. Suggested fix: stamp `git rev-parse HEAD` (or the embedded version-string if one exists) into MANIFEST.txt next to the schema version.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-EI-010
+  source_doc: pt-v4-ei-pentest
+  severity: INFO
+  status: open
+  title: Edge & integration surface structurally well-defended (positive observation)
+  description: |
+    Pentest probed all 10 attack-vector categories (E1-E10). Bot lifecycle controls are well-thought-out: KillMode=process prevents engine SIGKILL on portal restart, heartbeat-staleness with 6× threshold for silent-exit detection, bounded auto-restart via _BOT_RESTART_HISTORY (rha-003 verified resolved), drain budget + safety margin before SIGKILL escalation, schema migration in transaction with destructive-migrate gate, WAL-aware backup at two sites. The 5 truth sources (registry, state.json, PID file, _pid_alive probe, DB deals) reconcile via documented trust hierarchy at BotInfo.read_state. Findings cluster around BACKUP/RESTORE pipeline (4 of 10) rather than live-system path. Live-system path gets continuous test coverage; backup runs from cron without daily operator scrutiny — an observability gap rather than a structural weakness. No CRITICAL or HIGH findings emerged. Cross-batch series observation: zero CRITICAL/HIGH across all 6 PT-v4 batches confirms structurally solid single-tenant posture.
   resolution_ref: null
   notes: ""
