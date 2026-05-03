@@ -77,6 +77,7 @@ deploy:
 	@git pull origin main
 	@echo ""
 	@echo "  [deploy] git pull complete."
+	@$(MAKE) seed-findings
 	@echo "  [deploy] Next steps (manual):"
 	@echo "    - Restart het portal als code-wijzigingen dat vereisen:"
 	@echo "        make restart"
