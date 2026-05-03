@@ -45,12 +45,33 @@ router = APIRouter(tags=["changelog"])
 # export function already swallows internal failures; the outer
 # try/except is defense-in-depth.
 def _snapshot_marketing_changelog() -> None:
+    # Audit PT-v4-MK-003 — snapshot failures used to be log-only;
+    # emitting an audit event gives operators a queryable trail
+    # for "did the marketing snapshot pipeline ever silently fail
+    # in the last week" without grepping portal logs. Two failure
+    # signals: (1) write_*_snapshot returned False (caught
+    # internally — file IO error, JSON serialise error, etc.);
+    # (2) unexpected exception bubbled through the try/except.
     try:
-        marketing_export.write_changelog_snapshot()
-    except Exception:
+        ok = marketing_export.write_changelog_snapshot()
+    except Exception as e:
         logger.exception(
             "Marketing changelog snapshot raised (non-fatal — DB "
             "mutation already committed)"
+        )
+        _audit(
+            "marketing_snapshot_save_failed",
+            "changelog",
+            type(e).__name__,
+            result="error",
+        )
+        return
+    if not ok:
+        _audit(
+            "marketing_snapshot_save_failed",
+            "changelog",
+            "write_returned_false",
+            result="error",
         )
 
 

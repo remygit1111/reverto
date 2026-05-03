@@ -114,6 +114,98 @@ def test_auth_login_audit_fires_per_user_split(tmp_logs):
     assert entry["user_id"] == admin.id
 
 
+def test_auth_logout_emits_audit_event(tmp_logs):
+    """Audit PT-v4-AU-004: /auth/logout MUST emit a 'logout' audit
+    event so the audit trail captures session lifecycle. Drives the
+    full login → logout cycle and asserts the logout entry lands in
+    the per-user split file.
+
+    Follows the existing test_cross_tenant_isolation pattern of
+    flipping _COOKIE_SECURE=False + _COOKIE_SAMESITE=lax for the
+    duration of the test so the TestClient (running over plain
+    http://testserver) actually persists the session cookie set by
+    the login response. Without this, httpx drops the Secure cookie
+    and the logout request lands without a session.
+    """
+    from fastapi.testclient import TestClient
+    from core import user_store
+
+    admin = user_store.get_user_by_username("admin")
+    assert admin is not None
+    user_store.set_password(admin.id, "hotfix-pw-pt-v4-au-004")
+
+    prev_secure = webapp._COOKIE_SECURE
+    prev_samesite = webapp._COOKIE_SAMESITE
+    webapp._COOKIE_SECURE = False
+    webapp._COOKIE_SAMESITE = "lax"
+    try:
+        client = TestClient(webapp.app)
+        login_r = client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "hotfix-pw-pt-v4-au-004"},
+        )
+        assert login_r.status_code == 200, login_r.text
+        # Sanity: the session cookie actually landed in the jar.
+        assert "reverto_session" in client.cookies, (
+            "session cookie missing from TestClient jar after login — "
+            "_COOKIE_SECURE flip did not take effect"
+        )
+        csrf = login_r.json()["csrf_token"]
+
+        logout_r = client.post(
+            "/auth/logout",
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert logout_r.status_code == 200, logout_r.text
+    finally:
+        webapp._COOKIE_SECURE = prev_secure
+        webapp._COOKIE_SAMESITE = prev_samesite
+
+    # Per-user file MUST contain the logout entry.
+    user_jsonl = tmp_logs / "logs" / str(admin.id) / "audit.jsonl"
+    assert user_jsonl.exists(), (
+        "per-user audit.jsonl not written — logout handler didn't "
+        "propagate user_id into _audit()"
+    )
+    # Walk every line so we don't false-fail if other audit events
+    # interleaved (totp, etc.). The logout entry is the last one
+    # written for this flow.
+    lines = [json.loads(line) for line in user_jsonl.read_text().splitlines()]
+    logout_entries = [e for e in lines if e["action"] == "logout"]
+    assert len(logout_entries) == 1, (
+        f"expected exactly one 'logout' audit entry, got {logout_entries!r}"
+    )
+    logout_entry = logout_entries[0]
+    assert logout_entry["user_id"] == admin.id
+    assert logout_entry["slug"] == "admin"
+    assert logout_entry["result"] == "ok"
+
+
+def test_auth_logout_no_audit_when_unauthenticated(tmp_logs):
+    """Audit PT-v4-AU-004 (no-op path): a stranger hitting /auth/logout
+    without a session cookie returns 200 (idempotent) but MUST NOT
+    emit an audit event — there's no user identity to attribute and
+    the request is effectively a passing-by click. Pinning this so a
+    future refactor that audits every logout call doesn't pollute
+    audit.jsonl with anonymous logout-noise.
+    """
+    from fastapi.testclient import TestClient
+
+    client = TestClient(webapp.app)
+    r = client.post("/auth/logout")
+    assert r.status_code == 200, r.text
+
+    global_jsonl = tmp_logs / "audit.jsonl"
+    if not global_jsonl.exists():
+        return  # no audit file at all = no logout event, satisfies contract
+    lines = [json.loads(line) for line in global_jsonl.read_text().splitlines()]
+    logout_entries = [e for e in lines if e["action"] == "logout"]
+    assert logout_entries == [], (
+        "logout audit fired for an unauthenticated caller — should "
+        "be silent on the no-op path"
+    )
+
+
 # ── Phase-A wrap-up: ip + result fields ────────────────────────────────────
 
 

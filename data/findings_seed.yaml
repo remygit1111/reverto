@@ -3146,11 +3146,11 @@ findings:
 - finding_id: PT-v4-AU-004
   source_doc: pt-v4-au-pentest
   severity: LOW
-  status: open
+  status: resolved
   title: /auth/logout does not emit an audit event
   description: |
-    Login emits structured audit events (success and failure paths). Logout does not. For incident-response timeline reconstruction, logout-without-explicit-event makes it harder to distinguish "user logged out cleanly" from "session naturally expired" from "attacker bumped session_epoch via password change to invalidate the original session". Audit-trail gap, not an exploitation vector.
-  resolution_ref: null
+    Login emits structured audit events (success and failure paths). Logout does not. For incident-response timeline reconstruction, logout-without-explicit-event makes it harder to distinguish "user logged out cleanly" from "session naturally expired" from "attacker bumped session_epoch via password change to invalidate the original session". Audit-trail gap, not an exploitation vector. RESOLVED 2026-05-04: _audit('logout', ...) call added in web/routes/auth.py auth_logout handler.
+  resolution_ref: chore/pt-v4-audit-events-observability
   notes: ""
 
 - finding_id: PT-v4-AU-005
@@ -3589,11 +3589,11 @@ findings:
 - finding_id: PT-v4-MK-003
   source_doc: pt-v4-mk-pentest
   severity: LOW
-  status: open
+  status: resolved
   title: Snapshot-failure detection has no alert path (silent swallow)
   description: |
-    _snapshot_marketing_roadmap and _snapshot_marketing_changelog wrap export calls in try/except → logger.exception with no audit emission. If marketing_export fails (disk full, permission drift, etc.), the admin operation succeeds but the public site goes stale silently. Operator only notices via portal.log grep or visiting reverto.bot manually. Cheap fix: emit _audit("marketing_snapshot_failed", ...) in the except branches of both wrappers — audit.jsonl is already operator-monitored.
-  resolution_ref: null
+    _snapshot_marketing_roadmap and _snapshot_marketing_changelog wrap export calls in try/except → logger.exception with no audit emission. If marketing_export fails (disk full, permission drift, etc.), the admin operation succeeds but the public site goes stale silently. Operator only notices via portal.log grep or visiting reverto.bot manually. Cheap fix: emit _audit("marketing_snapshot_failed", ...) in the except branches of both wrappers — audit.jsonl is already operator-monitored. RESOLVED 2026-05-04: _audit('marketing_snapshot_save_failed', ...) call added on the snapshot-save except branch (and on the write_*_snapshot returned-False path) in both _snapshot_marketing_roadmap and _snapshot_marketing_changelog wrappers.
+  resolution_ref: chore/pt-v4-audit-events-observability
   notes: ""
 
 - finding_id: PT-v4-MK-004
@@ -3743,11 +3743,11 @@ findings:
 - finding_id: PT-v4-EI-006
   source_doc: pt-v4-ei-pentest
   severity: INFO
-  status: open
+  status: resolved
   title: Auto-restart attempts not emitted as audit events
   description: |
-    web/app.py _attempt_bot_auto_restart logs to portal.log but does not emit a structured _audit() event. For incident-response timeline reconstruction, an attacker triggering a restart-storm (e.g. by killing the bot subprocess repeatedly) would generate restart-history but no audit trail. Same observability concern as PT-v4-AU-004 (logout no audit) and PT-v4-MK-003 (snapshot-failure no audit). Suggested fix: emit _audit("bot_auto_restart", user_id=user_id, slug=slug, attempt_number=N, reason=...) on every attempt; emit "bot_auto_restart_exhausted" when retry budget hits the cap.
-  resolution_ref: null
+    web/app.py _attempt_bot_auto_restart logs to portal.log but does not emit a structured _audit() event. For incident-response timeline reconstruction, an attacker triggering a restart-storm (e.g. by killing the bot subprocess repeatedly) would generate restart-history but no audit trail. Same observability concern as PT-v4-AU-004 (logout no audit) and PT-v4-MK-003 (snapshot-failure no audit). Suggested fix: emit _audit("bot_auto_restart", user_id=user_id, slug=slug, attempt_number=N, reason=...) on every attempt; emit "bot_auto_restart_exhausted" when retry budget hits the cap. RESOLVED 2026-05-04: _audit calls added in _attempt_bot_auto_restart for attempted / budget-exceeded / failed / raised paths (actions: bot_auto_restart_attempted, bot_auto_restart_budget_exceeded, bot_auto_restart_failed).
+  resolution_ref: chore/pt-v4-audit-events-observability
   notes: ""
 
 - finding_id: PT-v4-EI-007

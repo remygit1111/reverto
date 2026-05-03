@@ -641,6 +641,8 @@ async def auth_logout(request: Request):
     # right row. A missing / invalid cookie still returns 200 — logout
     # is idempotent from the client's perspective.
     payload = _verify_session_cookie(request.cookies.get(_SESSION_COOKIE))
+    audited_user_id: int | None = None
+    audited_username: str = "-"
     if payload:
         uid = payload.get("uid")
         if isinstance(uid, int) and uid > 0:
@@ -648,6 +650,30 @@ async def auth_logout(request: Request):
                 user_store.bump_session_epoch(uid)
             except Exception as e:
                 logger.warning("logout: bump_session_epoch failed (%s)", e)
+            # Resolve username for the audit slug field. Best-effort:
+            # the user row may have been deleted between session-mint
+            # and now (admin removed the account). Username unknown
+            # → fall back to "-" so the audit still records the event
+            # against the user_id.
+            audited_user_id = uid
+            user = user_store.get_user_by_id(uid)
+            if user is not None:
+                audited_username = user.username
+    # Audit PT-v4-AU-004 — logout emits an audit event so security
+    # monitoring can correlate session-end with subsequent activity
+    # (or its absence). The session-epoch bump happens just above;
+    # at this point we know the logout took effect for an
+    # authenticated session. The no-op path (no valid cookie) is
+    # intentionally NOT audited — there's no user to attribute to
+    # and the request was effectively a stranger-clicks-logout.
+    if audited_user_id is not None:
+        _audit(
+            "logout",
+            audited_username,
+            "-",
+            user_id=audited_user_id,
+            request=request,
+        )
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(_SESSION_COOKIE, path="/")
     return resp
