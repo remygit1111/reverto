@@ -19,8 +19,8 @@
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
 # pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
-
-# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11. Total: 334.
+# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11, pt-v4-mk=8. Total: 342.
+#
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
 # narrative still says "PRE-EXISTING" / "still open" but the codebase
@@ -3534,3 +3534,114 @@ findings:
   resolution_ref: null
   notes: ""
 
+# ── pt-v4-mk-pentest (PT-v4-MK-001 … PT-v4-MK-008) ────────────────────────────
+#
+# Internal pentest batch covering marketing/app architectural split:
+# admin → public boundary, data-export pipeline, client-side rendering.
+# AI-driven adversarial code review by Claude Code on 2026-05-02.
+# 8 findings (0 CRITICAL, 0 HIGH, 0 MEDIUM, 3 LOW, 5 INFO).
+# See docs/pentests/PT-v4-MK-findings.md for the full report.
+#
+# Notable verified controls during this pentest:
+# - Three-layer XSS defence: markdown-it html=False + bleach
+#   allow-list + reverto.bot strict CSP. Each layer independently
+#   sufficient against OWASP cheat-sheet payloads.
+# - Single-source sanitisation: every render path (5 callsites in
+#   changelog/roadmap admin/public + 2 in marketing_export) goes
+#   through render_markdown — no parallel implementation drift.
+# - render.js DOM discipline: textContent everywhere except the
+#   bleach-output fields; class-name suffix construction strips
+#   to lowercase letters.
+# - list_published SQL filter at store layer in both stores —
+#   drafts cannot leak even if higher layer forgot.
+# - changelog public correctly strips raw description (model for
+#   the roadmap fix in MK-001).
+# - bleach 6.3.0 _ALLOWED_TAGS excludes script/iframe/object/embed/
+#   form/style; _ALLOWED_ATTRIBUTES permits only href/title/rel on
+#   <a>; _ALLOWED_PROTOCOLS = {http, https, mailto} (javascript:/
+#   data:/file: deliberately excluded).
+#
+# Tracker hygiene: no stale entries identified during this pentest.
+# PT-v4-AZ-001 (audit-swap in changelog/roadmap/marketing.py) and
+# PT-v4-AZ-003/004 (admin-gate pattern asymmetry) remain open as
+# previously triaged.
+
+- finding_id: PT-v4-MK-001
+  source_doc: pt-v4-mk-pentest
+  severity: LOW
+  status: open
+  title: _phase_to_public exposes raw body_md alongside rendered body_html (asymmetry with changelog)
+  description: |
+    core/marketing_export.py:54-66 _phase_to_public and web/routes/roadmap.py:185-208 _phase_to_public_json both expose raw body_md markdown alongside the rendered body_html. The marketing render.js consumes only body_html (render.js:141) — body_md is dead bytes in the public JSON. Slight info-leak surface (admin's raw phrasing visible) plus future foot-gun if a renderer ever reaches for the raw field. The changelog public response correctly drops the raw description field. Suggested fix: drop body_md from _phase_to_public + _phase_to_public_json to match the changelog model.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-MK-002
+  source_doc: pt-v4-mk-pentest
+  severity: LOW
+  status: open
+  title: _write_atomic filename parameter unvalidated (path-traversal forward-bug-surface)
+  description: |
+    core/marketing_export.py:128 _write_atomic(filename, payload) accepts any string as filename. Today's only callers pass safe literals ("roadmap.json", "changelog.json"), but the data dir is publicly served by Caddy file_server. A future caller passing attacker-influenced filename (e.g. "../foo.json" or "evil.html") could write publicly-fetchable files at attacker-chosen paths in /var/www/reverto-marketing/. No exploitation path today; defense-in-depth gap. Suggested fix: 5-line regex check on filename — `re.fullmatch(r"[a-z0-9_-]+\.json", filename)` — at the start of the function.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-MK-003
+  source_doc: pt-v4-mk-pentest
+  severity: LOW
+  status: open
+  title: Snapshot-failure detection has no alert path (silent swallow)
+  description: |
+    _snapshot_marketing_roadmap and _snapshot_marketing_changelog wrap export calls in try/except → logger.exception with no audit emission. If marketing_export fails (disk full, permission drift, etc.), the admin operation succeeds but the public site goes stale silently. Operator only notices via portal.log grep or visiting reverto.bot manually. Cheap fix: emit _audit("marketing_snapshot_failed", ...) in the except branches of both wrappers — audit.jsonl is already operator-monitored.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-MK-004
+  source_doc: pt-v4-mk-pentest
+  severity: INFO
+  status: open
+  title: POST /api/admin/marketing/regenerate has no per-call concurrency lock
+  description: |
+    web/routes/marketing.py POST /api/admin/marketing/regenerate has no advisory lock. Two operators (or operator + script) calling simultaneously would have both writes interleave at the _write_atomic level. The os.replace primitive is atomic so neither write is torn, but the LAST-write-wins ordering is non-deterministic — could publish older content over newer. Realistic exploitation requires two concurrent admin invocations; not a security issue but a consistency gap. Suggested fix: asyncio.Lock around the regenerate handler.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-MK-005
+  source_doc: pt-v4-mk-pentest
+  severity: INFO
+  status: open
+  title: render.js JSON.parse failure UX undefined
+  description: |
+    marketing/js/render.js:167 + 246 fetch /data/roadmap.json + /data/changelog.json. If JSON is malformed (manual file edit, partial write during snapshot, etc.), JSON.parse throws and the page silently shows broken state — no error message to the visitor, no fallback content. Suggested fix: try/catch around JSON.parse with a graceful fallback message ("Roadmap temporarily unavailable") rendered into the body. Edge-case, but visible to public users so worth polishing.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-MK-006
+  source_doc: pt-v4-mk-pentest
+  severity: INFO
+  status: open
+  title: Cache-busters versioned manually with no enforcement
+  description: |
+    marketing/*.html references render.js?v=3, marketing.css?v=2, theme-init.js?v=1. Manual version bumps mean a future code change without bump leads to stale cached content for users. tests/test_marketing_assets.py exists but doesn't pin the cache-buster invariant. Defense-in-depth (not security) gap. Suggested fix: add a regression test that asserts: for every marketing/js/*.js and marketing/css/*.css, all reverto.bot HTML files reference it with a ?v= parameter; OR adopt content-hash-based filenames like render.abc123.js to make cache-invalidation automatic.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-MK-007
+  source_doc: pt-v4-mk-pentest
+  severity: INFO
+  status: open
+  title: REVERTO_MARKETING_DATA_DIR override has no startup validation
+  description: |
+    core/marketing_export.py:42 _data_dir reads REVERTO_MARKETING_DATA_DIR env-var with no startup-time validation that the path exists, is writable, and points where the operator intends. Misconfiguration would surface only on first snapshot attempt, after admin operations have been audited but the snapshot silently failed. Suggested fix: at lifespan startup, if REVERTO_MARKETING_DATA_DIR is set, verify Path(override).is_dir() and os.access(path, os.W_OK), or fail-fast with a clear error.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PT-v4-MK-008
+  source_doc: pt-v4-mk-pentest
+  severity: INFO
+  status: open
+  title: Marketing surface structurally well-defended (positive observation)
+  description: |
+    Pentest probed all 10 attack-vector categories (M1-M10). Marketing/app split is structurally well-defended: three-layer XSS defence (markdown-it html=False + bleach allow-list + strict CSP, each independently sufficient), single-source sanitisation discipline (no parallel renderers), correct draft filtering at the SQL store layer, correct admin/public field-strip via _phase_to_public + _entry_to_public (with the body_md asymmetry noted in MK-001), atomic snapshot writes, no public/admin response field-leak vector found. Findings cluster around defense-in-depth (MK-001, MK-002), observability (MK-003), and polish (MK-004 to MK-007). No structural weaknesses identified.
+  resolution_ref: null
+  notes: ""
