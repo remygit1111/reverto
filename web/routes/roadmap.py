@@ -62,13 +62,35 @@ router = APIRouter(tags=["roadmap"])
 # in marketing_export (NameError, ImportError, etc.) cannot
 # bubble up and turn a 200 DB-mutation into a 500 because of a
 # best-effort side channel.
+#
+# Audit PT-v4-MK-003 — snapshot failures used to be log-only;
+# emitting an audit event gives operators a queryable trail for
+# "did the marketing snapshot pipeline ever silently fail in the
+# last week" without grepping portal logs. Two failure signals:
+# (1) write_*_snapshot returned False (caught internally — file
+# IO error, JSON serialise error, etc.); (2) unexpected exception
+# bubbled through the try/except.
 def _snapshot_marketing_roadmap() -> None:
     try:
-        marketing_export.write_roadmap_snapshot()
-    except Exception:
+        ok = marketing_export.write_roadmap_snapshot()
+    except Exception as e:
         logger.exception(
             "Marketing roadmap snapshot raised (non-fatal — DB "
             "mutation already committed)"
+        )
+        _audit(
+            "marketing_snapshot_save_failed",
+            "roadmap",
+            type(e).__name__,
+            result="error",
+        )
+        return
+    if not ok:
+        _audit(
+            "marketing_snapshot_save_failed",
+            "roadmap",
+            "write_returned_false",
+            result="error",
         )
 
 
