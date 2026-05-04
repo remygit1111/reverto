@@ -117,7 +117,9 @@ def _create_n_bots(client: TestClient, n: int, prefix: str) -> None:
 
 class TestPostBotsQuotaDefault:
     """Default ``REVERTO_MAX_BOTS_PER_USER`` is 10 — the 11th create
-    must return 429 with the structured ``code`` field."""
+    must return 429 with a human-readable string ``detail`` so the
+    SPA's ``err.textContent = body.detail`` rendering shows a real
+    sentence (not ``[object Object]``)."""
 
     def test_eleventh_create_returns_429(self, client, monkeypatch):
         # Be explicit: clear any leaked override from a prior test so
@@ -131,15 +133,11 @@ class TestPostBotsQuotaDefault:
             headers=JSON,
         )
         assert r.status_code == 429, r.text
-        body = r.json()
-        # FastAPI envelopes structured detail under ``detail``.
-        detail = body.get("detail")
-        assert isinstance(detail, dict), (
-            f"detail must be structured for programmatic clients; got {detail!r}"
-        )
-        assert detail.get("code") == "max_bots_per_user_reached"
-        assert detail.get("max") == 10
-        assert detail.get("current") == 10
+        # Pin the exact wording — if a future PR rewords the message,
+        # this test breaks and the change shows up in PR review.
+        assert r.json() == {
+            "detail": "Bot limit reached. You have 10 bots; the maximum is 10.",
+        }
 
     def test_tenth_create_still_succeeds(self, client, monkeypatch):
         """Boundary: at-cap is the rejection point, the create THAT
@@ -177,7 +175,9 @@ class TestQuotaOnDuplicateAndImport:
             headers=JSON,
         )
         assert r.status_code == 429, r.text
-        assert r.json()["detail"]["code"] == "max_bots_per_user_reached"
+        assert r.json() == {
+            "detail": "Bot limit reached. You have 10 bots; the maximum is 10.",
+        }
 
     def test_import_at_cap_returns_429(self, client, monkeypatch):
         """Same shape via the import endpoint. The body is YAML, not
@@ -193,7 +193,9 @@ class TestQuotaOnDuplicateAndImport:
             headers={**AUTH, "Content-Type": "application/x-yaml"},
         )
         assert r.status_code == 429, r.text
-        assert r.json()["detail"]["code"] == "max_bots_per_user_reached"
+        assert r.json() == {
+            "detail": "Bot limit reached. You have 10 bots; the maximum is 10.",
+        }
 
 
 # ── Env-var override ────────────────────────────────────────────────────────
@@ -214,9 +216,12 @@ class TestQuotaEnvOverride:
             headers=JSON,
         )
         assert r.status_code == 429, r.text
-        detail = r.json()["detail"]
-        assert detail["max"] == 3
-        assert detail["current"] == 3
+        # Both numbers must appear in the message: current count and
+        # cap. Pin the exact text so a wording rewrite surfaces in
+        # review.
+        assert r.json() == {
+            "detail": "Bot limit reached. You have 3 bots; the maximum is 3.",
+        }
 
     def test_malformed_override_falls_back_to_default(self, client, monkeypatch):
         """Garbage env-var must not silently disable the cap. The
@@ -231,7 +236,10 @@ class TestQuotaEnvOverride:
             headers=JSON,
         )
         assert r.status_code == 429, r.text
-        assert r.json()["detail"]["max"] == 10
+        # Default cap (10) wins when the env override is malformed.
+        assert r.json() == {
+            "detail": "Bot limit reached. You have 10 bots; the maximum is 10.",
+        }
 
     def test_non_positive_override_falls_back_to_default(
         self, client, monkeypatch,
@@ -247,7 +255,9 @@ class TestQuotaEnvOverride:
             headers=JSON,
         )
         assert r.status_code == 429
-        assert r.json()["detail"]["max"] == 10
+        assert r.json() == {
+            "detail": "Bot limit reached. You have 10 bots; the maximum is 10.",
+        }
 
 
 # ── Helper-level resolver tests ─────────────────────────────────────────────

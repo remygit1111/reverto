@@ -125,21 +125,20 @@ async def _enforce_bot_quota(user_id: int) -> None:
     user_bots = await registry.all(user_id=user_id)
     current = len(user_bots)
     if current >= cap:
-        # Structured detail so clients can branch on ``code`` without
-        # parsing the message string. FastAPI nests the dict under
-        # ``detail`` in the response body — the canonical envelope —
-        # so callers see ``response.json()["detail"]["code"]``.
+        # String detail (not dict) so the SPA's existing
+        # ``err.textContent = body.detail`` rendering shows a
+        # readable message instead of "[object Object]". If clients
+        # ever need programmatic quota error handling, switch to a
+        # custom exception handler that translates a detail dict to a
+        # user-readable string + sets an X-Quota-Code header — keeps
+        # the human-readable path simple while exposing a machine
+        # path out-of-band.
         raise HTTPException(
             status_code=429,
-            detail={
-                "message": (
-                    f"Bot limit reached. You have {current} bots; "
-                    f"the maximum is {cap}."
-                ),
-                "code": "max_bots_per_user_reached",
-                "current": current,
-                "max": cap,
-            },
+            detail=(
+                f"Bot limit reached. You have {current} bots; "
+                f"the maximum is {cap}."
+            ),
         )
 
 
