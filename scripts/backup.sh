@@ -10,6 +10,14 @@
 #                                     if still present)
 #   - logs/.auth.json                (pre-Phase-3a auth-state,
 #                                     if still present)
+#   - logs/<uid>/<slug>.state.json   (per-bot runtime state — added
+#                                     PT-v4-EI-004; without these
+#                                     a restore loses every running
+#                                     deal's PnL/balance/peak/queue)
+#   - config/bots/<uid>/<slug>.yaml  (per-bot configs — added
+#                                     PT-v4-EI-004; without these a
+#                                     restored DB references YAMLs
+#                                     that don't exist on disk)
 #
 # Retention:
 #   - 7 days of daily backups
@@ -103,6 +111,45 @@ fi
 
 if [ -f "logs/.auth.json" ]; then
     cp "logs/.auth.json" "${BACKUP_DIR}/.auth.json"
+fi
+
+# ──────────────────────────────────────────────────────────────
+# Per-bot runtime state + configs (PT-v4-EI-004). state.json
+# carries the engine's resume-able view of each open deal +
+# balance + drawdown peak + closed-deals tail. The bot YAMLs
+# under config/bots/<uid>/ are the source-of-truth strategy
+# config that the engine reads on start. Restoring the DB
+# without these leaves each bot referencing a YAML that's gone
+# and resumes its in-memory state from defaults — not what the
+# operator expects.
+#
+# State files: logs/<user_id>/<slug>.state.json. Use ``cp
+# --parents`` so the user_id/ directory structure is preserved
+# inside the backup (logs/1/foo.state.json → BACKUP_DIR/logs/1/
+# foo.state.json) — restore.sh's reverse-copy then lands the
+# files at their original paths without extra logic.
+# ──────────────────────────────────────────────────────────────
+
+if [ -d "logs" ]; then
+    # State files live one level deep under logs/<uid>/. The
+    # ``-quit`` short-circuits when no matches exist, so the
+    # subsequent ``find ... -exec`` skips the cp invocation
+    # entirely on a fresh install with no bots yet.
+    if find logs -mindepth 2 -maxdepth 2 \
+            -type f -name '*.state.json' -print -quit \
+            | grep -q . 2>/dev/null; then
+        find logs -mindepth 2 -maxdepth 2 \
+            -type f -name '*.state.json' \
+            -exec cp --parents {} "${BACKUP_DIR}/" \;
+    fi
+fi
+
+# Per-user bot YAMLs. ``cp -r`` preserves config/bots/<uid>/<slug>.yaml
+# layout. Skip silently when the directory is missing (fresh
+# install, or operator who hasn't created any bots yet).
+if [ -d "config/bots" ]; then
+    mkdir -p "${BACKUP_DIR}/config"
+    cp -r config/bots "${BACKUP_DIR}/config/bots"
 fi
 
 # ──────────────────────────────────────────────────────────────
