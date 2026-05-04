@@ -151,6 +151,8 @@ echo "  2. Restore logs/reverto.db from backup"
 echo "  3. Restore credentials/ from backup (if present)"
 echo "  4. Restore keys/ from backup (if present)"
 echo "  5. Restore logs/.credentials.key / .auth.json (legacy)"
+echo "  6. Restore logs/<uid>/<slug>.state.json (per-bot runtime)"
+echo "  7. Restore config/bots/<uid>/<slug>.yaml (per-bot configs)"
 echo ""
 echo "After restore you should:"
 echo "  - make start"
@@ -218,6 +220,26 @@ if [ -f "logs/.auth.json" ]; then
     cp "logs/.auth.json" "${PRE_RESTORE_DIR}/.auth.json"
 fi
 
+# PT-v4-EI-004: snapshot current state.json files + bot YAMLs so
+# the pre-restore directory is itself a complete recovery point.
+# Without these in the snapshot, an operator who runs restore.sh
+# twice in a row loses every bot's currently-running state with
+# no way back.
+if [ -d "logs" ]; then
+    if find logs -mindepth 2 -maxdepth 2 \
+            -type f -name '*.state.json' -print -quit \
+            | grep -q . 2>/dev/null; then
+        find logs -mindepth 2 -maxdepth 2 \
+            -type f -name '*.state.json' \
+            -exec cp --parents {} "${PRE_RESTORE_DIR}/" \;
+    fi
+fi
+
+if [ -d "config/bots" ]; then
+    mkdir -p "${PRE_RESTORE_DIR}/config"
+    cp -r config/bots "${PRE_RESTORE_DIR}/config/bots"
+fi
+
 chmod -R go-rwx "${PRE_RESTORE_DIR}" 2>/dev/null || true
 
 # ──────────────────────────────────────────────────────────────
@@ -250,6 +272,35 @@ fi
 if [ -f "${BACKUP_DIR}/.auth.json" ]; then
     echo "→ Restoring logs/.auth.json (legacy)..."
     cp "${BACKUP_DIR}/.auth.json" "logs/.auth.json"
+fi
+
+# PT-v4-EI-004 — per-bot state.json + bot YAMLs. backup.sh saved
+# them under BACKUP_DIR/logs/<uid>/<slug>.state.json and
+# BACKUP_DIR/config/bots/<uid>/<slug>.yaml respectively (mirroring
+# the source-tree layout via ``cp --parents`` / ``cp -r``). The
+# restore is the symmetric reverse: copy files back into the
+# checkout's logs/ + config/bots/ at their original paths.
+if [ -d "${BACKUP_DIR}/logs" ]; then
+    if find "${BACKUP_DIR}/logs" -mindepth 2 -maxdepth 2 \
+            -type f -name '*.state.json' -print -quit \
+            | grep -q . 2>/dev/null; then
+        echo "→ Restoring per-bot logs/<uid>/<slug>.state.json..."
+        # ``cp -r BACKUP_DIR/logs/. logs/`` merges per-uid subdirs
+        # into the existing logs/ tree without clobbering siblings
+        # (e.g. portal.log, audit.log, .last_error). The trailing
+        # /. is intentional — without it cp -r would create a
+        # nested logs/logs/ when the destination already exists.
+        cp -r "${BACKUP_DIR}/logs/." "logs/"
+    fi
+fi
+
+if [ -d "${BACKUP_DIR}/config/bots" ]; then
+    echo "→ Restoring config/bots/<uid>/<slug>.yaml..."
+    mkdir -p config
+    # rm-then-cp so a YAML deleted between backup and restore
+    # really does come back instead of merging old+new sets.
+    rm -rf config/bots
+    cp -r "${BACKUP_DIR}/config/bots" "config/bots"
 fi
 
 # Permissions — 600 on sensitive files, 700 on dirs. Best-

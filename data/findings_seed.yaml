@@ -3391,12 +3391,12 @@ findings:
 - finding_id: PT-v4-FS-007
   source_doc: pt-v4-fs-pentest
   severity: INFO
-  status: open
+  status: resolved
   title: No max-bots-per-user limit (potential disk-fill DoS for malicious users)
   description: |
     There is no hard cap on how many bots a single authenticated user can create. Each bot creates ~7 files (config, log, state, lock, manual_trigger, pid, ml results) plus DB rows. With rate-limit at 20 bot-creates/min, a malicious user could create ~28k bots/day. Per-bot disk footprint at idle is small (~few KB), but multiplied by 28k = ~140MB/day. Not exploitable without authentication and not a current threat (single-tenant), but worth limiting before SaaS launch. Suggested limit: configurable max_bots_per_user (default e.g. 50 for free tier, configurable per role). Also: log_size capping per bot (currently bot logs grow unbounded).
-  resolution_ref: null
-  notes: ""
+  resolution_ref: fix/pre-launch-hardening-cluster
+  notes: "Resolved 2026-05-04 — REVERTO_MAX_BOTS_PER_USER (default 10) enforced on POST /api/bots, /api/bots/{slug}/duplicate, /api/bots/import via _enforce_bot_quota in web/routes/bots.py. HTTP 429 with code=max_bots_per_user_reached. Phase 2 (per-role admin override UI) tracked separately."
 
 - finding_id: PT-v4-FS-008
   source_doc: pt-v4-fs-pentest
@@ -3475,12 +3475,12 @@ findings:
 - finding_id: PT-v4-NW-004
   source_doc: pt-v4-nw-pentest
   severity: MEDIUM
-  status: open
+  status: resolved
   title: No global request-body size limit (memory DoS via large POST)
   description: |
     _read_body_with_cap is only applied on bots-config endpoints (POST /api/bots, PUT config). Other endpoints — /auth/login, /api/admin/*, /api/dashboard/layout, /api/db/annotations, etc. — read the full body before Pydantic field-length checks fire. A 1GB POST to /auth/login allocates 1GB before Pydantic's max_length=512 rejects it. Caddy lacks request_body { max_size }. Memory-DoS amplifiable across IPs. Suggested fix: (a) Caddy global request_body { max_size 1MB } as defense-in-depth, plus (b) extend _read_body_with_cap to all body-accepting endpoints, or (c) FastAPI middleware that rejects oversized bodies before route handlers.
-  resolution_ref: null
-  notes: ""
+  resolution_ref: fix/pre-launch-hardening-cluster
+  notes: "Resolved 2026-05-04 — BodySizeLimitMiddleware in web/app.py caps every request body at REVERTO_MAX_REQUEST_BODY_BYTES (default 1 MiB) before auth runs. Caddy request_body{max_size 1MB} added to ops/caddy/Caddyfile as defence-in-depth Layer 2. Endpoint-specific _read_body_with_cap (64 KiB for bot config) keeps its tighter cap; the middleware is additive."
 
 - finding_id: PT-v4-NW-005
   source_doc: pt-v4-nw-pentest
@@ -3741,12 +3741,12 @@ findings:
 - finding_id: PT-v4-EI-004
   source_doc: pt-v4-ei-pentest
   severity: LOW
-  status: open
+  status: resolved
   title: state.json files and config/bots/ NOT in backup (NEW ANGLE on v26-14)
   description: |
     NEW ANGLE on existing finding v26-14 (DB + state.json dual-source). backup.sh captures DB + credentials + keys but NOT state.json files (logs/<uid>/<slug>/state.json) or bot configs (config/bots/<uid>/<slug>.yaml). On restore, the DB is re-hydrated but state.json files land back as whatever was on disk at restore time. Per-bot state (deals, balance, drawdown peak, DCA overrides) drifts with restored DB. Bot configs missing means a restored DB references bots whose config files don't exist on disk. Suggested fix: extend backup.sh to include logs/*/*.state.json + config/bots/ in the tar archive, OR document explicitly that state.json is engine-runtime state not part of backup contract (with operator-facing implications).
-  resolution_ref: null
-  notes: ""
+  resolution_ref: fix/pre-launch-hardening-cluster
+  notes: "Resolved 2026-05-04 — backup.sh now captures logs/<uid>/<slug>.state.json (via find -exec cp --parents) and config/bots/<uid>/<slug>.yaml (via cp -r). restore.sh extended symmetrically with pre-restore snapshot + restore-side cp -r merge. Operator path of state files is logs/<uid>/<slug>.state.json (one level deep, not the two-level layout suggested in the original finding)."
 
 - finding_id: PT-v4-EI-005
   source_doc: pt-v4-ei-pentest

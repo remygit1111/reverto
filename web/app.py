@@ -2062,6 +2062,163 @@ def current_request_id() -> str:
     return _request_id_ctx.get()
 
 
+# ── Global request-body size limit — PT-v4-NW-004 ──────────────────────────
+#
+# Audit PT-v4-NW-004 (MEDIUM, open) flagged that ``_read_body_with_cap``
+# in web/routes/bots.py only protects the bot-config endpoints. Every
+# OTHER POST endpoint (auth/login, admin/*, dashboard/layout, deals,
+# annotations, …) reads its request body unbounded — an authenticated
+# attacker (or accidental misconfigured client) can pin RAM by sending
+# a 200 MB JSON payload. The middleware below caps every request body
+# at ``REVERTO_MAX_REQUEST_BODY_BYTES`` (default 1 MiB) BEFORE auth
+# runs, so an oversized body is refused without the engine ever having
+# to allocate space for it. Endpoint-specific helpers like
+# ``_read_body_with_cap`` (64 KiB for bot config) keep their tighter
+# caps — the middleware is defence-in-depth above them, not a
+# replacement.
+_DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MiB
+
+
+def _max_request_body_bytes() -> int:
+    """Resolve the global body-size cap from
+    ``REVERTO_MAX_REQUEST_BODY_BYTES``. Read on each request so a
+    monkeypatched test sees the override without restarting the
+    process. Malformed / non-positive values fall back to the default
+    so a typo can't silently disable the cap.
+    """
+    raw = os.environ.get("REVERTO_MAX_REQUEST_BODY_BYTES")
+    if raw is None:
+        return _DEFAULT_MAX_REQUEST_BODY_BYTES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "REVERTO_MAX_REQUEST_BODY_BYTES=%r is not an integer — "
+            "falling back to default %d",
+            raw, _DEFAULT_MAX_REQUEST_BODY_BYTES,
+        )
+        return _DEFAULT_MAX_REQUEST_BODY_BYTES
+    if value <= 0:
+        logger.warning(
+            "REVERTO_MAX_REQUEST_BODY_BYTES=%d is non-positive — "
+            "falling back to default %d",
+            value, _DEFAULT_MAX_REQUEST_BODY_BYTES,
+        )
+        return _DEFAULT_MAX_REQUEST_BODY_BYTES
+    return value
+
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests whose body exceeds the global cap with HTTP 413.
+
+    Two paths, mirroring the validate-config helper in
+    ``web/routes/bots.py:_read_body_with_cap``:
+
+    * **Content-Length header present** — parse and refuse before
+      consuming the body. Malformed Content-Length is a 400 (matches
+      the existing helper's contract). The well-known ``Content-Length:
+      0`` short-circuits as a pass.
+    * **Content-Length absent** (chunked / Transfer-Encoding) — wrap
+      the ASGI ``receive`` callable so the byte counter trips inside
+      the route handler the moment the cap is crossed. Without this
+      a chunked client could still pin RAM by sending unbounded
+      chunks.
+
+    Methods without a body (GET, HEAD, OPTIONS, DELETE) skip both
+    paths so the middleware only touches mutating requests. Note
+    DELETE is treated as bodyless here — Reverto's DELETE endpoints
+    don't accept payloads today (audit-checked), and adding the body
+    cap would just slow down the safe path with no defensive value.
+
+    Order: registered AFTER (= outer of) AuthMiddleware so an
+    oversized body is refused without paying for an auth lookup.
+    The middleware itself does no DB or filesystem work — it's a
+    pure in-memory size check.
+    """
+
+    _BODYLESS_METHODS = {"GET", "HEAD", "OPTIONS", "DELETE"}
+
+    async def dispatch(self, request, call_next):
+        if request.method in self._BODYLESS_METHODS:
+            return await call_next(request)
+
+        cap = _max_request_body_bytes()
+
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                cl_int = int(content_length)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": "Invalid Content-Length"},
+                )
+            if cl_int > cap:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            f"Request body too large "
+                            f"({cl_int} > {cap} bytes)"
+                        ),
+                    },
+                )
+            # Content-Length within cap → no need to wrap receive.
+            # Endpoint-specific helpers (e.g. ``_read_body_with_cap``)
+            # may still impose a tighter limit further down.
+            return await call_next(request)
+
+        # No Content-Length → streaming/chunked. Wrap ``receive`` so
+        # the route handler's first ``await request.body()`` (or
+        # ``async for chunk in request.stream()``) trips the cap as
+        # soon as the running byte count crosses it.
+        original_receive = request.receive
+        accumulated = 0
+
+        async def _capped_receive():
+            nonlocal accumulated
+            message = await original_receive()
+            if message["type"] != "http.request":
+                return message
+            body_chunk = message.get("body", b"") or b""
+            accumulated += len(body_chunk)
+            if accumulated > cap:
+                # Synthesise a "client disconnected" message so the
+                # downstream handler short-circuits, and surface a 413
+                # by raising; the surrounding except block converts.
+                raise _RequestBodyTooLarge(accumulated, cap)
+            return message
+
+        # Replace the request's receive callable. Starlette's Request
+        # exposes ``_receive`` as the source of every body read, so
+        # this swap is the canonical extension point.
+        request._receive = _capped_receive  # type: ignore[attr-defined]
+
+        try:
+            return await call_next(request)
+        except _RequestBodyTooLarge as exc:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": (
+                        f"Request body too large "
+                        f"(>{exc.cap} bytes, observed {exc.observed})"
+                    ),
+                },
+            )
+
+
+class _RequestBodyTooLarge(Exception):
+    """Internal sentinel raised by the wrapped ASGI ``receive`` so the
+    surrounding middleware can map it to a 413 response. Not exposed
+    via the public API."""
+
+    def __init__(self, observed: int, cap: int) -> None:
+        super().__init__(f"body {observed} > cap {cap}")
+        self.observed = observed
+        self.cap = cap
+
+
 class RequestIdMiddleware(BaseHTTPMiddleware):
     """Assign a 12-char request-id to every HTTP request. If the
     caller sent ``X-Request-Id``, honour it so an upstream proxy /
@@ -2730,18 +2887,25 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 # Middleware order (Starlette wraps last-added = outermost):
-#   add_middleware(AuthMiddleware)            → runs innermost
-#   add_middleware(SecurityHeadersMiddleware) → runs middle
-#   add_middleware(RequestIdMiddleware)       → runs outermost
-# Request flow:  RequestId → SecurityHeaders → Auth → route handler
-# Response flow: route handler → Auth → SecurityHeaders → RequestId
+#   add_middleware(AuthMiddleware)             → runs innermost
+#   add_middleware(CSRFMiddleware)
+#   add_middleware(SecurityHeadersMiddleware)  → runs middle
+#   add_middleware(BodySizeLimitMiddleware)
+#   add_middleware(RequestIdMiddleware)        → runs outermost
+# Request flow:  RequestId → BodySizeLimit → SecurityHeaders →
+#                CSRF → Auth → route handler
+# Response flow: route handler → Auth → CSRF → SecurityHeaders →
+#                BodySizeLimit → RequestId
 # RequestId sits outermost so the X-Request-Id header lands on
 # *every* response (including auth 401/403 short-circuits) and so
 # the contextvar is populated before any middleware's log lines
-# reference it.
+# reference it. BodySizeLimit sits OUTSIDE Auth/CSRF so an
+# oversized body is refused (PT-v4-NW-004) without paying for the
+# auth lookup or token validation.
 app.add_middleware(AuthMiddleware)
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(RequestIdMiddleware)
 
 # Attach the request-id filter to the root logger + every existing
