@@ -151,3 +151,114 @@ def test_manifest_schema_version_for_fresh_db(isolated_reverto_root):
         f"expected Schema version=0 (fresh DB default), got "
         f"{match.group(1)!r}; manifest:\n{manifest_text}"
     )
+
+
+# ── PT-v4-EI-004 — backup must capture per-bot state + configs ──────────────
+
+
+def _seed_state_files(reverto_root: Path) -> list[Path]:
+    """Create representative ``logs/<uid>/<slug>.state.json`` files
+    so the backup test can verify they survive into the tarball.
+    Returns the list of seeded source paths (relative to root) for
+    cross-reference in assertions.
+    """
+    sources: list[Path] = []
+    for uid in (1, 7):
+        user_dir = reverto_root / "logs" / str(uid)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        state_path = user_dir / f"bot_a_{uid}.state.json"
+        state_path.write_text(
+            '{"bot_name": "bot_a_'
+            + str(uid)
+            + '", "balance_btc": 0.1}\n'
+        )
+        sources.append(state_path)
+    return sources
+
+
+def _seed_bot_yamls(reverto_root: Path) -> list[Path]:
+    """Create representative ``config/bots/<uid>/<slug>.yaml`` files
+    matching the production layout."""
+    sources: list[Path] = []
+    for uid in (1, 7):
+        bots_dir = reverto_root / "config" / "bots" / str(uid)
+        bots_dir.mkdir(parents=True, exist_ok=True)
+        yaml_path = bots_dir / f"bot_a_{uid}.yaml"
+        yaml_path.write_text("bot:\n  name: bot_a_" + str(uid) + "\n")
+        sources.append(yaml_path)
+    return sources
+
+
+def test_backup_includes_state_json_files(isolated_reverto_root):
+    """PT-v4-EI-004: per-bot state.json files must land in the backup
+    tarball at the same logs/<uid>/<slug>.state.json layout so a
+    restore can drop them straight back into the source tree."""
+    db_path = isolated_reverto_root / "logs" / "reverto.db"
+    _seed_db(db_path, schema_version=4)
+    seeded = _seed_state_files(isolated_reverto_root)
+
+    backup_dir = _run_backup(isolated_reverto_root)
+
+    # Each seeded state file must exist under the backup at the same
+    # relative path. ``cp --parents`` in backup.sh preserves the
+    # logs/<uid>/ structure inside BACKUP_DIR.
+    for src in seeded:
+        rel = src.relative_to(isolated_reverto_root)
+        assert (backup_dir / rel).exists(), (
+            f"backup missing {rel}; backup tree:\n"
+            + "\n".join(
+                str(p.relative_to(backup_dir))
+                for p in backup_dir.rglob("*") if p.is_file()
+            )
+        )
+        # Content round-trips byte-for-byte.
+        assert (backup_dir / rel).read_text() == src.read_text()
+
+
+def test_backup_includes_config_bots_dir(isolated_reverto_root):
+    """PT-v4-EI-004: config/bots/<uid>/<slug>.yaml must land in the
+    backup so a restored DB doesn't reference YAML files that aren't
+    on disk."""
+    db_path = isolated_reverto_root / "logs" / "reverto.db"
+    _seed_db(db_path, schema_version=4)
+    seeded = _seed_bot_yamls(isolated_reverto_root)
+
+    backup_dir = _run_backup(isolated_reverto_root)
+
+    backed_up_bots = backup_dir / "config" / "bots"
+    assert backed_up_bots.is_dir(), (
+        "config/bots/ missing from backup; backup tree:\n"
+        + "\n".join(
+            str(p.relative_to(backup_dir))
+            for p in backup_dir.rglob("*") if p.is_file()
+        )
+    )
+    for src in seeded:
+        rel = src.relative_to(isolated_reverto_root / "config")
+        assert (backup_dir / "config" / rel).exists(), (
+            f"backup missing config/{rel}"
+        )
+        assert (backup_dir / "config" / rel).read_text() == src.read_text()
+
+
+def test_backup_skips_state_section_when_no_bots(isolated_reverto_root):
+    """A fresh install has no logs/<uid>/ subdirs and no config/bots/
+    directory. The backup must still succeed — the new EI-004 logic
+    short-circuits both copies and produces a backup with just the DB
+    + manifest, exactly as before. Regression guard so a future
+    refactor doesn't make the new copies mandatory."""
+    db_path = isolated_reverto_root / "logs" / "reverto.db"
+    _seed_db(db_path, schema_version=4)
+
+    backup_dir = _run_backup(isolated_reverto_root)
+    assert (backup_dir / "reverto.db").exists()
+    assert (backup_dir / "MANIFEST.txt").exists()
+    # No state.json files → no logs/<uid>/ subdirs in backup tree.
+    state_jsons = list(backup_dir.rglob("*.state.json"))
+    assert state_jsons == [], (
+        f"unexpected state.json files in fresh-install backup: "
+        f"{state_jsons}"
+    )
+    assert not (backup_dir / "config" / "bots").exists(), (
+        "config/bots/ should not exist in backup when source has none"
+    )

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +66,81 @@ logger = logging.getLogger(__name__)
 # Content-Length BEFORE awaiting the JSON body so oversized payloads
 # never land in memory.
 MAX_CONFIG_BODY_BYTES = 64 * 1024
+
+# Per-user bot quota — PT-v4-FS-007. Default 10 is well above what a
+# real operator runs in normal use (the production baseline today is
+# 1 active bot per user) but low enough that an authenticated user
+# can't fill the disk with thousands of YAMLs + state files. Enforced
+# uniformly on every bot-creation endpoint (POST /api/bots, the
+# duplicate path, and the import path). Admin role does NOT bypass
+# the cap in this revision — Phase 2 (admin UI for per-role limits)
+# tracks the override story separately.
+_DEFAULT_MAX_BOTS_PER_USER = 10
+
+
+def _max_bots_per_user() -> int:
+    """Resolve the per-user bot cap from ``REVERTO_MAX_BOTS_PER_USER``.
+
+    Reads the env var on each call so tests using ``monkeypatch.setenv``
+    see the new value without restarting the process. A malformed or
+    non-positive value falls back to the module default rather than
+    silently disabling the cap.
+    """
+    raw = os.environ.get("REVERTO_MAX_BOTS_PER_USER")
+    if raw is None:
+        return _DEFAULT_MAX_BOTS_PER_USER
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "REVERTO_MAX_BOTS_PER_USER=%r is not an integer — "
+            "falling back to default %d",
+            raw, _DEFAULT_MAX_BOTS_PER_USER,
+        )
+        return _DEFAULT_MAX_BOTS_PER_USER
+    if value <= 0:
+        logger.warning(
+            "REVERTO_MAX_BOTS_PER_USER=%d is non-positive — "
+            "falling back to default %d",
+            value, _DEFAULT_MAX_BOTS_PER_USER,
+        )
+        return _DEFAULT_MAX_BOTS_PER_USER
+    return value
+
+
+async def _enforce_bot_quota(user_id: int) -> None:
+    """Refuse the request with HTTP 429 when ``user_id`` is at or over
+    the per-user bot cap. Counts the user's bots via the existing
+    registry helper; no dedicated count() helper is added because this
+    is the only call site and registry.all(user_id=...) already returns
+    a per-user list.
+
+    HTTP 429 (Too Many Requests) is the right semantic — the operator
+    is trying to create more of a bounded user-action resource. 403
+    would also work, but 429 telegraphs "quota" instead of
+    "permission" and matches the existing ratelimit-style error path
+    that the SPA already understands.
+    """
+    cap = _max_bots_per_user()
+    user_bots = await registry.all(user_id=user_id)
+    current = len(user_bots)
+    if current >= cap:
+        # String detail (not dict) so the SPA's existing
+        # ``err.textContent = body.detail`` rendering shows a
+        # readable message instead of "[object Object]". If clients
+        # ever need programmatic quota error handling, switch to a
+        # custom exception handler that translates a detail dict to a
+        # user-readable string + sets an X-Quota-Code header — keeps
+        # the human-readable path simple while exposing a machine
+        # path out-of-band.
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Bot limit reached. You have {current} bots; "
+                f"the maximum is {cap}."
+            ),
+        )
+
 
 router = APIRouter(tags=["bots"])
 
@@ -428,7 +504,13 @@ async def create_bot(
     gigantic YAML payload is the same attack surface here — every
     authenticated endpoint that ingests config JSON needs the
     guard. Audit v24/v25 flagged this as MEDIUM #3.
+
+    Per-user quota cap (PT-v4-FS-007) runs before body parsing so a
+    user already at the limit gets a fast 429 instead of paying for
+    the body read + Pydantic validate.
     """
+    await _enforce_bot_quota(user.id)
+
     body_bytes = await _read_body_with_cap(request, MAX_CONFIG_BODY_BYTES)
     body = _parse_json_object_body(body_bytes)
 
@@ -610,7 +692,13 @@ async def duplicate_bot(
 ):
     """Duplicate a bot config to a new slug. Request body is a JSON
     object with ``new_slug``. State, deals, orders, and credentials are
-    NOT copied — the duplicate starts fresh."""
+    NOT copied — the duplicate starts fresh.
+
+    Quota check (PT-v4-FS-007) runs before reading the body — at-cap
+    users can't sneak past via duplicate.
+    """
+    await _enforce_bot_quota(user.id)
+
     body_bytes = await _read_body_with_cap(request, MAX_CONFIG_BODY_BYTES)
     body = _parse_json_object_body(body_bytes)
     new_slug = str(body.get("new_slug", "")).strip()
@@ -682,7 +770,13 @@ async def import_bot(
     ``?slug=`` query param so the operator can pick a non-conflicting
     name at import time. Full Pydantic schema validation runs before
     anything hits disk — bad YAML or schema violations are refused
-    without side effects."""
+    without side effects.
+
+    Quota check (PT-v4-FS-007) runs before reading the body so import
+    can't be used to bypass the per-user cap on bot creation.
+    """
+    await _enforce_bot_quota(user.id)
+
     target_slug = request.query_params.get("slug", "").strip()
     if not _BOT_SLUG_RE.match(target_slug):
         raise HTTPException(

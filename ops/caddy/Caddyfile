@@ -103,6 +103,17 @@ app.reverto.bot {
 		-Server
 	}
 
+	# Defence-in-depth body-size cap (PT-v4-NW-004). The FastAPI
+	# BodySizeLimitMiddleware caps every request at 1 MiB before
+	# routing; this Caddy directive rejects oversized bodies one
+	# layer earlier so a 200 MB upload never reaches the Python
+	# process. 1MB matches the FastAPI default
+	# (REVERTO_MAX_REQUEST_BODY_BYTES) — keep the two in sync.
+	# Operator override: bump both Caddy AND the env-var together.
+	request_body {
+		max_size 1MB
+	}
+
 	reverse_proxy localhost:8080 {
 		header_up X-Forwarded-Proto https
 		header_up X-Forwarded-For {client_ip}
