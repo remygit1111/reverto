@@ -19,7 +19,10 @@ from config.config_loader import load_bot_config
 from config.models import Mode
 from core import paths
 from core.file_lock import LockTimeoutError, exclusive_lock
-from core.logging_setup import parse_log_level_env
+from core.logging_setup import (
+    configure_bot_file_logging,
+    parse_log_level_env,
+)
 from exchanges.public_exchange import PublicExchange
 from notifications.telegram import TelegramNotifier
 from paper.paper_engine import PaperEngine
@@ -107,6 +110,14 @@ def main() -> None:
     pid_file = paths.bot_pid_path(user_id, slug)
     state_file = paths.bot_state_path(user_id, slug)
     manual_trigger_file = paths.bot_manual_trigger_path(user_id, slug)
+    log_file = paths.bot_log_path(user_id, slug)
+
+    # PT-v4-FS-008 — install a RotatingFileHandler at the canonical
+    # log path now that slug + user_id are resolved. Replaces the
+    # module-level basicConfig handler so we don't double-write
+    # via the portal's stdout-redirect path. See
+    # ``configure_bot_file_logging`` for the trade-off discussion.
+    configure_bot_file_logging(log_file)
 
     # Write PID file early so the portal's start_bot() polling sees it
     # within the 3s starting-slot window. atexit removes it on a clean
