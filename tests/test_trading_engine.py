@@ -4,6 +4,10 @@ from unittest.mock import MagicMock
 from datetime import datetime, UTC
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.inverse_perp_math import (
+    compute_sl_target_price,
+    compute_tp_target_price,
+)
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from paper.paper_engine import PaperEngine
 
@@ -47,29 +51,41 @@ def _engine(sl_type="fixed", sl_pct=6.0, tp_pct=3.0, max_orders=5,
 
 
 class TestTakeProfit:
+    # pt-041: TP target derivation switched from linear (avg * 1.03)
+    # to inverse-perp (avg / 0.97) at tp_pct=3 %. Tests now derive
+    # the trigger price via the same helper the engine uses so
+    # they stay correct under any future helper revision.
+
     def test_tp_fires_at_target(self):
         e = _engine(tp_pct=3.0); d = _deal(80000.0)
         e.state.open_deal(d)
-        e._check_tp(d, 80000.0 * 1.03)
+        target = compute_tp_target_price(80000.0, 3.0, "long")
+        e._check_tp(d, target)
         assert d.id not in e.state.open_deals
         assert e.state.closed_deals[0].close_reason == "tp"
 
     def test_tp_no_fire_below_target(self):
         e = _engine(tp_pct=3.0); d = _deal(80000.0)
         e.state.open_deal(d)
+        # 80000 * 1.02 = 81600 sits below the post-fix target
+        # (~82474) so this path stays valid regardless of the
+        # linear-vs-inverse fix; pin literal to keep the test
+        # easy to read at a glance.
         e._check_tp(d, 80000.0 * 1.02)
         assert d.id in e.state.open_deals
 
     def test_tp_pnl_positive(self):
         e = _engine(tp_pct=3.0); d = _deal(80000.0)
         e.state.open_deal(d)
-        e._check_tp(d, 80000.0 * 1.03)
+        target = compute_tp_target_price(80000.0, 3.0, "long")
+        e._check_tp(d, target)
         assert e.state.closed_deals[0].pnl_btc > 0
 
     def test_tp_notifier_called(self):
         e = _engine(tp_pct=3.0); d = _deal(80000.0)
         e.state.open_deal(d)
-        e._check_tp(d, 80000.0 * 1.03)
+        target = compute_tp_target_price(80000.0, 3.0, "long")
+        e._check_tp(d, target)
         e._notify_queue.join()
         e.notifier.notify_take_profit.assert_called_once()
 
@@ -77,7 +93,7 @@ class TestTakeProfit:
         e = _engine(tp_pct=3.0); d = _deal(80000.0)
         d.orders.append(_order(78000.0, 0.002, "dca", 2))
         e.state.open_deal(d)
-        target = d.avg_entry_price * 1.03
+        target = compute_tp_target_price(d.avg_entry_price, 3.0, "long")
         e._check_tp(d, target - 1)
         assert d.id in e.state.open_deals
         e._check_tp(d, target)
@@ -137,7 +153,10 @@ class TestTrailingStopLoss:
         e = _engine(sl_type="trailing", sl_pct=6.0); d = _deal(80000.0)
         e.state.open_deal(d)
         e._check_sl(d, 90000.0)                        # peak = 90000
-        sl = 90000.0 * (1 - 0.06)                      # = 84600
+        # pt-041: trailing SL line is now derived inversely from
+        # the peak — 90 000 / 1.06 ≈ 84 905.66 instead of the old
+        # linear 90 000 × 0.94 = 84 600.
+        sl = compute_sl_target_price(90000.0, 6.0, "long")
         e._check_sl(d, sl + 1)
         assert d.id in e.state.open_deals               # nog open
         e._check_sl(d, sl)
@@ -234,7 +253,7 @@ class TestNoDoubleClose:
     def test_tp_before_sl(self):
         e = _engine(sl_type="fixed", sl_pct=6.0, tp_pct=3.0)
         d = _deal(80000.0); e.state.open_deal(d)
-        price = 80000.0 * 1.03
+        price = compute_tp_target_price(80000.0, 3.0, "long")
         e._check_tp(d, price)
         assert len(e.state.closed_deals) == 1
         assert e.state.closed_deals[0].close_reason == "tp"
@@ -269,8 +288,9 @@ class TestWickSimulation:
         assert d.id not in e.state.open_deals
         closed = e.state.closed_deals[0]
         assert closed.close_reason == "tp"
-        # Fill capped at the target, not at the wick high.
-        target = 80000.0 * 1.03
+        # Fill capped at the post-fix inverse-perp target, not at
+        # the wick high.
+        target = compute_tp_target_price(80000.0, 3.0, "long")
         assert abs(closed.close_price - target) < 0.01
 
     def test_sl_fires_on_current_tick_below_stop(self):
@@ -305,7 +325,7 @@ class TestWickSimulation:
     def test_tp_normal_tick_path_unchanged(self):
         e = _engine(tp_pct=3.0); d = _deal(80000.0); e.state.open_deal(d)
         # No tracker updates; tick itself crosses target.
-        e._check_tp(d, 80000.0 * 1.03)
+        e._check_tp(d, compute_tp_target_price(80000.0, 3.0, "long"))
         assert d.id not in e.state.open_deals
 
     def test_trailing_peak_updates_via_wick_high(self):
@@ -384,8 +404,9 @@ class TestPerDealWickTracking:
         """Direct tick-hit path — the tracker is updated to the tick
         value, which is also at target. TP fires cleanly."""
         e = _engine(tp_pct=3.0); d = _deal(100.0); e.state.open_deal(d)
-        e._update_deal_wick_trackers(103.0)
-        e._check_tp(d, 103.0)
+        target = compute_tp_target_price(100.0, 3.0, "long")
+        e._update_deal_wick_trackers(target)
+        e._check_tp(d, target)
         assert d.id not in e.state.open_deals
         assert e.state.closed_deals[0].close_reason == "tp"
 
@@ -399,8 +420,9 @@ class TestPerDealWickTracking:
         assert d.id not in e.state.open_deals
         closed = e.state.closed_deals[0]
         assert closed.close_reason == "tp"
-        # Fill capped at target, not at the tracked spike.
-        assert closed.close_price == pytest.approx(103.0)
+        # Fill capped at the post-fix inverse-perp target.
+        target = compute_tp_target_price(100.0, 3.0, "long")
+        assert closed.close_price == pytest.approx(target)
 
     def test_sl_ignores_pre_fix_tracker_low_memory(self):
         """Post-fix SL decision is tick-only (see ``_check_sl`` comment

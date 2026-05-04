@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backtest.backtest_engine import BacktestEngine, BacktestCandle
 from backtest.backtest_report import BacktestResult
+from core.inverse_perp_math import compute_tp_target_price
 
 
 def _candle(ts, o, h, lo, c, v=100.0):
@@ -126,9 +127,14 @@ class TestEngineTP:
         assert len(tp_deals) >= 1
 
     def test_tp_price_is_correct(self):
-        """TP sluit op tp_price, niet op candle high."""
+        """TP sluit op tp_price, niet op candle high.
+
+        pt-041: post-fix the backtest TP target is derived inversely
+        (avg / (1 - tp_pct/100)), matching paper-engine + the
+        ``calculate_pnl`` realization formula. The candle high needs
+        to be at least the new (higher) target for TP to fire."""
         entry_price = 80000.0
-        tp_price    = entry_price * 1.03
+        tp_price    = compute_tp_target_price(entry_price, 3.0, "long")
 
         flat      = _make_candles([entry_price] * 79)
         tp_candle = _candle(
