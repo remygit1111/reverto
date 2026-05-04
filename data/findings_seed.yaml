@@ -19,7 +19,7 @@
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
 # pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
-# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11, pt-v4-mk=8, pt-v4-ei=10. Total: 352.
+# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11, pt-v4-mk=8, pt-v4-ei=10. Total: 353.
 #
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
@@ -2220,6 +2220,24 @@ findings:
     Single ticker at start of tick. Paper-mode fill price is snapshot price (zero slippage). Live-mode exchange fill at current price (real slippage 0.05-0.30%).
   resolution_ref: null
   notes: ""
+
+- finding_id: pt-064
+  source_doc: architecture-investigation-tp-dca-correctness
+  severity: MEDIUM
+  status: open
+  title: Exit math (_check_tp/_check_sl/_check_dca) ignores deal.side - short bots fire on adverse moves
+  description: |
+    Paper engine's exit-decision functions hardcode long-direction price math.
+    `_check_tp`, `_check_sl`, and `_check_dca` compare `current_price >= target`
+    (long-style) without consulting `deal.side`. Short bots open correctly via
+    paper_engine.py:1280-1285 but their exit logic uses wrong-direction comparisons.
+    Result: a short bot's TP would fire on adverse price moves (price rising = TP
+    triggers) instead of favorable moves (price falling = TP should trigger).
+  notes: |
+    Currently latent: short trading is gated in the wizard UI (no short-direction
+    option exposed to users). Becomes acute when short feature is enabled. Must be
+    fixed OR explicitly gated at API level before live trading rollout includes shorts.
+    See docs/architecture-investigation-tp-dca-correctness.md Part 6.3 for full analysis.
 
 - finding_id: pt-041
   source_doc: production-pentest-v2
