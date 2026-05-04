@@ -4525,7 +4525,7 @@ const NB_INDICATOR_DESCRIPTIONS = {
     "QFL Base Scanner. Tracks consolidation lows that were rejected fast " +
     "and signals when price returns to or cracks a validated base.",
   ASAP:
-    "Opens a deal immediately on the next tick, ignoring all other entry conditions.",
+    "Opens a new deal immediately when the previous one closes, without waiting for entry indicators.",
 };
 
 let nbState = null;
