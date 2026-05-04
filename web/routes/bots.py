@@ -608,6 +608,24 @@ async def delete_bot(
     actor: str = Depends(_request_actor),
     user: User = Depends(_request_user),
 ):
+    """Hard-delete a bot. PT-v4-FS-001: the YAML used to be the only
+    thing removed; state files, logs, sentinels, ML results, and DB
+    rows were left behind, causing the engine to rehydrate from old
+    state when a bot was recreated under the same slug. ``purge_bot``
+    now wipes everything bot-scoped EXCEPT the YAML (caller's
+    responsibility to unlink last).
+
+    Order of operations:
+      1. Resolve registry entry, refuse if running or missing.
+      2. ``purge_bot`` removes bot-scoped state (DB transactional,
+         filesystem best-effort).
+      3. Unlink YAML — only after purge — so a partial-purge failure
+         leaves the bot re-deletable for retry.
+      4. Invalidate registry, emit audit event with purge summary.
+
+    The route returns the purge summary in the response body so the
+    SPA can surface "removed N files, M DB rows" to the operator.
+    """
     bot = await registry.get(user.id, slug)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found")
@@ -618,10 +636,26 @@ async def delete_bot(
     path = _bot_yaml_path(user.id, slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="YAML not found")
+
+    # YAML-last principle: if purge crashes or partially fails, the
+    # YAML stays so the operator can retry the DELETE call.
+    purge_summary = paths.purge_bot(user.id, slug)
+    if purge_summary["files_failed"]:
+        # Log at WARNING so an operator looking at portal.log post-
+        # delete can see what didn't get cleaned. The deletion itself
+        # still proceeds — these are typically permission glitches
+        # that don't justify failing the whole call.
+        logger.warning(
+            "delete_bot: %d file(s) could not be removed during purge "
+            "(user=%d slug=%s): %s",
+            len(purge_summary["files_failed"]), user.id, slug,
+            purge_summary["files_failed"],
+        )
+
     path.unlink()
     await registry.invalidate()
     _audit("bot_delete", slug, actor, user_id=user.id)
-    return {"ok": True, "slug": slug}
+    return {"ok": True, "slug": slug, "purged": purge_summary}
 
 
 # ── Import / Export / Duplicate ─────────────────────────────────────────────
