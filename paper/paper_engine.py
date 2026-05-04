@@ -25,6 +25,10 @@ from core.drawdown_guard import DrawdownGuard, DrawdownGuardConfig
 from core import deal_store, paths
 from core.database import init_db as _init_db
 from core.ids import DEAL_ID_RE
+from core.inverse_perp_math import (
+    compute_sl_target_price,
+    compute_tp_target_price,
+)
 
 # Backwards-compatible aliases for the deal-serialisation helpers. Tests
 # and other external callers import these from paper.paper_engine; they
@@ -1533,24 +1537,41 @@ class PaperEngine:
             tp_pct = self.config.take_profit.target_pct
 
         avg          = deal.avg_entry_price
-        target_price = avg * (1 + tp_pct / 100)
+        # pt-041: inverse-perp target derivation, symmetric with the
+        # ``calculate_pnl`` formula in paper/paper_state.py. Pre-fix
+        # the linear shape ``avg * (1 + tp_pct/100)`` paired with
+        # inverse PnL realization yielded ``tp_pct/(1+tp_pct/100)``
+        # realized — e.g. 5 % configured TP delivered ~4.76 %.
+        # pt-064: respect deal.side so short bots compute targets
+        # below entry (the long formula put them above entry, which
+        # is the LOSS direction for a short).
+        target_price = compute_tp_target_price(avg, tp_pct, deal.side)
 
-        # Per-deal wick-high: max TICK-PRICE observed since THIS deal
-        # opened, folded with the current tick. Pre-fix this read the
-        # forming candle's full wick via ``_wick_high_low(price)`` —
-        # which included ticks from BEFORE the deal was opened and
-        # caused spurious TP fires on pre-existing wicks. The tracker
-        # is seeded to ``avg_entry_price`` at deal-open and updated by
-        # ``_update_deal_wick_trackers`` on every tick; ``max(..., price)``
-        # guarantees the comparison always includes the current tick
-        # regardless of whether the caller drove the tracker first
-        # (monitor loop: yes; unit-test harness: usually no).
+        # Per-deal wick-high / wick-low: extreme TICK-PRICE observed
+        # since THIS deal opened, folded with the current tick. Pre-
+        # fix (pre-pt-041 era) this read the forming candle's full
+        # wick via ``_wick_high_low(price)`` which included ticks
+        # from BEFORE the deal was opened and caused spurious TP
+        # fires on pre-existing wicks. The tracker is seeded to
+        # ``avg_entry_price`` at deal-open and updated by
+        # ``_update_deal_wick_trackers`` on every tick; folding with
+        # the current tick guarantees the comparison includes the
+        # latest price regardless of whether the caller drove the
+        # tracker first (monitor loop: yes; unit-test harness:
+        # usually no).
         wick_high = max(deal._wick_high_since_open, price)
-        wick_hit = (
-            getattr(self.config, "use_wick_simulation", True)
-            and wick_high >= target_price
-        )
-        tick_hit = price >= target_price
+        wick_low = min(deal._wick_low_since_open, price)
+        wick_sim_on = getattr(self.config, "use_wick_simulation", True)
+        # pt-064: long TP fires on price RISING to the target above
+        # entry; short TP fires on price FALLING to the target below
+        # entry. Wick-based hit uses the high (long) or low (short)
+        # extreme observed since deal-open.
+        if deal.side == "long":
+            wick_hit = wick_sim_on and wick_high >= target_price
+            tick_hit = price >= target_price
+        else:
+            wick_hit = wick_sim_on and wick_low <= target_price
+            tick_hit = price <= target_price
 
         if wick_hit or tick_hit:
             bot_tf = self.config.timeframe
@@ -1589,9 +1610,13 @@ class PaperEngine:
                 exit_trigger=exit_trigger,
             )
             if wick_hit and not tick_hit:
+                # pt-064: emit the relevant extreme — high for longs,
+                # low for shorts — so the log line reflects the side.
+                wick_extreme = wick_high if deal.side == "long" else wick_low
+                wick_label = "high" if deal.side == "long" else "low"
                 logger.info(
                     f"TP hit (wick): {deal.id} at ${fill_price:,.2f} "
-                    f"(wick high: ${wick_high:,.2f}) "
+                    f"(wick {wick_label}: ${wick_extreme:,.2f}) "
                     f"PnL: {pnl_btc:+.6f} BTC (fee {fee:.8f})"
                 )
             else:
@@ -1694,34 +1719,58 @@ class PaperEngine:
         # hit decision.
         wick_sim_on = getattr(self.config, "use_wick_simulation", True)
         wick_high = max(deal._wick_high_since_open, price) if wick_sim_on else price
+        wick_low_tracker = (
+            min(deal._wick_low_since_open, price) if wick_sim_on else price
+        )
 
+        # pt-041 + pt-064: SL target uses inverse-perp math AND
+        # respects ``deal.side``. For a long, peak rises with price
+        # and SL trails BELOW the peak; for a short, the
+        # mirror-image "trough" tracks the lowest tick and SL trails
+        # ABOVE the trough. ``_peak_price`` is overloaded to mean
+        # "extreme adverse-favourable price" — for longs the running
+        # high (used as the trailing-peak), for shorts the running
+        # low. Naming stays for state-file backward compat.
         if sl_type == "trailing":
-            # Initialize peak on first tick after deal opens.
             if deal._peak_price == 0.0:
                 deal._peak_price = price
-            # Trailing peak only rises from wicks observed during the
-            # deal's lifetime — pre-fix it was allowed to jump to the
-            # forming candle's full wick-high, which could be a wick
-            # from before the deal opened.
-            new_peak = max(deal._peak_price, wick_high)
-            if wick_high > price and new_peak > deal._peak_price:
-                logger.debug(
-                    "Trailing peak updated via since-open wick: $%.2f (tick: $%.2f)",
-                    wick_high, price,
-                )
-            deal._peak_price = new_peak
-            sl_price = deal._peak_price * (1 - sl_pct / 100)
+            if deal.side == "long":
+                new_peak = max(deal._peak_price, wick_high)
+                if wick_high > price and new_peak > deal._peak_price:
+                    logger.debug(
+                        "Trailing peak updated via since-open wick: "
+                        "$%.2f (tick: $%.2f)",
+                        wick_high, price,
+                    )
+                deal._peak_price = new_peak
+            else:  # short
+                new_peak = min(deal._peak_price, wick_low_tracker)
+                if wick_low_tracker < price and new_peak < deal._peak_price:
+                    logger.debug(
+                        "Trailing trough updated via since-open wick: "
+                        "$%.2f (tick: $%.2f)",
+                        wick_low_tracker, price,
+                    )
+                deal._peak_price = new_peak
+            sl_price = compute_sl_target_price(
+                deal._peak_price, sl_pct, deal.side,
+            )
         else:
-            sl_price = deal.avg_entry_price * (1 - sl_pct / 100)
+            sl_price = compute_sl_target_price(
+                deal.avg_entry_price, sl_pct, deal.side,
+            )
 
-        # SL hit-check: tick-only, no tracker.low memory (see comment
-        # above on why tracker.low is anachronistic for trailing SL).
-        # ``wick_hit`` is synthesised False for logging-shape
-        # compatibility with the rest of the function — there is no
-        # between-poll wick fill in the new model.
+        # SL hit-check: tick-only, no tracker memory (see comment
+        # above on why tracker memory is anachronistic for trailing
+        # SL). ``wick_hit`` is synthesised False for logging-shape
+        # compatibility — there is no between-poll wick fill in the
+        # post-r1-067 model.
         wick_hit = False
         wick_low = price
-        tick_hit = price <= sl_price
+        if deal.side == "long":
+            tick_hit = price <= sl_price
+        else:
+            tick_hit = price >= sl_price
 
         if wick_hit or tick_hit:
             # Same fill semantics as TP: wick-only fills cap at the SL
@@ -1775,9 +1824,29 @@ class PaperEngine:
         step = self.config.dca.order_spacing_pct * (
             self.config.dca.step_scale ** deal.dca_count
         )
+        # Spacing math stays as the long-direction linear formula here
+        # by operator decision (see PR description: DCA grid spacing
+        # generalisation to inverse / short is tracked separately).
+        # The pt-064 fix below is only about the *comparison*: a
+        # short bot would look for price RISING above a level, not
+        # falling below. The short branch will produce structurally
+        # incorrect threshold prices until the spacing math is
+        # generalised — the wizard UI continues to gate short-
+        # direction selection so this branch is unreachable from
+        # operator-driven code paths today.
         next_dca_price   = last_order_price * (1 - step / 100)
 
-        if price <= next_dca_price:
+        if deal.side == "long":
+            triggered = price <= next_dca_price
+        else:
+            # Short fallback: mirror the threshold above the last
+            # order price so the comparison is at least directionally
+            # correct. Functional correctness depends on the spacing
+            # math which is out of scope for this PR.
+            next_dca_price = last_order_price * (1 + step / 100)
+            triggered = price >= next_dca_price
+
+        if triggered:
             multiplier = self.config.dca.multiplier ** deal.dca_count
             dca_size   = round(self.config.dca.base_order_size * multiplier, 8)
 
