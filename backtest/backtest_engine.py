@@ -12,6 +12,10 @@ if TYPE_CHECKING:
     from backtest.backtest_report import BacktestResult
 
 from config.models import BotConfig
+from core.inverse_perp_math import (
+    compute_sl_target_price,
+    compute_tp_target_price,
+)
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from strategies.indicator_engine import IndicatorEngine
 
@@ -220,7 +224,16 @@ class BacktestEngine:
         price_enabled = getattr(tp_config, 'price_enabled', True)
 
         price_hit = False
-        tp_price = avg * (1 + tp_config.target_pct / 100)
+        # pt-041: inverse-perp target derivation, symmetric with the
+        # paper engine. Backtest hardcodes ``side="long"`` at deal-
+        # open (line below) so the side-aware branch in the helper
+        # collapses to the long formula here, but using the helper
+        # keeps the two engines drift-resistant: a future short-
+        # backtest path would just need its deals tagged ``"short"``
+        # and the math follows.
+        tp_price = compute_tp_target_price(
+            avg, tp_config.target_pct, deal.side,
+        )
         if tp_enabled and price_enabled and candle.high >= tp_price:
             price_hit = True
 
@@ -262,14 +275,19 @@ class BacktestEngine:
 
         sl_pct = self.config.stop_loss.pct
 
+        # pt-041: inverse-perp SL math via the shared helper. Backtest
+        # is long-only today (deal.side == "long" at line below) so
+        # this collapses to ``avg / (1 + sl_pct/100)``.
         if self.config.stop_loss.type == "trailing":
             if deal._peak_price == 0.0:
                 deal._peak_price = candle.open
             deal._peak_price = max(deal._peak_price, candle.high)
-            sl_price = deal._peak_price * (1 - sl_pct / 100)
+            sl_price = compute_sl_target_price(
+                deal._peak_price, sl_pct, deal.side,
+            )
             sl_type_tag = "trailing_sl"
         else:
-            sl_price = avg * (1 - sl_pct / 100)
+            sl_price = compute_sl_target_price(avg, sl_pct, deal.side)
             sl_type_tag = "price_sl"
 
         if candle.low <= sl_price:
