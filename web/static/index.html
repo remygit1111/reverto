@@ -398,6 +398,33 @@
   </div>
 </div>
 
+<!-- ── Bot delete confirmation modal (PT-v4-FS-001) ─────────────────────────
+     Pre-fix the delete used a one-click confirm() prompt that paired with
+     a YAML-only purge — easy to misclick into "yes" and lose a bot's
+     state forever. Post-fix the operator must type the slug to confirm,
+     mirroring the high-stakes-delete UX of GitHub repo deletion. -->
+<div id="bot-delete-modal" class="modal-overlay">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="bot-delete-title">
+    <div class="modal-title" id="bot-delete-title">⚠ Delete bot</div>
+    <div class="modal-body-text" id="bot-delete-warning">
+      This will permanently delete the bot and all its trade history,
+      deals, orders, logs, and state. This cannot be undone.
+    </div>
+    <div class="modal-body-text">
+      To confirm, type the bot slug
+      <code id="bot-delete-slug-display" class="bot-delete-slug-hint"></code>
+      below:
+    </div>
+    <input type="text" id="bot-delete-confirm-input" class="modal-input"
+           autocomplete="off" autocapitalize="off" autocorrect="off"
+           spellcheck="false" placeholder="type slug to confirm">
+    <div class="modal-actions">
+      <button type="button" class="hbtn hbtn-theme" id="bot-delete-cancel-btn">Cancel</button>
+      <button type="button" class="hbtn hbtn-theme btn-danger" id="bot-delete-confirm-btn" disabled>Delete bot</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Wizard Backtest modal ──────────────────────────────────────────────── -->
 <div id="wizard-backtest-modal" class="modal-overlay">
   <div class="modal-card bt-modal-card" role="dialog" aria-modal="true" aria-labelledby="wizard-backtest-modal-title">
