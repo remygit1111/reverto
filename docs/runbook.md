@@ -1081,23 +1081,21 @@ re-save via the portal (Exchanges → Add Keys).
 - `logs/audit.log` — start/stop/restart/drawdown-reset/emergency-stop.
 - `logs/<slug>.log` — per-bot output (stdout + stderr + Python logger).
 
-External `logrotate` is the recommended rotation strategy for bot
-logs — the portal log uses `RotatingFileHandler` internally, but bot
-logs go through `subprocess.Popen`'s `stdout` redirect which Python's
-handler can't rotate.
+Bot logs auto-rotate via Python's `RotatingFileHandler`, configured
+in `core/logging_setup.py:configure_bot_file_logging`. Defaults:
+10 MiB per file, 3 rotated backups (overrideable via
+`REVERTO_BOT_LOG_MAX_BYTES` and `REVERTO_BOT_LOG_BACKUP_COUNT`).
+Per-bot disk footprint capped at ~40 MiB.
 
-Sample `/etc/logrotate.d/reverto`:
-
-```
-/home/bot/reverto/logs/*.log {
-    daily
-    rotate 14
-    compress
-    missingok
-    notifempty
-    copytruncate
-}
-```
+**Note for incident response:** regular logger output writes
+correctly to the active `<slug>.log` via the rotating handler.
+However, crash dumps that bypass the logger — Python interpreter
+tracebacks via stderr, raw `print()` calls — flow through Popen's
+redirected file descriptor, which holds the pre-rotation inode.
+After the first rotation those writes land in `<slug>.log.1`
+instead of `<slug>.log`. If a bot appears to have crashed but
+`<slug>.log` shows no error context, check `<slug>.log.1` for
+the missing crash dump.
 
 ## Common errors + fixes
 

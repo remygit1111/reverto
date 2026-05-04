@@ -3,6 +3,7 @@
 # Writes state to logs/{slug}.state.json after every tick so the
 # web portal can read it without shared memory.
 
+import os
 import queue
 import sqlite3
 import threading
@@ -85,6 +86,44 @@ MAX_DCA_PER_TICK = 1
 # budget is silently dropped — operators trading off "last notification
 # delivered" vs. "engine actually exits within portal.stop's timeout".
 NOTIFY_DRAIN_TIMEOUT_S = 15
+
+# PT-v4-EI-005 — bound the notify queue so a permanent Telegram outage
+# can't grow memory without bound (queue size = bot tick rate × outage
+# duration). 1000 items at ~200 bytes/closure = ~200 KB upper bound per
+# bot, comfortably under the per-bot RAM budget the scaling-audit memo
+# uses for projection. Override via env so an operator who wants a
+# larger drop window during a known outage can bump it without code.
+_DEFAULT_NOTIFY_QUEUE_MAX = 1000
+
+
+def _resolve_notify_queue_max() -> int:
+    """Read ``REVERTO_TELEGRAM_QUEUE_MAX`` once per engine instance.
+
+    Malformed / non-positive values fall back to the default — same
+    pattern as ``_max_bots_per_user`` / ``_max_request_body_bytes``
+    elsewhere in the codebase. Logs a warning so a typo is visible
+    in portal.log.
+    """
+    raw = os.environ.get("REVERTO_TELEGRAM_QUEUE_MAX")
+    if raw is None:
+        return _DEFAULT_NOTIFY_QUEUE_MAX
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "REVERTO_TELEGRAM_QUEUE_MAX=%r is not an integer — "
+            "falling back to default %d",
+            raw, _DEFAULT_NOTIFY_QUEUE_MAX,
+        )
+        return _DEFAULT_NOTIFY_QUEUE_MAX
+    if value <= 0:
+        logger.warning(
+            "REVERTO_TELEGRAM_QUEUE_MAX=%d is non-positive — "
+            "falling back to default %d",
+            value, _DEFAULT_NOTIFY_QUEUE_MAX,
+        )
+        return _DEFAULT_NOTIFY_QUEUE_MAX
+    return value
 
 # Wick-simulation TTL bounds. Clamp the derived (poll_interval * 2)
 # TTL so a misconfigured poll_interval can't starve or over-refresh
@@ -272,7 +311,28 @@ class PaperEngine:
         # Notification queue + worker — verhindert dat een trage Telegram
         # call de tick-loop blokkeert (TP/SL/DCA detectie kritisch op timing).
         # De worker is een daemon thread; bij stop() krijgt hij een sentinel.
-        self._notify_queue: queue.Queue = queue.Queue()
+        #
+        # PT-v4-EI-005: bounded queue with oldest-drop policy. When the
+        # queue is full a new put() drops the *oldest* pending closure
+        # so the freshest events (current TP/SL fires) win over stale
+        # ones (a startup notification queued an hour ago). Drops are
+        # counted in ``_notify_dropped_count`` and surfaced through one
+        # WARNING log line when the queue drains back to empty —
+        # collapses a multi-minute Telegram outage into one summary
+        # line instead of per-drop log spam.
+        self._notify_queue_max: int = _resolve_notify_queue_max()
+        self._notify_queue: queue.Queue = queue.Queue(
+            maxsize=self._notify_queue_max,
+        )
+        # Drop-event bookkeeping. Both fields are mutated from the
+        # producer thread (engine tick) AND the consumer thread
+        # (notify worker), so reads/writes are guarded by the queue
+        # itself — Python's int/bool ops are atomic enough for this
+        # counter pattern under the GIL, and the consumer only reads
+        # them after a successful get() which already crosses a
+        # memory barrier.
+        self._notify_dropped_count: int = 0
+        self._notify_drop_pending: bool = False
         self._notify_thread = threading.Thread(
             target=self._notify_worker, daemon=True, name="reverto-notify"
         )
@@ -399,11 +459,51 @@ class PaperEngine:
             logger.warning("deal_store.close_deal failed: %s", e)
 
     def _notify(self, fn, *args, **kwargs):
-        """Plaats een notificatie-call op de queue zonder te blokkeren."""
-        self._notify_queue.put((fn, args, kwargs))
+        """Plaats een notificatie-call op de queue zonder te blokkeren.
+
+        PT-v4-EI-005 — when the queue is full (Telegram-side outage,
+        worker stuck in a slow ``send()``), drop the *oldest* item to
+        make room for the new one. Freshest events are the most
+        operationally relevant during an outage; a 30-minute-old
+        startup notification is stale by the time Telegram recovers.
+
+        Multi-thread safety: a concurrent ``_notify_worker.get()``
+        between our ``put_nowait`` failing and our ``get_nowait``
+        could race the queue empty. We catch ``queue.Empty`` and retry
+        the put — the worker may have already dispatched the oldest
+        item, freeing the slot we wanted.
+        """
+        item = (fn, args, kwargs)
+        while True:
+            try:
+                self._notify_queue.put_nowait(item)
+                return
+            except queue.Full:
+                try:
+                    self._notify_queue.get_nowait()
+                    self._notify_queue.task_done()
+                except queue.Empty:
+                    # Worker drained between our put_nowait and
+                    # get_nowait — loop and try put again.
+                    continue
+                self._notify_dropped_count += 1
+                self._notify_drop_pending = True
+                # Loop one more time to land the new item now that we
+                # made a slot. ``put_nowait`` could in principle still
+                # raise Full if another producer races us, but engine
+                # has only one producer (tick loop + signal handler,
+                # which never overlap) so a second iteration is
+                # vanishingly rare in practice.
 
     def _notify_worker(self):
-        """Achtergrondthread die notificaties uit de queue dispatcht."""
+        """Achtergrondthread die notificaties uit de queue dispatcht.
+
+        After every successfully dispatched item, if the queue is now
+        empty AND we previously dropped events during the outage, log
+        a single WARNING summary line and reset the latch. Operator
+        sees ``"Notify queue recovered: dropped N notifications"`` once
+        per outage instead of per-drop spam.
+        """
         while True:
             item = self._notify_queue.get()
             if item is None:  # sentinel
@@ -416,6 +516,22 @@ class PaperEngine:
                 logger.error(f"Notification failed: {type(e).__name__}: {e}")
             finally:
                 self._notify_queue.task_done()
+            # Recovery trigger: we just successfully drained an item
+            # and the queue is back to empty. If drops accumulated
+            # during the outage that just resolved, surface the
+            # summary now and clear the latch. ``empty()`` is
+            # advisory under concurrency but the cost of a missed
+            # summary is "operator sees the next one" — acceptable.
+            if self._notify_drop_pending and self._notify_queue.empty():
+                logger.warning(
+                    "Notify queue recovered: dropped %d notification(s) "
+                    "during the outage (cap=%d).",
+                    self._notify_dropped_count, self._notify_queue_max,
+                )
+                self._notify_drop_pending = False
+                # Don't reset the cumulative count — it's useful as a
+                # lifetime-of-bot metric. A future Prometheus exporter
+                # can read it as a gauge.
 
     # ------------------------------------------------------------------
     # State file — written after every tick for portal to read

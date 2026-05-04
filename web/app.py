@@ -3475,7 +3475,16 @@ async def watch_state_files():
                     if _state_mtimes.get(key) == mtime:
                         continue
                     _state_mtimes[key] = mtime
-                    state = bot.read_state()
+                    # r1-067: bot.read_state() does blocking file I/O
+                    # (open + read + json.loads + a possible
+                    # silent-exit-reconcile state-file rewrite). Pre-fix
+                    # this stalled the asyncio loop for ~ms per bot,
+                    # which on N bots delays every other coroutine
+                    # — including the broadcaster fan-out for the
+                    # PREVIOUS bot in this same loop. asyncio.to_thread
+                    # pushes the I/O onto the default thread pool so
+                    # the loop stays responsive.
+                    state = await asyncio.to_thread(bot.read_state)
                     payload = json.dumps({
                         "type": "bot_state",
                         "slug": bot.slug,
@@ -3498,10 +3507,21 @@ async def watch_state_files():
                 for b in bots:
                     bots_by_user.setdefault(b.user_id, []).append(b)
                 for uid, user_bots in bots_by_user.items():
-                    snapshot = [b.read_state() for b in user_bots]
+                    # r1-067 (continued): the per-user summary
+                    # computation does N more reads per cycle. Run them
+                    # concurrently in the thread pool so a slow file
+                    # system on one bot can't head-of-line the rest of
+                    # this user's summary. Serial-in-thread would be
+                    # equally non-blocking for the loop, but gather
+                    # halves the wall-clock for the summary step at
+                    # the cost of ~N pool slots per cycle — acceptable
+                    # since reads are short-lived.
+                    snapshot = await asyncio.gather(
+                        *[asyncio.to_thread(b.read_state) for b in user_bots]
+                    )
                     summary_payload = json.dumps({
                         "type": "summary",
-                        "data": _compute_summary(snapshot),
+                        "data": _compute_summary(list(snapshot)),
                     })
                     await state_broadcaster.broadcast(
                         summary_payload, target_user_id=uid,
