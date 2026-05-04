@@ -2064,15 +2064,29 @@ function updateBotDetailDrawdown(state) {
 }
 
 // ── Delete bot ───────────────────────────────────────────────────────────────
+// PT-v4-FS-001: replaced the one-click ``confirm()`` prompt with a
+// type-to-confirm modal. The operator must type the bot slug
+// exactly to enable the Delete button — same pattern GitHub uses
+// for repo deletion. Mirrors the existing modal-overlay / modal-card
+// styling used by deal-edit-modal so it feels native to the SPA.
 async function deleteBot(slug, name) {
-  if (!confirm(`Delete bot '${name}'? This cannot be undone.`)) return;
+  const confirmed = await _confirmBotDelete(slug, name);
+  if (!confirmed) return;
   const res = await fetch(`/api/bots/${slug}`, { method: 'DELETE' });
   if (res.status === 401) { _handle401(); return; }
-  let detail = '';
-  try { detail = (await res.json()).detail || ''; } catch (e) {}
+  let body = null;
+  try { body = await res.json(); } catch (e) {}
   if (!res.ok) {
-    alert(`Delete failed: ${detail || res.status}`);
+    const detail = (body && body.detail) || res.status;
+    alert(`Delete failed: ${detail}`);
     return;
+  }
+  // Surface the purge summary if any files failed — operator may
+  // want to clean those up manually. The bot is still gone from the
+  // registry, so we don't block on it.
+  const purged = body && body.purged;
+  if (purged && Array.isArray(purged.files_failed) && purged.files_failed.length) {
+    console.warn('Bot deleted but some files could not be removed:', purged.files_failed);
   }
   // Drop any cached backtest results for the deleted bot so a
   // future bot that reuses the slug starts with a clean slate.
@@ -2081,6 +2095,72 @@ async function deleteBot(slug, name) {
   // If we're currently inside this bot's detail view, bounce back to Bots.
   if (currentSlug === slug) goBots();
   else fetchOverview();
+}
+
+// Returns a Promise<boolean>: resolves true when the operator
+// confirmed (typed slug + clicked Delete), false when cancelled.
+function _confirmBotDelete(slug, name) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('bot-delete-modal');
+    const slugEl = document.getElementById('bot-delete-slug-display');
+    const warning = document.getElementById('bot-delete-warning');
+    const input = document.getElementById('bot-delete-confirm-input');
+    const cancelBtn = document.getElementById('bot-delete-cancel-btn');
+    const confirmBtn = document.getElementById('bot-delete-confirm-btn');
+    if (!overlay || !slugEl || !input || !cancelBtn || !confirmBtn) {
+      // Modal markup missing — fall back to the legacy confirm()
+      // prompt so the operator still has a way to delete. Defensive
+      // because the JS shouldn't 500-spinner if a future redesign
+      // renames an element id by accident.
+      resolve(window.confirm(
+        `Delete bot '${name || slug}'? This cannot be undone.`,
+      ));
+      return;
+    }
+
+    slugEl.textContent = slug;
+    if (warning && name && name !== slug) {
+      warning.textContent = (
+        `This will permanently delete '${name}' (${slug}) and all its ` +
+        'trade history, deals, orders, logs, and state. This cannot be undone.'
+      );
+    }
+    input.value = '';
+    confirmBtn.disabled = true;
+
+    const cleanup = () => {
+      overlay.classList.remove('show');
+      input.removeEventListener('input', onInput);
+      input.removeEventListener('keydown', onKeydown);
+      cancelBtn.removeEventListener('click', onCancel);
+      confirmBtn.removeEventListener('click', onConfirm);
+    };
+    const onInput = () => {
+      // Strict equality — typing the slug exactly is the gate. No
+      // case-insensitive match: slugs are already lowercase by
+      // _BOT_SLUG_RE so this avoids "btc" vs "BTC" surprises.
+      confirmBtn.disabled = input.value !== slug;
+    };
+    const onKeydown = (ev) => {
+      if (ev.key === 'Escape') { cleanup(); resolve(false); }
+      else if (ev.key === 'Enter' && !confirmBtn.disabled) {
+        cleanup(); resolve(true);
+      }
+    };
+    const onCancel = () => { cleanup(); resolve(false); };
+    const onConfirm = () => { cleanup(); resolve(true); };
+
+    input.addEventListener('input', onInput);
+    input.addEventListener('keydown', onKeydown);
+    cancelBtn.addEventListener('click', onCancel);
+    confirmBtn.addEventListener('click', onConfirm);
+
+    overlay.classList.add('show');
+    // Defer focus so the modal's transition lands first; otherwise
+    // some browsers focus before display:flex has resolved and the
+    // input doesn't actually receive caret focus.
+    setTimeout(() => input.focus(), 0);
+  });
 }
 
 // ── Duplicate / Export / Import ─────────────────────────────────────────────
