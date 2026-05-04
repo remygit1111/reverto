@@ -22,7 +22,10 @@ from config.config_loader import load_bot_config
 from config.models import Mode
 from core import paths
 from core.file_lock import LockTimeoutError, exclusive_lock
-from core.logging_setup import parse_log_level_env
+from core.logging_setup import (
+    configure_bot_file_logging,
+    parse_log_level_env,
+)
 from exchanges.public_exchange import PublicExchange
 from live.live_engine import LiveEngine
 from notifications.telegram import TelegramNotifier
@@ -152,6 +155,12 @@ def main() -> None:
     pid_file = paths.bot_pid_path(user_id, slug)
     state_file = paths.bot_state_path(user_id, slug)
     manual_trigger_file = paths.bot_manual_trigger_path(user_id, slug)
+    log_file = paths.bot_log_path(user_id, slug)
+
+    # PT-v4-FS-008 — same rotating-handler wiring as main_paper.py.
+    # Replaces the module-level basicConfig stream handler now that
+    # the canonical log path is known.
+    configure_bot_file_logging(log_file)
 
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
     atexit.register(lambda: pid_file.exists() and pid_file.unlink())
