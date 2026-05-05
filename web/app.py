@@ -2828,6 +2828,10 @@ async def lifespan(app: FastAPI):
     cleanup_orphaned_tmp_files(
         BASE_DIR / "logs",
         BASE_DIR / "credentials",
+        # PT-v4-FS-004: a Fernet-key rotation that crashes between
+        # creating ``keys/<uid>.key.tmp`` and ``os.replace`` would
+        # otherwise leave the orphan on disk indefinitely.
+        BASE_DIR / "keys",
     )
     # Lifecycle-stability: reconcile every bot's on-disk state with
     # PID + heartbeat truth at startup. If the previous portal
