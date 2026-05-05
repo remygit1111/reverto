@@ -9,6 +9,7 @@ dirs (keys/, credentials/<uid>/) land at mode 0700.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -209,3 +210,143 @@ class TestRelativeToBase:
         full = paths.bot_yaml_path(1, "rsi_test")
         rel = full.relative_to(_sandboxed_base)
         assert rel == Path("config/bots/1/rsi_test.yaml")
+
+
+# ── PT-v4-FS-002: chmod-failure visibility ─────────────────────────────────
+
+
+class TestEnsureDirChmodVisibility:
+    """Pre-fix, ``_ensure_dir`` swallowed ``OSError`` from chmod with a
+    bare ``except: pass``. Operators had no way to notice that a
+    secret directory was sitting at the wrong mode. Post-fix, the
+    failure logs at WARNING with the path + intended mode + error so
+    the boot log surfaces permission drift."""
+
+    def test_chmod_failure_logs_warning(
+        self, _sandboxed_base, monkeypatch, caplog,
+    ):
+        target = _sandboxed_base / "warned"
+
+        def boom(path, mode):
+            raise OSError("simulated EPERM")
+
+        monkeypatch.setattr(paths.os, "chmod", boom)
+
+        with caplog.at_level(logging.WARNING, logger="core.paths"):
+            paths._ensure_dir(target, mode=0o700)
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            "chmod" in m and str(target) in m and "simulated EPERM" in m
+            for m in msgs
+        ), msgs
+
+    def test_chmod_success_no_warning(self, _sandboxed_base, caplog):
+        with caplog.at_level(logging.WARNING, logger="core.paths"):
+            paths._ensure_dir(_sandboxed_base / "ok")
+
+        assert not any(
+            "chmod" in r.getMessage() for r in caplog.records
+        )
+
+
+# ── PT-v4-FS-002: symlink refusal vs warn-and-continue ─────────────────────
+
+
+class TestEnsureDirSymlinkPolicy:
+    """Symlinks at security-critical directory paths are a
+    permission-drift / deploy-error / symlink-attack signal.
+    ``refuse_symlinks=True`` (keys/, credentials/) must raise so
+    secrets never land on a redirected path; default warn-only keeps
+    operator deploy-pain from blocking portal startup for
+    non-critical dirs."""
+
+    def test_refuse_symlinks_raises_on_symlink(self, _sandboxed_base):
+        # Make the link target a real directory so the only thing
+        # different from a normal happy path is the symlink itself.
+        target = _sandboxed_base / "real_target"
+        target.mkdir()
+        link = _sandboxed_base / "linked"
+        link.symlink_to(target)
+
+        with pytest.raises(RuntimeError) as ei:
+            paths._ensure_dir(link, mode=0o700, refuse_symlinks=True)
+
+        msg = str(ei.value)
+        assert "symlink" in msg.lower()
+        assert str(link) in msg
+
+    def test_warn_symlinks_continues(
+        self, _sandboxed_base, caplog,
+    ):
+        target = _sandboxed_base / "real_target"
+        target.mkdir()
+        link = _sandboxed_base / "linked"
+        link.symlink_to(target)
+
+        with caplog.at_level(logging.WARNING, logger="core.paths"):
+            result = paths._ensure_dir(link)
+
+        assert result == link
+        assert any(
+            "symlink" in r.getMessage().lower()
+            for r in caplog.records
+        )
+
+    def test_user_keys_dir_refuses_symlink(self, _sandboxed_base):
+        # Pre-create keys/ as a symlink to a different location so the
+        # helper must refuse rather than proceed.
+        elsewhere = _sandboxed_base / "elsewhere"
+        elsewhere.mkdir()
+        (_sandboxed_base / "keys").symlink_to(elsewhere)
+
+        with pytest.raises(RuntimeError):
+            paths.user_keys_dir()
+
+    def test_user_credentials_dir_refuses_symlink_at_parent(
+        self, _sandboxed_base,
+    ):
+        # The parent ``credentials/`` is also security-critical — a
+        # symlink there could redirect every user's encrypted blob.
+        elsewhere = _sandboxed_base / "elsewhere_creds"
+        elsewhere.mkdir()
+        (_sandboxed_base / "credentials").symlink_to(elsewhere)
+
+        with pytest.raises(RuntimeError):
+            paths.user_credentials_dir(1)
+
+    def test_user_credentials_dir_refuses_symlink_at_user_leaf(
+        self, _sandboxed_base,
+    ):
+        # Per-user leaf: someone could swap ``credentials/<uid>/`` for
+        # a link pointing into another user's tree. Refuse there too.
+        (_sandboxed_base / "credentials").mkdir(mode=0o700)
+        elsewhere = _sandboxed_base / "elsewhere_user"
+        elsewhere.mkdir()
+        (_sandboxed_base / "credentials" / "1").symlink_to(elsewhere)
+
+        with pytest.raises(RuntimeError):
+            paths.user_credentials_dir(1)
+
+    def test_user_logs_dir_does_not_refuse_symlinks(
+        self, _sandboxed_base, caplog,
+    ):
+        """Non-security-critical helpers stay at warn-and-continue —
+        operator deploy-pain (e.g. ``logs/<uid>/`` symlinked to a
+        larger partition) must not block portal startup. The leaf
+        path must itself be a symlink for ``_ensure_dir`` to see it
+        (``is_symlink`` checks the exact path, not its parents)."""
+        (_sandboxed_base / "logs").mkdir()
+        elsewhere = _sandboxed_base / "logs_elsewhere"
+        elsewhere.mkdir()
+        (_sandboxed_base / "logs" / "1").symlink_to(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="core.paths"):
+            result = paths.user_logs_dir(1)
+
+        # Did not raise — symlinks at non-critical paths warn only.
+        assert result == _sandboxed_base / "logs" / "1"
+        assert any(
+            "symlink" in r.getMessage().lower()
+            for r in caplog.records
+        )

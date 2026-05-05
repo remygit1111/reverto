@@ -40,15 +40,58 @@ BASE_DIR: Path = Path(__file__).resolve().parent.parent
 # ── Directory helpers ─────────────────────────────────────────────────────
 
 
-def _ensure_dir(path: Path, mode: int = 0o755) -> Path:
+def _ensure_dir(
+    path: Path,
+    mode: int = 0o755,
+    refuse_symlinks: bool = False,
+) -> Path:
     """Create ``path`` (and parents) if missing. Best-effort chmod so a
     restrictive umask doesn't accidentally open the dir. Returns the
-    path for ergonomic chaining."""
+    path for ergonomic chaining.
+
+    Args:
+        path: Directory to ensure exists.
+        mode: Permission bits (octal) to chmod the directory to.
+        refuse_symlinks: If True and ``path`` exists as a symlink,
+            raise RuntimeError instead of using it. Use for
+            security-critical directories (keys, credentials) where
+            a symlink could redirect secrets to an attacker- or
+            operator-error-controlled location. Default False
+            (warn-only) for non-security-critical directories so
+            operator deploy-pain doesn't block portal startup.
+
+    Raises:
+        RuntimeError: When refuse_symlinks=True and path is a symlink.
+    """
+    # PT-v4-FS-002: symlink check happens BEFORE mkdir so a hostile
+    # link can't be silently followed. mkdir(exist_ok=True) on an
+    # existing symlink succeeds without touching the link itself.
+    if path.is_symlink():
+        if refuse_symlinks:
+            raise RuntimeError(
+                f"Refusing to use {path}: exists as symlink. "
+                f"Possible permission-drift, deploy-error, or symlink "
+                f"attack. Inspect target manually and remove the symlink "
+                f"if it's no longer intended."
+            )
+        logger.warning(
+            "Path %s exists as symlink; chmod will follow the link "
+            "target. Verify target permissions manually if security "
+            "matters here.", path,
+        )
+
     path.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path, mode)
-    except OSError:
-        pass
+    except OSError as e:
+        # PT-v4-FS-002: was silently swallowed pre-fix. WARN so
+        # operators see permission drift in the boot log instead of
+        # discovering it months later when secrets leaked through a
+        # 0755 dir.
+        logger.warning(
+            "chmod %o failed for %s: %s. Directory may have incorrect "
+            "permissions; verify manually.", mode, path, e,
+        )
     return path
 
 
@@ -75,8 +118,15 @@ def user_pid_dir(user_id: int) -> Path:
 
 def user_keys_dir() -> Path:
     """``keys/`` — root of the Fernet-key tree. 0700 because anyone
-    who can read a key can decrypt the matching credentials blob."""
-    return _ensure_dir(BASE_DIR / "keys", mode=0o700)
+    who can read a key can decrypt the matching credentials blob.
+
+    PT-v4-FS-002: refuses to proceed if ``keys/`` is a symlink. Keys
+    must live on the canonical path so a deploy-error or attacker
+    can't redirect them to a less-protected location.
+    """
+    return _ensure_dir(
+        BASE_DIR / "keys", mode=0o700, refuse_symlinks=True,
+    )
 
 
 def user_credentials_dir(user_id: int) -> Path:
@@ -91,10 +141,18 @@ def user_credentials_dir(user_id: int) -> Path:
     local account. We now ensure the parent explicitly at 0700 first
     before creating the child — both levels of the tree are now
     owner-only.
+
+    PT-v4-FS-002: both levels refuse symlinks for the same reason as
+    user_keys_dir — secrets must live on the canonical path so a
+    deploy-error or attacker can't redirect them.
     """
-    _ensure_dir(BASE_DIR / "credentials", mode=0o700)
+    _ensure_dir(
+        BASE_DIR / "credentials", mode=0o700, refuse_symlinks=True,
+    )
     return _ensure_dir(
-        BASE_DIR / "credentials" / str(user_id), mode=0o700,
+        BASE_DIR / "credentials" / str(user_id),
+        mode=0o700,
+        refuse_symlinks=True,
     )
 
 
