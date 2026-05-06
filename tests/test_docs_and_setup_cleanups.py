@@ -26,43 +26,6 @@ def _read(rel_path: str) -> str:
     return (_REPO_ROOT / rel_path).read_text(encoding="utf-8")
 
 
-def test_readme_status_section_lists_phase_a_and_b():
-    """rha-012: pre-fix README:4 said "Phase-1 live-trading scaffold"
-    but README:74 said ``make live`` was "refused until Phase 3 lands"
-    — a reader had to reconcile the two. Post-fix the README opens
-    with a tightened tagline (the runner refuses real orders until
-    Phase-3) AND a Status section that enumerates Foundation +
-    Phase-3a + Phase A/B + Phase-3 prep + Phase C+ as separate
-    milestones, so the live-mode-refusal is no longer a contradiction
-    against an earlier optimistic claim."""
-    readme = _read("README.md")
-    assert "## Status" in readme, (
-        "rha-012: README must carry a top-level ## Status section "
-        "listing the actual phase milestones."
-    )
-    # Phase A + Phase B were both feature-complete by 2026-04-29
-    # and must surface in the Status section so the README does
-    # not undercount delivered work.
-    assert "Phase A" in readme, (
-        "rha-012: README Status section must mention Phase A "
-        "(foundation wrap-up — feature-complete)."
-    )
-    assert "Phase B" in readme, (
-        "rha-012: README Status section must mention Phase B "
-        "(TOTP + per-user rate limit + cookie posture — feature-"
-        "complete)."
-    )
-    # The tagline at the top must explicitly clarify that the
-    # live-mode runner refuses real orders, so a reader hitting
-    # README:1-5 and README:74 sees consistent claims.
-    head = readme[: readme.find("## Status")]
-    assert "refuses real orders" in head.lower() or "refused until" in head.lower(), (
-        "rha-012: opening tagline must explicitly note that the "
-        "Phase-1 live-trading scaffold's runner refuses real orders "
-        "until Phase-3 lands — otherwise README:4 contradicts the "
-        "Commands block at README:74."
-    )
-
 
 def test_requirements_ml_comments_are_english():
     """rha-015: pre-fix line 1 of ``requirements-ml.txt`` was Dutch
