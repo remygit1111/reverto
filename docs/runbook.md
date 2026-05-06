@@ -764,7 +764,7 @@ notifications via its `notify_stop` / `notify_shutdown` queue drain.
 ## Remote deployment from Reverto-Dev
 
 Reverto draait op twee machines: **Reverto-Server** (Mele Quieter 4C,
-productie, IP `192.168.178.227`) en **Reverto-Dev** (development
+productie, IP `<your-vps-ip>`) en **Reverto-Dev** (development
 workstation, waar nieuwe features worden gebouwd). De deploy-flow:
 
 1. Code-werk gebeurt op Reverto-Dev.
@@ -774,7 +774,7 @@ workstation, waar nieuwe features worden gebouwd). De deploy-flow:
    Reverto-Dev:
 
 ```bash
-ssh bot@192.168.178.227 'cd ~/reverto && make deploy'
+ssh bot@<your-vps-ip> 'cd ~/reverto && make deploy'
 ```
 
 `make deploy` doet **alleen** `git pull origin main` met
