@@ -1,162 +1,133 @@
 # Reverto
 
-BTC/USD inverse-perpetual DCA bot platform with a web portal, paper
-engine, backtest engine, and a Phase-1 live-trading scaffold (the
-runner refuses real orders until Phase-3 lands).
+> **An open-source automated trading framework for BTC/USD inverse perpetual contracts on Bitget and Kraken.** Self-hosted, designed for personal use, published for educational and research purposes.
+
+---
+
+## ⚠️ Important Notice
+
+**This software is for educational and research purposes.** It is NOT a financial service, NOT a hosted product, and the maintainers do NOT offer commercial support.
+
+- **Trading cryptocurrencies involves substantial financial risk.** You may lose all your capital.
+- **No guarantees of profitability.** Backtest results do not predict future performance.
+- **Use at your own risk.** The software is provided "as is" without warranties of any kind. See [LICENSE](LICENSE) for full terms.
+- **Regulatory compliance is your responsibility.** If you deploy this software for live trading, you are responsible for compliance with applicable laws in your jurisdiction (including but not limited to the EU's MiCA regulation).
+- **The maintainers are not financial advisors.** Nothing in this repository constitutes financial advice.
+
+If you intend to use this software, you should fully understand the code, the trading strategies, and the risks involved. **If you don't, don't use it.**
+
+---
+
+## What is Reverto?
+
+Reverto is a Python-based automated trading framework that runs DCA (Dollar-Cost Averaging) bots against perpetual futures markets. It includes:
+
+- **Multi-bot architecture** with per-bot configuration and isolated state
+- **Paper trading engine** for strategy validation without real capital
+- **Backtest engine** for historical strategy evaluation
+- **Live trading scaffold** for real-money deployment (requires explicit configuration)
+- **Web portal** with TOTP 2FA, per-user encrypted credentials, and a workspace dashboard
+- **Indicator library** with RSI, EMA crossover, MACD, Bollinger Bands, PSAR, Supertrend, and more
+- **Telegram notifications** for trade alerts and lifecycle events
+
+Reverto targets **inverse perpetual contracts** specifically (where margin and PnL are denominated in the base asset, e.g., BTC). The math, position sizing, and liquidation logic differ from linear perpetuals.
+
+## What Reverto is NOT
+
+- **Not a service.** This is software you run yourself on your own infrastructure.
+- **Not MiCA-compliant for commercial use.** If you want to offer this to others as a paid service in the EU, you will need to obtain CASP authorization separately. The maintainers do not provide such authorization.
+- **Not a guaranteed profit machine.** Trading bots can and do lose money.
+- **Not actively maintained as a product.** Bug fixes and improvements come on a best-effort basis.
 
 ## Status
 
-- **Foundation** (multi-bot architecture, paper engine, backtest
-  engine, exchange abstraction) — complete.
-- **Phase 3a** (DB-based auth: `users` table, bcrypt + per-user
-  session-epoch, admin provisioning via `make setup-admin`) —
-  complete.
-- **Phase A wrap-up + Phase B** (per-user filesystem, per-user
-  Fernet credentials, TOTP 2FA, per-user login rate-limit, audit-
-  log hardening, cookie-posture regression test) — complete.
-- **Phase 3 live-trading** (Phase-1 scaffold + dry-run preflights
-  in repo; the `make live` runner currently refuses real orders) —
-  in preparation; PT-v3 + RHA-v2 audits open the remaining
-  blockers.
-- **Phase C+** (signing-service separation, multi-tenant scale) —
-  future work.
+Reverto is functional for paper trading and backtesting. The live-trading scaffold exists but requires careful configuration and review before deploying real capital.
 
-For the per-finding security backlog see
-[docs/security-model.md](docs/security-model.md); for the live-
-trading scope see [docs/phase-3.md](docs/phase-3.md).
+This project is published as a snapshot of working code. The original maintainer (`remy1111`) uses Reverto for personal trading. There is no commercial roadmap and no service-level agreement.
 
-## Quick start
+## Quick Start
 
-Eerste keer op een fresh install:
+**Requirements:** Python 3.12+, Linux (tested on Ubuntu 24 / WSL2)
 
 ```bash
-cd ~/reverto
+# Clone and set up venv
+git clone https://github.com/remygit1111/reverto.git
+cd reverto
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+source .venv/bin/activate
+pip install -r requirements.txt
 
-# Initialiseer de DB (stop na "Portal started" in logs)
+# Configure environment
+cp .env.example .env
+# Edit .env: fill in REVERTO_API_KEY, REVERTO_SECRET_KEY (generate via Python),
+# and exchange credentials (Bitget/Kraken API keys).
+
+# Initialize and start the portal
 make start
 
-# Zet het admin-wachtwoord (minimaal 12 tekens; zonder deze stap blijft login 401)
-REVERTO_ADMIN_PW="een_sterk_wachtwoord" make setup-admin
+# Set the admin password (separate terminal, with portal still running)
+REVERTO_ADMIN_PW="your_strong_password_min_12_chars" make setup-admin
 
-# Start het portal voor gebruik
-make start
+# Restart portal to pick up admin user
+make restart
 ```
 
-Open [http://localhost:8080](http://localhost:8080), login met
-username `admin` + bovenstaand wachtwoord, maak een bot aan via de
-wizard en start 'm vanuit het dashboard. Het portal spawnt per bot
-één `main_paper.py` subprocess en houdt state in
-`logs/<user_id>/<slug>.state.json`.
+Open <http://localhost:8080>, log in with `admin` + your password, complete TOTP enrollment, and create your first paper bot via the dashboard.
 
-Volledige setup-gids (env-vars, schema-migraties, restore-flow):
-[docs/runbook.md](docs/runbook.md) "First-time setup" +
-"Schema migrations".
+For detailed installation, configuration, and deployment instructions, see [docs/INSTALL.md](docs/INSTALL.md) (work in progress).
 
-**Remote deploy** vanaf Reverto-Dev naar Reverto-Server:
-`ssh bot@<server> 'cd ~/reverto && make deploy'`. Zie
-[docs/runbook.md](docs/runbook.md) "Remote deployment from
-Reverto-Dev" voor de volledige flow.
+## Configuration
 
-## Layout
+Required environment variables (in `.env`):
+
+- `REVERTO_API_KEY`: random 64-char hex (`python3 -c 'import secrets; print(secrets.token_hex(32))'`)
+- `REVERTO_SECRET_KEY`: same generation method
+- `BITGET_API_KEY`, `BITGET_API_SECRET`: from your Bitget account
+- `KRAKEN_API_KEY`, `KRAKEN_API_SECRET`: from your Kraken account (if using Kraken)
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: optional, for trade alerts
+
+See [.env.example](.env.example) for the complete list.
+
+## Architecture
 
 ```
-core/        — shared infrastructure (SQLite ledger, guards, credentials)
-paper/       — paper trading engine + in-memory state
-live/        — live trading (Phase 1: dry-run scaffolding + preflights)
-backtest/    — historical backtest engine with indicator groups
-strategies/  — technical indicators + group evaluation
-exchanges/   — ccxt wrappers (Bitget inverse swap, Kraken futures)
-notifications/ — Telegram alerts
-ml/          — optional ML pipeline (nightly entry-filter training)
-web/         — FastAPI portal (REST + WebSocket + static UI)
-tests/       — pytest suite (480+ tests, isolated SQLite per test)
-notebooks/   — Jupyter exploratory analysis
-scripts/     — operational CLI tools (credential rotation, etc.)
-docs/        — architecture diagrams + runbook
+~/reverto/
+├── core/              Shared business logic (positions, indicators, paths)
+├── paper/             Paper-trading engine
+├── backtest/          Backtest engine
+├── live/              Live-trading scaffold
+├── exchanges/         Bitget + Kraken adapters via ccxt
+├── strategies/        DCA strategy + indicator implementations
+├── web/               FastAPI portal (auth, dashboard, API)
+├── notifications/     Telegram notifier
+├── config/            Pydantic config models
+└── tests/             ~1900 tests covering core paths
 ```
 
-## Commands
+Each bot runs as a separate `main_paper.py` (or `main_live.py`) subprocess managed by the portal.
 
-```bash
-make start          # launch portal
-make stop           # stop portal only (bots keep running)
-make stop-all       # stop portal AND all bots
-make restart        # restart portal, bots survive
-make status         # show running processes
-make log            # tail portal log
-make log b=<slug>   # tail a bot log
-make test           # run pytest
-make lint           # ruff check
-make backtest       # run backtest with the default config
-make notebook       # launch Jupyter for notebooks/
-make beep           # trigger a Telegram test notification
+## Disclaimers
 
-make live-dry BOT=<slug>   # Phase-1 dry-run of a live bot
-make live BOT=<slug>       # Phase-3 real orders (refused until Phase 3 lands)
-```
+By cloning, modifying, or running this software, you acknowledge:
 
-## Safety rails
+1. The maintainers provide no warranty, express or implied (see [LICENSE](LICENSE)).
+2. You are responsible for testing and validating the software for your use case.
+3. You are responsible for the security of your exchange API keys and trading capital.
+4. You are responsible for regulatory compliance in your jurisdiction.
+5. Past performance (backtest or paper) does not predict future results.
 
-- **Config advisory (wizard)** — the portal wizard's Review step calls
-  `POST /api/bots/validate-config` and surfaces advisory warnings for
-  risky DCA ladders (worst-case > 50× base, cumulative > 150× base,
-  live-mode base > 0.001 BTC, etc.). Nothing blocks the save — runtime
-  guards do the actual braking.
-- **Drawdown guard** — peak is persisted to `state.json` so restarts
-  don't reset the kill-switch baseline.
-- **Balance guard** — every fee debit pre-checks balance; insufficient
-  funds logs + notifies instead of silently going negative.
-- **Hard mode checks** — `main_paper.py` only accepts `mode: paper`,
-  `main_live.py` only accepts `mode: live`. No cross-boot possible.
-- **Emergency stop** — `POST /api/emergency-stop` + portal-menu button
-  SIGTERMs every running bot with a confirmation prompt.
-- **Idempotent order retries** — Bitget `place_*_order` injects a
-  `clientOrderId` and checks the exchange for an existing order
-  before retrying, closing the "rate-limited on confirmation →
-  duplicate" race.
+For the explicit declaration that this repository is published as personal-use software, see [PERSONAL_USE_DECLARATION.md](PERSONAL_USE_DECLARATION.md).
 
-## Authentication & Security
+## License
 
-- **Two-factor authentication (TOTP)** — optional but recommended.
-  Uses RFC 6238-compliant time-based one-time passwords compatible
-  with Google Authenticator, Authy, 1Password, Aegis, and similar
-  apps. Enable via Profile → Two-factor authentication → Enable TOTP.
-- **Per-user login rate limiting** — automatically blocks accounts
-  after 10 failed login attempts within a 15-minute window, with a
-  rounded `Retry-After` header so legitimate clients can pace.
-- **Session management** — signed `itsdangerous` cookies with
-  HttpOnly + Secure + SameSite=Strict and a per-user epoch counter
-  that lets the user (or operator) invalidate every existing session
-  in one DB write.
-- **Audit logging** — every authentication event lands as a
-  structured JSONL record in `logs/audit.jsonl` with IP attribution,
-  request id, and a per-user split under `logs/<user_id>/audit.jsonl`
-  (mode `0o640`).
+Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
 
-For the full design rationale + threat model, see
-[docs/security-model.md](docs/security-model.md). For the operator-
-side TOTP recovery procedure, see [docs/runbook.md](docs/runbook.md)
-"TOTP recovery".
+## Author
 
-## Monitoring
+Maintained by **remy1111** ([@remygit1111](https://github.com/remygit1111)).
 
-- `GET /healthz` — liveness probe (200 OK, no auth, no rate-limit).
-- `GET /readyz` — readiness probe; 503 when the SQLite ledger is
-  unreachable.
-- `GET /metrics` — Prometheus scrape (no auth). See `web/metrics.py`
-  for the full metric catalogue.
+This project is not actively maintained as a commercial product. Issues and pull requests will be reviewed when time permits, but there is no guaranteed response time.
 
-## Documentation
+---
 
-- [Live Trading](live/README.md) — phases, dry-run usage, safety rails.
-- [ML Pipeline](ml/README.md) — nightly training, notebook analysis.
-- [Architecture](docs/architecture.md) — process model + tick flow.
-- [Runbook](docs/runbook.md) — startup checklist, emergency procedures,
-  credential rotation, common error fixes.
-- [Deployment](docs/deployment.md) — bare-metal + Docker + Kubernetes.
-- [Phase 3 scoping](docs/phase-3.md) — live-trading roadmap.
-- [Phase 4 scoping](docs/phase-4.md) — multi-tenant readiness
-  prerequisites (Postgres + Redis coordination).
-- [Alert rules](docs/alerts.yml) — Prometheus alert template.
+*Reverto is independent software and is not affiliated with Bitget, Kraken, or any other exchange. Names and trademarks are the property of their respective owners.*
