@@ -1,7 +1,7 @@
 # backtest/backtest_engine.py
-# Simuleert de trading strategie op historische OHLCV data.
-# Hergebruikt PaperState, PaperDeal en IndicatorEngine exact zoals de paper engine.
-# Geen exchange calls, geen Telegram, geen sleep — zo snel mogelijk.
+# Simulates the trading strategy on historical OHLCV data.
+# Reuses PaperState, PaperDeal and IndicatorEngine exactly like the paper engine.
+# No exchange calls, no Telegram, no sleep — as fast as possible.
 
 import logging
 from datetime import datetime, UTC
@@ -39,18 +39,18 @@ class BacktestCandle:
 
 class BacktestEngine:
     """
-    Backtester voor Reverto.
+    Backtester for Reverto.
 
-    Werkt candle-voor-candle door historische data:
+    Walks candle by candle through historical data:
     - Driving timeframe = config.timeframe (bot-level)
-    - Per tick wordt closes_per_tf gereconstrueerd: voor elke timeframe
-      die de indicator engine nodig heeft bouwen we de lijst met
-      afgesloten closes tot aan de timestamp van de huidige driving
-      candle. Pointer-based walk, O(N) totaal per timeframe.
-    - Checkt intra-candle high/low voor TP en SL (realistischer dan
-      alleen close)
-    - Past taker fees toe op elke entry en exit
-    - Hergebruikt exact dezelfde DCA/TP/SL logica als de paper engine
+    - Per tick closes_per_tf is reconstructed: for every timeframe
+      the indicator engine needs we build the list of closed
+      closes up to the timestamp of the current driving candle.
+      Pointer-based walk, O(N) total per timeframe.
+    - Checks intra-candle high/low for TP and SL (more realistic
+      than close only)
+    - Applies taker fees to every entry and exit
+    - Reuses exactly the same DCA/TP/SL logic as the paper engine
     """
 
     def __init__(
@@ -99,33 +99,33 @@ class BacktestEngine:
         self._lows_per_tf:   dict[str, list[float]] = {}
 
     # ------------------------------------------------------------------
-    # Hoofdloop
+    # Main loop
     # ------------------------------------------------------------------
 
     def run(self) -> "BacktestResult":
         """
-        Voer de backtest uit over alle driving-timeframe candles.
-        Retourneert een BacktestResult met alle statistieken.
+        Run the backtest across all driving-timeframe candles.
+        Returns a BacktestResult with all statistics.
         """
         logger.info(
-            f"Backtest gestart: {self.config.name} | "
+            f"Backtest started: {self.config.name} | "
             f"{len(self.driving_candles)} driving candles ({self.bot_timeframe}) | "
             f"timeframes: {sorted(self.candles_per_tf.keys())} | "
             f"balance: {self.initial_balance} BTC"
         )
 
-        # Minimale warm-up voor indicators (MACD vereist 3*26=78 candles)
+        # Minimal warm-up for indicators (MACD requires 3*26=78 candles)
         warmup = 78
 
         for i, candle in enumerate(self.driving_candles):
             if i < warmup:
-                continue  # wacht tot indicators betrouwbaar zijn
+                continue  # wait until indicators are reliable
 
             ohlc = self._ohlc_up_to(candle.timestamp)
             self._process_candle(candle, *ohlc)
             self._candles_processed += 1
 
-        # Sluit alle nog openstaande deals op de slotprijs van de laatste candle
+        # Close any deals that are still open at the close of the last candle
         if self.driving_candles:
             last_price = self.driving_candles[-1].close
             for deal_id in list(self.state.open_deals.keys()):
@@ -163,7 +163,7 @@ class BacktestEngine:
         return closes, highs, lows, opens
 
     # ------------------------------------------------------------------
-    # Candle verwerking
+    # Candle processing
     # ------------------------------------------------------------------
 
     def _process_candle(
@@ -174,7 +174,7 @@ class BacktestEngine:
         lows_per_tf:  dict[str, list[float]],
         opens_per_tf: dict[str, list[float]] | None = None,
     ):
-        """Verwerk één driving candle: check entry en monitor open deals."""
+        """Process one driving candle: check entry and monitor open deals."""
         close = candle.close
 
         # Hand the latest per-tf slices to the instance so
@@ -184,7 +184,7 @@ class BacktestEngine:
         self._highs_per_tf  = highs_per_tf
         self._lows_per_tf   = lows_per_tf
 
-        # Monitor open deals — check TP/SL met intra-candle high/low
+        # Monitor open deals — check TP/SL with intra-candle high/low
         for deal_id, deal in list(self.state.get_open_deals_snapshot().items()):
             closed = self._check_tp_sl_intracandle(deal, candle)
             if closed:
@@ -192,7 +192,7 @@ class BacktestEngine:
             if deal_id in self.state.open_deals:
                 self._check_dca(deal, close)
 
-        # Entry check — alleen als geen open deals
+        # Entry check — only if there are no open deals
         if not self.state.open_deals and closes_per_tf.get(self.bot_timeframe):
             try:
                 triggered, trigger_info = self.indicator_engine.check_entry_signal(
@@ -204,21 +204,22 @@ class BacktestEngine:
                 if triggered:
                     self._open_deal(close, candle.dt, entry_trigger=trigger_info)
             except Exception as e:
-                logger.debug(f"Entry check fout op candle {candle.dt}: {e}")
+                logger.debug(f"Entry check error on candle {candle.dt}: {e}")
 
     def _check_tp_sl_intracandle(self, deal: PaperDeal, candle: BacktestCandle) -> bool:
         """
-        Check TP en SL met intra-candle high en low.
-        Realistischer dan alleen close — de prijs passeerde het niveau binnen de candle.
-        Retourneert True als de deal gesloten is.
+        Check TP and SL with intra-candle high and low.
+        More realistic than close only — the price crossed the level inside the candle.
+        Returns True if the deal was closed.
         """
         avg = deal.avg_entry_price
 
         # ── Take Profit ───────────────────────────────────────────────
-        # Paper engine evalueert twee TP-paden naast elkaar: de prijs-TP
-        # (wanneer price_enabled) en de indicator-TP groepen (OR). De
-        # backtest moet hetzelfde gedrag spiegelen, anders drift backtest
-        # ≠ paper zodra een strategie indicator-gebaseerde TP gebruikt.
+        # The paper engine evaluates two TP paths side by side: the
+        # price TP (when price_enabled) and the indicator TP groups
+        # (OR). The backtest must mirror the same behaviour, or
+        # backtest ≠ paper drifts the moment a strategy uses
+        # indicator-based TP.
         tp_config = self.config.take_profit
         tp_enabled = getattr(tp_config, 'enabled', True)
         price_enabled = getattr(tp_config, 'price_enabled', True)

@@ -13,11 +13,11 @@ import logging
 import sys
 
 logging.basicConfig(
-    level=logging.WARNING,  # Stil — alleen rapport in terminal
+    level=logging.WARNING,  # Quiet — only the report in the terminal
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler()],
 )
-# Zet backtest engine op INFO zodat deal-logs zichtbaar zijn met --verbose
+# Set backtest engine to INFO so deal-logs are visible with --verbose
 logger = logging.getLogger(__name__)
 
 
@@ -66,14 +66,14 @@ def main():
     from config.config_loader import load_bot_config
     config = load_bot_config(args.config)
 
-    # CLI override heeft voorrang op config.timeframe
+    # CLI override takes precedence over config.timeframe
     if args.timeframe:
-        # We kunnen config.timeframe niet muteren (Pydantic frozen? Nee,
-        # maar we willen het wel overschrijven voor deze run). Pydantic
-        # models zijn standaard muteerbaar, dus direct assignen werkt.
+        # We can't mutate config.timeframe (Pydantic frozen? No, but
+        # we do want to override it for this run). Pydantic models
+        # are mutable by default, so a direct assign works.
         config.timeframe = args.timeframe
 
-    # Alle timeframes die de indicators vragen + de bot-level timeframe
+    # All timeframes the indicators require + the bot-level timeframe
     from strategies.indicator_engine import IndicatorEngine
     tmp_engine = IndicatorEngine(config)
     required_tfs = sorted(tmp_engine.required_timeframes(config.timeframe))
@@ -113,7 +113,7 @@ def main():
                 volume=float(c[5]),
             )
             for c in raw
-            if c[1] and c[2] and c[3] and c[4]  # filter lege candles
+            if c[1] and c[2] and c[3] and c[4]  # filter empty candles
         ]
         candles_per_tf[tf] = tf_candles
         print(
@@ -122,8 +122,8 @@ def main():
             f"{tf_candles[-1].dt.strftime('%Y-%m-%d')})"
         )
 
-    # ── Backtest uitvoeren ────────────────────────────────────────────────────
-    print("\n🚀 Backtest wordt uitgevoerd...\n")
+    # ── Run backtest ──────────────────────────────────────────────────────────
+    print("\n🚀 Running backtest...\n")
 
     from backtest.backtest_engine import BacktestEngine
     engine = BacktestEngine(
