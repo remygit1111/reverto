@@ -1,6 +1,6 @@
 # Reverto — Notice and Intent
 
-Copyright 2024-2026 remy1111
+Copyright 2026 remy1111
 
 Licensed under the Apache License, Version 2.0 (the "License").
 See the [LICENSE](LICENSE) file for the full text of the license.

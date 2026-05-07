@@ -74,7 +74,14 @@ make restart
 
 Open <http://localhost:8080>, log in with `admin` + your password, complete TOTP enrollment, and create your first paper bot via the dashboard.
 
-For detailed installation, configuration, and deployment instructions, see [docs/INSTALL.md](docs/INSTALL.md) (work in progress).
+For detailed self-hoster documentation:
+
+- [docs/INSTALL.md](docs/INSTALL.md) — installation guide
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — env vars, bot YAML, strategies
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — backups, schema migrations, troubleshooting
+- [docs/architecture.md](docs/architecture.md) — codebase overview
+- [docs/exchange-permissions.md](docs/exchange-permissions.md) — API key permissions
+- [SECURITY.md](SECURITY.md) — security disclosure policy
 
 ## Configuration
 
@@ -101,7 +108,7 @@ See [.env.example](.env.example) for the complete list.
 ├── web/               FastAPI portal (auth, dashboard, API)
 ├── notifications/     Telegram notifier
 ├── config/            Pydantic config models
-└── tests/             ~1900 tests covering core paths
+└── tests/             ~1925 tests covering core paths
 ```
 
 Each bot runs as a separate `main_paper.py` (or `main_live.py`) subprocess managed by the portal.
