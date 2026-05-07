@@ -58,13 +58,13 @@ class ScheduleGuard:
 
     @staticmethod
     def _time_in_window(current: str, ft: str, tt: str) -> bool:
-        """True als `current` (HH:MM) binnen [ft, tt] valt.
+        """True if `current` (HH:MM) falls within [ft, tt].
 
-        Ondersteunt overnight windows: als ft > tt (b.v. 22:00 → 06:00)
-        is het venster geldig als current >= ft OF current <= tt.
-        Voor day-spanning windows checkt is_open() alleen de start-dag —
-        een operator die Mon 22:00 → Tue 06:00 wil moet beide dagen in
-        window.days zetten.
+        Supports overnight windows: if ft > tt (e.g. 22:00 → 06:00)
+        the window is valid when current >= ft OR current <= tt.
+        For day-spanning windows is_open() only checks the start
+        day — an operator who wants Mon 22:00 → Tue 06:00 must put
+        both days in window.days.
         """
         if ft <= tt:
             return ft <= current <= tt
