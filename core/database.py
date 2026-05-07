@@ -643,7 +643,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
                     f"{_DESTRUCTIVE_OPT_IN_ENV}=1 set. A pre-migration "
                     f"backup will be created automatically at "
                     f"logs/pre-migration-backup-YYYYMMDD-HHMMSS.db.\n"
-                    f"See docs/runbook.md section 'Schema migrations' "
+                    f"See docs/OPERATIONS.md section 'Schema migrations' "
                     f"for details including restore procedure."
                 )
             backup_path = _create_pre_migration_backup()

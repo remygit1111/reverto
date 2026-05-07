@@ -212,8 +212,8 @@ make start           # portal boots, registry scans config/bots/<uid>/
 The migration script (`scripts/migrate_to_user_fs.py`) is
 idempotent: a second run on an already-migrated layout is a
 no-op. System files (`reverto.db`, `audit.log`, etc.) are never
-touched. See `docs/OPERATIONS.md` "Filesystem migration
-(Phase 2)" for the step-by-step.
+touched. The script ran once during the pre-MT → v3/v4 transition;
+fresh installs on v4+ do not need it.
 
 
 ## Persistence layer (post-v22 refactor)
@@ -437,7 +437,7 @@ with the exchange-credential pattern, Phase 2 per-user filesystem).
 Requires BOTH the current password AND a current valid TOTP code
 — a stolen session alone or a stolen device alone is insufficient.
 For operator-side recovery when a user has lost the authenticator
-app, see `docs/runbook.md` "TOTP recovery".
+app, see `docs/OPERATIONS.md` "TOTP recovery".
 
 ### Layer 3 — Session cookies
 
@@ -479,7 +479,8 @@ Detailed design rationale + threat model:
   engine decides `pause` vs `stop`. `to_dict()`/`from_dict()` let the
   peak survive restarts.
 - **core.credentials** — Fernet-encrypted at rest. `rotate_fernet_key`
-  mass re-encrypts every credential atomically (see runbook).
+  mass re-encrypts every credential atomically (see OPERATIONS.md
+  "Credential rotation").
 - **live.order_reconciliation** — tracks pending orders + timeouts.
   Scaffolding only in Phase 1; Phase 3 wires the `fetch_order` polling
   branch.
