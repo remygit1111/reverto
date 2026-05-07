@@ -120,7 +120,7 @@ user password/role/session_epoch data).
 To proceed, restart with REVERTO_DESTRUCTIVE_MIGRATE=1 set. A
 pre-migration backup will be created automatically at
 logs/pre-migration-backup-YYYYMMDD-HHMMSS.db.
-See docs/runbook.md section 'Schema migrations' for details
+See docs/OPERATIONS.md section 'Schema migrations' for details
 including restore procedure.
 ```
 
@@ -177,6 +177,95 @@ make start
 
 The backup is a full SQLite file; `sqlite3 <backup>.db
 'PRAGMA user_version'` shows which schema version it is on.
+
+
+## Rollback procedure
+
+When a deploy causes a regression, use the rollback script
+(`scripts/rollback.sh`) to revert to a known-good state. The
+ad-hoc `git revert && make deploy` flow is replaced with a single
+scripted entry point that includes safety checks for
+schema-migration commits + confirmation prompts.
+
+### Quick rollback (most common)
+
+From the production server:
+
+```bash
+cd ~/reverto
+make rollback
+```
+
+This rolls back **1 commit**, resets git HEAD, and restarts the
+portal. Bots keep running during the restart (only the portal
+process is affected). The script prints a full plan and waits
+for your `y` before doing anything destructive.
+
+### Rolling back further
+
+```bash
+make rollback ARGS=3              # last 3 commits
+make rollback ARGS="--to abc123"  # to a specific SHA
+```
+
+### Schema-migration WARNING
+
+If any commit being rolled back touched `core/database.py`, the
+script halts and requires explicit confirmation. Schema migrations
+are forward-only in Reverto — older code does not know how to
+read data written against a newer schema, so a naive rollback
+leaves the DB + code out of sync.
+
+**If you get the migration warning, choose one:**
+
+- **Option A — Restore DB from backup (safest):**
+
+  ```bash
+  # 1. Stop the portal first
+  cd ~/reverto
+  make stop
+
+  # 2. Restore the pre-migration backup
+  cp logs/pre-migration-backup-YYYYMMDD-HHMMSS.db logs/reverto.db
+
+  # 3. Now the rollback is safe
+  make rollback
+  ```
+
+- **Option B — Fix forward (preferred for most cases):**
+
+  Instead of rolling back, write a new commit that addresses the
+  regression. Keeps schema + code aligned and leaves a cleaner
+  git history. Schema rollback is the exception, not the rule.
+
+### What rollback does NOT do
+
+- **Does NOT** touch bots — they keep running with their existing
+  subprocesses + state files.
+- **Does NOT** restore the DB from backup — see the
+  schema-migration section above.
+- **Does NOT** push to the remote — the reset is local-only until
+  you explicitly `git push --force-with-lease origin main`. Only
+  push if you want other operators pulling the reverted state.
+
+### Reverse a rollback
+
+If you want to undo the rollback itself:
+
+```bash
+git reflog              # find the previous HEAD
+git reset --hard <prev-sha>
+make restart
+```
+
+### Verify rollback success
+
+After every rollback:
+
+1. Open the portal in a browser — confirm the UI loads.
+2. `tail -30 logs/portal.log` — confirm the portal started cleanly.
+3. `ps aux | grep main_paper` — confirm bots are still running.
+4. Test the specific flow that was broken pre-rollback.
 
 
 ## Backup and restore

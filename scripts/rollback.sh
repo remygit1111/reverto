@@ -13,7 +13,7 @@
 #   ./scripts/rollback.sh --to <sha>   # Rollback to a specific commit
 #
 # Must be run from the reverto project root on the production
-# machine (SSH to the server first). See docs/runbook.md section
+# machine (SSH to the server first). See docs/OPERATIONS.md section
 # "Rollback procedure" for the full flow, safety notes, and
 # reverse-a-rollback steps.
 
@@ -96,7 +96,7 @@ if [ -n "$MIGRATION_COMMITS" ]; then
     echo "  2. Write a manual SQL downgrade, then run rollback"
     echo "  3. Fix forward (new commit that reverts behaviour) instead"
     echo ""
-    echo "See docs/runbook.md section 'Rollback procedure' for the"
+    echo "See docs/OPERATIONS.md section 'Rollback procedure' for the"
     echo "restore-from-backup flow."
     echo ""
     read -r -p "Proceed anyway? [y/N] " REPLY
