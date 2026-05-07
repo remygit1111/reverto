@@ -223,8 +223,8 @@ class BotConfig(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        # Strip eerst control chars (ANSI escapes, null bytes) zodat een
-        # YAML met "BotA\x1b[31m" niet via logs richting dashboard lekt.
+        # Strip control chars first (ANSI escapes, null bytes) so a
+        # YAML with "BotA\x1b[31m" doesn't leak via logs to the dashboard.
         cleaned = "".join(c for c in v if ord(c) >= 32 or c in "\t").strip()
         if not (1 <= len(cleaned) <= 100):
             raise ValueError("name must be 1-100 characters after stripping control chars")

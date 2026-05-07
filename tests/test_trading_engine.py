@@ -217,13 +217,13 @@ class TestDCA:
             e._check_dca(d, d.orders[-1].price * 0.975)
         assert d.dca_count == 4
         e._check_dca(d, d.orders[-1].price * 0.975)
-        assert d.dca_count == 4  # geen 5e DCA
+        assert d.dca_count == 4  # no 5th DCA
 
     def test_no_cascade_single_call(self):
         e = _engine(spacing=2.5, max_orders=5); d = _deal(80000.0)
         e.state.open_deal(d)
-        e._check_dca(d, 70000.0)   # grote daling, raakt meerdere niveaus
-        assert d.dca_count == 1    # maar slechts 1 order per call
+        e._check_dca(d, 70000.0)   # large drop, crosses multiple levels
+        assert d.dca_count == 1    # but only 1 order per call
 
     def test_multiplier_sizing(self):
         e = _engine(spacing=2.5, mult=1.5, base_size=0.001)

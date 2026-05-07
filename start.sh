@@ -1,6 +1,6 @@
 #!/bin/bash
-# start.sh — Start het Reverto web portal
-# De bots start je via het portal of met:
+# start.sh — Start the Reverto web portal
+# Start bots via the portal or with:
 #   python3 main_paper.py --config config/bots/xxx.yaml
 
 cd "$(dirname "$0")"
@@ -39,7 +39,7 @@ fi
 PORTAL_PID_FILE="logs/pids/portal.pid"
 mkdir -p logs/pids
 
-# Check of portal al draait
+# Check if the portal is already running
 if [ -f "$PORTAL_PID_FILE" ]; then
     PID=$(cat "$PORTAL_PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
@@ -51,21 +51,21 @@ if [ -f "$PORTAL_PID_FILE" ]; then
     fi
 fi
 
-# Start portal op achtergrond
-# Note: het PID bestand wordt door main_web.py zelf geschreven via atexit.
-# Wij schrijven hier GEEN $! meer — dat gaf een race condition waarbij
-# het PID van het nohup shell-proces werd opgeslagen in plaats van Python.
+# Start the portal in the background
+# Note: main_web.py writes the PID file itself via atexit. We do
+# NOT write $! here anymore — that produced a race condition where
+# the PID of the nohup shell process was stored instead of Python's.
 #
-# stdout/stderr gaan naar portal.boot.log (NIET portal.log). Python's
-# RotatingFileHandler in main_web.py schrijft zelf naar portal.log —
-# als de shell ook >> portal.log tee't krijgen we elke regel dubbel,
-# omdat de StreamHandler van Python ook nog naar stderr schrijft en
-# die redirection dan in portal.log landt. portal.boot.log vangt
-# alleen pre-logger crashes op (Python import-fouten e.d.).
+# stdout/stderr go to portal.boot.log (NOT portal.log). Python's
+# RotatingFileHandler in main_web.py writes to portal.log itself —
+# if the shell also `>> portal.log` tee's it we'd get every line
+# twice, because Python's StreamHandler also writes to stderr and
+# that redirection would land in portal.log. portal.boot.log only
+# captures pre-logger crashes (Python import errors etc.).
 echo "🚀 Starting Reverto portal..."
 nohup .venv/bin/python3 main_web.py >> logs/portal.boot.log 2>&1 &
 
-# Wacht tot main_web.py zijn eigen PID bestand heeft geschreven
+# Wait until main_web.py has written its own PID file
 for i in $(seq 1 10); do
     sleep 0.5
     if [ -f "$PORTAL_PID_FILE" ]; then

@@ -1,44 +1,44 @@
 # Makefile — Reverto
-# Gebruik: make <target>
-# Vereist: GNU make, .venv aanwezig
+# Usage: make <target>
+# Requires: GNU make, .venv present
 
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
 .PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin seed-findings deploy deploy-marketing rollback backup restore
 
-# ── Standaard target ──────────────────────────────────────────────────────────
+# ── Default target ───────────────────────────────────────────────────────────
 help:
 	@echo ""
-	@echo "  REVERTO — beschikbare commando's"
+	@echo "  REVERTO — available commands"
 	@echo ""
-	@echo "  make setup           Maak standaard bot YAML bestanden aan (idempotent)"
-	@echo "  make start           Start het portal op de achtergrond"
-	@echo "  make stop            Stop alleen het portal (bots blijven draaien)"
-	@echo "  make stop-all        Stop portal EN alle bots (machine shutdown)"
-	@echo "  make restart         Herstart het portal, bots blijven draaien"
-	@echo "  make status          Toon welke processen draaien"
-	@echo "  make log             Volg de portal log live (Ctrl+C om te stoppen)"
-	@echo "  make log b=naam      Volg de log van een specifieke bot"
-	@echo "  make log a=1         Volg de audit log (start/stop/restart events)"
-	@echo "  make test            Voer alle pytest tests uit"
-	@echo "  make lint            Controleer code met ruff"
-	@echo "  make backtest        Voer backtest uit met standaard config"
-	@echo "  make backtest tf=4h  Backtest op 4h candles"
-	@echo "  make clean           Verwijder stale PID bestanden en .tmp state files"
+	@echo "  make setup           Create default bot YAML files (idempotent)"
+	@echo "  make start           Start the portal in the background"
+	@echo "  make stop            Stop only the portal (bots keep running)"
+	@echo "  make stop-all        Stop the portal AND all bots (machine shutdown)"
+	@echo "  make restart         Restart the portal, bots keep running"
+	@echo "  make status          Show which processes are running"
+	@echo "  make log             Follow the portal log live (Ctrl+C to stop)"
+	@echo "  make log b=name      Follow the log of a specific bot"
+	@echo "  make log a=1         Follow the audit log (start/stop/restart events)"
+	@echo "  make test            Run all pytest tests"
+	@echo "  make lint            Check code with ruff"
+	@echo "  make backtest        Run backtest with default config"
+	@echo "  make backtest tf=4h  Backtest on 4h candles"
+	@echo "  make clean           Remove stale PID files and .tmp state files"
 	@echo ""
 
-# ── Setup: zorg dat de bots-directory bestaat ────────────────────────────────
-# We genereren geen default YAML bestanden meer — bots worden via de web
-# portal aangemaakt zodat een fresh clone niet meteen voorbeeld-bots heeft
-# die per ongeluk gestart kunnen worden.
+# ── Setup: ensure the bots directory exists ──────────────────────────────────
+# We no longer generate default YAML files — bots are created via the web
+# portal so a fresh clone does not immediately have example bots that
+# could be started by accident.
 
 setup:
 	@mkdir -p config/bots
 	@echo "Create bots via the web portal."
-	@echo "Setup klaar"
+	@echo "Setup done"
 
-# ── Portal start/stop/restart ─────────────────────────────────────────────────
+# ── Portal start/stop/restart ────────────────────────────────────────────────
 start:
 	@bash start.sh
 
@@ -55,60 +55,60 @@ restart: stop
 status:
 	@bash status.sh
 
-# ── Audit-findings tracker sync ───────────────────────────────────────────────
-# Idempotent re-import van data/findings_seed.yaml naar de audit_findings
-# DB-tabel via INSERT OR IGNORE. Operator-edits via de admin-UI (status,
-# notes, resolution_ref) blijven behouden — het script raakt alleen
-# nieuwe finding_ids aan. Veilig om herhaald te draaien.
+# ── Audit-findings tracker sync ──────────────────────────────────────────────
+# Idempotent re-import of data/findings_seed.yaml into the audit_findings
+# DB table via INSERT OR IGNORE. Operator edits via the admin UI (status,
+# notes, resolution_ref) are preserved — the script only touches new
+# finding_ids. Safe to run repeatedly.
 #
-# Wordt automatisch aangeroepen door `make deploy` zodat YAML-toevoegingen
-# (nieuwe pentest-batch) na een `git pull` direct in de admin-UI verschijnen.
+# Called automatically by `make deploy` so YAML additions (a new
+# pentest batch) appear in the admin UI immediately after a `git pull`.
 seed-findings:
 	@echo ""
 	@echo "  [seed-findings] Syncing data/findings_seed.yaml → audit_findings DB…"
 	@$(PYTHON) scripts/seed_audit_findings.py
 	@echo ""
 
-# ── Remote deployment (Reverto-Server) ───────────────────────────────────────
-# Workflow: dev op Reverto-Dev merged PR naar main, deploy vanaf Dev via:
-#   ssh bot@192.168.178.227 'cd ~/reverto && make deploy'
+# ── Remote deployment ────────────────────────────────────────────────────────
+# Workflow: dev merges PR to main, then deploys via:
+#   ssh bot@<host> 'cd ~/reverto && make deploy'
 #
-# Target doet ALLEEN git pull — geen automatische bot-restarts. De operator
-# moet zelf via de portal-UI beslissen welke bots te herstarten (of via
-# `make restart` voor het portal zelf). Bot-restart-automation vereist een
-# aparte design-sessie over bot-state-preservation en het valt buiten de
-# scope van deploy-triviality.
+# Target ONLY does git pull — no automatic bot restarts. The operator
+# decides via the portal UI which bots to restart (or via
+# `make restart` for the portal itself). Bot-restart automation
+# requires a separate design session about bot-state preservation
+# and is out of scope of deploy triviality.
 #
-# Bij een destructive schema migration (zie docs/runbook.md "Schema
-# migrations") weigert init_db() te boot'en zonder de expliciete
-# REVERTO_DESTRUCTIVE_MIGRATE=1 opt-in; die flag wordt NOOIT in deze
-# target gezet — destructive migrations horen expliciet, niet via een
-# routine-deploy.
+# On a destructive schema migration (see docs/OPERATIONS.md "Schema
+# migrations"), init_db() refuses to boot without the explicit
+# REVERTO_DESTRUCTIVE_MIGRATE=1 opt-in; that flag is NEVER set in
+# this target — destructive migrations belong to an explicit step,
+# not a routine deploy.
 deploy:
 	@echo ""
-	@echo "  [deploy] Reverto-Server pulling latest main…"
+	@echo "  [deploy] pulling latest main…"
 	@echo ""
 	@git pull origin main
 	@echo ""
 	@echo "  [deploy] git pull complete."
 	@$(MAKE) seed-findings
 	@echo "  [deploy] Next steps (manual):"
-	@echo "    - Restart het portal als code-wijzigingen dat vereisen:"
+	@echo "    - Restart the portal if code changes require it:"
 	@echo "        make restart"
-	@echo "    - Herstart relevante bots via de portal-UI"
-	@echo "    - Bij schema-migration prompts: zie docs/runbook.md"
-	@echo "      sectie 'Schema migrations' voor de opt-in flow"
+	@echo "    - Restart relevant bots via the portal UI"
+	@echo "    - On schema-migration prompts: see docs/OPERATIONS.md"
+	@echo "      section 'Schema migrations' for the opt-in flow"
 	@echo ""
 
 # ── Deploy marketing site (reverto.bot, static) ─────────────────────────────
 # Rsyncs marketing/ to /var/www/reverto-marketing/ on the production VPS,
 # sets ownership to caddy:caddy, and applies 755/644 permissions.
 #
-# Run this ON the VPS (the sudo chown/chmod calls are local). From
-# Reverto-Dev (WSL2), SSH to the VPS first:
+# Run this ON the VPS (the sudo chown/chmod calls are local). From a
+# dev machine, SSH to the VPS first:
 #     ssh bot@<vps> 'cd ~/reverto && git pull && make deploy-marketing'
 #
-# KRITIEK: the data/ subdirectory at /var/www/reverto-marketing/data/ is
+# CRITICAL: the data/ subdirectory at /var/www/reverto-marketing/data/ is
 # owned by bot:bot (the FastAPI process writes JSON snapshots there via
 # core/marketing_export.py). Touching its ownership would break auto-
 # export. PR 3 of the marketing-app split fixed a latent bug where the
@@ -146,7 +146,7 @@ deploy-marketing:
 # Scripted rollback of the production portal. Resets HEAD by N commits
 # (default 1) or to a specific SHA (ARGS="--to <sha>"), then restarts.
 # Warns on schema-migration commits; the operator confirms each
-# destructive step. See docs/runbook.md section "Rollback procedure"
+# destructive step. See docs/OPERATIONS.md section "Rollback procedure"
 # for the full flow + safety notes.
 rollback:
 	@bash scripts/rollback.sh $(ARGS)
@@ -155,7 +155,7 @@ rollback:
 # `make backup` writes a timestamped snapshot to backups/<ts>/
 # (DB + credentials + keys). Intended for cron (daily at 03:00 UTC)
 # but also runnable ad-hoc. Retention: 7 days daily + 4 weeks
-# weekly + 3 months monthly. See docs/runbook.md section
+# weekly + 3 months monthly. See docs/OPERATIONS.md section
 # "Backup and restore" for scheduling + off-host follow-ups.
 #
 # `make restore BACKUP=backups/<ts>` restores a specific snapshot.
@@ -167,7 +167,7 @@ backup:
 restore:
 	@bash scripts/restore.sh $(BACKUP)
 
-# ── Logs volgen ───────────────────────────────────────────────────────────────
+# ── Tail logs ────────────────────────────────────────────────────────────────
 log:
 ifdef b
 	@tail -f logs/$(b).log
@@ -177,15 +177,15 @@ else
 	@tail -f logs/portal.log
 endif
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+# ── Tests ────────────────────────────────────────────────────────────────────
 test:
 	@$(PYTHON) -m pytest tests/ -v
 
-# ── Lint ──────────────────────────────────────────────────────────────────────
+# ── Lint ─────────────────────────────────────────────────────────────────────
 lint:
-	@$(PYTHON) -m ruff check . 2>/dev/null || echo "ruff niet geinstalleerd — pip install ruff"
+	@$(PYTHON) -m ruff check . 2>/dev/null || echo "ruff not installed — pip install ruff"
 
-# ── Backtest ──────────────────────────────────────────────────────────────────
+# ── Backtest ─────────────────────────────────────────────────────────────────
 backtest:
 	@$(PYTHON) main_backtest.py \
 		--config config/bots/btc_backtest.yaml \
@@ -193,16 +193,16 @@ backtest:
 		--limit $(or $(limit),1000) \
 		--balance $(or $(bal),0.1)
 
-# ── Opruimen ─────────────────────────────────────────────────────────────────
+# ── Cleanup ─────────────────────────────────────────────────────────────────
 clean:
-	@echo "Opruimen..."
+	@echo "Cleaning up..."
 	@find logs/pids -name "*.pid" 2>/dev/null | while read f; do \
 		PID=$$(cat "$$f"); \
-		kill -0 "$$PID" 2>/dev/null || (echo "  Verwijder stale PID: $$f" && rm -f "$$f"); \
+		kill -0 "$$PID" 2>/dev/null || (echo "  Removing stale PID: $$f" && rm -f "$$f"); \
 	done
-	@find logs -name "*.tmp" -delete 2>/dev/null && echo "  .tmp bestanden verwijderd" || true
-	@find . -name "*Zone.Identifier" -delete 2>/dev/null && echo "  Zone.Identifier bestanden verwijderd" || true
-	@echo "Klaar"
+	@find logs -name "*.tmp" -delete 2>/dev/null && echo "  .tmp files removed" || true
+	@find . -name "*Zone.Identifier" -delete 2>/dev/null && echo "  Zone.Identifier files removed" || true
+	@echo "Done"
 beep:
 	@bash scripts/notify.sh
 

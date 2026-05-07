@@ -55,7 +55,7 @@
 ```
 web/
 ├── app.py                 ← FastAPI app + middleware + WS + shared helpers
-│                             (1447 regels, was 2374 pre-v22)
+│                             (1447 lines, was 2374 pre-v22)
 ├── metrics.py             ← Prometheus metrics + classify_error
 ├── templates/
 │   └── index.html         ← SPA shell
@@ -80,38 +80,38 @@ web/
     └── exchanges.py       ← /api/exchanges/*
 ```
 
-**Design principes:**
+**Design principles:**
 
-- Elke route module is onafhankelijk van andere route modules —
-  zero cross-imports binnen `web/routes/`.
-- Alle modules importeren gedeelde state (limiter, registry,
-  session helpers, `_BOT_SLUG_RE`, ...) alleen uit `web.app`.
-- Circulair-import patroon werkt door `include_router()` aan te
-  roepen aan de bodem van `web/app.py` — op dat moment zijn alle
-  module-level namen in `web.app` al gedefinieerd.
-- WebSocket endpoints (`/ws/logs/{slug}`, `/ws/state`) blijven
-  in `web/app.py` omdat `include_router` niet cleanly met
-  `BaseHTTPMiddleware` + async WS auth samenwerkt.
+- Each route module is independent of other route modules —
+  zero cross-imports inside `web/routes/`.
+- All modules import shared state (limiter, registry, session
+  helpers, `_BOT_SLUG_RE`, ...) only from `web.app`.
+- The circular-import pattern works by calling `include_router()`
+  at the bottom of `web/app.py` — at that point all module-level
+  names in `web.app` are already defined.
+- WebSocket endpoints (`/ws/logs/{slug}`, `/ws/state`) stay in
+  `web/app.py` because `include_router` does not work cleanly
+  with `BaseHTTPMiddleware` + async WS auth.
 
-## Multi-tenant foundation (Fase 1)
+## Multi-tenant foundation (Phase 1)
 
-Reverto is voorbereid op multi-tenant deployment. Schema versie 3
-introduceert een `users` tabel en elke OWNED tabel (`deals`, `orders`,
-`chart_annotations`, `backtest_runs`) heeft een `user_id INTEGER NOT
-NULL REFERENCES users(id)` kolom + een composite index op
+Reverto is prepared for multi-tenant deployment. Schema version 3
+introduces a `users` table, and every OWNED table (`deals`, `orders`,
+`chart_annotations`, `backtest_runs`) has a `user_id INTEGER NOT
+NULL REFERENCES users(id)` column plus a composite index on
 `(user_id, bot_slug)`.
 
-Voor Fase 1 draait alles op `user_id=1` (de geseede admin row). De
-request-laag resolvt via `_request_user` in `web/app.py` die een
-`User` instance retourneert; Fase 2 zal die lookup aan de session
-cookie hangen. Het store-interface (`core/deal_store.py`) vereist
-`user_id` expliciet op elke functie — er zijn geen stille defaults.
-Die keuze voorkomt dat een toekomstige callsite per ongeluk cross-
-user data lekt.
+For Phase 1 everything runs on `user_id=1` (the seeded admin row).
+The request layer resolves via `_request_user` in `web/app.py`,
+which returns a `User` instance; Phase 2 will tie that lookup to
+the session cookie. The store interface (`core/deal_store.py`)
+requires `user_id` explicitly on every function — there are no
+silent defaults. That choice prevents a future call site from
+accidentally leaking cross-user data.
 
-### Tabellen met user_id FK
+### Tables with a user_id FK
 
-| Tabel              | Index                                |
+| Table              | Index                                |
 |--------------------|--------------------------------------|
 | deals              | idx_deals_user_id, idx_deals_user_bot |
 | orders             | idx_orders_user_id                    |
@@ -120,36 +120,37 @@ user data lekt.
 
 ### Migration contract
 
-Van pre-MT (SCHEMA_VERSION ≤ 2) naar v3 is een **destructive drop +
-recreate** — een `ALTER TABLE` die een NOT NULL FK kolom toevoegt
-aan een bestaande tabel met rijen is in SQLite een volledige
-table-rewrite met zijn eigen failure modes. `_migrate_schema` logt
-een WARNING, dropt owned tabellen in FK-safe volgorde en laat
-`_SCHEMA_STATEMENTS` het v3 schema installeren. `scripts/reset_db.py`
-backupt `logs/reverto.db` + elke `*.state.json` naar `.pre_mt.<ts>`
-voordat de eerste boot op v3 plaatsvindt.
+From pre-MT (SCHEMA_VERSION ≤ 2) to v3 is a **destructive drop +
+recreate** — an `ALTER TABLE` that adds a NOT NULL FK column to an
+existing table with rows is, in SQLite, a full table rewrite with
+its own failure modes. `_migrate_schema` logs a WARNING, drops
+owned tables in FK-safe order, and lets `_SCHEMA_STATEMENTS`
+install the v3 schema. `scripts/reset_db.py` backs up
+`logs/reverto.db` and every `*.state.json` to `.pre_mt.<ts>`
+before the first boot on v3.
 
 ### User resolution (engines)
 
-`PaperEngine.__init__` en `LiveEngine.__init__` krijgen `user_id=1`
-als default; `main_paper.py` en `main_live.py` geven het expliciet
-mee. Elke `deal_store` call binnen de engine gebruikt
-`self.user_id`. Fase 2 zal de user afleiden uit de bot-YAML folder
-(per-user directory layout) zonder verdere signature-wijzigingen.
+`PaperEngine.__init__` and `LiveEngine.__init__` receive
+`user_id=1` as default; `main_paper.py` and `main_live.py` pass
+it explicitly. Every `deal_store` call inside the engine uses
+`self.user_id`. Phase 2 will derive the user from the bot-YAML
+folder (per-user directory layout) without further signature
+changes.
 
-### Credentials (Fase 1 = global)
+### Credentials (Phase 1 = global)
 
-`core/credentials.py` heeft `user_id` verplicht gemaakt maar gebruikt
-het nog niet — Phase 1 deelde één `logs/credentials.json` + één
-Fernet master key tussen alle users. Phase 2 (hieronder) wire't de
-per-user key files + per-exchange `.enc` files echt aan.
+`core/credentials.py` requires `user_id` but does not yet use it
+— Phase 1 shared one `logs/credentials.json` + one Fernet master
+key between all users. Phase 2 (below) actually wires up the
+per-user key files and per-exchange `.enc` files.
 
-## Multi-tenant filesystem layout (Fase 2)
+## Multi-tenant filesystem layout (Phase 2)
 
-Alle user-specifieke assets zijn gescoped per `user_id`. Path
-construction gebeurt via `core/paths.py`; nooit hardcoded strings.
+All user-specific assets are scoped per `user_id`. Path
+construction goes through `core/paths.py`; never hardcoded strings.
 
-| Artefact          | Pad                                                  |
+| Artefact          | Path                                                 |
 |-------------------|------------------------------------------------------|
 | Bot YAML config   | `config/bots/<user_id>/<slug>.yaml`                 |
 | Engine state      | `logs/<user_id>/<slug>.state.json`                  |
@@ -160,59 +161,59 @@ construction gebeurt via `core/paths.py`; nooit hardcoded strings.
 | Per-user Fernet   | `keys/<user_id>.key`             (chmod 0600)       |
 | Per-exchange enc  | `credentials/<user_id>/<exchange>.enc`  (0600)      |
 
-Systeem-bestanden (`logs/reverto.db`, `logs/audit.log`,
+System files (`logs/reverto.db`, `logs/audit.log`,
 `logs/portal.log`, `logs/.credentials.key`,
-`logs/.api_key_ephemeral`) blijven op hun bestaande locatie —
-die zijn operator/system state, niet tenant data. Phase-3a heeft
-`logs/.auth.json` uit de runtime-paden verwijderd; het bestand
-wordt op eerste `init_db()` automatisch naar
-`.auth.json.pre_phase3.<ts>` gearchiveerd.
+`logs/.api_key_ephemeral`) stay in their existing location — they
+are operator/system state, not tenant data. Phase-3a removed
+`logs/.auth.json` from the runtime paths; on the first
+`init_db()` it is automatically archived to
+`.auth.json.pre_phase3.<ts>`.
 
 ### Composite bot slug
 
-De `BotRegistry` keyt op `(user_id, slug)` in plaats van alleen
-`slug`. Twee verschillende users kunnen dezelfde slug-naam
-gebruiken zonder conflict — hun state/log/pid/config bestanden
-leven elk onder hun eigen `<user_id>/` subdir. `BotInfo.user_id`
-is het nieuwe veld dat door elke file-path helper wordt gelezen.
+The `BotRegistry` keys on `(user_id, slug)` instead of just
+`slug`. Two different users can use the same slug name without
+conflict — their state/log/pid/config files each live under their
+own `<user_id>/` subdir. `BotInfo.user_id` is the new field that
+every file-path helper reads.
 
-### Per-user Fernet key — cryptografische isolatie
+### Per-user Fernet key — cryptographic isolation
 
-`core/credentials.py` onderhoudt twee onafhankelijke key-systemen:
+`core/credentials.py` maintains two independent key systems:
 
-- **Per-user keys** (`keys/<user_id>.key`) beschermen exchange
-  credentials. Elke user heeft een eigen Fernet key, dus user 2
-  kan user 1's `.enc` ciphertext fundamenteel niet decrypten
-  zelfs bij volledige filesystem-toegang. Dit is de primaire
-  security property van Fase 2.
-- **System key** (`logs/.credentials.key`) blijft bestaan voor
+- **Per-user keys** (`keys/<user_id>.key`) protect exchange
+  credentials. Each user has their own Fernet key, so user 2
+  fundamentally cannot decrypt user 1's `.enc` ciphertext even
+  with full filesystem access. This is the primary security
+  property of Phase 2.
+- **System key** (`logs/.credentials.key`) remains for
   `save_encrypted` / `load_encrypted` — generic Fernet helpers
-  voor eventuele system-level encrypted files buiten de exchange-
-  credentials scope. Phase-3a heeft de portal-auth blob
-  (`.auth.json`) afgeschaft; password_hash + session_epoch leven
-  nu in `users` (DB-backed, via `core.user_store`).
+  for any system-level encrypted files outside the
+  exchange-credentials scope. Phase-3a deprecated the portal-auth
+  blob (`.auth.json`); password_hash + session_epoch now live in
+  `users` (DB-backed, via `core.user_store`).
 
-`rotate_fernet_key(user_id=...)` is nu per-user: rotate user 1's
-key + re-encrypt zijn hele `credentials/1/` tree zonder user 2 te
-raken. De commit-order (key first, .enc files second) is
-ongewijzigd zodat een crash mid-rotation recoverable blijft via
-de timestamped `.bak.<ts>` backup.
+`rotate_fernet_key(user_id=...)` is now per-user: rotate user 1's
+key + re-encrypt their entire `credentials/1/` tree without
+touching user 2. The commit order (key first, .enc files second)
+is unchanged so a crash mid-rotation remains recoverable via the
+timestamped `.bak.<ts>` backup.
 
-### Migratie contract
+### Migration contract
 
-Van Phase-1 flat layout naar Phase-2 per-user layout:
+From Phase-1 flat layout to Phase-2 per-user layout:
 
 ```bash
-make reset-db        # als je ook de DB wilt resetten (v3 schema)
-make migrate-fs      # verplaatst bot configs + state/log/pid + credentials
-make start           # portal boot, registry scans config/bots/<uid>/
+make reset-db        # if you also want to reset the DB (v3 schema)
+make migrate-fs      # moves bot configs + state/log/pid + credentials
+make start           # portal boots, registry scans config/bots/<uid>/
 ```
 
-Het migratie-script (`scripts/migrate_to_user_fs.py`) is
-idempotent: een tweede run op een al-gemigreerde layout doet
-niks. System files (`reverto.db`, `audit.log`, etc.) worden
-nooit aangeraakt. Zie `docs/runbook.md` "Filesystem migration
-(Fase 2)" voor de stap-voor-stap.
+The migration script (`scripts/migrate_to_user_fs.py`) is
+idempotent: a second run on an already-migrated layout is a
+no-op. System files (`reverto.db`, `audit.log`, etc.) are never
+touched. The script ran once during the pre-MT → v3/v4 transition;
+fresh installs on v4+ do not need it.
 
 
 ## Persistence layer (post-v22 refactor)
@@ -220,24 +221,24 @@ nooit aangeraakt. Zie `docs/runbook.md` "Filesystem migration
 ```
 paper/
 ├── paper_engine.py        ← Engine orchestrator + tick loop
-│                             (1397 regels, was 1542 pre-v22)
+│                             (1397 lines, was 1542 pre-v22)
 ├── paper_state.py         ← PaperState, PaperDeal, PaperOrder
 └── state_io.py            ← StateIO class (NEW v22)
-    ├── load()             — met orphan .tmp cleanup
+    ├── load()             — with orphan .tmp cleanup
     ├── write()            — atomic tmp + replace
-    ├── mark_stopped()     — preserveert overige velden
+    ├── mark_stopped()     — preserves the other fields
     ├── cleanup_orphan_tmps()
     └── deal_to_dict / dict_to_deal
 ```
 
-`StateIO` is verantwoordelijk voor alle `state.json` persistence.
-`PaperEngine._load_state` / `_write_state` / `_clear_state` delegeren
-naar `self._state_io`. Per-bot file isolation maakt locking overbodig
-(een bot heeft altijd maar één writer).
+`StateIO` is responsible for all `state.json` persistence.
+`PaperEngine._load_state` / `_write_state` / `_clear_state`
+delegate to `self._state_io`. Per-bot file isolation makes
+locking unnecessary (a bot always has only one writer).
 
-Backwards-compat: `paper.paper_engine` re-exporteert `_deal_to_dict`
-en `_dict_to_deal` als aliasen zodat bestaande tests de oude import-
-paden kunnen blijven gebruiken.
+Backwards-compat: `paper.paper_engine` re-exports `_deal_to_dict`
+and `_dict_to_deal` as aliases so existing tests can keep using
+the old import paths.
 
 ## Tick flow
 
@@ -266,24 +267,24 @@ engine.start()
 
 ## Deal-ID format (post-v25)
 
-Deals hebben een globally-unique id met format `YYYYMMDDHHMM-RRRR`
-(bv. `202604201430-8421`). De ISO-prefix geeft time-sortability en
-gemakkelijk debuggen ("welke deal is dit?"); de 4-digit random
-suffix voorkomt collisions binnen dezelfde minuut
-(10 000 mogelijkheden → 1-in-10 000 per bot per minuut).
+Deals have a globally-unique id with format `YYYYMMDDHHMM-RRRR`
+(e.g. `202604201430-8421`). The ISO prefix gives time-sortability
+and easy debugging ("which deal is this?"); the 4-digit random
+suffix prevents collisions inside the same minute (10 000
+possibilities → 1-in-10 000 per bot per minute).
 
-Generatie via `core/ids.py:generate_deal_id()`. Persistence via
-`core.deal_store.create_deal()` — INSERT-only, collisions raisen
-`sqlite3.IntegrityError`. De retry-on-collision logic leeft in
-`paper/paper_engine.py:_db_create_deal_with_retry` (max 3 attempts,
-mutatie van `deal.id` in-place zodat de caller na retry de nieuwe
-id gebruikt).
+Generation via `core/ids.py:generate_deal_id()`. Persistence via
+`core.deal_store.create_deal()` — INSERT-only, collisions raise
+`sqlite3.IntegrityError`. The retry-on-collision logic lives in
+`paper/paper_engine.py:_db_create_deal_with_retry` (max 3
+attempts, mutating `deal.id` in place so the caller uses the new
+id after a retry).
 
-Edge case: NTP-backward clock correcties kunnen de
-`YYYYMMDDHHMM-` prefix herhalen. De UNIQUE constraint op `deals.id`
-vangt dat en de retry regenereert de suffix. De compound
-probability van 3 opeenvolgende collisions is ~1e-12 — effectief
-onmogelijk.
+Edge case: NTP-backward clock corrections can repeat the
+`YYYYMMDDHHMM-` prefix. The UNIQUE constraint on `deals.id`
+catches that and the retry regenerates the suffix. The compound
+probability of 3 consecutive collisions is ~1e-12 — effectively
+impossible.
 
 ## State file lifecycle
 
@@ -307,71 +308,72 @@ swept by `_load_state` before any deal hydration.
 
 ### wipe-deals
 
-Complete reset van deal / order / annotation / backtest history.
-Behoudt users, bot-configs, credentials.
+Complete reset of deal / order / annotation / backtest history.
+Preserves users, bot configs, credentials.
 
 ```bash
 make wipe-deals
 ```
 
-Weigert te draaien als er actieve bot-subprocesses zijn (via
-pid-file scan + `os.kill(pid, 0)` liveness check). Neemt een
-exclusieve `fcntl.flock` op `logs/.wipe.lock` om concurrent wipes
-te voorkomen — twee parallelle wipe-deals processen kunnen elkaar
-niet destructief kruisen. Zie `docs/runbook.md` voor de volledige
+Refuses to run when there are active bot subprocesses (via
+pid-file scan + `os.kill(pid, 0)` liveness check). Takes an
+exclusive `fcntl.flock` on `logs/.wipe.lock` to prevent
+concurrent wipes — two parallel wipe-deals processes cannot
+destructively interleave. See `docs/OPERATIONS.md` for the full
 flow + recovery.
 
 ### Log level override
 
-Standaard loggen bot-subprocesses op INFO. Voor retrospective
-DEBUG-info:
+By default, bot subprocesses log at INFO. For retrospective DEBUG
+info:
 
 ```bash
 REVERTO_LOG_LEVEL=DEBUG make restart
 ```
 
-Werkt voor `main_paper.py` en `main_live.py`. Portal-UI heeft een
-aparte dropdown-filter per bot-log tab (ALL / WARNING+ERROR) —
-dat is client-side visibility, beïnvloedt niet wat naar disk
-geschreven wordt.
+Works for `main_paper.py` and `main_live.py`. The portal UI has a
+separate dropdown filter per bot-log tab (ALL / WARNING+ERROR) —
+that is client-side visibility, it does not affect what is
+written to disk.
 
 ### Bot config import / export / duplicate
 
-Beschikbaar via het kebab-menu (⋮) per bot-card in de portal.
+Available via the kebab menu (⋮) on each bot card in the portal.
 
-- **Export** produceert YAML met een metadata-header (Reverto
-  versie, export timestamp, origineel slug). Geen credentials,
-  geen state, geen deal-history — puur de strategy-config.
-- **Import** valideert het geüploade YAML via
-  `config.models.BotConfig` (volledige Pydantic schema-check).
-  Slug-conflict → 409; operator kiest een andere naam.
-- **Duplicate** is server-side, schoner dan export+import
-  round-trip. Ook alleen strategy; de duplicate start met lege
-  state en zonder history.
+- **Export** produces YAML with a metadata header (Reverto
+  version, export timestamp, original slug). No credentials, no
+  state, no deal history — purely the strategy config.
+- **Import** validates the uploaded YAML via
+  `config.models.BotConfig` (full Pydantic schema check).
+  Slug conflict → 409; operator picks another name.
+- **Duplicate** is server-side, cleaner than an export+import
+  round-trip. Also strategy-only; the duplicate starts with
+  empty state and no history.
 
 ### Admin provisioning (post-Phase-3a)
 
-Bij fresh install of na een destructieve schema-migratie (v<4 →
-v4, of toekomstige vergelijkbare bumps) is de `users.password_hash`
-voor de seeded admin-row `NULL`. Login is geblokkeerd tot
-`scripts/setup_admin.py` is gedraaid — typisch via:
+On a fresh install or after a destructive schema migration (v<4
+→ v4, or future similar bumps), `users.password_hash` for the
+seeded admin row is `NULL`. Login is blocked until
+`scripts/setup_admin.py` has been run — typically via:
 
 ```bash
 REVERTO_ADMIN_PW="<password>" make setup-admin
 ```
 
-Het script schrijft een bcrypt-hash (rounds=12) naar
-`users.password_hash` voor user_id=1. Zonder deze stap blijft elke
-login 401 omdat `verify_password()` in `core/user_store.py`
-fails-closed op NULL hash (zie `docs/security-model.md` Part 3.3).
+The script writes a bcrypt hash (rounds=12) to
+`users.password_hash` for user_id=1. Without this step every
+login returns 401 because `verify_password()` in
+`core/user_store.py` fails closed on a NULL hash (see
+`docs/security-model.md` Part 3.3).
 
-Destructieve schema-migraties zelf vereisen sinds audit v26-10
-(2026-04-20) een expliciete operator-opt-in via
-`REVERTO_DESTRUCTIVE_MIGRATE=1` bij `make start`, met
-auto-gegenereerde pre-migration backup naar
-`logs/pre-migration-backup-YYYYMMDD-HHMMSS.db`. Zie
-`docs/runbook.md` "Schema migrations" voor de volledige flow +
-restore-procedure.
+Destructive schema migrations themselves have, since audit v26-10
+(2026-04-20), required an explicit operator opt-in via
+`REVERTO_DESTRUCTIVE_MIGRATE=1` on `make start`, with an
+auto-generated pre-migration backup at
+`logs/pre-migration-backup-YYYYMMDD-HHMMSS.db`. See
+`docs/OPERATIONS.md` "Schema migrations" for the full flow +
+restore procedure.
 
 ## Authentication architecture (Phase B)
 
@@ -435,7 +437,7 @@ with the exchange-credential pattern, Phase 2 per-user filesystem).
 Requires BOTH the current password AND a current valid TOTP code
 — a stolen session alone or a stolen device alone is insufficient.
 For operator-side recovery when a user has lost the authenticator
-app, see `docs/runbook.md` "TOTP recovery".
+app, see `docs/OPERATIONS.md` "TOTP recovery".
 
 ### Layer 3 — Session cookies
 
@@ -477,7 +479,8 @@ Detailed design rationale + threat model:
   engine decides `pause` vs `stop`. `to_dict()`/`from_dict()` let the
   peak survive restarts.
 - **core.credentials** — Fernet-encrypted at rest. `rotate_fernet_key`
-  mass re-encrypts every credential atomically (see runbook).
+  mass re-encrypts every credential atomically (see OPERATIONS.md
+  "Credential rotation").
 - **live.order_reconciliation** — tracks pending orders + timeouts.
   Scaffolding only in Phase 1; Phase 3 wires the `fetch_order` polling
   branch.
@@ -501,25 +504,26 @@ Detailed design rationale + threat model:
   Follow the existing patterns — see `web/routes/exchanges.py` for the
   minimal 3-endpoint template.
 
-## Refactor roadmap — bewust uitgesteld
+## Refactor roadmap — deliberately deferred
 
-- **paper_engine.py TickLoop/DealMonitor extract** — overwogen v22,
-  uitgesteld. Alle tick-gerelateerde logica zit nu in één klasse.
-  Splitsen zou extract vereisen van `_monitor_open_deals`, `_check_entry`,
-  `_check_dca`, `_check_tp`, `_check_sl` — hoog risico op state-
-  synchronisatie bugs zonder directe architecturale winst. Herbeoordelen
-  wanneer de file boven 2000 regels groeit.
-- **_close_deal_at_price DRY refactor** — TP en SL branches hebben
-  structureel verschillende flows (SL trailing peak, TP indicator groups).
-  Refactor-risico > winst.
-- **Wick-slippage cap** — verandert PnL semantiek; bestaande tests
-  verankeren het huidige gedrag. Zinvol bij Phase 3 wanneer paper/live
-  divergence via echte slippage gemeten kan worden.
-- **Decimal precision voor DCA sizing** — Phase 3 blocker voor exchange
-  fill reconciliation. Exchange min-qty rounding compenseert in de
-  praktijk de float-drift tot dan.
-- **web/app.py verder splitsen** — 1447 regels resteren (middleware +
-  lifespan + shared helpers + WS + BotRegistry + auth-primitives). Verder
-  extract denkbaar (session helpers → `web/auth_primitives.py`, WS →
-  `web/websockets.py`), maar coupling met middleware maakt dit niet
-  triviaal. Niet urgent na v22 36% reductie.
+- **paper_engine.py TickLoop/DealMonitor extract** — considered in
+  v22, deferred. All tick-related logic sits in one class today.
+  Splitting would require extracting `_monitor_open_deals`,
+  `_check_entry`, `_check_dca`, `_check_tp`, `_check_sl` — high
+  risk of state-synchronisation bugs without direct architectural
+  gain. Revisit when the file grows past 2000 lines.
+- **_close_deal_at_price DRY refactor** — TP and SL branches have
+  structurally different flows (SL trailing peak, TP indicator
+  groups). Refactor risk > gain.
+- **Wick-slippage cap** — changes PnL semantics; existing tests
+  anchor the current behaviour. Worthwhile in Phase 3 once
+  paper/live divergence can be measured against real slippage.
+- **Decimal precision for DCA sizing** — Phase 3 blocker for
+  exchange fill reconciliation. Exchange min-qty rounding
+  compensates for the float drift in practice until then.
+- **Split web/app.py further** — 1447 lines remain (middleware +
+  lifespan + shared helpers + WS + BotRegistry + auth primitives).
+  Further extraction is conceivable (session helpers →
+  `web/auth_primitives.py`, WS → `web/websockets.py`), but
+  coupling with middleware makes this non-trivial. Not urgent
+  after the v22 36% reduction.

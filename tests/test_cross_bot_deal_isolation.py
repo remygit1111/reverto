@@ -1,21 +1,21 @@
-"""Regressie-guard voor de cross-bot deal-id collision bug (2026-04-19).
+"""Regression guard for the cross-bot deal-id collision bug (2026-04-19).
 
-De vorige versie van PaperState.new_deal_id() gebruikte een per-instance
-counter "PAPER-NNNN" — elke bot begon bij PAPER-0001 en zodra twee bots
-tegelijk draaiden botsten hun IDs. Dat was niet zichtbaar omdat
-core/deal_store.save_deal INSERT OR REPLACE gebruikte: de tweede
-schrijver overschreef stilletjes de rij van de eerste. Gevolg: één
-deal verdween uit de DB terwijl hij nog in state.json stond,
-ML-pipeline trainde op een gecorrumpeerde dataset, parity-compare
-rapporteerde misleidende counts.
+The previous version of PaperState.new_deal_id() used a per-instance
+counter "PAPER-NNNN" — every bot started at PAPER-0001, and as soon
+as two bots ran at the same time their ids collided. That was not
+visible because core/deal_store.save_deal used INSERT OR REPLACE: the
+second writer silently overwrote the first one's row. Result: one
+deal disappeared from the DB while it still sat in state.json, the
+ML pipeline trained on a corrupted dataset, parity-compare reported
+misleading counts.
 
-Deze tests pinnen de drie invariants die de fix garandeert:
-  1. Twee bots die op exact hetzelfde tijdstip een ID minten krijgen
-     verschillende ids (10_000-slot random suffix).
-  2. Een geforceerde DB-collisie raised IntegrityError — geen silent
-     clobber meer.
-  3. Het realistische scenario uit de productie-bug: twee bots openen
-     binnen ms een deal; beide rows blijven in de DB aanwezig.
+These tests pin the three invariants the fix guarantees:
+  1. Two bots that mint an id at exactly the same instant get
+     different ids (10_000-slot random suffix).
+  2. A forced DB collision raises IntegrityError — no silent
+     clobber any more.
+  3. The realistic scenario from the production bug: two bots open
+     a deal within ms of each other; both rows stay in the DB.
 """
 
 from __future__ import annotations

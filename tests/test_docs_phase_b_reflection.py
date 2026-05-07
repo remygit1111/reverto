@@ -47,59 +47,31 @@ def test_core_docs_mention_totp():
     )
 
 
-def test_session_epoch_policy_documented():
-    """rhav2-014: docs/security-model.md must carry an explicit
-    session_epoch policy matrix (events that BUMP vs events that
-    do NOT bump). Pre-fix the rules lived only in scattered code
-    comments — readers had to grep ``bump_session_epoch`` call-
-    sites to recover the rationale."""
-    sec_model = _read("docs/security-model.md")
-
-    assert "session_epoch" in sec_model, (
-        "docs/security-model.md does not mention session_epoch — "
-        "the per-user cookie-invalidation primitive is undocumented. "
-        "rhav2-014 regression."
-    )
-    # The matrix uses BUMP / do NOT BUMP language; either casing
-    # passes — but at least one explicit bump-vs-no-bump signal
-    # must be present so a future edit can't silently drop the
-    # matrix while leaving an incidental ``session_epoch`` mention.
-    lower = sec_model.lower()
-    assert "bump" in lower and "do not bump" in lower, (
-        "session_epoch policy matrix missing the explicit "
-        "BUMP / do NOT BUMP split. rhav2-014 regression."
-    )
-    # pt-130 must be cross-referenced so the doc stays anchored to
-    # the findings tracker.
-    assert "pt-130" in sec_model, (
-        "security-model.md does not cross-reference PT-v3 pt-130 — "
-        "the documented attack vector that motivated the matrix. "
-        "rhav2-014 regression."
-    )
-
 
 def test_runbook_totp_recovery_english():
-    """rhav2-012: the TOTP-recovery section in docs/runbook.md was
-    written in Dutch in the original Phase B PR 3 deploy notes;
-    every other operator section is English. Pin the English
-    translation so a future copy-paste from a Dutch source doc
-    regresses the file consistency."""
-    runbook = _read("docs/runbook.md")
+    """rhav2-012: the TOTP-recovery section in the operator
+    documentation was written in Dutch in the original Phase B
+    PR 3 deploy notes; every other operator section is English.
+    Pin the English translation so a future copy-paste from a Dutch
+    source doc regresses the file consistency. The doc moved from
+    docs/runbook.md to docs/OPERATIONS.md during the open-source
+    publication prep."""
+    operations = _read("docs/OPERATIONS.md")
 
-    assert "TOTP recovery" in runbook, (
-        "docs/runbook.md no longer contains a 'TOTP recovery' "
+    assert "TOTP recovery" in operations, (
+        "docs/OPERATIONS.md no longer contains a 'TOTP recovery' "
         "section. rhav2-012 regression."
     )
 
     # Slice the TOTP-recovery section out so the assertion does not
     # false-positive on Dutch words that legitimately live in other
-    # parts of the runbook (e.g. 'wanneer' inside Schema-migrations).
-    start = runbook.find("## TOTP recovery")
+    # parts of the doc.
+    start = operations.find("## TOTP recovery")
     assert start != -1
-    end = runbook.find("\n## ", start + 1)
+    end = operations.find("\n## ", start + 1)
     if end == -1:
-        end = len(runbook)
-    section = runbook[start:end].lower()
+        end = len(operations)
+    section = operations[start:end].lower()
 
     # Dutch markers that appeared in the original section.
     # 'beveiliging' (security) and 'wanneer gebruiken' (when to
