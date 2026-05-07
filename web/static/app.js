@@ -1169,10 +1169,10 @@ async function fetchOverview() {
 }
 
 function renderOverview(d) {
-  // Een /api/bots fetch voedt drie views: Overview (summary + status),
-  // Bots (grid) en Active Deals (tabel). Splits de render zodat elk
-  // view zijn eigen DOM-tak update zonder afhankelijk te zijn van welk
-  // view actief is.
+  // A single /api/bots fetch feeds three views: Overview (summary +
+  // status), Bots (grid) and Active Deals (table). Split the render
+  // so each view updates its own DOM branch without depending on
+  // which view is active.
   const sum  = d.summary || {};
   const bots = d.bots || [];
   const deals = d.all_open_deals || [];
@@ -6518,13 +6518,13 @@ function connectWS(slug) {
   ws.onerror = () => ws.close();
 }
 
-// ── Log-level filter (UI-only, client-side tekstpatroon) ──────────────────────
-// _logLevelFilter is een globale preference: geldt voor ALLE bots, blijft
-// bewaard bij tab-switch en bij CLEAR. Twee standen:
-//   'all'         — toon elke regel (default)
-//   'warn-error'  — alleen regels met [WARNING]/[ERROR]/[CRITICAL] prefix
-// Pure tekstmatching op de levelname die logging.basicConfig meestuurt;
-// geen wijziging aan de WS-payload of backend.
+// ── Log-level filter (UI-only, client-side text pattern) ─────────────────────
+// _logLevelFilter is a global preference: applies to ALL bots, preserved
+// across tab-switch and CLEAR. Two states:
+//   'all'         — show every line (default)
+//   'warn-error'  — only lines with a [WARNING]/[ERROR]/[CRITICAL] prefix
+// Pure text matching on the levelname that logging.basicConfig emits; no
+// changes to the WS payload or backend.
 let _logLevelFilter = 'all';
 
 function _lineMatchesFilter(text) {
@@ -10699,11 +10699,11 @@ class RevertoBacktest {
     }
 
     // DCA usage breakdown:
-    //  (A) per-level trigger counts — hoe vaak werd DCA #1 gebruikt,
-    //      DCA #2, etc. Order binnen deal.orders (sorted op tijd)
-    //      bepaalt de level-sequentie.
-    //  (B) per-deal depth histogram — verdeling van deals over
-    //      dca_count (0 = geen DCA gedaan, N = N DCA-fills).
+    //  (A) per-level trigger counts — how often was DCA #1 used,
+    //      DCA #2, etc. Order within deal.orders (sorted by time)
+    //      determines the level sequence.
+    //  (B) per-deal depth histogram — distribution of deals across
+    //      dca_count (0 = no DCA executed, N = N DCA fills).
     const dcaLevelCounts = new Map();
     for (const d of deals) {
       let level = 0;
