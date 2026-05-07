@@ -41,7 +41,7 @@ with a paper bot you can start.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<owner>/reverto.git
+git clone https://github.com/remygit1111/reverto.git
 cd reverto
 ```
 
