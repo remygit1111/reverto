@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TOTP admin-reset wrapper with audit-log emission (audit pt-150).
 
-The runbook-documented SQL recovery procedure (``UPDATE users SET
+The OPERATIONS-documented SQL recovery procedure (``UPDATE users SET
 totp_seed_encrypted = NULL WHERE username = ?``) bypasses the
 ``/auth/totp/disable`` route and produces no application-layer
 audit-log entry. That's a forensic blind spot: an operator with
@@ -40,7 +40,7 @@ Usage::
 After reset the user logs in with password only and re-enrols TOTP
 via Profile → Enable TOTP.
 
-The raw SQL path documented in ``docs/runbook.md`` is retained as
+The raw SQL path documented in ``docs/OPERATIONS.md`` is retained as
 an emergency fallback for cases where this wrapper cannot run
 (broken Python environment, audit log filesystem unwritable). It
 produces NO audit-log entry; operator must record the reset

@@ -66,7 +66,7 @@ class TestOvernightWindow:
 
 
 class TestSameDayWindow:
-    """Sanity check: bestaande non-overnight windows blijven werken."""
+    """Sanity check: existing non-overnight windows keep working."""
 
     def test_within(self):
         g = _guard("09:00", "17:00")

@@ -300,30 +300,30 @@ class TestWipeStateFiles:
 
 
 class TestConcurrentWipeLock:
-    """Audit v25 Finding #9 — twee gelijktijdige ``wipe-deals`` calls
-    mochten niet kunnen interleaven. _wipe_lock neemt exclusieve
-    fcntl.flock; een parallelle poging raised RuntimeError met
+    """Audit v25 Finding #9 — two concurrent ``wipe-deals`` calls
+    must not be able to interleave. _wipe_lock takes an exclusive
+    fcntl.flock; a parallel attempt raises RuntimeError with
     'already in progress'.
     """
 
     def test_concurrent_wipe_is_blocked_by_flock(self, sandboxed_base):
-        """Terwijl proces A binnen ``with _wipe_lock(base)`` zit, moet
-        proces B afketsen op BlockingIOError → RuntimeError. We
-        simuleren dit met twee geneste context-managers binnen één
-        proces — fcntl.flock is advisory per-file-descriptor, dus de
-        tweede open() + LOCK_EX|LOCK_NB trippt net zoals vanuit een
-        tweede proces zou gebeuren.
+        """While process A is inside ``with _wipe_lock(base)``,
+        process B must bounce on BlockingIOError → RuntimeError. We
+        simulate this with two nested context managers inside a
+        single process — fcntl.flock is advisory per file descriptor,
+        so the second open() + LOCK_EX|LOCK_NB trips just like it
+        would from a second process.
         """
         base = sandboxed_base
         with wipe_deals._wipe_lock(base):
-            # A houdt de lock; B moet nu afketsen. We wikkelen het in
-            # een pytest.raises zodat de tweede context-manager niet
-            # onbedoeld onze eigen lock alsnog weet te grijpen.
+            # A holds the lock; B must now bounce. We wrap it in a
+            # pytest.raises so the second context manager doesn't
+            # accidentally acquire our own lock.
             with pytest.raises(RuntimeError, match="already in progress"):
                 with wipe_deals._wipe_lock(base):
                     pytest.fail("second lock should not be reachable")
-        # Na release: lock file bestaat nog (flock is advisory) maar is
-        # weer acquireerbaar.
+        # After release: lock file still exists (flock is advisory)
+        # but is acquirable again.
         lock_path = base / wipe_deals._WIPE_LOCK_FILE
         assert lock_path.exists()
         with wipe_deals._wipe_lock(base):

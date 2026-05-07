@@ -48,22 +48,22 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
 
-# Maximum file size for state.json — voorkomt OOM bij corrupte/oversize files
+# Maximum file size for state.json — prevents OOM on corrupt/oversize files
 _MAX_STATE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
-# Extra slack op top van de engine's notify-drain budget voor
-# process-startup/teardown overhead tussen engine.stop() returning en
-# de PID die van de procestabel verdwijnt. Portal-stop wait-deadline
-# = NOTIFY_DRAIN_TIMEOUT_S + _STOP_SAFETY_MARGIN_S, zodat elke
-# verhoging van de drain-budget automatisch doorwerkt in de portal.
+# Extra slack on top of the engine's notify-drain budget for
+# process-startup/teardown overhead between engine.stop() returning and
+# the PID disappearing from the process table. Portal-stop wait-deadline
+# = NOTIFY_DRAIN_TIMEOUT_S + _STOP_SAFETY_MARGIN_S, so any increase in
+# the drain budget automatically propagates to the portal.
 _STOP_SAFETY_MARGIN_S = 3.0
 
 
 class BotStateModel(BaseModel):
-    """Pydantic schema voor logs/{slug}.state.json — beschermt tegen
-    corrupte of geïnjecteerde JSON met onverwachte types of waarden.
-    Extra velden worden genegeerd (niet gestript) zodat toekomstige
-    velden niet crashen op oude portal versies."""
+    """Pydantic schema for logs/{slug}.state.json — protects against
+    corrupt or injected JSON with unexpected types or values. Extra
+    fields are ignored (not stripped) so future fields don't crash
+    older portal versions."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -579,14 +579,15 @@ _COOKIE_SAMESITE: str = "strict"
 def _create_session_cookie(user: User) -> str:
     """Sign + emit the session cookie for the given ``User`` instance.
 
-    Audit v26-05: de pre-Phase-3a signature accepteerde ook een
-    username-string met een fallback die uid=-1 mintte als de
-    username niet resolvde. Die fallback was onbereikbaar — de login-
-    flow passeert altijd een al-geresolvede User uit
-    ``verify_password`` — dus de branch is nu weg. Tests die voorheen
-    ``_create_session_cookie("admin")`` aanriepen moeten de admin-User
-    zelf ophalen via ``user_store.get_user_by_username`` (of een
-    test-helper daaromheen).
+    Audit v26-05: the pre-Phase-3a signature also accepted a
+    username string with a fallback that minted uid=-1 if the
+    username did not resolve. That fallback was unreachable — the
+    login flow always passes an already-resolved User from
+    ``verify_password`` — so the branch is gone now. Tests that
+    previously called ``_create_session_cookie("admin")`` must
+    fetch the admin User themselves via
+    ``user_store.get_user_by_username`` (or a test helper around
+    it).
 
     Audit r1-006: pre-fix payload also carried a ``"u": username``
     field left over from Phase-1. Every read-path resolves the
@@ -965,8 +966,8 @@ PID_DIR    = LOG_DIR / "pids"
 PYTHON_BIN = sys.executable
 
 # ── Audit logging ─────────────────────────────────────────────────────────────
-# Aparte logger "reverto.audit" → logs/audit.log met rotation. Propagate=False
-# zodat audit events niet ook nog in portal.log belanden. Format:
+# Separate logger "reverto.audit" → logs/audit.log with rotation. Propagate=False
+# so audit events don't also land in portal.log. Format:
 #     2026-04-15T12:34:56+0000 | bot_start | btc_paper | a1b2c3d4
 _audit_logger = logging.getLogger("reverto.audit")
 _audit_logger.setLevel(logging.INFO)
@@ -1199,11 +1200,11 @@ _BOT_SLUG_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 def slugify(name: str) -> str:
-    """Zet een vrije bot-naam om naar een veilig filename stem.
+    """Convert a free-form bot name into a safe filename stem.
 
-    Lowercase, spaties → underscore, alles buiten [a-z0-9_] gestript,
-    meervoudige underscores worden samengetrokken. Lege resultaten
-    raise ValueError zodat de caller een 400 kan returnen.
+    Lowercase, spaces → underscore, everything outside [a-z0-9_]
+    stripped, multiple underscores collapsed. Empty results raise
+    ValueError so the caller can return a 400.
     """
     cleaned = name.strip().lower().replace(" ", "_")
     cleaned = _SLUG_RE.sub("", cleaned)
@@ -1349,10 +1350,10 @@ class BotInfo:
     def read_state(self) -> dict:
         yaml_mode = self._resolve_yaml_mode()
         try:
-            # Bounded read — lees maximaal _MAX_STATE_FILE_SIZE + 1 bytes in
-            # één open()+read() zodat er geen TOCTOU gat is tussen een
-            # aparte stat() en read_text(). Als er een byte extra binnenkomt
-            # is de file groter dan toegestaan en vallen we terug op default.
+            # Bounded read — read at most _MAX_STATE_FILE_SIZE + 1 bytes in
+            # a single open()+read() so there is no TOCTOU gap between a
+            # separate stat() and read_text(). If one extra byte comes in
+            # the file is larger than allowed and we fall back to default.
             try:
                 with open(self.state_file, "rb") as fh:
                     raw_bytes = fh.read(_MAX_STATE_FILE_SIZE + 1)
@@ -1452,34 +1453,34 @@ class BotInfo:
 
 # ── Fail-closed cache voor _scan_user_dirs (audit v25 Finding #1) ────────────
 # Vóór de fix viel _scan_user_dirs bij een get_active_user_ids()-failure
-# terug op integer-name-only matching — fail-open. In een multi-user
-# Phase-3 omgeving kan één transient DB-glitch dan stil een orphan dir
-# als valide tenant accepteren. Nu houden we de laatste bekend-goede
-# users-set vast en hergebruiken die tot ``_MAX_STALE_REFRESHES`` achter
-# elkaar falen; daarna returnt de scan leeg (fail-closed) met een
-# ERROR in de log.
+# back to integer-name-only matching — fail-open. In a multi-user
+# Phase-3 environment a single transient DB-glitch could then silently
+# accept an orphan dir as a valid tenant. We now hold on to the last
+# known-good users-set and reuse it until ``_MAX_STALE_REFRESHES``
+# consecutive failures; after that the scan returns empty (fail-closed)
+# with an ERROR in the log.
 #
-# _previously_logged_orphans voorkomt ook de Finding #7 log-spam:
-# een orphan dir die bij elke 5-seconden scan opnieuw gelogd zou
-# worden komt hier maar eenmaal doorheen totdat 'ie weer verschijnt.
+# _previously_logged_orphans also prevents the Finding #7 log-spam:
+# an orphan dir that would otherwise be re-logged on every 5-second
+# scan comes through here only once until it reappears.
 _cached_active_users: set[int] | None = None
 _db_failure_count: int = 0
-_MAX_STALE_REFRESHES: int = 5  # ≈ 25 s bij de 5 s registry-refresh TTL
+_MAX_STALE_REFRESHES: int = 5  # ≈ 25 s at the 5 s registry-refresh TTL
 _previously_logged_orphans: set[Path] = set()
-# TTL voor de DB-cache in _scan_user_dirs (audit v25 Finding #6). Zonder
-# deze short-circuit deed elke 5 s scan een verse get_active_user_ids()
-# call, terwijl de users-tabel in steady-state zelden verandert. 30 s
-# is ruim binnen de refresh-cadans en scheelt ~6 DB-reads per minuut
-# per portal. Een user-create/-delete endpoint kan
-# ``_cache_last_refresh_ts = 0`` zetten om expliciet te invalideren
-# (Phase-3 werk; nu pure-TTL).
+# TTL for the DB-cache in _scan_user_dirs (audit v25 Finding #6). Without
+# this short-circuit, every 5 s scan would issue a fresh
+# get_active_user_ids() call while the users table changes rarely in
+# steady state. 30 s sits well within the refresh cadence and saves
+# ~6 DB reads per minute per portal. A user-create/-delete endpoint
+# can set ``_cache_last_refresh_ts = 0`` to invalidate explicitly
+# (Phase-3 work; pure-TTL for now).
 _CACHE_TTL_S: float = 30.0
 _cache_last_refresh_ts: float = 0.0
 
 
 def _reset_user_dirs_cache() -> None:
-    """Reset de module-level fail-closed state. Alleen voor gebruik
-    door tests — productie-code raakt deze globals niet direct aan.
+    """Reset the module-level fail-closed state. For test use only —
+    production code does not touch these globals directly.
     """
     global _cached_active_users, _db_failure_count
     global _previously_logged_orphans, _cache_last_refresh_ts
@@ -1490,13 +1491,13 @@ def _reset_user_dirs_cache() -> None:
 
 
 def _scan_active_dirs(active: set[int]) -> list[tuple[int, Path]]:
-    """Match ``config/bots/<int>/`` directories tegen een vertrouwde
-    active-set. Gedeeld tussen de cache-hit en cache-miss paden van
-    ``BotRegistry._scan_user_dirs`` — een orphan-log-dedup is daarom
-    onafhankelijk van of de DB dit tick geraadpleegd werd.
+    """Match ``config/bots/<int>/`` directories against a trusted
+    active-set. Shared between the cache-hit and cache-miss paths of
+    ``BotRegistry._scan_user_dirs`` — orphan-log dedup is therefore
+    independent of whether the DB was queried this tick.
 
-    ``active`` is áltijd pas gevalideerd door de caller (DB live óf
-    last-known-good cache); deze helper doet geen DB-call.
+    ``active`` is always pre-validated by the caller (live DB or
+    last-known-good cache); this helper makes no DB call.
     """
     global _previously_logged_orphans
 
@@ -1522,9 +1523,9 @@ def _scan_active_dirs(active: set[int]) -> list[tuple[int, Path]]:
                 "orphan user dir %s (no matching active user in DB), skipped",
                 str(child),
             )
-    # Dedup-baseline voor de volgende scan. Orphans die verdwenen zijn
-    # (operator ruimt op) vallen uit de set, en als ze ooit terugkomen
-    # worden ze opnieuw gelogd.
+    # Dedup baseline for the next scan. Orphans that are gone
+    # (operator cleaned up) drop out of the set, and if they ever
+    # come back they get logged again.
     _previously_logged_orphans = current_orphans
     return out
 
@@ -1539,21 +1540,22 @@ class BotRegistry:
     is no longer supported (the migration script moves it under 1/).
     """
 
-    # TTL voor de filesystem-glob in refresh(). Bij hoge API frequentie
-    # (dashboard polls elke 5s, plus /api/price, plus tail_logs) voerde
-    # iedere call een eigen glob uit — overbodig en duur op trage
-    # filesystems (NFS/SMB). 5s is ruim binnen de UI-refresh cadans.
+    # TTL for the filesystem glob in refresh(). At high API
+    # frequency (dashboard polls every 5s, plus /api/price, plus
+    # tail_logs) every call ran its own glob — redundant and
+    # expensive on slow filesystems (NFS/SMB). 5s sits well within
+    # the UI refresh cadence.
     _REFRESH_TTL = 5.0
 
     def __init__(self):
         self._bots: dict[tuple[int, str], BotInfo] = {}
         self._lock = asyncio.Lock()
         self._last_refresh: float = 0.0
-        # In-progress starts, keyed on (user_id, slug) so a dubble-klik
+        # In-progress starts, keyed on (user_id, slug) so a double-click
         # for user 1/rsi_test and user 2/rsi_test don't block each other.
         self._starting: set[tuple[int, str]] = set()
-        # Initiële populatie: gebeurt vóór de event loop bestaat, dus
-        # geen lock-contention mogelijk — direct synchroon vullen.
+        # Initial population: happens before the event loop exists,
+        # so no lock-contention is possible — fill synchronously.
         self._refresh_locked()
         self._last_refresh = time.time()
 
@@ -1569,10 +1571,11 @@ class BotRegistry:
         not per 5 s scan (see ``_previously_logged_orphans``).
 
         Fail-closed at DB-failure (audit v25 Finding #1): if
-        ``get_active_user_ids()`` raises, we reuse the last bekend-
-        goede set for up to ``_MAX_STALE_REFRESHES`` cycles; after
-        that we return an empty list and log ERROR. A single transient
-        glitch therefore never surfaces an orphan as a tenant.
+        ``get_active_user_ids()`` raises, we reuse the last
+        known-good set for up to ``_MAX_STALE_REFRESHES`` cycles;
+        after that we return an empty list and log ERROR. A single
+        transient glitch therefore never surfaces an orphan as a
+        tenant.
 
         Happy-path cache (audit v25 Finding #6): within ``_CACHE_TTL_S``
         of a successful DB-call we reuse ``_cached_active_users``
@@ -1583,24 +1586,24 @@ class BotRegistry:
         global _cache_last_refresh_ts
 
         now = time.time()
-        # Cache-hit pad: cache vers genoeg → skip de DB-call en meteen
-        # door naar de directory-scan. De DB-failure counter raken we
-        # niet aan; een volgende cache-miss (na TTL-expiry) herleeft
-        # de happy/failure-split normaal.
+        # Cache-hit path: cache fresh enough → skip the DB call and
+        # go straight to the directory scan. The DB-failure counter
+        # is left alone; a subsequent cache miss (after TTL expiry)
+        # revives the happy/failure split normally.
         if (
             _cached_active_users is not None
             and now - _cache_last_refresh_ts < _CACHE_TTL_S
         ):
             return _scan_active_dirs(_cached_active_users)
 
-        # Cross-check tegen de users tabel. Importeer hier binnen de
-        # functie zodat circular imports niet optreden als core.user
-        # ooit bij init naar web.app zou willen kijken. De DB-query
-        # komt vóór de CONFIG_DIR.exists() short-circuit zodat de
-        # cache-invariant (ververst bij elke scan) onafhankelijk is
-        # van of er al bot-yamls op disk staan — een fresh install
-        # zonder yamls populeert alsnog de cache zodat latere failures
-        # niet direct fail-closed gaan.
+        # Cross-check against the users table. Import inside the
+        # function so circular imports don't occur if core.user
+        # ever wants to look at web.app at init time. The DB query
+        # comes before the CONFIG_DIR.exists() short-circuit so the
+        # cache invariant (refreshed on every scan) is independent
+        # of whether bot YAMLs exist on disk yet — a fresh install
+        # without YAMLs still populates the cache so later failures
+        # don't go fail-closed immediately.
         try:
             from core.user import get_active_user_ids
             active: set[int] = get_active_user_ids()
@@ -1645,7 +1648,7 @@ class BotRegistry:
         return _scan_active_dirs(active)
 
     def _refresh_locked(self) -> None:
-        """Voer de glob uit; caller moet de lock vasthouden (of init zijn)."""
+        """Run the glob; caller must hold the lock (or be init)."""
         current: set[tuple[int, str]] = set()
         for uid, user_dir in self._scan_user_dirs():
             for f in sorted(user_dir.glob("*.yaml")):
@@ -1782,9 +1785,9 @@ async def start_bot(user_id: int, slug: str) -> dict:
     if bot.running:
         return {"ok": False, "error": f"{slug} already running (PID {bot.pid})"}
 
-    # Claim de start-slot. Voorkomt dat een dubbel-klik (beide calls zien
-    # bot.running=False omdat main_paper.py nog niet is opgestart) twee
-    # subprocessen spawnt.
+    # Claim the start slot. Prevents a double-click (both calls see
+    # bot.running=False because main_paper.py has not started yet)
+    # from spawning two subprocesses.
     if not await registry.begin_start(user_id, slug):
         return {"ok": False, "error": "Bot is already starting"}
 
@@ -1823,10 +1826,10 @@ async def start_bot(user_id: int, slug: str) -> dict:
             )
         logger.info(f"Bot {slug} started (PID {proc.pid})")
 
-        # Wacht maximaal 3s tot main_paper.py zijn eigen PID file heeft
-        # geschreven. Zolang we die niet zien houdt de starting-slot stand
-        # zodat een volgende klik netjes een "already starting" krijgt in
-        # plaats van een tweede subprocess.
+        # Wait up to 3s until main_paper.py has written its own PID
+        # file. As long as we don't see it the starting-slot stays
+        # claimed so a follow-up click cleanly gets "already starting"
+        # instead of a second subprocess.
         deadline = time.time() + 3.0
         while time.time() < deadline:
             if bot.pid_file.exists():
@@ -2952,12 +2955,12 @@ async def favicon():
 
 
 def _compute_summary(bots: list[dict]) -> dict:
-    """Single source of truth voor de dashboard summary-blok.
+    """Single source of truth for the dashboard summary block.
 
-    Wordt gebruikt door zowel GET /api/bots als de /ws/state watcher,
-    zodat het HTTP fallback-pad en de WS push exact dezelfde vorm
-    hebben. closed_deals is geaggregeerd over alle bots zodat toekomstige
-    WS-consumers het kunnen tonen zonder extra round-trip.
+    Used by both GET /api/bots and the /ws/state watcher, so the
+    HTTP fallback path and the WS push have exactly the same shape.
+    closed_deals is aggregated across all bots so future WS
+    consumers can show it without an extra round-trip.
     """
     total_pnl  = sum(b.get("total_pnl_btc", 0) for b in bots)
     active     = sum(1 for b in bots if b.get("running"))
@@ -3245,9 +3248,9 @@ def _bot_yaml_path(user_id: int, slug: str) -> Path:
 
 
 def _validate_bot_payload(payload: dict) -> BotConfig:
-    """Valideer een rauwe dict via BotConfig. Accepteert zowel
-    {"bot": {...}} als {...} aan top-level zodat de portal flexibel
-    blijft. Raised ValueError bij invalide config."""
+    """Validate a raw dict via BotConfig. Accepts both
+    {"bot": {...}} and {...} at the top level so the portal stays
+    flexible. Raises ValueError on invalid config."""
     inner = payload.get("bot", payload)
     try:
         return BotConfig(**inner)
@@ -3278,10 +3281,11 @@ class LogBroadcaster:
         # Per-socket user_id so broadcast() can filter without going
         # back to the DB on every frame.
         self._user_map: dict[WebSocket, int] = {}
-        # asyncio.Lock — essentieel zodra uvicorn meerdere workers krijgt
-        # of meer dan één coroutine concurrent connect/disconnect/broadcast
-        # uitvoert. Onder de huidige single-worker setup is het pad veilig
-        # door de event loop, maar de lock maakt het future-proof.
+        # asyncio.Lock — essential once uvicorn gains multiple workers
+        # or more than one coroutine concurrently connects/disconnects/
+        # broadcasts. Under the current single-worker setup the path
+        # is safe via the event loop, but the lock makes it
+        # future-proof.
         self._lock = asyncio.Lock()
 
     async def connect(self, ws: WebSocket, slug: str, user_id: int):
@@ -3442,12 +3446,12 @@ class StateBroadcaster:
 
 state_broadcaster = StateBroadcaster()
 
-# Module-level cache van laatst-geziene mtimes. Audit r1-041: key is
-# ``(user_id, slug)`` zodat twee users met dezelfde slug-naam elkaar
-# niet besmetten — anders zou user A's mtime-update B's change-
-# detection blokkeren. Gereset op portal restart, wat prima is: de
-# watcher stuurt in dat geval gewoon één extra broadcast bij de
-# eerste iteratie.
+# Module-level cache of last-seen mtimes. Audit r1-041: key is
+# ``(user_id, slug)`` so that two users with the same slug name
+# don't pollute each other — otherwise user A's mtime update would
+# block user B's change detection. Reset on portal restart, which
+# is fine: the watcher then just sends one extra broadcast on the
+# first iteration.
 _state_mtimes: dict[tuple[int, str], float] = {}
 
 

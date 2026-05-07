@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from paper.paper_state import PaperState, PaperDeal, PaperOrder
 from paper.paper_engine import _deal_to_dict
 
-# helper — hergebruikt conftest functies via pytest injection maar ook direct
+# helper — reuses conftest functions via pytest injection but also directly
 def _order(price, size=0.001, t="base", n=1):
     return PaperOrder(order_number=n, price=price, size=size,
                       timestamp=datetime.now(UTC), order_type=t)
@@ -66,15 +66,15 @@ class TestCalculatePnl:
 
     def test_correct_formula(self):
         """
-        Verifieer de Bitget BTCUSD inverse-perpetual formule (pt-043):
+        Verify the Bitget BTCUSD inverse-perpetual formula (pt-043):
         PnL (BTC) = size * (exit - entry) / exit * leverage
-        Bij size=1.0 BTC, entry=80000, exit=82000, lev=1:
+        For size=1.0 BTC, entry=80000, exit=82000, lev=1:
         PnL = 1.0 * (82000 - 80000) / 82000 = 0.024390... BTC
 
-        Pre-fix de denominator was ``entry`` (linear-perpetual shape),
-        wat 0.025 BTC opleverde — een ~2.4 % over-statement in dit
-        scenario. Bitget testnet validatie 2026-04-28 bevestigde dat
-        ``current_price`` de juiste deler is.
+        Pre-fix the denominator was ``entry`` (linear-perpetual
+        shape), which produced 0.025 BTC — a ~2.4 % overstatement
+        in this scenario. Bitget testnet validation on 2026-04-28
+        confirmed that ``current_price`` is the correct divisor.
         """
         d = _deal(80000.0, 1.0)
         expected = 1.0 * (82000.0 - 80000.0) / 82000.0

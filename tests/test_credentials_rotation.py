@@ -23,8 +23,8 @@ def routed_store(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
     monkeypatch.setattr(creds, "_BASE_DIR", tmp_path)
     # Audit v26-06: pre-Phase-3a _LOG_DIR / _KEY_FILE monkeypatches
-    # gesandboxed de system-key voor .auth.json; die helpers zijn
-    # verwijderd, dus alleen _BASE_DIR sandboxing blijft over.
+    # sandboxed the system key for .auth.json; those helpers have
+    # been removed, so only _BASE_DIR sandboxing remains.
     return paths.user_fernet_key_path(1)
 
 

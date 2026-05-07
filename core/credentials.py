@@ -1,12 +1,12 @@
 # core/credentials.py
-# Encrypted opslag van exchange API keys.
+# Encrypted storage of exchange API keys.
 #
-# Sinds Phase-3a bevat deze module één path: **per-user exchange
-# credentials**. De pre-Phase-3a system-level Fernet helpers
-# (save_encrypted / load_encrypted / _system_fernet) zijn
-# verwijderd in audit v26-06 — ze bedienden alleen logs/.auth.json,
-# en admin-auth leeft nu in ``users.password_hash`` (bcrypt) in de
-# DB. Zie commit d69fcd2 (v26-06) voor de delete.
+# Since Phase-3a this module has a single path: **per-user exchange
+# credentials**. The pre-Phase-3a system-level Fernet helpers
+# (save_encrypted / load_encrypted / _system_fernet) were removed
+# in audit v26-06 — they only served logs/.auth.json, and admin-auth
+# now lives in ``users.password_hash`` (bcrypt) in the DB. See
+# commit d69fcd2 (v26-06) for the delete.
 #
 # Per-user exchange credentials:
 #   - Fernet key at  keys/<user_id>.key                  (chmod 0600)
@@ -310,9 +310,9 @@ class FernetCredentialProvider(CredentialProvider):
         key_path.write_bytes(key)
         ensure_secret_file_mode(key_path)
         logger.warning(
-            "Nieuw Fernet key gegenereerd voor user %d in %s — verlies "
-            "dit bestand niet, anders zijn opgeslagen exchange keys "
-            "voor deze user onbruikbaar.",
+            "Generated new Fernet key for user %d at %s — do not "
+            "lose this file, otherwise stored exchange keys for "
+            "this user become unusable.",
             user_id, key_path,
         )
         return key
@@ -337,8 +337,8 @@ class FernetCredentialProvider(CredentialProvider):
         passphrase: str = "",
         _skip_format_validation: bool = False,
     ) -> None:
-        """Versleutel en schrijf een api_key + api_secret (+ optional
-        passphrase) voor ``(user_id, exchange)`` naar
+        """Encrypt and write an api_key + api_secret (+ optional
+        passphrase) for ``(user_id, exchange)`` to
         ``credentials/<user_id>/<exchange>.enc``.
 
         Atomic write via .tmp → os.replace so a crash mid-write never
@@ -384,21 +384,21 @@ class FernetCredentialProvider(CredentialProvider):
         tmp.replace(dst)
         ensure_secret_file_mode(dst)
         logger.info(
-            "Credentials opgeslagen voor user %d / %s",
+            "Credentials saved for user %d / %s",
             user_id, exchange,
         )
 
     def get_keys(
         self, exchange: str, user_id: int,
     ) -> Optional[dict]:
-        """Decrypt en retourneer ``{'api_key', 'api_secret',
-        'passphrase'}`` voor ``(user_id, exchange)``, of None als het
-        bestand ontbreekt of niet decrypteerbaar is onder de huidige
+        """Decrypt and return ``{'api_key', 'api_secret',
+        'passphrase'}`` for ``(user_id, exchange)``, or None if the
+        file is missing or not decryptable under the current
         user-key.
 
-        Geen exceptie naar boven — het aanroep-pad (engine boot,
-        portal list) moet blijven werken als één paar credentials
-        corrupt blijkt.
+        No exception bubbles up — the call path (engine boot,
+        portal list) must keep working when one pair of credentials
+        turns out to be corrupt.
 
         Audit r1-012: ``passphrase`` is always present in the returned
         dict (empty string when not stored) so callers can treat the
@@ -415,7 +415,7 @@ class FernetCredentialProvider(CredentialProvider):
             data = json.loads(raw.decode("utf-8"))
         except (InvalidToken, ValueError, OSError, json.JSONDecodeError) as e:
             logger.error(
-                "Kan credentials niet decrypten voor user %d / %s: %s",
+                "Cannot decrypt credentials for user %d / %s: %s",
                 user_id, exchange, e,
             )
             return None
@@ -475,24 +475,23 @@ class FernetCredentialProvider(CredentialProvider):
         )
 
     def has_keys(self, exchange: str, user_id: int) -> bool:
-        """True als er een .enc bestand bestaat voor (user_id,
-        exchange). Decrypt wordt NIET getest — dat kost een Fernet-
-        rondgang per call en get_keys kan er alsnog None voor
-        retourneren."""
+        """True if a .enc file exists for (user_id, exchange).
+        Decrypt is NOT tested — that costs a Fernet round-trip per
+        call and get_keys can still return None for it."""
         return exchange_creds_path(user_id, exchange).exists()
 
     def list_exchanges_with_keys(self, user_id: int) -> list[str]:
-        """Lijst van exchange-namen met .enc files onder deze user.
-        Sorted zodat UI-lijsten deterministisch zijn."""
+        """List of exchange names with .enc files under this user.
+        Sorted so UI lists are deterministic."""
         cred_dir = user_credentials_dir(user_id)
         if not cred_dir.exists():
             return []
         return sorted(p.stem for p in cred_dir.glob("*.enc"))
 
     def delete_keys(self, exchange: str, user_id: int) -> bool:
-        """Verwijder credentials voor (user_id, exchange). Retourneert
-        True als er iets verwijderd is. Ontbrekende files zijn een
-        no-op (False)."""
+        """Delete credentials for (user_id, exchange). Returns True
+        if something was deleted. A missing file is a no-op
+        (False)."""
         path = exchange_creds_path(user_id, exchange)
         if not path.exists():
             return False
@@ -500,12 +499,12 @@ class FernetCredentialProvider(CredentialProvider):
             path.unlink()
         except OSError as e:
             logger.error(
-                "Kan credentials niet verwijderen voor user %d / %s: %s",
+                "Cannot delete credentials for user %d / %s: %s",
                 user_id, exchange, e,
             )
             return False
         logger.info(
-            "Credentials verwijderd voor user %d / %s",
+            "Credentials deleted for user %d / %s",
             user_id, exchange,
         )
         return True

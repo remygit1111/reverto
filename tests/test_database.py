@@ -666,7 +666,7 @@ class TestDestructiveMigrationGuard:
         msg = str(exc_info.value)
         assert "REVERTO_DESTRUCTIVE_MIGRATE" in msg
         assert "backup" in msg.lower()
-        assert "docs/runbook.md" in msg
+        assert "docs/OPERATIONS.md" in msg
 
         # Data still there — the raise happened BEFORE the DROP.
         import sqlite3 as _sqlite
