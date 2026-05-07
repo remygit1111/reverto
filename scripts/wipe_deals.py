@@ -35,12 +35,12 @@ from pathlib import Path
 BASE: Path = Path(__file__).resolve().parent.parent
 DB_PATH: Path = BASE / "logs" / "reverto.db"
 
-# Exclusive-lock sentinel. Audit v25 Finding #9 — pre-fix opende een
-# TOCTOU window tussen _check_no_bots_running() (scan pid-files) en de
-# eerste DELETE: een bot-start in dat venster kon een pid-file schrijven
-# dat nooit gezien werd en een deel van de wipe bij een al actieve bot
-# afronden. Flock sluit het venster voor concurrent wipe-aanroepen;
-# een parallelle bot-start zelf valt buiten scope (Phase-3 werk).
+# Exclusive-lock sentinel. Audit v25 Finding #9 — pre-fix opened a
+# TOCTOU window between _check_no_bots_running() (scan pid-files) and
+# the first DELETE: a bot-start in that window could write a pid-file
+# that was never seen and complete part of the wipe against an already
+# active bot. Flock closes the window for concurrent wipe invocations;
+# a parallel bot-start itself is out of scope (Phase-3 work).
 _WIPE_LOCK_FILE: str = "logs/.wipe.lock"
 
 # Fields reset to their "fresh start" value on wipe. Balance has its
@@ -71,15 +71,16 @@ _BACKUP_SUFFIX: str = ".pre_wipe_backup"
 
 @contextmanager
 def _wipe_lock(base_dir: Path):
-    """Exclusive ``fcntl.flock`` rond de wipe-flow. Voorkomt dat twee
-    parallelle ``wipe-deals`` invocaties elkaar destructief kruisen
-    (één wist deals terwijl de ander state.json reset op half-gewiste
-    ids). Kernel-level lock, dus robuust tegen twee Python-processen —
-    geen polling, geen manual unlock op crash.
+    """Exclusive ``fcntl.flock`` around the wipe flow. Prevents two
+    parallel ``wipe-deals`` invocations from destructively
+    interleaving (one wiping deals while the other resets
+    state.json against half-wiped ids). Kernel-level lock, so
+    robust against two Python processes — no polling, no manual
+    unlock on crash.
 
-    Een bot-start die in hetzelfde venster een nieuwe pid-file probeert
-    te schrijven valt buiten scope — dat zou een flock in de engine
-    vereisen. Voor nu concentreren we op het concurrent-wipe paar.
+    A bot-start that tries to write a new pid-file inside the same
+    window is out of scope — that would require a flock in the
+    engine. For now we focus on the concurrent-wipe pair.
     """
     lock_path = base_dir / _WIPE_LOCK_FILE
     lock_path.parent.mkdir(parents=True, exist_ok=True)

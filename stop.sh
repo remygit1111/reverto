@@ -1,13 +1,13 @@
 #!/bin/bash
-# stop.sh — Stop het Reverto portal (en optioneel alle bots).
+# stop.sh — Stop the Reverto portal (and optionally all bots).
 #
-# Standaard gedrag: stopt ALLEEN het portal proces. Bot subprocessen
-# blijven draaien — dat is wat je wilt bij een portal-restart (make
-# restart) zodat je trading posities niet verliest door een UI refresh.
+# Default behaviour: stops ONLY the portal process. Bot subprocesses
+# keep running — that's what you want on a portal restart (make
+# restart) so trading positions are not lost by a UI refresh.
 #
-# Gebruik `--all` om ook alle bot processen te stoppen. Dat is het
-# gedrag dat make stop-all aanroept, typisch voor machine shutdown
-# of wanneer je echt alles wil stilleggen.
+# Use `--all` to also stop all bot processes. That is the behaviour
+# that make stop-all invokes, typically for a machine shutdown or
+# when you genuinely want to bring everything down.
 
 cd "$(dirname "$0")"
 
@@ -22,18 +22,18 @@ stop_pidfile() {
     if kill -0 "$pid" 2>/dev/null; then
         echo "🛑 Stopping $name (PID $pid)..."
         kill "$pid"
-        # Wacht tot het proces daadwerkelijk gestopt is (max 8 seconden).
-        # Portal graceful-shutdown kan tot ~5s duren: uvicorn's
-        # timeout_graceful_shutdown=5 wacht op pending requests en de
-        # lifespan-handler neemt nog 2s voor task-cancellation. 5s hier
-        # was te krap — gaf af en toe een onnodige SIGKILL op het
-        # net-niet-klaar proces. 8s geeft comfortabel budget zonder
-        # ops-flows merkbaar te vertragen.
+        # Wait until the process has actually stopped (max 8 seconds).
+        # A graceful portal shutdown can take ~5s: uvicorn's
+        # timeout_graceful_shutdown=5 waits on pending requests and
+        # the lifespan handler takes another 2s for task cancellation.
+        # 5s here was too tight — it occasionally produced an
+        # unnecessary SIGKILL on the not-quite-finished process. 8s
+        # gives a comfortable budget without slowing ops flows.
         for _ in $(seq 1 16); do
             sleep 0.5
             kill -0 "$pid" 2>/dev/null || break
         done
-        # Forceer stop als proces nog draait na 8 seconden
+        # Force stop if the process is still running after 8 seconds
         if kill -0 "$pid" 2>/dev/null; then
             echo "⚠️  $name did not stop gracefully — sending SIGKILL"
             kill -9 "$pid" 2>/dev/null
@@ -48,7 +48,7 @@ if [ "$1" = "--all" ]; then
 fi
 
 if [ "$MODE" = "all" ]; then
-    # Stop alle bots eerst, dan het portal.
+    # Stop all bots first, then the portal.
     any_bots=0
     for pid_file in "$PID_DIR"/*.pid; do
         [ -f "$pid_file" ] || continue

@@ -1,7 +1,7 @@
 # backtest/backtest_report.py
-# Berekent en toont alle statistieken van een backtest run.
-# Geen rounding op interne waarden — volledige precisie bewaard.
-# Weergave gebruikt significante cijfers zodat kleine BTC bedragen zichtbaar zijn.
+# Computes and displays all statistics from a backtest run.
+# No rounding on internal values — full precision preserved.
+# Display uses significant digits so small BTC amounts stay visible.
 
 import logging
 from dataclasses import dataclass, field
