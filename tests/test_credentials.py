@@ -19,9 +19,9 @@ from core import credentials, paths
 @pytest.fixture
 def tmp_store(tmp_path, monkeypatch):
     """Redirect the whole Phase-2 tree (keys/ + credentials/) into
-    tmp_path. Audit v26-06: de system-key helpers
-    (save_encrypted/load_encrypted) zijn verwijderd post-Phase-3a,
-    dus de oude _LOG_DIR/_KEY_FILE sandboxing is niet langer nodig."""
+    tmp_path. Audit v26-06: the system-key helpers
+    (save_encrypted/load_encrypted) were removed post-Phase-3a, so
+    the old _LOG_DIR/_KEY_FILE sandboxing is no longer needed."""
     monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
     monkeypatch.setattr(credentials, "_BASE_DIR", tmp_path)
     return tmp_path
@@ -211,10 +211,10 @@ class TestPerUserIsolation:
 
 
 # Audit v26-06: TestSystemEncryption (save_encrypted / load_encrypted
-# roundtrip) is verwijderd omdat de helpers in core.credentials zelf
-# zijn gedelete post-Phase-3a. Admin-auth leeft nu in
-# users.password_hash (bcrypt), niet in een Fernet-encrypted
-# .auth.json blob.
+# roundtrip) was removed because the helpers in core.credentials
+# themselves were deleted post-Phase-3a. Admin auth now lives in
+# users.password_hash (bcrypt), not in a Fernet-encrypted .auth.json
+# blob.
 
 
 # ── Phase-A wrap-up: provider abstraction ──────────────────────────────────

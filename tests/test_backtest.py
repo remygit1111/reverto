@@ -34,12 +34,12 @@ def _config(tp_pct=3.0, sl_pct=6.0, sl_type="fixed", spacing=2.5,
     cfg.dca.base_order_size = base_size
     cfg.dca.taker_fee = 0.0006
     cfg.dca.step_scale = 1.0
-    cfg.entry.indicators = []  # geen indicators → altijd entry
+    cfg.entry.indicators = []  # no indicators → always entry
     return cfg
 
 
 def _engine_with_candles(candles, **kwargs):
-    """Maak een engine met gegeven candles en geen indicators (altijd entry).
+    """Build an engine with the given candles and no indicators (always entry).
 
     Wraps the candle list in a per-timeframe dict since the backtest
     engine now expects candles_per_tf. The default bot timeframe in
@@ -82,25 +82,25 @@ class TestBacktestCandle:
 
 class TestEngineEntry:
     def test_no_entry_without_enough_candles(self):
-        """Warmup vereist 78 candles — minder = geen entry."""
+        """Warmup requires 78 candles — fewer = no entry."""
         candles = _make_candles([80000.0] * 50)
         e = _engine_with_candles(candles)
         result = e.run()
         assert result.total_deals == 0
 
     def test_entry_after_warmup(self):
-        """Na 78 candles warmup moet een entry plaatsvinden (geen indicators)."""
+        """After 78 warmup candles an entry must occur (no indicators)."""
         candles = _make_candles([80000.0] * 100)
         e = _engine_with_candles(candles)
         result = e.run()
         assert result.total_deals >= 1
 
     def test_no_double_entry(self):
-        """Tweede entry mag niet plaatsvinden terwijl deal open is."""
+        """A second entry must not happen while a deal is open."""
         candles = _make_candles([80000.0] * 200)
         e = _engine_with_candles(candles)
         result = e.run()
-        # Zonder TP/SL trigger blijft de deal open — maximaal 1 deal
+        # Without a TP/SL trigger the deal stays open — at most 1 deal
         assert result.total_deals <= 1
 
 
@@ -184,7 +184,7 @@ class TestEngineDCA:
             flat[-1].timestamp + 3_600_000,
             entry_price, entry_price, dca_price - 100, dca_price
         )
-        # Hoge TP zodat deal niet sluit tijdens DCA
+        # High TP so the deal does not close during DCA
         candles = flat + [dca_candle] + _make_candles([dca_price] * 20)
         # offset timestamp
         for i, c in enumerate(candles[80:], start=80):
@@ -195,7 +195,7 @@ class TestEngineDCA:
 
         e = _engine_with_candles(candles, tp_pct=50.0, sl_pct=50.0, spacing=2.5)
         e.run()
-        # Check of er deals zijn met meer dan 1 order
+        # Check that there are deals with more than 1 order
         all_closed = e.state.get_closed_deals_snapshot()
         all_open   = list(e.state.get_open_deals_snapshot().values())
         combined   = all_closed + all_open
@@ -203,10 +203,10 @@ class TestEngineDCA:
         assert len(dca_deals) >= 1
 
     def test_max_orders_respected(self):
-        """DCA plaatst niet meer orders dan max_orders - 1."""
+        """DCA places no more orders than max_orders - 1."""
         entry_price = 80000.0
         candles = _make_candles([entry_price] * 79)
-        # Voeg candles toe met steeds lagere prijzen
+        # Append candles with progressively lower prices
         for i in range(10):
             price = entry_price * (1 - (i + 1) * 0.025)
             ts    = candles[-1].timestamp + 3_600_000
@@ -226,11 +226,12 @@ class TestEngineDCA:
 class TestEngineFees:
     def test_fees_are_paid(self):
         """
-        Fees worden berekend bij elke entry en exit.
-        Bij kleine posities (0.001 BTC) zijn fees zo klein (~7e-12 BTC)
-        dat ze na round(..., 10) nul worden. We verifiëren daarom dat de
-        engine de fee-berekening aanroept, niet dat het eindgetal > 0 is.
-        In plaats daarvan: gebruik een grote positiegrootte zodat fees meetbaar zijn.
+        Fees are computed on every entry and exit.
+        For small positions (0.001 BTC) fees are so small (~7e-12 BTC)
+        that they round to zero after round(..., 10). We therefore
+        verify that the engine invokes the fee calculation, not that
+        the final number is > 0. Instead: use a large position size
+        so fees are measurable.
         """
         entry_price = 80000.0
         tp_price    = entry_price * 1.03
@@ -241,7 +242,7 @@ class TestEngineFees:
             entry_price, tp_price + 100, entry_price - 100, entry_price
         )
         candles = flat + [tp_candle]
-        # Grote positiegrootte zodat fees meetbaar zijn (1 BTC = 1 contract per $1)
+        # Large position size so fees are measurable (1 BTC = 1 contract per $1)
         e = _engine_with_candles(candles, tp_pct=3.0, base_size=100.0)
         result = e.run()
 
