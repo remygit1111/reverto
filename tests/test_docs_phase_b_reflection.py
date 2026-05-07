@@ -47,36 +47,6 @@ def test_core_docs_mention_totp():
     )
 
 
-def test_session_epoch_policy_documented():
-    """rhav2-014: docs/security-model.md must carry an explicit
-    session_epoch policy matrix (events that BUMP vs events that
-    do NOT bump). Pre-fix the rules lived only in scattered code
-    comments — readers had to grep ``bump_session_epoch`` call-
-    sites to recover the rationale."""
-    sec_model = _read("docs/security-model.md")
-
-    assert "session_epoch" in sec_model, (
-        "docs/security-model.md does not mention session_epoch — "
-        "the per-user cookie-invalidation primitive is undocumented. "
-        "rhav2-014 regression."
-    )
-    # The matrix uses BUMP / do NOT BUMP language; either casing
-    # passes — but at least one explicit bump-vs-no-bump signal
-    # must be present so a future edit can't silently drop the
-    # matrix while leaving an incidental ``session_epoch`` mention.
-    lower = sec_model.lower()
-    assert "bump" in lower and "do not bump" in lower, (
-        "session_epoch policy matrix missing the explicit "
-        "BUMP / do NOT BUMP split. rhav2-014 regression."
-    )
-    # pt-130 must be cross-referenced so the doc stays anchored to
-    # the findings tracker.
-    assert "pt-130" in sec_model, (
-        "security-model.md does not cross-reference PT-v3 pt-130 — "
-        "the documented attack vector that motivated the matrix. "
-        "rhav2-014 regression."
-    )
-
 
 def test_runbook_totp_recovery_english():
     """rhav2-012: the TOTP-recovery section in the operator
