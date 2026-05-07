@@ -203,8 +203,8 @@ class TestOrphanUserDirs:
     als WARNING met 'orphan' in de message en geskipped."""
 
     def test_orphan_integer_dir_is_skipped(self, sandbox_registry, caplog):
-        """Seed alleen user 1 (default). Drop config/bots/999/ yaml.
-        Registry mag dit niet oppakken + moet een WARNING loggen."""
+        """Seed only user 1 (default). Drop a config/bots/999/ yaml.
+        Registry must not pick this up and must log a WARNING."""
         _write_bot_yaml(sandbox_registry, 1, "legit", "Legit one")
         _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan")
 
@@ -223,18 +223,18 @@ class TestOrphanUserDirs:
         )
 
     def test_existing_user_dir_still_scanned(self, sandbox_registry):
-        """Positive-path guard: de default admin user (id=1) blijft
-        gewoon werken. Als we hier falen hebben we per ongeluk de
-        enige productie-user afgeknepen."""
+        """Positive-path guard: the default admin user (id=1) keeps
+        working. If we fail here we accidentally choked off the only
+        production user."""
         _write_bot_yaml(sandbox_registry, 1, "rsi", "Admin's RSI")
 
         reg = BotRegistry()
         assert (1, "rsi") in reg._bots
 
     def test_mixed_orphan_and_valid_dirs(self, sandbox_registry, caplog):
-        """Realistisch scenario: operator heeft een valide user 1
-        dir én een orphan 777 dir. Alleen 1 mag in de registry
-        landen; 777 krijgt een WARNING."""
+        """Realistic scenario: the operator has a valid user 1 dir
+        AND an orphan 777 dir. Only 1 must land in the registry;
+        777 gets a WARNING."""
         _write_bot_yaml(sandbox_registry, 1, "real", "Real")
         _write_bot_yaml(sandbox_registry, 777, "fake", "Orphan")
 
@@ -255,11 +255,11 @@ class TestOrphanUserDirs:
     def test_inactive_user_dir_is_treated_as_orphan(
         self, sandbox_registry, caplog,
     ):
-        """Een user met active=0 moet net als een niet-bestaande user
-        behandeld worden. Het cross-check filter moet op active=1
-        staan, niet alleen op ID-bestaan. Anders kan een operator die
-        een tenant deactiveert nog steeds bots voor die tenant in de
-        registry zien verschijnen."""
+        """A user with active=0 must be treated like a
+        non-existent user. The cross-check filter must require
+        active=1, not just ID existence. Otherwise an operator who
+        deactivates a tenant could still see bots for that tenant
+        appear in the registry."""
         _seed_user(42, "deactivated", active=0)
         _write_bot_yaml(sandbox_registry, 42, "bot", "Dead tenant")
 
@@ -299,20 +299,20 @@ class TestUserDirScanCacheFallback:
     def test_db_failure_uses_cache_within_window(
         self, sandbox_registry, monkeypatch, caplog,
     ):
-        """Bij DB-failure met een geldige cache moeten we N stale
-        cycles lang de cache hergebruiken — niet fail-open terugvallen
-        op integer-name matching, niet meteen fail-closed leeg teruggeven.
+        """On a DB failure with a valid cache we must reuse the
+        cache for N stale cycles — not fail-open back to
+        integer-name matching, not fail-closed empty straight away.
         """
         import web.app as webapp
         _seed_user(2, "bob")
         _write_bot_yaml(sandbox_registry, 1, "legit", "Legit")
         _write_bot_yaml(sandbox_registry, 2, "bobs_bot", "Bob")
 
-        # Prime de cache met één succesvolle scan.
+        # Prime the cache with a single successful scan.
         reg = BotRegistry()
         assert webapp._cached_active_users == {1, 2}
 
-        # Patch core.user.get_active_user_ids op raise-pad.
+        # Patch core.user.get_active_user_ids onto a raise path.
         def _boom():
             raise RuntimeError("DB temporarily unavailable")
         monkeypatch.setattr("core.user.get_active_user_ids", _boom)
@@ -320,14 +320,15 @@ class TestUserDirScanCacheFallback:
         caplog.clear()
         with caplog.at_level("WARNING", logger="web.app"):
             for _ in range(3):
-                # Force elke iteratie door de DB-path heen — zonder
-                # deze reset short-circuit de happy-path cache
-                # (_CACHE_TTL_S=30s) en worden de fail-closed counters
-                # nooit aangeraakt. Dit test-scenario valideert juist
-                # het DB-failure gedrag, niet de cache.
+                # Force every iteration through the DB path —
+                # without this reset the happy-path cache
+                # (_CACHE_TTL_S=30s) short-circuits and the
+                # fail-closed counters are never touched. This test
+                # scenario specifically validates the DB-failure
+                # behaviour, not the cache.
                 webapp._cache_last_refresh_ts = 0.0
                 result = reg._scan_user_dirs()
-                # Elke stale-cycle levert nog steeds (1, …) en (2, …).
+                # Each stale cycle still yields (1, …) and (2, …).
                 uids = {uid for uid, _dir in result}
                 assert uids == {1, 2}
 
@@ -339,16 +340,16 @@ class TestUserDirScanCacheFallback:
         assert len(stale_msgs) == 3, (
             f"expected 3 stale-cycle WARNINGs, got {stale_msgs}"
         )
-        # Geen ERROR binnen het venster — dat is juist het verschil
-        # met fail-closed mode.
+        # No ERROR within the window — that's the very difference
+        # from fail-closed mode.
         errors = [r for r in caplog.records if r.levelname == "ERROR"]
         assert errors == []
 
     def test_db_failure_returns_empty_after_max_stale_refreshes(
         self, sandbox_registry, monkeypatch, caplog,
     ):
-        """Na ``_MAX_STALE_REFRESHES`` mislukte pogingen flip we naar
-        fail-closed: returnt [], ERROR log."""
+        """After ``_MAX_STALE_REFRESHES`` failed attempts we flip
+        to fail-closed: returns [], logs ERROR."""
         import web.app as webapp
         _write_bot_yaml(sandbox_registry, 1, "legit", "Legit")
         reg = BotRegistry()
@@ -362,9 +363,10 @@ class TestUserDirScanCacheFallback:
         caplog.clear()
         with caplog.at_level("ERROR", logger="web.app"):
             result = None
-            # _MAX_STALE_REFRESHES=5; de 6e call moet fail-closed gaan.
-            # Force DB-path per iteratie — de 30s happy-path cache zou
-            # anders 5 van de 6 iteraties wegoptimaliseren.
+            # _MAX_STALE_REFRESHES=5; the 6th call must go
+            # fail-closed. Force the DB path per iteration —
+            # otherwise the 30s happy-path cache would optimise
+            # 5 of the 6 iterations away.
             for _ in range(webapp._MAX_STALE_REFRESHES + 1):
                 webapp._cache_last_refresh_ts = 0.0
                 result = reg._scan_user_dirs()
@@ -381,21 +383,23 @@ class TestUserDirScanCacheFallback:
             f"expected ERROR with 'fail-closed', got "
             f"{[r.message for r in caplog.records]}"
         )
-        # Counter stays incremented — de volgende DB-success reset 'em.
+        # Counter stays incremented — the next DB success resets it.
         assert webapp._db_failure_count > webapp._MAX_STALE_REFRESHES
 
     def test_db_success_after_failure_resets_counter(
         self, sandbox_registry, monkeypatch,
     ):
-        """Na een herstelde DB-call moet de counter terug naar 0 en
-        de cache vernieuwd zijn. Zonder reset zou de registry
-        permanent in stale-mode blijven zitten na een hickup."""
+        """After a recovered DB call the counter must reset to 0
+        and the cache must be refreshed. Without the reset the
+        registry would stay in stale mode permanently after a
+        hiccup."""
         import web.app as webapp
         _seed_user(2, "bob")
         reg = BotRegistry()
 
-        # Twee mislukte scans. Force DB-path — binnen TTL (30s) zou
-        # de happy-path cache anders de failure stilletjes wegslikken.
+        # Two failed scans. Force the DB path — within TTL (30s)
+        # the happy-path cache would otherwise silently swallow
+        # the failure.
         def _boom():
             raise RuntimeError("hiccup")
         monkeypatch.setattr("core.user.get_active_user_ids", _boom)
@@ -405,11 +409,11 @@ class TestUserDirScanCacheFallback:
         reg._scan_user_dirs()
         assert webapp._db_failure_count == 2
 
-        # Herstel de DB-call en scan opnieuw.
+        # Recover the DB call and scan again.
         monkeypatch.undo()
-        # Seed user 2 opnieuw omdat monkeypatch.undo() de fixture-
-        # installatie niet verwijdert maar onze monkeypatch wel.
-        # (sandbox_registry zelf blijft gelden.)
+        # Seed user 2 again because monkeypatch.undo() doesn't
+        # remove the fixture installation but does remove our
+        # monkeypatch. (sandbox_registry itself stays active.)
         webapp._cache_last_refresh_ts = 0.0
         reg._scan_user_dirs()
 
@@ -428,8 +432,8 @@ class TestUserDirScanCacheFallback:
         _reset_user_dirs_cache()
         assert webapp._cached_active_users is None
 
-        # Patch get_active_user_ids VOORDAT BotRegistry() de
-        # eerste scan doet — anders primt __init__ de cache alsnog.
+        # Patch get_active_user_ids BEFORE BotRegistry() does the
+        # first scan — otherwise __init__ primes the cache anyway.
         def _boom():
             raise RuntimeError("DB not ready")
         monkeypatch.setattr("core.user.get_active_user_ids", _boom)
@@ -442,14 +446,14 @@ class TestUserDirScanCacheFallback:
             result = reg._scan_user_dirs()
 
         assert result == [], (
-            "fail-open regressie — lege cache moet meteen [] returnen"
+            "fail-open regression — empty cache must return [] immediately"
         )
         error_msgs = [
             r.message for r in caplog.records
             if r.levelname == "ERROR" and "no prior cache" in r.message
         ]
         assert error_msgs, (
-            f"expected ERROR met 'no prior cache', got "
+            f"expected ERROR with 'no prior cache', got "
             f"{[r.message for r in caplog.records if r.levelname == 'ERROR']}"
         )
 
@@ -458,23 +462,23 @@ class TestUserDirScanCacheFallback:
 
 
 class TestOrphanLogDedup:
-    """Pre-fix: elke 5-seconden registry-refresh die een orphan dir
-    tegenkwam logde opnieuw een WARNING. Eén typo = 720
-    WARNINGs/uur. Post-fix: alleen loggen als de orphan NIEUW is
-    sinds de vorige scan. Verdwenen + heringevoerde orphans worden
-    wél opnieuw gelogd zodat operator-drift niet onzichtbaar is.
+    """Pre-fix: every 5-second registry refresh that hit an orphan
+    dir re-logged a WARNING. One typo = 720 WARNINGs/hour. Post-fix:
+    only log if the orphan is NEW since the last scan. Disappeared
+    and re-introduced orphans are logged again so operator drift
+    stays visible.
     """
 
     def test_orphan_logged_once_across_scans(
         self, sandbox_registry, caplog,
     ):
-        """5 scans op dezelfde orphan = 1 WARNING. Niet 5."""
+        """5 scans against the same orphan = 1 WARNING. Not 5."""
         _write_bot_yaml(sandbox_registry, 1, "legit", "OK")
         _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan")
 
-        # De eerste scan gebeurt in ``BotRegistry.__init__``; capture
-        # vanaf dat moment zodat de totaal-telling over alle 5 scans
-        # klopt (eerste + 4 handmatige).
+        # The first scan happens in ``BotRegistry.__init__``;
+        # capture from that point on so the total count across all
+        # 5 scans matches (first + 4 manual).
         with caplog.at_level("WARNING", logger="web.app"):
             reg = BotRegistry()  # scan 1
             for _ in range(4):
@@ -494,12 +498,12 @@ class TestOrphanLogDedup:
     def test_new_orphan_logged_on_subsequent_scan(
         self, sandbox_registry, caplog,
     ):
-        """Scan 1: 999 gelogd. Scan 2 (na toevoegen van 888): 888
-        gelogd, 999 NIET opnieuw."""
+        """Scan 1: 999 logged. Scan 2 (after adding 888): 888
+        logged, 999 NOT logged again."""
         _write_bot_yaml(sandbox_registry, 1, "legit", "OK")
         _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan 999")
 
-        reg = BotRegistry()  # eerste scan in __init__ logt 999.
+        reg = BotRegistry()  # first scan in __init__ logs 999.
         caplog.clear()
 
         _write_bot_yaml(sandbox_registry, 888, "ghost2", "Orphan 888")
@@ -521,29 +525,29 @@ class TestOrphanLogDedup:
     def test_removed_orphan_relogged_if_recreated(
         self, sandbox_registry, caplog,
     ):
-        """Life-cycle van een orphan: loggen → verdwijnen → opnieuw
-        loggen als 'ie terugkomt. Garandeert dat operator-drift
-        zichtbaar blijft zonder dat een tijdelijk verwijderde dir
-        voor altijd stil blijft."""
+        """Life cycle of an orphan: log → disappear → log again
+        when it comes back. Guarantees that operator drift stays
+        visible without a temporarily removed dir going silent
+        forever."""
         import shutil as _shutil
         _write_bot_yaml(sandbox_registry, 1, "legit", "OK")
         _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan 999")
 
-        # Scan 1 — 999 wordt gelogd.
+        # Scan 1 — 999 is logged.
         reg = BotRegistry()
 
-        # Operator ruimt 999 op.
+        # Operator cleans up 999.
         _shutil.rmtree(sandbox_registry / "config" / "bots" / "999")
 
         caplog.clear()
         with caplog.at_level("WARNING", logger="web.app"):
-            reg._scan_user_dirs()  # Scan 2 — geen orphan meer.
+            reg._scan_user_dirs()  # Scan 2 — no orphan any more.
 
-        # Operator plaatst 'm opnieuw.
+        # Operator puts it back.
         _write_bot_yaml(sandbox_registry, 999, "ghost", "Orphan 999 take 2")
 
         with caplog.at_level("WARNING", logger="web.app"):
-            reg._scan_user_dirs()  # Scan 3 — 999 is weer nieuw.
+            reg._scan_user_dirs()  # Scan 3 — 999 is new again.
 
         orphan_msgs = [
             r.message for r in caplog.records
@@ -560,19 +564,21 @@ class TestOrphanLogDedup:
 
 
 class TestUserDirScanCacheTTL:
-    """Finding #6: vóór de fix draaide ``_scan_user_dirs`` elke scan
-    (≈ elke 5 s per portal) een verse ``get_active_user_ids()`` DB-call,
-    ook als niets in de users-tabel veranderde. De ``_CACHE_TTL_S``
-    gate (30 s) hergebruikt nu de cached set tussen scans — de
-    DB-failure fail-closed paden hierboven (TestUserDirScanCacheFallback)
-    worden pas bereikt als de cache expired of ontbreekt.
+    """Finding #6: before the fix ``_scan_user_dirs`` ran a fresh
+    ``get_active_user_ids()`` DB call on every scan (≈ every 5 s
+    per portal), even if nothing in the users table changed. The
+    ``_CACHE_TTL_S`` gate (30 s) now reuses the cached set across
+    scans — the DB-failure fail-closed paths above
+    (TestUserDirScanCacheFallback) are only reached once the cache
+    expires or is missing.
     """
 
     def test_cache_hit_within_ttl_skips_db_call(
         self, sandbox_registry, monkeypatch,
     ):
-        """Twee scans binnen TTL = één DB-call. Zonder TTL-gate telt
-        de counter door naar 2 (en doet elke bot-tick een extra query)."""
+        """Two scans within TTL = one DB call. Without the TTL gate
+        the counter would tick to 2 (and every bot tick would make
+        an extra query)."""
         import web.app as webapp
         _seed_user(2, "bob")
 
@@ -586,8 +592,9 @@ class TestUserDirScanCacheTTL:
         monkeypatch.setattr("core.user.get_active_user_ids", _counting)
 
         reg = BotRegistry()
-        # BotRegistry() doet al 1 scan via __init__ → _refresh_locked.
-        # Nul de counter zodat dit pad niet meetelt in de assertion.
+        # BotRegistry() already does 1 scan via __init__ →
+        # _refresh_locked. Zero the counter so that path is not
+        # counted in the assertion.
         initial = calls["n"]
         reg._scan_user_dirs()
         reg._scan_user_dirs()
@@ -598,8 +605,8 @@ class TestUserDirScanCacheTTL:
     def test_cache_refresh_after_ttl_expires(
         self, sandbox_registry, monkeypatch,
     ):
-        """Na TTL-expiry is de volgende scan een cache-miss en raakt
-        de DB weer. Gesimuleerd door de timestamp terug te zetten."""
+        """After TTL expiry the next scan is a cache miss and hits
+        the DB again. Simulated by rewinding the timestamp."""
         import web.app as webapp
         _seed_user(2, "bob")
 
@@ -615,7 +622,7 @@ class TestUserDirScanCacheTTL:
         reg = BotRegistry()
         initial = calls["n"]
         reg._scan_user_dirs()  # cache-hit
-        # Simuleer TTL-expiry door de timestamp terug in de tijd te zetten.
+        # Simulate TTL expiry by rewinding the timestamp.
         webapp._cache_last_refresh_ts = 0.0
         reg._scan_user_dirs()  # cache-miss → DB call
         assert calls["n"] == initial + 1, (
@@ -626,13 +633,14 @@ class TestUserDirScanCacheTTL:
     def test_cache_reset_helper_also_clears_timestamp(
         self, sandbox_registry,
     ):
-        """``_reset_user_dirs_cache()`` moet ook de TTL-timestamp nullen
-        — anders zou een test-fixture die de cache clear'd de volgende
-        scan nog steeds als een cache-hit zien en de DB niet raken."""
+        """``_reset_user_dirs_cache()`` must also zero the TTL
+        timestamp — otherwise a test fixture that clears the cache
+        would still see the next scan as a cache hit and not touch
+        the DB."""
         import web.app as webapp
         _seed_user(2, "bob")
 
-        reg = BotRegistry()  # primt de cache + timestamp
+        reg = BotRegistry()  # primes the cache + timestamp
         assert webapp._cache_last_refresh_ts > 0
         assert webapp._cached_active_users == {1, 2}
 
@@ -640,8 +648,9 @@ class TestUserDirScanCacheTTL:
         assert webapp._cache_last_refresh_ts == 0.0
         assert webapp._cached_active_users is None
 
-        # Een volgende scan moet dan gegarandeerd de DB raken (cache is
-        # leeg, dus de TTL-check slaat over op `_cached_active_users is
-        # None` en de try/except DB-path wordt doorlopen).
+        # A subsequent scan must then be guaranteed to hit the DB
+        # (cache is empty, so the TTL check skips on
+        # `_cached_active_users is None` and the try/except DB
+        # path is traversed).
         reg._scan_user_dirs()
         assert webapp._cached_active_users == {1, 2}

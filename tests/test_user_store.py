@@ -215,18 +215,19 @@ class TestSessionEpoch:
         assert user_store.get_session_epoch(999) == 0
 
     def test_bump_returns_value_atomically(self):
-        """Audit v26-11: bump_session_epoch gebruikt sinds v26-11
-        een ``UPDATE ... RETURNING session_epoch`` statement, zodat
-        de post-update waarde in één SQL-call terugkomt. Pre-fix
-        was UPDATE gevolgd door aparte SELECT, met een race-window
-        waarin twee threads dezelfde SELECT-waarde zouden lezen.
+        """Audit v26-11: bump_session_epoch since v26-11 uses an
+        ``UPDATE ... RETURNING session_epoch`` statement so the
+        post-update value comes back in a single SQL call. Pre-fix
+        was UPDATE followed by a separate SELECT, with a race
+        window in which two threads would read the same SELECT
+        value.
 
-        Deze test dekt de functionele kant (retour = post-UPDATE
-        waarde); de concurrency-garantie zit in het RETURNING
-        statement zelf.
+        This test covers the functional side (return = post-UPDATE
+        value); the concurrency guarantee is in the RETURNING
+        statement itself.
         """
         assert user_store.get_session_epoch(1) == 0
-        # Elke bump moet zijn eigen unieke waarde retourneren.
+        # Each bump must return its own unique value.
         v1 = user_store.bump_session_epoch(1)
         v2 = user_store.bump_session_epoch(1)
         v3 = user_store.bump_session_epoch(1)

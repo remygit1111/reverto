@@ -30,12 +30,12 @@ from pydantic import ValidationError
 
 class TestRSI:
     def test_flat_market(self):
-        """Constante prijzen → geen verliezen → avg_loss=0 → fillna(100) → RSI=100."""
+        """Constant prices → no losses → avg_loss=0 → fillna(100) → RSI=100."""
         assert calculate_rsi([100.0]*20, 14) == 100.0
 
     def test_mixed_market_between_0_and_100(self):
-        """Gemengde markt geeft RSI tussen 0 en 100."""
-        # Afwisselend stijgen en dalen
+        """A mixed market produces an RSI between 0 and 100."""
+        # Alternating up and down
         closes = [100.0 + (5 if i % 2 == 0 else -3) for i in range(20)]
         rsi = calculate_rsi(closes, 14)
         assert 0.0 < rsi < 100.0
