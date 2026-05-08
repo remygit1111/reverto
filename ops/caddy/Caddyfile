@@ -8,18 +8,44 @@
 #
 # See docs/OPERATIONS.md for fuller operational context.
 
-# Marketing site — redirects to the GitHub repository.
-# Reverto is open-source; reverto.bot itself doesn't host a
-# marketing site. Visitors are redirected to the repo where
-# they can read the README, browse the code, or self-host.
+# Marketing site — static HTML/CSS/JS served from disk.
+# This is the public-facing reverto.bot domain. No auth, no
+# Python, no DB access. Caddy serves files directly.
 reverto.bot {
-        redir https://github.com/remygit1111/reverto permanent
+        root * /var/www/reverto-marketing
+        file_server
+        encode gzip
 
         # Explicit protocol pin — Caddy v2 defaults to TLS 1.2+
         # but pinning prevents silent weakening on future upgrade
         # or operator config drift.
         tls {
                 protocols tls1.2 tls1.3
+        }
+
+        # Security headers. Stricter CSP than app.reverto.bot since
+        # the marketing site has no inline scripts and no
+        # third-party CDN dependencies.
+        header {
+                Strict-Transport-Security "max-age=31536000; includeSubDomains"
+                Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+                X-Frame-Options "DENY"
+                X-Content-Type-Options "nosniff"
+                Referrer-Policy "no-referrer"
+                Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=()"
+                # Remove the default Server header for a tiny privacy bump
+                -Server
+        }
+
+        # 5xx fallback — same maintenance page as the app
+        # serves for consistency.
+        handle_errors {
+                @5xx expression `{err.status_code} >= 500`
+                handle @5xx {
+                        root * /var/www/reverto-marketing
+                        rewrite * /maintenance.html
+                        file_server
+                }
         }
 
         log {
