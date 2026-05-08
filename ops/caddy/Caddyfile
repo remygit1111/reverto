@@ -123,3 +123,39 @@ app.reverto.bot {
                 }
         }
 }
+
+# Umami self-hosted analytics — privacy-first web analytics
+# for the marketing site. Reverse-proxies to a Docker container
+# bound to 127.0.0.1:3000 (see ~/umami/docker-compose.yml on the
+# operator's VPS — not under repo control).
+analytics.reverto.bot {
+        reverse_proxy 127.0.0.1:3000
+
+        # Explicit protocol pin — Caddy v2 defaults to TLS 1.2+
+        # but pinning prevents silent weakening on future upgrade
+        # or operator config drift.
+        tls {
+                protocols tls1.2 tls1.3
+        }
+
+        # Security headers. Content-Security-Policy is intentionally
+        # OMITTED here — Umami sends its own CSP in its Next.js
+        # response headers (verified via curl). Caddy-level CSP
+        # would either duplicate or conflict.
+        header {
+                Strict-Transport-Security "max-age=31536000; includeSubDomains"
+                X-Frame-Options "DENY"
+                X-Content-Type-Options "nosniff"
+                Referrer-Policy "no-referrer"
+                Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=()"
+                # Remove the default Server header for a tiny privacy bump
+                -Server
+        }
+
+        log {
+                output file /var/log/caddy/analytics.log {
+                        roll_size 100MiB
+                        roll_keep 10
+                }
+        }
+}
