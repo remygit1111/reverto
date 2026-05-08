@@ -28,7 +28,7 @@ reverto.bot {
         # third-party CDN dependencies.
         header {
                 Strict-Transport-Security "max-age=31536000; includeSubDomains"
-                Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+                Content-Security-Policy "default-src 'self'; script-src 'self' https://analytics.reverto.bot; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://analytics.reverto.bot; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
                 X-Frame-Options "DENY"
                 X-Content-Type-Options "nosniff"
                 Referrer-Policy "no-referrer"
