@@ -30,14 +30,16 @@
 /* ── Design tokens ──────────────────────────────────────────────────────────── */
 /* Dark palette tracks VS Code's "Dark+" defaults (neutral greys) so
    long sessions stay easy on the eyes. The previous blue-black palette
-   (--bg #0a0e14) was too saturated under portal use. Turquoise accent
-   (#00d4aa) stays as Reverto's brand identity. */
+   (--bg #0a0e14) was too saturated under portal use. The accent color
+   (#06b6d4) is Reverto's UI brand. Charts retain a teal up-color
+   (--chart-up) for trading-convention reasons (green=up). */
 :root {
   --bg:       #1e1e1e;
   --surface:  #252526;
   --surface2: #2d2d30;
   --border:   #3c3c3c;
-  --accent:   #00d4aa;
+  --accent:   #06b6d4;
+  --chart-up: #26a69a;
   --red:      #ff4d6d;
   --amber:    #ffb347;
   --blue:     #5b8dee;

@@ -6718,7 +6718,7 @@ function getChartColors() {
     background: _cssVar('--bg',     isDark ? '#0a0e14' : '#f0f2f5'),
     textColor:  _cssVar('--muted',  isDark ? '#4a5568' : '#8a94a6'),
     gridColor:  _cssVar('--border', isDark ? '#1e2736' : '#dde1e9'),
-    upColor:    _cssVar('--accent', '#00d4aa'),
+    upColor:    _cssVar('--chart-up', '#26a69a'),
     downColor:  _cssVar('--red',    '#ff4d6d'),
   };
 }
@@ -7088,11 +7088,11 @@ function initCharts() {
     height: mainEl.clientHeight || 500,
   });
   _chartCandles = _chartMain.addSeries(_LWC().CandlestickSeries, {
-    upColor:        _cssVar('--accent', '#26a69a'),
+    upColor:        _cssVar('--chart-up', '#26a69a'),
     downColor:      _cssVar('--red',    '#ef5350'),
-    borderUpColor:  _cssVar('--accent', '#26a69a'),
+    borderUpColor:  _cssVar('--chart-up', '#26a69a'),
     borderDownColor:_cssVar('--red',    '#ef5350'),
-    wickUpColor:    _cssVar('--accent', '#26a69a'),
+    wickUpColor:    _cssVar('--chart-up', '#26a69a'),
     wickDownColor:  _cssVar('--red',    '#ef5350'),
   });
 
@@ -8220,11 +8220,11 @@ function initWizardChart() {
     };
   }
   _wizardCandles = _wizardChart.addSeries(_LWC().CandlestickSeries, {
-    upColor:        _cssVar('--accent', '#26a69a'),
+    upColor:        _cssVar('--chart-up', '#26a69a'),
     downColor:      _cssVar('--red',    '#ef5350'),
-    borderUpColor:  _cssVar('--accent', '#26a69a'),
+    borderUpColor:  _cssVar('--chart-up', '#26a69a'),
     borderDownColor:_cssVar('--red',    '#ef5350'),
-    wickUpColor:    _cssVar('--accent', '#26a69a'),
+    wickUpColor:    _cssVar('--chart-up', '#26a69a'),
     wickDownColor:  _cssVar('--red',    '#ef5350'),
   });
   if (typeof ResizeObserver !== 'undefined') {
@@ -12394,11 +12394,11 @@ function btInitChart(candles, deals) {
     };
   }
   _btCandleSeries = _btCandleChart.addSeries(_LWC().CandlestickSeries, {
-    upColor: _cssVar('--accent', '#26a69a'),
+    upColor: _cssVar('--chart-up', '#26a69a'),
     downColor: _cssVar('--red', '#ef5350'),
-    borderUpColor: _cssVar('--accent', '#26a69a'),
+    borderUpColor: _cssVar('--chart-up', '#26a69a'),
     borderDownColor: _cssVar('--red', '#ef5350'),
-    wickUpColor: _cssVar('--accent', '#26a69a'),
+    wickUpColor: _cssVar('--chart-up', '#26a69a'),
     wickDownColor: _cssVar('--red', '#ef5350'),
   });
   _btCandleSeries.setData(candles);
