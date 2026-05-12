@@ -90,6 +90,7 @@ class LiveEngine(PaperEngine):
         dry_run: bool = True,
         clock_skew_tolerance: float = DEFAULT_CLOCK_SKEW_TOLERANCE_S,
         user_id: int = 1,
+        exchange_type: str = "",
     ) -> None:
         super().__init__(
             config=config,
@@ -101,6 +102,7 @@ class LiveEngine(PaperEngine):
             manual_trigger_file=manual_trigger_file,
             slug=slug,
             user_id=user_id,
+            exchange_type=exchange_type,
         )
 
         self._live_exchange = exchange

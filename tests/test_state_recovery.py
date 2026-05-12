@@ -17,7 +17,6 @@ sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 from config.models import (  # noqa: E402
     BotConfig,
     DCAConfig,
-    Exchange,
     Mode,
     TakeProfitConfig,
 )
@@ -29,7 +28,7 @@ def min_config():
     return BotConfig(
         name="RecoveryBot",
         mode=Mode.PAPER,
-        exchange=Exchange.BITGET,
+        exchange_account_id=1,
         pair="BTC/USD",
         dca=DCAConfig(
             enabled=True, base_order_size=0.001,

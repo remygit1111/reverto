@@ -214,10 +214,15 @@ def user_ml_results_path(user_id: int, slug: str) -> Path:
     return parent / f"results_{slug}.json"
 
 
-def exchange_creds_path(user_id: int, exchange: str) -> Path:
-    """``credentials/<user_id>/<exchange>.enc`` — encrypted payload for
-    one exchange belonging to one user."""
-    return user_credentials_dir(user_id) / f"{exchange}.enc"
+def uuid_creds_path(user_id: int, credentials_uuid: str) -> Path:
+    """``credentials/<user_id>/<uuid>.enc`` — encrypted payload for
+    one exchange account belonging to one user. UUID is generated at
+    account-create time and stored in the ``exchange_accounts`` DB row.
+
+    Replaces the pre-multi-account ``exchange_creds_path`` which keyed
+    the file by exchange name and so could only hold one credential
+    pair per (user, exchange_type)."""
+    return user_credentials_dir(user_id) / f"{credentials_uuid}.enc"
 
 
 # ── File-permission helper ────────────────────────────────────────────────

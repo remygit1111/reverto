@@ -277,11 +277,24 @@ async def _close_deal_offline(
         raise HTTPException(status_code=400, detail="Invalid bot config")
 
     # Fetch current market price via the public ticker endpoint.
-    exchange_name = (
-        bot_config.exchange.value
-        if hasattr(bot_config.exchange, "value")
-        else str(bot_config.exchange)
+    # exchange_type resolves through the bot's exchange_account row —
+    # the YAML now stores an account_id rather than a literal exchange
+    # slug.
+    from core import exchange_account_store
+    account = exchange_account_store.get_account(
+        bot_config.exchange_account_id,
     )
+    if account is None or account["user_id"] != user_id:
+        logger.warning(
+            "Offline close — bot %s/%s references missing or foreign "
+            "exchange_account_id=%d",
+            user_id, slug, bot_config.exchange_account_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Bot's exchange account is missing or unowned",
+        )
+    exchange_name = str(account["exchange_type"])
     try:
         current_price = await _fetch_current_price_for_close(
             bot_config.pair, exchange_name,

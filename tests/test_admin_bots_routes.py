@@ -92,7 +92,7 @@ class _FakeBot:
         self._state = state or {
             "bot_name": slug.capitalize(),
             "mode": "paper",
-            "exchange": "bitget",
+            "exchange_account_id": 1,
             "pair": "BTC/USD",
             "current_price": 0.0,
             "balance_btc": 0.1,

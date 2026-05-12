@@ -147,38 +147,13 @@ def test_session_cookie_not_logged_on_verify_failure(caplog):
 
 
 # ── pd-019 c: Bitget passphrase never appears in logs ─────────────────────
-
-
-def test_bitget_passphrase_not_logged_on_env_fallback(
-    tmp_path, monkeypatch, caplog,
-):
-    """r1-012 deprecation-warning path reads ``BITGET_PASSPHRASE``
-    from the env-var when no credential-store entry exists. The
-    warning line points the operator at the migration endpoint
-    but must NEVER echo the passphrase value itself.
-    """
-    from core import credentials
-
-    fake_pass = "PYTEST_PASSPHRASE_SENTINEL_9a8b7c6d"
-    monkeypatch.setenv("BITGET_PASSPHRASE", fake_pass)
-
-    # Force the store-miss branch so the env fallback kicks in.
-    monkeypatch.setattr(
-        credentials, "get_keys",
-        lambda exchange, user_id: None,
-    )
-
-    with caplog.at_level(logging.DEBUG):
-        got = credentials.get_bitget_passphrase(user_id=1)
-
-    # The helper returns the passphrase to the caller (engine) —
-    # that's the whole point. The contract is only: it doesn't
-    # log it.
-    assert got == fake_pass
-    for record in caplog.records:
-        assert fake_pass not in record.getMessage(), (
-            f"Passphrase leaked into log: {record.getMessage()!r}"
-        )
+#
+# The pre-multi-account `get_bitget_passphrase` env-var fallback path
+# (audit r1-012) was removed in feat/exchange-account-management:
+# passphrases now live inside the per-account encrypted blob, so
+# there is no env-var path to log. Coverage for the "missing
+# passphrase refuses to boot live" invariant moved to
+# tests/test_main_live.py::TestAuthenticatedExchange::test_bitget_requires_passphrase.
 
 
 # ── r3-007: Telegram bot tokens never appear in logs ──────────────────────

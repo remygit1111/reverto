@@ -2663,6 +2663,7 @@ function goAdmin(fromPop = false, subRoute = null) {
   if (subRoute === 'roadmap-manage') loadAdminRoadmap();
   if (subRoute === 'bots') loadAdminBotsOverview();
   if (subRoute === 'findings') loadAdminFindings();
+  if (subRoute === 'exchanges') loadAdminExchanges();
 }
 
 function _showAdminSubpage(name) {
@@ -2674,18 +2675,20 @@ function _showAdminSubpage(name) {
   const subRm = $('admin-roadmap-manage');
   const subBots = $('admin-bots-overview');
   const subFindings = $('admin-findings');
+  const subEx = $('admin-exchanges');
   if (!index) return;
-  const subs = [subCl, subRm, subBots, subFindings].filter(Boolean);
-  const showIndex = !(
-    name === 'changelog-manage' || name === 'roadmap-manage'
-    || name === 'bots' || name === 'findings'
-  );
+  const subs = [subCl, subRm, subBots, subFindings, subEx].filter(Boolean);
+  const knownSubs = new Set([
+    'changelog-manage', 'roadmap-manage', 'bots', 'findings', 'exchanges',
+  ]);
+  const showIndex = !knownSubs.has(name);
   index.classList.toggle('hidden', !showIndex);
   subs.forEach((el) => el.classList.add('hidden'));
   if (name === 'changelog-manage' && subCl) subCl.classList.remove('hidden');
   if (name === 'roadmap-manage' && subRm) subRm.classList.remove('hidden');
   if (name === 'bots' && subBots) subBots.classList.remove('hidden');
   if (name === 'findings' && subFindings) subFindings.classList.remove('hidden');
+  if (name === 'exchanges' && subEx) subEx.classList.remove('hidden');
 }
 
 // ── Admin — Bot Overview (cross-user) ────────────────────────────────────
@@ -3910,6 +3913,252 @@ function _readCookie(name) {
 }
 
 
+// ── Admin — Exchange accounts ────────────────────────────────────────────
+// CRUD UI backed by /api/exchange-accounts. The table is the table of
+// truth; the modal handles create + the inline buttons handle test /
+// set-default / delete. Credentials are write-only by design — there is
+// no GET that exposes api_key/api_secret, so rotating a key is
+// always a delete-and-recreate flow.
+
+let _exAccountsCache = [];
+
+async function loadAdminExchanges() {
+  const tbody = $('admin-ex-tbody');
+  if (!tbody) return;
+  _exAttachDOMListeners();
+  tbody.innerHTML =
+    '<tr><td colspan="5" class="cl-empty-cell">Loading…</td></tr>';
+  try {
+    const r = await fetch('/api/exchange-accounts', { credentials: 'include' });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const payload = await r.json();
+    _exAccountsCache = payload.accounts || [];
+    _renderExchangeAccounts(_exAccountsCache);
+  } catch (e) {
+    console.warn('[reverto] loadAdminExchanges failed:', e);
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="cl-empty-cell">Failed to load accounts.</td></tr>';
+  }
+}
+
+function _renderExchangeAccounts(items) {
+  const tbody = $('admin-ex-tbody');
+  if (!tbody) return;
+  if (!items || items.length === 0) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="cl-empty-cell">No accounts yet. Click <strong>+ Add account</strong> to create one.</td></tr>';
+    return;
+  }
+  const rows = items.map((acc) => {
+    const last = acc.last_tested_at
+      ? safeText(acc.last_tested_at).split('T')[0]
+      : '—';
+    const dflt = acc.is_default
+      ? '<span class="cl-badge cl-badge-fix">Default</span>'
+      : `<button type="button" class="hbtn hbtn-theme" data-set-default="${acc.id}">Set default</button>`;
+    return (
+      '<tr>'
+      + `<td>${safeText(acc.exchange_type)}</td>`
+      + `<td>${safeText(acc.alias)}</td>`
+      + `<td>${dflt}</td>`
+      + `<td>${last}</td>`
+      + '<td>'
+      + `<button type="button" class="hbtn hbtn-theme" data-test-conn="${acc.id}">Test</button> `
+      + `<button type="button" class="hbtn hbtn-theme btn-danger" data-delete-acc="${acc.id}">Delete</button>`
+      + '</td>'
+      + '</tr>'
+    );
+  });
+  tbody.innerHTML = rows.join('');
+  tbody.querySelectorAll('[data-test-conn]').forEach((btn) => {
+    btn.addEventListener('click', () => testAccountConnection(
+      Number(btn.dataset.testConn),
+    ));
+  });
+  tbody.querySelectorAll('[data-set-default]').forEach((btn) => {
+    btn.addEventListener('click', () => setAccountAsDefault(
+      Number(btn.dataset.setDefault),
+    ));
+  });
+  tbody.querySelectorAll('[data-delete-acc]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteAccount(
+      Number(btn.dataset.deleteAcc),
+    ));
+  });
+}
+
+function _exShowStatus(msg, isError = false) {
+  const el = $('admin-ex-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.hidden = false;
+  el.style.color = isError ? 'var(--danger, #e25)' : '';
+}
+
+function openAddAccountModal() {
+  $('admin-ex-type').value = 'bitget';
+  $('admin-ex-alias').value = '';
+  $('admin-ex-api-key').value = '';
+  $('admin-ex-api-secret').value = '';
+  $('admin-ex-passphrase').value = '';
+  $('admin-ex-is-default').checked = false;
+  $('admin-ex-form-error').classList.add('hidden');
+  _exUpdatePassphraseVisibility();
+  $('admin-ex-modal').classList.add('active');
+}
+
+function _exCloseModal() {
+  $('admin-ex-modal').classList.remove('active');
+}
+
+function _exUpdatePassphraseVisibility() {
+  // Bitget needs a passphrase; Kraken doesn't. Toggle the row so
+  // the operator doesn't see an unused field that they'd otherwise
+  // wonder whether to fill.
+  const row = $('admin-ex-passphrase-row');
+  if (!row) return;
+  const isBitget = $('admin-ex-type').value === 'bitget';
+  row.style.display = isBitget ? '' : 'none';
+}
+
+async function submitAccountForm() {
+  const errBox = $('admin-ex-form-error');
+  errBox.classList.add('hidden');
+  errBox.textContent = '';
+  const body = {
+    exchange_type: $('admin-ex-type').value,
+    alias: $('admin-ex-alias').value.trim(),
+    api_key: $('admin-ex-api-key').value,
+    api_secret: $('admin-ex-api-secret').value,
+    is_default: $('admin-ex-is-default').checked,
+  };
+  const pp = $('admin-ex-passphrase').value;
+  if (body.exchange_type === 'bitget') body.passphrase = pp;
+  try {
+    const r = await fetch('/api/exchange-accounts', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) {
+      const detail = await r.json().catch(() => ({}));
+      errBox.textContent =
+        (detail && detail.detail) ? String(detail.detail) : `HTTP ${r.status}`;
+      errBox.classList.remove('hidden');
+      return;
+    }
+    _exCloseModal();
+    await loadAdminExchanges();
+    _exShowStatus('Account saved.');
+  } catch (e) {
+    errBox.textContent = `Save failed: ${e}`;
+    errBox.classList.remove('hidden');
+  }
+}
+
+async function testAccountConnection(id) {
+  _exShowStatus(`Testing account ${id}…`);
+  try {
+    const r = await fetch(
+      `/api/exchange-accounts/${id}/test-connection`,
+      { method: 'POST', credentials: 'include' },
+    );
+    if (r.status === 401) { _handle401(); return; }
+    const data = await r.json().catch(() => ({}));
+    if (data.ok) {
+      _exShowStatus(
+        `Test OK — balance ${data.balance_btc} BTC.`,
+      );
+    } else {
+      _exShowStatus(
+        `Test failed: ${data.error || 'unknown error'}`, true,
+      );
+    }
+    await loadAdminExchanges();
+  } catch (e) {
+    _exShowStatus(`Test failed: ${e}`, true);
+  }
+}
+
+async function setAccountAsDefault(id) {
+  try {
+    const r = await fetch(`/api/exchange-accounts/${id}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_default: true }),
+    });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) {
+      _exShowStatus(`Set-default failed: HTTP ${r.status}`, true);
+      return;
+    }
+    await loadAdminExchanges();
+    _exShowStatus('Default account updated.');
+  } catch (e) {
+    _exShowStatus(`Set-default failed: ${e}`, true);
+  }
+}
+
+async function deleteAccount(id) {
+  // Confirm with the operator — accounts referenced by a bot YAML
+  // refuse to delete server-side with a 409, but a confirm dialog
+  // here catches the accidental-click case before round-tripping.
+  if (!confirm('Delete this exchange account? Stored credentials will be removed.')) return;
+  try {
+    const r = await fetch(`/api/exchange-accounts/${id}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    if (r.status === 401) { _handle401(); return; }
+    if (r.status === 409) {
+      const data = await r.json().catch(() => ({}));
+      const detail = (data && data.detail) || {};
+      const bots = (detail.blocking_bots || []).join(', ');
+      _exShowStatus(
+        `Cannot delete — bot configs reference this account: ${bots}`,
+        true,
+      );
+      return;
+    }
+    if (!r.ok) {
+      _exShowStatus(`Delete failed: HTTP ${r.status}`, true);
+      return;
+    }
+    await loadAdminExchanges();
+    _exShowStatus('Account deleted.');
+  } catch (e) {
+    _exShowStatus(`Delete failed: ${e}`, true);
+  }
+}
+
+// Modal listeners — attached idempotently the first time the admin
+// exchanges page loads. Wiring on DOMContentLoaded would race the
+// existing _wireAllModalFocusTraps init block and break the
+// test_focus_trap_wired_to_modals_at_init regression guard. Calling
+// here keeps it scoped to "operator actually visited the admin tile".
+let _exDOMListenersAttached = false;
+function _exAttachDOMListeners() {
+  if (_exDOMListenersAttached) return;
+  _exDOMListenersAttached = true;
+  const newBtn = $('admin-ex-new-btn');
+  if (newBtn) newBtn.addEventListener('click', openAddAccountModal);
+  const cancelBtn = $('admin-ex-cancel-btn');
+  if (cancelBtn) cancelBtn.addEventListener('click', _exCloseModal);
+  const saveBtn = $('admin-ex-save-btn');
+  if (saveBtn) saveBtn.addEventListener('click', submitAccountForm);
+  const typeSel = $('admin-ex-type');
+  if (typeSel) typeSel.addEventListener('change', _exUpdatePassphraseVisibility);
+  const overlay = $('admin-ex-modal');
+  if (overlay) overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) _exCloseModal();
+  });
+}
+
+
 // ── Admin — changelog CRUD ───────────────────────────────────────────────
 // Lists every entry (drafts + published) in a table and wires the
 // modal editor for create/edit plus inline publish/unpublish/delete
@@ -4615,7 +4864,7 @@ let nbEditSlug = null;
 
 function nbDefaultState() {
   return {
-    name: '', exchange: 'bitget', pair: 'BTC/USD', mode: 'paper', direction: 'long',
+    name: '', exchange_account_id: null, pair: 'BTC/USD', mode: 'paper', direction: 'long',
     leverage_enabled: false, leverage_size: 1, timeframe: '1h',
     base_unit: 'btc', base_size: 0.001,
     indicators: [],
@@ -4730,6 +4979,9 @@ function nbInit() {
   nbHideError();
   nbRecompute();
   nbApplyMobileCollapse();
+  // Refresh the exchange-account dropdown on every wizard open so a
+  // freshly-added account shows up without a hard page reload.
+  nbLoadExchangeAccounts().then(() => nbRecompute());
 }
 
 // On narrow viewports, collapse every wizard section except the first
@@ -4777,7 +5029,12 @@ function nbReadAll() {
   // before submit/validation, so the rest of the wizard can read from
   // a single source of truth.
   nbState.name = $('nb-name').value.trim();
-  nbState.exchange = $('nb-exchange').value;
+  // exchange_account_id — empty string means "operator hasn't picked
+  // an account yet"; serialise as null so the backend's required-int
+  // validator gives a clean 422 rather than coercing to 0.
+  const accSel = $('nb-exchange-account');
+  const accRaw = accSel ? accSel.value : '';
+  nbState.exchange_account_id = accRaw ? Number(accRaw) : null;
   nbState.pair = $('nb-pair').value.trim();
   nbState.mode = $('nb-mode').value;
   nbState.direction = $('nb-direction').value;
@@ -4879,7 +5136,12 @@ function nbUpdateMinTpHint() {
 
 function nbApplyStateToForm() {
   $('nb-name').value = nbState.name;
-  $('nb-exchange').value = nbState.exchange;
+  const accSel = $('nb-exchange-account');
+  if (accSel) {
+    accSel.value = nbState.exchange_account_id != null
+      ? String(nbState.exchange_account_id)
+      : '';
+  }
   $('nb-pair').value = nbState.pair;
   $('nb-mode').value = nbState.mode;
   $('nb-direction').value = nbState.direction;
@@ -5607,7 +5869,7 @@ function nbRenderReview() {
     <div class="review-section">
       <div class="review-section-title">General</div>
       <div class="review-row"><span class="review-key">Name</span><span>${safeText(nbState.name) || '—'}</span></div>
-      <div class="review-row"><span class="review-key">Exchange</span><span>${safeText(nbState.exchange.toUpperCase())}</span></div>
+      <div class="review-row"><span class="review-key">Exchange account</span><span>${safeText(_nbExchangeAccountLabel())}</span></div>
       <div class="review-row"><span class="review-key">Pair</span><span>${safeText(nbState.pair)}</span></div>
       <div class="review-row"><span class="review-key">Mode</span><span>${safeText(nbState.mode.toUpperCase())}</span></div>
       <div class="review-row"><span class="review-key">Direction</span><span>${safeText(nbState.direction.toUpperCase())}</span></div>
@@ -5811,6 +6073,61 @@ function _nbSerializeIndicator(i) {
   return out;
 }
 
+// Cache of exchange accounts available to the operator. Populated by
+// nbLoadExchangeAccounts on wizard open; the dropdown re-renders from
+// this cache so a freshly-added account shows up after the operator
+// returns to the wizard.
+let _nbExchangeAccounts = [];
+
+async function nbLoadExchangeAccounts() {
+  try {
+    const r = await fetch('/api/exchange-accounts', { credentials: 'include' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const payload = await r.json();
+    _nbExchangeAccounts = payload.accounts || [];
+  } catch (e) {
+    console.warn('[reverto] nbLoadExchangeAccounts failed:', e);
+    _nbExchangeAccounts = [];
+  }
+  _nbRenderExchangeAccountDropdown();
+}
+
+function _nbRenderExchangeAccountDropdown() {
+  const sel = $('nb-exchange-account');
+  if (!sel) return;
+  if (!_nbExchangeAccounts.length) {
+    sel.innerHTML =
+      '<option value="">No accounts yet — add one in Exchanges admin</option>';
+    return;
+  }
+  const desired = nbState && nbState.exchange_account_id != null
+    ? String(nbState.exchange_account_id)
+    : '';
+  const opts = _nbExchangeAccounts.map((acc) => {
+    const label = `${acc.exchange_type} — ${acc.alias}`
+      + (acc.is_default ? ' (default)' : '');
+    return `<option value="${acc.id}">${safeText(label)}</option>`;
+  });
+  sel.innerHTML = opts.join('');
+  if (desired && _nbExchangeAccounts.some(a => String(a.id) === desired)) {
+    sel.value = desired;
+  } else {
+    // Auto-pick the default for the operator's first exchange if no
+    // selection is set yet. Removes one click from the happy path.
+    const dflt = _nbExchangeAccounts.find(a => a.is_default);
+    sel.value = String((dflt || _nbExchangeAccounts[0]).id);
+  }
+  if (nbState) nbState.exchange_account_id = Number(sel.value);
+}
+
+function _nbExchangeAccountLabel() {
+  const id = nbState && nbState.exchange_account_id;
+  if (id == null) return '(none selected)';
+  const acc = _nbExchangeAccounts.find(a => a.id === Number(id));
+  if (!acc) return `account #${id}`;
+  return `${acc.exchange_type.toUpperCase()} — ${acc.alias}`;
+}
+
 function nbBuildBotConfig() {
   // Build a BotConfig-compatible payload. Pydantic ignores unknown fields
   // (extra='ignore'), so timeframe/direction/etc. are dropped server-side
@@ -5818,7 +6135,7 @@ function nbBuildBotConfig() {
   const cfg = {
     name: nbState.name,
     mode: nbState.mode,
-    exchange: nbState.exchange,
+    exchange_account_id: nbState.exchange_account_id,
     pair: nbState.pair,
     contract_type: 'inverse_perpetual',
     leverage: {
@@ -6462,7 +6779,8 @@ function nbStateFromConfig(cfg) {
   return {
     ...d,
     name:             b.name || '',
-    exchange:         b.exchange || d.exchange,
+    exchange_account_id: b.exchange_account_id != null
+      ? b.exchange_account_id : d.exchange_account_id,
     pair:             b.pair || d.pair,
     mode:             b.mode || d.mode,
     leverage_enabled: !!lev.enabled,
