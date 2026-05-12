@@ -54,7 +54,6 @@ import fcntl
 import json
 import logging
 import os
-import re
 import shutil
 import time
 from abc import ABC, abstractmethod
@@ -78,77 +77,33 @@ logger = logging.getLogger(__name__)
 _BASE_DIR = Path(__file__).parent.parent
 
 
-# ── r2-010: API-key format validation ─────────────────────────────────────
+# ── API-key format validation: removed ────────────────────────────────────
 #
-# Heuristic length-bounds catch the typical typo modes (truncated
-# paste, wrong field pasted into the wrong input, partial copy)
-# without locking us in to a specific format the exchange might
-# evolve. The patterns are deliberately generous — exchanges have
-# rotated their key formats more than once over the last few years
-# and we'd rather fail-open on a future format than fail-closed on a
-# legitimate key.
-#
-# Wire-up: ``FernetCredentialProvider.save_keys_by_uuid`` calls
-# ``_validate_api_key_format`` before the encrypt step; failure
-# raises ``CredentialFormatError`` (a ``ValueError`` subclass) with
-# a hint about the expected shape and the actual length, so the
-# operator has enough to diagnose the typo without leaking the key.
-
-# Bitget API key — observed shape: alphanumeric, ~32-64 characters.
-_BITGET_API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9]{16,128}$")
-_BITGET_API_SECRET_PATTERN = re.compile(r"^[A-Za-z0-9]{16,128}$")
-# Kraken API key — 56-character base64; secret 88-char base64.
-# Generous bounds to absorb format drift.
-_KRAKEN_API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9+/=]{40,128}$")
-_KRAKEN_API_SECRET_PATTERN = re.compile(r"^[A-Za-z0-9+/=]{40,256}$")
+# An earlier r2-010 heuristic regex (16-128 alphanumerics for Bitget,
+# 40-256 base64 for Kraken) rejected real Bitget keys after Bitget
+# rolled out the "bg_" prefix that contains underscores. Rather than
+# chase exchange-format-of-the-week, the regex layer was removed.
+# Defence layers that remain:
+#   1. Pydantic ``Field(min_length, max_length)`` on the route bodies
+#      (``web/routes/exchanges.py``) catches empty input and DoS-size
+#      payloads — the only failure modes worth gating at the wire.
+#   2. ``POST /api/exchange-accounts/{id}/test-connection`` does a
+#      real authenticated round-trip (``fetch_balance``) and gives an
+#      accurate verdict within a second or two; the operator clicks
+#      it right after saving.
+#   3. Fernet encryption fixes the on-disk format regardless of
+#      input content — no injection surface.
 
 
 class CredentialFormatError(ValueError):
-    """Raised when an exchange API key/secret pair does not match the
-    expected format heuristic. See r2-010.
-
-    Subclass of ``ValueError`` so existing call-sites that catch
-    ``ValueError`` (Pydantic body validators, route 400-handlers)
-    keep working without code changes.
+    """No longer raised by the credential layer (see the section
+    comment above for the migration rationale). The class is kept as
+    a backwards-compatibility stub because external callers may still
+    ``except CredentialFormatError`` or import the name. Subclass of
+    ``ValueError`` so any ``except ValueError`` (Pydantic body
+    validators, route 400-handlers) keeps catching it if some future
+    caller re-raises it.
     """
-
-
-def _validate_api_key_format(
-    exchange: str, api_key: str, api_secret: str,
-) -> None:
-    """Heuristic format check for exchange API key/secret pairs.
-
-    r2-010: catches obvious typos at credential-save time rather than
-    at first authenticated exchange call. Patterns are intentionally
-    permissive so a future format-rotation by the exchange does NOT
-    lock out legitimate operators — the goal is to catch truncation /
-    wrong-field-pasted / partial-copy mistakes, not to enforce a
-    schema. Unknown exchanges fall through silently.
-    """
-    if exchange == "bitget":
-        if not _BITGET_API_KEY_PATTERN.match(api_key):
-            raise CredentialFormatError(
-                f"Bitget API key does not match expected format "
-                f"(16-128 alphanumerics). Got {len(api_key)} chars. "
-                f"Verify you copied the full key from the Bitget UI."
-            )
-        if not _BITGET_API_SECRET_PATTERN.match(api_secret):
-            raise CredentialFormatError(
-                f"Bitget API secret does not match expected format "
-                f"(16-128 alphanumerics). Got {len(api_secret)} chars."
-            )
-    elif exchange == "kraken":
-        if not _KRAKEN_API_KEY_PATTERN.match(api_key):
-            raise CredentialFormatError(
-                f"Kraken API key does not match expected format "
-                f"(40-128 base64 chars). Got {len(api_key)} chars."
-            )
-        if not _KRAKEN_API_SECRET_PATTERN.match(api_secret):
-            raise CredentialFormatError(
-                f"Kraken API secret does not match expected format "
-                f"(40-256 base64 chars). Got {len(api_secret)} chars."
-            )
-    # Unknown exchange — pass through unvalidated.
 
 
 class CredentialProvider(ABC):
@@ -173,19 +128,16 @@ class CredentialProvider(ABC):
         user_id: int,
         *,
         passphrase: str = "",
-        _skip_format_validation: bool = False,
     ) -> None:
         """Persist ``(api_key, api_secret, optional passphrase)`` under
         ``credentials_uuid`` for ``user_id``. Atomic — a crash mid-write
         leaves either the prior payload intact or the new one fully
         written, never a half-written blob.
 
-        ``exchange_type`` is passed only so the format validator can
-        apply exchange-specific heuristics; it is NOT stored in the
-        encrypted blob (the DB row owns that mapping).
-
-        ``_skip_format_validation`` is the test-only escape hatch;
-        production routes never set it."""
+        ``exchange_type`` is accepted for symmetry with the DB row
+        (and for diagnostic logging) but is NOT stored inside the
+        encrypted blob — the ``exchange_accounts`` row owns that
+        mapping."""
 
     @abstractmethod
     def get_keys_by_uuid(
@@ -287,7 +239,6 @@ class FernetCredentialProvider(CredentialProvider):
         user_id: int,
         *,
         passphrase: str = "",
-        _skip_format_validation: bool = False,
     ) -> None:
         """Encrypt and write the api_key + api_secret (+ optional
         passphrase) for ``(user_id, credentials_uuid)`` to
@@ -300,16 +251,12 @@ class FernetCredentialProvider(CredentialProvider):
         API-key creation time) lands in the same blob. Kraken doesn't
         use one; empty string means "no passphrase stored".
 
-        Format-validate the api_key + api_secret BEFORE the encrypt
-        step so a typo / truncation / wrong-field paste raises
-        ``CredentialFormatError`` at save-time instead of surfacing
-        as a ccxt auth error tens of seconds later. The test suite
-        sets ``_skip_format_validation`` for fixtures that use
-        placeholder values; production routes never set it.
+        Input is not regex-validated — see the module-level note on
+        format validation. The route layer's Pydantic ``min_length``
+        / ``max_length`` already catch empty input and DoS-size
+        payloads; substantive correctness is verified by the
+        test-connection endpoint.
         """
-        if not _skip_format_validation:
-            _validate_api_key_format(exchange_type, api_key, api_secret)
-
         f = self._user_fernet(user_id)
         payload_dict: dict[str, str] = {
             "api_key": api_key,
@@ -555,12 +502,10 @@ def save_keys_by_uuid(
     user_id: int,
     *,
     passphrase: str = "",
-    _skip_format_validation: bool = False,
 ) -> None:
     _default_provider.save_keys_by_uuid(
         credentials_uuid, exchange_type, api_key, api_secret, user_id,
         passphrase=passphrase,
-        _skip_format_validation=_skip_format_validation,
     )
 
 

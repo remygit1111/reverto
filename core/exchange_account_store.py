@@ -169,10 +169,13 @@ def create_account(
 
     credentials_uuid = uuid.uuid4().hex
 
-    # Save the blob first; this raises CredentialFormatError on a bad
-    # api_key/api_secret pair, which bubbles up to the caller as a
-    # ValueError. No DB write has happened yet, so there's nothing to
-    # roll back.
+    # Save the blob first. No DB write has happened yet, so a write
+    # failure (disk full, permission error) leaves no orphan row to
+    # roll back. Pre-fix the credentials layer also raised
+    # CredentialFormatError on malformed input; that regex check was
+    # removed because legitimate Bitget keys started carrying
+    # underscores and were getting rejected. Format-correctness is
+    # now caught by the test-connection endpoint.
     credentials.save_keys_by_uuid(
         credentials_uuid, exchange_type, api_key, api_secret,
         user_id, passphrase=passphrase,

@@ -40,7 +40,6 @@ class TestUserKey:
         assert not key_path.exists()
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "ak", "sc", user_id=1,
-            _skip_format_validation=True,
         )
         assert key_path.exists()
         assert len(key_path.read_bytes()) > 0
@@ -48,12 +47,10 @@ class TestUserKey:
     def test_user_key_reused_across_calls(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "ak", "sc", user_id=1,
-            _skip_format_validation=True,
         )
         first = paths.user_fernet_key_path(1).read_bytes()
         credentials.save_keys_by_uuid(
             _UUID_B, "kraken", "ak2", "sc2", user_id=1,
-            _skip_format_validation=True,
         )
         second = paths.user_fernet_key_path(1).read_bytes()
         assert first == second, "per-user key must not rotate between calls"
@@ -61,7 +58,6 @@ class TestUserKey:
     def test_user_key_is_mode_0600(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "ak", "sc", user_id=1,
-            _skip_format_validation=True,
         )
         key_path = paths.user_fernet_key_path(1)
         mode = key_path.stat().st_mode & 0o777
@@ -72,7 +68,7 @@ class TestSaveAndGet:
     def test_roundtrip(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "my-api-key", "my-secret",
-            user_id=1, _skip_format_validation=True,
+            user_id=1,
         )
         got = credentials.get_keys_by_uuid(_UUID_A, user_id=1)
         assert got == {
@@ -87,11 +83,11 @@ class TestSaveAndGet:
     def test_multiple_accounts_distinct_blobs(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "b-key", "b-sec",
-            user_id=1, _skip_format_validation=True,
+            user_id=1,
         )
         credentials.save_keys_by_uuid(
             _UUID_B, "kraken", "k-key", "k-sec",
-            user_id=1, _skip_format_validation=True,
+            user_id=1,
         )
         assert credentials.get_keys_by_uuid(_UUID_A, user_id=1) == {
             "api_key": "b-key", "api_secret": "b-sec", "passphrase": "",
@@ -107,12 +103,10 @@ class TestSaveAndGet:
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "main-key", "main-sec",
             user_id=1, passphrase="main-pp",
-            _skip_format_validation=True,
         )
         credentials.save_keys_by_uuid(
             _UUID_B, "bitget", "test-key", "test-sec",
             user_id=1, passphrase="test-pp",
-            _skip_format_validation=True,
         )
         a = credentials.get_keys_by_uuid(_UUID_A, user_id=1)
         b = credentials.get_keys_by_uuid(_UUID_B, user_id=1)
@@ -123,7 +117,6 @@ class TestSaveAndGet:
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "ak", "sc",
             user_id=1, passphrase="my-pass",
-            _skip_format_validation=True,
         )
         got = credentials.get_keys_by_uuid(_UUID_A, user_id=1)
         assert got == {
@@ -134,7 +127,6 @@ class TestSaveAndGet:
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "plain-text-key", "plain-text-secret",
             user_id=1, passphrase="plain-pp",
-            _skip_format_validation=True,
         )
         enc_path = paths.uuid_creds_path(1, _UUID_A)
         raw = enc_path.read_bytes()
@@ -148,7 +140,6 @@ class TestDeleteKeys:
     def test_delete_existing(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "ak", "sc", user_id=1,
-            _skip_format_validation=True,
         )
         assert credentials.delete_keys_by_uuid(_UUID_A, user_id=1) is True
         assert credentials.get_keys_by_uuid(_UUID_A, user_id=1) is None
@@ -159,11 +150,9 @@ class TestDeleteKeys:
     def test_delete_leaves_other_entries(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "b", "B", user_id=1,
-            _skip_format_validation=True,
         )
         credentials.save_keys_by_uuid(
             _UUID_B, "kraken", "k", "K", user_id=1,
-            _skip_format_validation=True,
         )
         credentials.delete_keys_by_uuid(_UUID_A, user_id=1)
         assert credentials.get_keys_by_uuid(_UUID_A, user_id=1) is None
@@ -176,7 +165,6 @@ class TestDecryptFailure:
     def test_tampered_ciphertext_returns_none(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "ak", "sc", user_id=1,
-            _skip_format_validation=True,
         )
         path = paths.uuid_creds_path(1, _UUID_A)
         data = bytearray(path.read_bytes())
@@ -202,11 +190,9 @@ class TestPerUserIsolation:
     def test_user_1_and_user_2_have_different_keys(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
         credentials.save_keys_by_uuid(
             _UUID_USER_2, "bitget", "c", "d", user_id=2,
-            _skip_format_validation=True,
         )
         key1 = paths.user_fernet_key_path(1).read_bytes()
         key2 = paths.user_fernet_key_path(2).read_bytes()
@@ -215,11 +201,9 @@ class TestPerUserIsolation:
     def test_get_keys_isolates_across_users(self, tmp_store):
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "u1-ak", "u1-sc", user_id=1,
-            _skip_format_validation=True,
         )
         credentials.save_keys_by_uuid(
             _UUID_USER_2, "bitget", "u2-ak", "u2-sc", user_id=2,
-            _skip_format_validation=True,
         )
         u1 = credentials.get_keys_by_uuid(_UUID_A, user_id=1)
         u2 = credentials.get_keys_by_uuid(_UUID_USER_2, user_id=2)
@@ -232,12 +216,11 @@ class TestPerUserIsolation:
         Fernet keys) rather than leak plaintext."""
         credentials.save_keys_by_uuid(
             _UUID_A, "bitget", "secret-one", "secret-sec",
-            user_id=1, _skip_format_validation=True,
+            user_id=1,
         )
         # Ensure user 2 has their own key on disk first.
         credentials.save_keys_by_uuid(
             _UUID_USER_2, "kraken", "x", "y", user_id=2,
-            _skip_format_validation=True,
         )
 
         u1_blob = paths.uuid_creds_path(1, _UUID_A).read_bytes()
@@ -291,7 +274,6 @@ class TestCredentialProviderInterface:
             def save_keys_by_uuid(
                 self, credentials_uuid, exchange_type, api_key,
                 api_secret, user_id, *, passphrase="",
-                _skip_format_validation=False,
             ):
                 self.calls.append((
                     "save_keys_by_uuid",
@@ -326,7 +308,7 @@ class TestCredentialProviderInterface:
             credentials.set_default_provider(stub)
             credentials.save_keys_by_uuid(
                 _UUID_A, "bitget", "k", "s", user_id=9,
-                passphrase="pp", _skip_format_validation=True,
+                passphrase="pp",
             )
             result = credentials.get_keys_by_uuid(_UUID_A, user_id=9)
         finally:
