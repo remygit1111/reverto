@@ -18,11 +18,19 @@ from exchanges.bitget import BitgetExchange, _with_order_retries  # noqa: E402
 
 
 def _make_exchange():
+    # Bypass __init__ so the test doesn't pull in a real ccxt.bitget()
+    # client. Fields set below are the ones the order-path uses.
+    # ``_ccxt_params`` and ``market_type`` were added in the
+    # market-routing PR; without them ``_merge_params`` AttributeError's
+    # on the first call.
     exc = BitgetExchange.__new__(BitgetExchange)
     exc.client = MagicMock()
     exc.api_key = "k"
     exc.api_secret = "s"
     exc.paper = True
+    exc.market_type = "coin_m"
+    exc._balance_currency = "BTC"
+    exc._ccxt_params = {"productType": "COIN-FUTURES"}
     return exc
 
 

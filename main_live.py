@@ -190,7 +190,7 @@ def main() -> None:
     # depends on exchange_type. A missing or foreign-user account is
     # a hard refusal — live engine boot must never silently fall back
     # to a different exchange than the YAML pinned.
-    from core import exchange_account_store
+    from core import exchange_account_store, markets
     account = exchange_account_store.get_account(config.exchange_account_id)
     if account is None or account["user_id"] != user_id:
         logger.error(
@@ -201,7 +201,25 @@ def main() -> None:
         )
         sys.exit(1)
     exchange_type = str(account["exchange_type"])
+    market_type = str(account["market_type"])
     account_alias = str(account["alias"])
+
+    # Bot contract_type vs account market_type compatibility check.
+    # ``inverse_perpetual`` only makes sense on a coin-margined wallet
+    # (Bitget coin_m, Kraken futures); a USDT-M account would route
+    # orders into the wrong wallet with mismatched balance accounting.
+    # See core.markets._CONTRACT_TYPE_TO_MARKETS.
+    try:
+        markets.validate_contract_type(
+            config.contract_type, exchange_type, market_type,
+        )
+    except ValueError as e:
+        logger.error(
+            "Bot %s: %s. Pick a compatible account in the bot YAML or "
+            "create a new account on the right market via the Exchanges "
+            "admin tile.", slug, e,
+        )
+        sys.exit(1)
 
     _print_live_banner(slug, config, exchange_type, account_alias, args.dry_run)
     _require_confirmation(args.dry_run)
@@ -219,7 +237,8 @@ def main() -> None:
         )
     else:
         exchange = _authenticated_exchange(
-            exchange_type, config.exchange_account_id, user_id,
+            exchange_type, market_type,
+            config.exchange_account_id, user_id,
         )
         if exchange is None:
             logger.error(
@@ -268,7 +287,10 @@ def main() -> None:
 
 
 def _authenticated_exchange(
-    exchange_type: str, exchange_account_id: int, user_id: int,
+    exchange_type: str,
+    market_type: str,
+    exchange_account_id: int,
+    user_id: int,
 ):
     """Build an authenticated exchange client for live (non-dry-run) use.
 
@@ -277,6 +299,10 @@ def _authenticated_exchange(
     resolves ``exchange_account_id`` → (credentials_uuid, decrypted
     api_key/api_secret/passphrase). Returns None when the account
     has no decryptable blob — caller must refuse to boot in that case.
+
+    ``market_type`` is threaded through to the exchange client so its
+    ccxt routing (Bitget productType, Kraken kraken-vs-krakenfutures)
+    matches the account's wallet.
 
     Bitget needs the third credential piece (passphrase) packaged into
     the same encrypted blob; Kraken doesn't. The store guarantees a
@@ -304,6 +330,7 @@ def _authenticated_exchange(
             api_key=keys["api_key"],
             api_secret=keys["api_secret"],
             passphrase=keys["passphrase"],
+            market_type=market_type,
             paper=False,
         )
     if exchange_type == "kraken":
@@ -311,6 +338,7 @@ def _authenticated_exchange(
         return KrakenExchange(
             api_key=keys["api_key"],
             api_secret=keys["api_secret"],
+            market_type=market_type,
             paper=False,
         )
     logger.error(
