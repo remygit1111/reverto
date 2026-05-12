@@ -4005,11 +4005,15 @@ function openAddAccountModal() {
   $('admin-ex-is-default').checked = false;
   $('admin-ex-form-error').classList.add('hidden');
   _exUpdatePassphraseVisibility();
-  $('admin-ex-modal').classList.add('active');
+  // Use the same `.show` class every other modal in this file uses
+  // (api-key-modal, profile-modal, …). An earlier draft toggled
+  // `.active`, which the CSS does not target — the modal never
+  // appeared and Cancel had nothing to close.
+  $('admin-ex-modal').classList.add('show');
 }
 
 function _exCloseModal() {
-  $('admin-ex-modal').classList.remove('active');
+  $('admin-ex-modal').classList.remove('show');
 }
 
 function _exUpdatePassphraseVisibility() {
@@ -4020,6 +4024,25 @@ function _exUpdatePassphraseVisibility() {
   if (!row) return;
   const isBitget = $('admin-ex-type').value === 'bitget';
   row.style.display = isBitget ? '' : 'none';
+}
+
+function _exFormatErrorDetail(detail) {
+  // FastAPI's 422 body is {"detail": [{loc, msg, type}, ...]}; the
+  // 400/409 bodies are {"detail": "string"} or {"detail": {...}}.
+  // Without this dispatch the modal showed "[object Object],..."
+  // for every Pydantic validation failure.
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((e) => {
+      const loc = Array.isArray(e.loc) ? e.loc.slice(-1)[0] : e.loc;
+      return `${loc}: ${e.msg}`;
+    }).join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    if (detail.error) return String(detail.error);
+    try { return JSON.stringify(detail); } catch (_e) { return String(detail); }
+  }
+  return '';
 }
 
 async function submitAccountForm() {
@@ -4035,6 +4058,26 @@ async function submitAccountForm() {
   };
   const pp = $('admin-ex-passphrase').value;
   if (body.exchange_type === 'bitget') body.passphrase = pp;
+
+  // Client-side required-field check. Without this an empty Save
+  // round-trips a 422 and the operator gets a generic Pydantic
+  // "Field required" — slow feedback and no indication of which
+  // field. Match the backend's required set (passphrase only for
+  // Bitget) so the message lines up with what the API would say.
+  const missing = [];
+  if (!body.exchange_type) missing.push('exchange');
+  if (!body.alias) missing.push('alias');
+  if (!body.api_key) missing.push('api_key');
+  if (!body.api_secret) missing.push('api_secret');
+  if (body.exchange_type === 'bitget' && !body.passphrase) {
+    missing.push('passphrase');
+  }
+  if (missing.length) {
+    errBox.textContent = `Required: ${missing.join(', ')}`;
+    errBox.classList.remove('hidden');
+    return;
+  }
+
   try {
     const r = await fetch('/api/exchange-accounts', {
       method: 'POST',
@@ -4044,9 +4087,9 @@ async function submitAccountForm() {
     });
     if (r.status === 401) { _handle401(); return; }
     if (!r.ok) {
-      const detail = await r.json().catch(() => ({}));
-      errBox.textContent =
-        (detail && detail.detail) ? String(detail.detail) : `HTTP ${r.status}`;
+      const payload = await r.json().catch(() => ({}));
+      const msg = _exFormatErrorDetail(payload && payload.detail);
+      errBox.textContent = msg || `HTTP ${r.status}`;
       errBox.classList.remove('hidden');
       return;
     }
@@ -4154,7 +4197,19 @@ function _exAttachDOMListeners() {
   if (typeSel) typeSel.addEventListener('change', _exUpdatePassphraseVisibility);
   const overlay = $('admin-ex-modal');
   if (overlay) overlay.addEventListener('click', (ev) => {
+    // Only dismiss on direct backdrop clicks. Clicks that bubble up
+    // from inside .modal-card would otherwise close the modal mid-
+    // typing in a password input.
     if (ev.target === overlay) _exCloseModal();
+  });
+  // Escape closes the modal, mirroring every other dialog in this
+  // app. Attached at document scope (modal-overlay only takes focus
+  // when an input is focused, so a keydown on the overlay itself
+  // doesn't fire). Idempotent via `_exDOMListenersAttached`.
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    const m = $('admin-ex-modal');
+    if (m && m.classList.contains('show')) _exCloseModal();
   });
 }
 
