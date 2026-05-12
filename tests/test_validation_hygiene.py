@@ -241,118 +241,15 @@ class TestStateIoPosixDocstring:
         )
 
 
-# ── r2-010: API-key format validator ──────────────────────────────────────
-
-
-class TestApiKeyFormatValidator:
-    """r2-010 — pre-fix ``save_keys`` accepted any non-empty strings;
-    typos surfaced only on the first authenticated exchange call.
-    Heuristic format check now rejects the typical typo modes
-    (truncation, wrong-field paste) at save-time."""
-
-    def test_credential_format_error_subclasses_value_error(self):
-        """``CredentialFormatError`` extends ``ValueError`` so any
-        existing ``except ValueError`` (Pydantic, route 400-handlers)
-        keeps catching it without code changes."""
-        from core.credentials import CredentialFormatError
-
-        assert issubclass(CredentialFormatError, ValueError)
-
-    def test_bitget_key_too_short_rejected(self):
-        from core.credentials import (
-            CredentialFormatError, _validate_api_key_format,
-        )
-
-        with pytest.raises(CredentialFormatError, match="Bitget API key"):
-            _validate_api_key_format(
-                "bitget", "short", "a" * 64,
-            )
-
-    def test_bitget_secret_too_short_rejected(self):
-        from core.credentials import (
-            CredentialFormatError, _validate_api_key_format,
-        )
-
-        with pytest.raises(CredentialFormatError, match="Bitget API secret"):
-            _validate_api_key_format(
-                "bitget", "a" * 32, "tooshort",
-            )
-
-    def test_bitget_key_with_special_chars_rejected(self):
-        """Bitget keys are alphanumeric — special chars (e.g. from a
-        wrong-field paste) are rejected."""
-        from core.credentials import (
-            CredentialFormatError, _validate_api_key_format,
-        )
-
-        with pytest.raises(CredentialFormatError):
-            _validate_api_key_format(
-                "bitget",
-                "key-with-hyphens-not-allowed-here-yet-long-enough",
-                "a" * 64,
-            )
-
-    def test_bitget_realistic_key_accepted(self):
-        from core.credentials import _validate_api_key_format
-
-        # Should not raise — a realistic shape (32 alphanumerics).
-        _validate_api_key_format("bitget", "a" * 32, "b" * 64)
-        # Upper bound (128) accepted.
-        _validate_api_key_format("bitget", "a" * 128, "b" * 128)
-
-    def test_kraken_realistic_key_accepted(self):
-        from core.credentials import _validate_api_key_format
-
-        # Realistic Kraken shape (56-char base64).
-        _validate_api_key_format(
-            "kraken",
-            "Kx" + "+/=Aa0" * 9,  # 56 chars
-            "Sx" + "+/=Bb0" * 14 + "+/",  # 88 chars
-        )
-
-    def test_unknown_exchange_passes_through(self):
-        """An unrecognised exchange skips validation entirely — the
-        validator is additive and does not block a future exchange
-        whose format we haven't characterised yet."""
-        from core.credentials import _validate_api_key_format
-
-        # Garbage input on an unknown exchange must NOT raise.
-        _validate_api_key_format("future_exchange", "?", "??")
-        _validate_api_key_format("kucoin", "literally-anything", "x")
-
-    def test_save_keys_validates_before_encrypt(self, tmp_path, monkeypatch):
-        """Wire-up check: ``FernetCredentialProvider.save_keys_by_uuid``
-        must call the validator BEFORE the encrypt step. A short Bitget
-        key must raise ``CredentialFormatError`` and never reach the
-        filesystem write."""
-        from core import paths
-        from core.credentials import (
-            CredentialFormatError, FernetCredentialProvider,
-        )
-
-        # Isolate filesystem touches under tmp.
-        monkeypatch.setattr(paths, "BASE_DIR", tmp_path)
-        provider = FernetCredentialProvider()
-
-        with pytest.raises(CredentialFormatError):
-            provider.save_keys_by_uuid(
-                "deadbeef" * 4, "bitget", "x", "y", user_id=1,
-            )
-
-        # Filesystem must remain untouched — no .enc file created.
-        # paths.exchange_creds_path may not be importable cleanly
-        # from a tmp BASE_DIR, but the credentials/ tree should not
-        # exist at all because the validator raised before the
-        # encrypt step.
-        creds_dir = tmp_path / "credentials"
-        if creds_dir.exists():
-            # Tolerable if paths created an empty user dir, but no
-            # .enc file should have landed.
-            enc_files = list(creds_dir.rglob("*.enc"))
-            assert enc_files == [], (
-                f"r2-010: short key got past the validator and an "
-                f".enc file landed: {enc_files}"
-            )
+# ── r2-010 (REMOVED): API-key format validator ────────────────────────────
+#
+# The TestApiKeyFormatValidator class was deleted alongside the
+# ``_validate_api_key_format`` helper in core/credentials.py. The
+# heuristic regex rejected legitimate Bitget keys after Bitget's
+# "bg_" prefix rollout (underscores aren't in [A-Za-z0-9]). Defence
+# now lives in (1) Pydantic length bounds at the route layer and
+# (2) the test-connection endpoint that round-trips a real
+# authenticated call.
 
 
 # ── r2-011: restore.sh schema-version compatibility check ─────────────────

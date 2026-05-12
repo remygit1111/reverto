@@ -35,11 +35,11 @@ class TestRotateFernetKey:
         key = routed_store
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "api_abc", "secret_xyz",
-            user_id=1, _skip_format_validation=True,
+            user_id=1,
         )
         creds.save_keys_by_uuid(
             _UUID_B, "kraken", "k_api", "k_secret",
-            user_id=1, _skip_format_validation=True,
+            user_id=1,
         )
 
         before = creds.get_keys_by_uuid(_UUID_A, user_id=1)
@@ -68,7 +68,6 @@ class TestRotateFernetKey:
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "ak", "sc",
             user_id=1, passphrase="rotate-me",
-            _skip_format_validation=True,
         )
         creds.rotate_fernet_key(user_id=1)
         stored = creds.get_keys_by_uuid(_UUID_A, user_id=1)
@@ -81,7 +80,6 @@ class TestRotateFernetKey:
         key = routed_store
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
         old_key_bytes = key.read_bytes()
 
@@ -101,7 +99,6 @@ class TestRotateFernetKey:
     def test_ciphertext_actually_changes(self, routed_store):
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
         enc_path = paths.uuid_creds_path(1, _UUID_A)
         ct_before = enc_path.read_bytes()
@@ -114,11 +111,9 @@ class TestRotateFernetKey:
     def test_result_summary_shape(self, routed_store):
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
         creds.save_keys_by_uuid(
             _UUID_B, "kraken", "c", "d", user_id=1,
-            _skip_format_validation=True,
         )
         result = creds.rotate_fernet_key(user_id=1)
         # UUIDs come back sorted; the exact pair we wrote is in there.
@@ -133,11 +128,9 @@ class TestRotateFernetKey:
         _UUID_U2 = "cc33" * 8
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a1", "s1", user_id=1,
-            _skip_format_validation=True,
         )
         creds.save_keys_by_uuid(
             _UUID_U2, "bitget", "a2", "s2", user_id=2,
-            _skip_format_validation=True,
         )
         u2_key_before = paths.user_fernet_key_path(2).read_bytes()
         u2_enc_before = paths.uuid_creds_path(2, _UUID_U2).read_bytes()
