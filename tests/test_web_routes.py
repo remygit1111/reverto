@@ -65,7 +65,7 @@ def _make_payload(name: str = "Pytest Route Check") -> dict:
         "bot": {
             "name": name,
             "mode": "paper",
-            "exchange": "bitget",
+            "exchange_account_id": 1,
             "pair": "BTC/USD",
             "contract_type": "inverse_perpetual",
             "leverage": {"enabled": False, "size": 1},
@@ -175,7 +175,7 @@ class TestGetBotSlug:
 
 class TestInvalidPayload:
     def test_missing_required_fields_is_400(self):
-        bad = {"bot": {"name": "x", "mode": "paper", "exchange": "bitget"}}
+        bad = {"bot": {"name": "x", "mode": "paper", "exchange_account_id": 1}}
         r = CLIENT.post("/api/bots", json=bad, headers=JSON)
         # Pydantic validation → our endpoint wraps into 400, not 422/500
         assert r.status_code == 400
@@ -1567,6 +1567,15 @@ class TestOfflineDealClose:
             "INSERT OR IGNORE INTO users (id, username, role) "
             "VALUES (1, 'admin', 'admin')"
         )
+        # Seed a fake exchange_accounts row so the offline-close path
+        # can resolve exchange_account_id=1 → exchange_type='bitget'.
+        # No matching .enc file is needed — the offline path only reads
+        # exchange_type from the DB row to pick the public-ticker URL.
+        conn.execute(
+            "INSERT OR IGNORE INTO exchange_accounts "
+            "(id, user_id, exchange_type, alias, credentials_uuid) "
+            "VALUES (1, 1, 'bitget', 'test-fixture', 'deadbeef' || hex(randomblob(12)))"
+        )
         conn.commit()
 
     @pytest.fixture
@@ -1601,7 +1610,7 @@ class TestOfflineDealClose:
             "bot": {
                 "name": "Offline Close Test",
                 "mode": "paper",
-                "exchange": "bitget",
+                "exchange_account_id": 1,
                 "pair": "BTC/USD",
                 "contract_type": "inverse_perpetual",
                 "leverage": {"enabled": False, "size": 1},
@@ -1809,7 +1818,7 @@ class TestOfflineDealClose:
             "bot": {
                 "name": f"{mode.upper()} Test",
                 "mode": mode,
-                "exchange": "bitget",
+                "exchange_account_id": 1,
                 "pair": "BTC/USD",
                 "contract_type": "inverse_perpetual",
                 "leverage": {"enabled": False, "size": 1},
@@ -2001,6 +2010,15 @@ class TestOfflineDealCloseLock:
             "INSERT OR IGNORE INTO users (id, username, role) "
             "VALUES (1, 'admin', 'admin')"
         )
+        # Seed a fake exchange_accounts row so the offline-close path
+        # can resolve exchange_account_id=1 → exchange_type='bitget'.
+        # No matching .enc file is needed — the offline path only reads
+        # exchange_type from the DB row to pick the public-ticker URL.
+        conn.execute(
+            "INSERT OR IGNORE INTO exchange_accounts "
+            "(id, user_id, exchange_type, alias, credentials_uuid) "
+            "VALUES (1, 1, 'bitget', 'test-fixture', 'deadbeef' || hex(randomblob(12)))"
+        )
         conn.commit()
 
     @pytest.fixture
@@ -2021,7 +2039,7 @@ class TestOfflineDealCloseLock:
             "bot": {
                 "name": "Offline Lock Test",
                 "mode": "paper",
-                "exchange": "bitget",
+                "exchange_account_id": 1,
                 "pair": "BTC/USD",
                 "contract_type": "inverse_perpetual",
                 "leverage": {"enabled": False, "size": 1},
@@ -2554,7 +2572,7 @@ class TestApiBotsReturnsMode:
                 _json.dump({
                     "bot_name": "Pytest Route Check",
                     "mode": "paper",
-                    "exchange": "bitget",
+                    "exchange_account_id": 1,
                     "pair": "BTC/USD",
                 }, fh)
             r2 = auth_client.get("/api/bots")
@@ -2586,7 +2604,7 @@ class TestApiBotsReturnsMode:
             _json.dump({
                 "bot_name": "Pytest Route Check",
                 "mode": "paper",
-                "exchange": "bitget",
+                "exchange_account_id": 1,
                 "pair": "BTC/USD",
             }, fh)
 
@@ -2692,7 +2710,7 @@ class TestValidateConfigEndpoint:
         auth_client.cookies.set("reverto_session", token)
 
         # name is required; drop it.
-        bad = {"mode": "paper", "exchange": "bitget", "pair": "BTC/USD"}
+        bad = {"mode": "paper", "exchange_account_id": 1, "pair": "BTC/USD"}
         r = auth_client.post("/api/bots/validate-config", json=bad)
         assert r.status_code == 400
         assert "Invalid config" in r.json().get("detail", "")
@@ -3177,7 +3195,7 @@ class TestBotImportExportDuplicate:
         # Missing required sub-blocks — BotConfig rejects it.
         r = CLIENT.post(
             "/api/bots/import?slug=pytest_iex_bad",
-            content=b"bot:\n  name: x\n  mode: paper\n  exchange: bitget\n",
+            content=b"bot:\n  name: x\n  mode: paper\n  exchange_account_id: 1\n",
             headers={**AUTH, "Content-Type": "application/x-yaml"},
         )
         assert r.status_code == 400

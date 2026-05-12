@@ -26,7 +26,7 @@ _MINIMAL_YAML = {
     "bot": {
         "name": "Composite Key Test",
         "mode": "paper",
-        "exchange": "bitget",
+        "exchange_account_id": 1,
         "pair": "BTC/USD",
         "contract_type": "inverse_perpetual",
         "leverage": {"enabled": False, "size": 1},
