@@ -216,6 +216,7 @@ class PaperEngine:
         manual_trigger_file: str = None,
         slug: str | None = None,
         user_id: int = 1,
+        exchange_type: str = "",
     ):
         # Multi-tenant foundation (Phase 1): the engine owns a user_id
         # that it passes into every deal_store call so rows land with
@@ -224,6 +225,13 @@ class PaperEngine:
         # pass it explicitly when the runner knows the bot's owner.
         self.user_id = int(user_id)
         self.config           = config
+        # ``exchange_type`` was the ``config.exchange.value`` field
+        # pre-multi-account. Now it's resolved from the bot's
+        # ``exchange_account_id`` at boot and passed in by the runner.
+        # Engines use it for state.json snapshots, startup-notification
+        # labels, and ccxt-error classification — read-only label use,
+        # never for auth.
+        self.exchange_type    = str(exchange_type)
         # Bot slug drives the DB ledger rows. Prefer the explicit arg from
         # main_paper.py (YAML filename stem). Fall back to deriving it from
         # the state file path, then to a sanitised config.name. When none
@@ -553,7 +561,7 @@ class PaperEngine:
         snapshot = {
             "bot_name":            self.config.name,
             "mode":                self.config.mode.value,
-            "exchange":            self.config.exchange.value,
+            "exchange":            self.exchange_type,
             "pair":                self.config.pair,
             "running":             True,
             "current_price":       price,
@@ -735,7 +743,7 @@ class PaperEngine:
             self.notifier.notify_startup,
             self.config.name,
             self.config.mode.value,
-            self.config.exchange.value,
+            self.exchange_type,
         )
 
         try:
@@ -900,7 +908,7 @@ class PaperEngine:
             # transient-vs-persistent verdict.
             err = classify_exception(
                 e,
-                exchange=self.config.exchange.value,
+                exchange=self.exchange_type,
                 endpoint="tick",
                 symbol=self.config.pair,
                 retry_attempt=self._consecutive_tick_errors,

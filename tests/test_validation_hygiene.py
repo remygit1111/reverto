@@ -321,8 +321,8 @@ class TestApiKeyFormatValidator:
         _validate_api_key_format("kucoin", "literally-anything", "x")
 
     def test_save_keys_validates_before_encrypt(self, tmp_path, monkeypatch):
-        """Wire-up check: ``FernetCredentialProvider.save_keys`` must
-        call the validator BEFORE the encrypt step. A short Bitget
+        """Wire-up check: ``FernetCredentialProvider.save_keys_by_uuid``
+        must call the validator BEFORE the encrypt step. A short Bitget
         key must raise ``CredentialFormatError`` and never reach the
         filesystem write."""
         from core import paths
@@ -335,8 +335,8 @@ class TestApiKeyFormatValidator:
         provider = FernetCredentialProvider()
 
         with pytest.raises(CredentialFormatError):
-            provider.save_keys(
-                "bitget", "x", "y", user_id=1,
+            provider.save_keys_by_uuid(
+                "deadbeef" * 4, "bitget", "x", "y", user_id=1,
             )
 
         # Filesystem must remain untouched — no .enc file created.

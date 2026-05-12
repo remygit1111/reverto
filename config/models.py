@@ -18,11 +18,6 @@ class Mode(str, Enum):
     BACKTEST = "backtest"
 
 
-class Exchange(str, Enum):
-    KRAKEN = "kraken"
-    BITGET = "bitget"
-
-
 # Strict config: unknown keys anywhere in a bot YAML become a hard
 # ValidationError instead of silently getting stripped. The wizard's
 # nbBuildBotConfig() already filters its payload to known fields, so
@@ -189,7 +184,11 @@ class BotConfig(BaseModel):
 
     name: str
     mode: Mode
-    exchange: Exchange
+    # Reference to a row in the ``exchange_accounts`` DB table — the
+    # engine resolves this at boot to (exchange_type, credentials).
+    # Replaces the pre-multi-account ``exchange: Exchange`` enum so
+    # an operator can run two bots on two Bitget accounts in parallel.
+    exchange_account_id: int = Field(gt=0)
     pair: str = "BTC/USD"
     # contract_type determines PnL calculation formula.
     # Only inverse_perpetual is currently supported.

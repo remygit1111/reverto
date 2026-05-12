@@ -25,7 +25,8 @@ def load_bot_config(path: str) -> BotConfig:
     try:
         config = BotConfig(**raw.get("bot", {}))
         logger.info(
-            f"Config loaded: {config.name} ({config.mode} on {config.exchange})"
+            f"Config loaded: {config.name} ({config.mode}, "
+            f"exchange_account_id={config.exchange_account_id})"
         )
 
         # Warn about config sections that are defined but not yet implemented

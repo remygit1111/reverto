@@ -78,20 +78,35 @@ def main():
     tmp_engine = IndicatorEngine(config)
     required_tfs = sorted(tmp_engine.required_timeframes(config.timeframe))
 
+    # Resolve the bot's exchange account → exchange_type for the
+    # public market-data feed. Backtests use a process-wide admin
+    # user_id (no per-user CLI flag exists yet) — match main_paper's
+    # default of 1. A missing account refuses to boot so a backtest
+    # never silently flips to a different exchange.
+    from core import exchange_account_store
+    account = exchange_account_store.get_account(config.exchange_account_id)
+    if account is None:
+        print(
+            f"\n❌ Bot references exchange_account_id="
+            f"{config.exchange_account_id} which does not exist."
+        )
+        sys.exit(1)
+    exchange_type = str(account["exchange_type"])
+
     print(f"\n🔍 Reverto Backtest — {config.name}")
     print(f"   Paar      : {config.pair}")
     print(f"   Bot TF    : {config.timeframe}")
     print(f"   Alle TFs  : {', '.join(required_tfs)}")
     print(f"   Candles   : {args.limit} per timeframe")
-    print(f"   Exchange  : {config.exchange.value}")
+    print(f"   Exchange  : {exchange_type}")
     print(f"   Beginbal  : {args.balance} BTC")
-    print(f"\n⏳ Historische data ophalen van {config.exchange.value}...")
+    print(f"\n⏳ Historische data ophalen van {exchange_type}...")
 
     # ── Data ophalen per timeframe ───────────────────────────────────────────
     from backtest.backtest_engine import BacktestCandle
     from exchanges.public_exchange import PublicExchange
 
-    exchange = PublicExchange(config.exchange.value)
+    exchange = PublicExchange(exchange_type)
     candles_per_tf: dict[str, list[BacktestCandle]] = {}
 
     for tf in required_tfs:

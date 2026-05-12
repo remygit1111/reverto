@@ -33,7 +33,6 @@ during a write-heavy tick can leave state.json files half-moved.
 
 from __future__ import annotations
 
-import json
 import shutil
 import sys
 from pathlib import Path
@@ -167,88 +166,18 @@ def migrate_pid_files() -> int:
 
 
 def migrate_credentials() -> int:
-    """logs/credentials.json + logs/.credentials.key →
-    credentials/<USER_ID>/<exchange>.enc + keys/<USER_ID>.key.
+    """Pre-multi-account migration: convert ``logs/credentials.json``
+    + ``logs/.credentials.key`` into the per-user
+    ``credentials/<user>/<exchange>.enc`` layout.
 
-    The per-field Fernet values inside credentials.json are decrypted
-    under the old global key, then re-encrypted under a fresh per-user
-    key. The old ciphertext + JSON store is LEFT in place (the system
-    key / .auth.json still live there) — the operator removes them
-    manually once comfortable.
-    """
-    print(f"[credentials] converting logs/credentials.json → credentials/{USER_ID}/")
-    old_store = BASE / "logs" / "credentials.json"
-    old_key = BASE / "logs" / ".credentials.key"
-
-    if not old_store.exists():
-        print("  (no credentials.json — skip)")
-        return 0
-    if not old_key.exists():
-        print("  WARN: credentials.json exists but .credentials.key doesn't — cannot decrypt")
-        return 0
-
-    # Import lazily so the script still runs on a bare machine that
-    # hasn't installed cryptography (no bots would run there either).
-    try:
-        from cryptography.fernet import Fernet, InvalidToken
-    except ImportError as e:
-        print(f"  ERROR: cryptography not installed: {e}")
-        return 0
-
-    try:
-        raw_store = json.loads(old_store.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"  ERROR: cannot read credentials.json: {e}")
-        return 0
-
-    try:
-        old_fernet = Fernet(old_key.read_bytes())
-    except Exception as e:
-        print(f"  ERROR: cannot load old Fernet key: {e}")
-        return 0
-
-    # Decrypt each (api_key, api_secret) pair under the old key.
-    plaintext: dict[str, dict[str, str]] = {}
-    for exchange, entry in raw_store.items():
-        try:
-            ak = old_fernet.decrypt(
-                entry["api_key"].encode("ascii"),
-            ).decode("utf-8")
-            sec = old_fernet.decrypt(
-                entry["api_secret"].encode("ascii"),
-            ).decode("utf-8")
-        except (InvalidToken, KeyError, ValueError) as e:
-            print(f"  WARN: decrypt failed for {exchange}: {e}")
-            continue
-        plaintext[exchange] = {"api_key": ak, "api_secret": sec}
-
-    if not plaintext:
-        print("  (no decryptable entries — skip)")
-        return 0
-
-    # Write re-encrypted blobs via the Phase-2 save_keys so the on-
-    # disk layout (keys/1.key + credentials/1/<exchange>.enc, 0600)
-    # matches exactly what the runtime expects.
-    sys.path.insert(0, str(BASE))
-    from core.credentials import save_keys  # noqa: E402
-
-    moved = 0
-    for exchange, payload in plaintext.items():
-        # r2-010: skip format-validation on the migrate path —
-        # these credentials were already accepted by the pre-r2-010
-        # save path, so the heuristic check would only false-flag
-        # legacy keys that don't match the modern format pattern
-        # (e.g. shorter pre-rotation Bitget keys). Operators rotating
-        # via the portal go through the validated public path.
-        save_keys(
-            exchange, payload["api_key"], payload["api_secret"],
-            user_id=USER_ID,
-            _skip_format_validation=True,
-        )
-        print(f"  converted {exchange} → credentials/{USER_ID}/{exchange}.enc")
-        moved += 1
-    print(f"[credentials] {moved} converted")
-    return moved
+    Removed in feat/exchange-account-management — the per-exchange-
+    name layout itself was replaced by UUID-named blobs keyed via the
+    ``exchange_accounts`` DB table. There is no automated path from a
+    pre-multi-account credentials.json to the new layout because the
+    new layout requires a DB row (alias, is_default) that the operator
+    has to choose. Returns 0 unconditionally so existing call sites
+    keep working without throwing."""
+    return 0
 
 
 def main() -> int:
@@ -262,8 +191,6 @@ def main() -> int:
     migrate_logs_and_state()
     print()
     migrate_pid_files()
-    print()
-    migrate_credentials()
     print()
     print("✓ Migration complete.")
     print("  Restart bots via the portal to pick up the new layout.")

@@ -65,8 +65,11 @@ class TestRoutesRegistered:
         "/api/db/annotations/{ann_id}",
         # drawdown
         "/api/bots/{slug}/drawdown/reset",
-        # exchanges
-        "/api/exchanges", "/api/exchanges/{name}/keys",
+        # exchanges (multi-account)
+        "/api/exchanges/supported",
+        "/api/exchange-accounts",
+        "/api/exchange-accounts/{account_id}",
+        "/api/exchange-accounts/{account_id}/test-connection",
     }
 
     def test_all_migrated_paths_registered(self):
