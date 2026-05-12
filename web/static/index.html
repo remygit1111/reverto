@@ -867,6 +867,12 @@
             Filter by status, severity, source.
           </div>
         </a>
+        <a class="card cl-admin-card" id="admin-card-exchanges" href="#admin/exchanges">
+          <div class="cl-admin-card-title">Exchanges</div>
+          <div class="cl-admin-card-desc">
+            Manage exchange API connections for paper and live trading.
+          </div>
+        </a>
       </div>
     </div>
     <div id="admin-bots-overview" class="admin-subpage hidden">
@@ -1027,6 +1033,85 @@
         </table>
       </div>
     </div>
+    <!-- Exchange accounts — admin sub-page. Backend at
+         /api/exchange-accounts (CRUD) + /api/exchanges/supported
+         for the dropdown. Test-connection round-trips a real
+         authenticated call through fetch_balance(). -->
+    <div id="admin-exchanges" class="admin-subpage hidden">
+      <div class="cl-breadcrumb">
+        <a href="#admin" class="admin-back-link">&larr; Back to Admin</a>
+      </div>
+      <div class="cl-admin-header">
+        <div class="section-title">Exchange Accounts</div>
+        <button class="hbtn hbtn-theme btn-accent" id="admin-ex-new-btn" type="button">
+          + Add account
+        </button>
+      </div>
+      <div class="card card-no-pad">
+        <table class="cl-admin-table">
+          <thead>
+            <tr>
+              <th>Exchange</th>
+              <th>Alias</th>
+              <th>Default</th>
+              <th>Last tested</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="admin-ex-tbody">
+            <tr><td colspan="5" class="cl-empty-cell">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="admin-ex-status" class="cl-empty" hidden></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- MODAL: Add exchange account                                               -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="admin-ex-modal" class="modal-overlay">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="admin-ex-modal-title">
+    <div class="modal-title" id="admin-ex-modal-title">Add exchange account</div>
+    <form id="admin-ex-form" class="finding-edit-form" onsubmit="return false;">
+      <label class="finding-edit-label">
+        Exchange
+        <select id="admin-ex-type" required>
+          <option value="bitget">Bitget</option>
+          <option value="kraken">Kraken</option>
+        </select>
+      </label>
+      <label class="finding-edit-label">
+        Alias
+        <input type="text" id="admin-ex-alias" maxlength="64" required
+               placeholder="main, test, …">
+      </label>
+      <label class="finding-edit-label">
+        API key
+        <input type="password" id="admin-ex-api-key" maxlength="512"
+               autocomplete="off" required>
+      </label>
+      <label class="finding-edit-label">
+        API secret
+        <input type="password" id="admin-ex-api-secret" maxlength="512"
+               autocomplete="off" required>
+      </label>
+      <label class="finding-edit-label" id="admin-ex-passphrase-row">
+        Passphrase (Bitget only)
+        <input type="password" id="admin-ex-passphrase" maxlength="64"
+               autocomplete="off">
+      </label>
+      <label class="finding-edit-label">
+        <input type="checkbox" id="admin-ex-is-default">
+        Make this the default account for this exchange
+      </label>
+      <div class="finding-edit-error hidden" id="admin-ex-form-error"></div>
+      <div class="finding-edit-actions">
+        <button type="button" class="hbtn hbtn-theme" id="admin-ex-cancel-btn">Cancel</button>
+        <button type="button" class="hbtn hbtn-theme btn-accent" id="admin-ex-save-btn">Save</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1270,16 +1355,15 @@
             </span>
           </div>
           <div class="form-row">
-            <label for="nb-exchange">Exchange</label>
-            <select id="nb-exchange" name="exchange"
+            <label for="nb-exchange-account">Exchange account</label>
+            <select id="nb-exchange-account" name="exchange_account_id"
                     required aria-required="true"
-                    aria-describedby="nb-exchange-hint">
-              <option value="bitget">Bitget</option>
-              <option value="kraken">Kraken</option>
+                    aria-describedby="nb-exchange-account-hint">
+              <option value="">Loading accounts…</option>
             </select>
-            <span id="nb-exchange-hint" class="form-hint">
-              Exchange this bot runs on. Connect credentials via
-              Exchanges → Add Keys (only required for live mode).
+            <span id="nb-exchange-account-hint" class="form-hint">
+              Pick the saved exchange account. Add or rename accounts
+              via the <a href="#admin/exchanges">Exchanges admin tile</a>.
             </span>
           </div>
           <div class="form-row">

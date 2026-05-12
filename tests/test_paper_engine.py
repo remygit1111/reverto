@@ -18,7 +18,6 @@ sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 from config.models import (  # noqa: E402
     BotConfig,
     DCAConfig,
-    Exchange,
     Mode,
     TakeProfitConfig,
 )
@@ -35,7 +34,7 @@ def minimal_bot_config():
     return BotConfig(
         name="TestBot",
         mode=Mode.PAPER,
-        exchange=Exchange.BITGET,
+        exchange_account_id=1,
         pair="BTC/USD",
         dca=DCAConfig(
             enabled=True,
@@ -92,6 +91,7 @@ def engine(minimal_bot_config, mock_exchange, mock_notifier, tmp_path):
         poll_interval=1,
         state_file=str(state_file),
         slug="testbot",
+        exchange_type="bitget",
     )
     yield eng
     # Teardown — stop the notify worker without running the full stop().

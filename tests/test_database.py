@@ -250,7 +250,7 @@ def test_config_toggle_serialisation():
 bot:
   name: toggle-test
   mode: paper
-  exchange: bitget
+  exchange_account_id: 1
   pair: BTC/USD
   contract_type: inverse_perpetual
   leverage: {enabled: false, size: 1}
@@ -348,7 +348,7 @@ def test_indicator_groups_yaml_roundtrip():
 bot:
   name: Indi group test
   mode: paper
-  exchange: bitget
+  exchange_account_id: 1
   pair: BTC/USD
   contract_type: inverse_perpetual
   leverage: {enabled: false, size: 1}

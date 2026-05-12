@@ -7,7 +7,6 @@ Each test sandboxes the filesystem by redirecting the module's
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -134,60 +133,24 @@ class TestPidMigration:
 
 
 # ── Credentials conversion ──────────────────────────────────────────────────
+#
+# Pre-multi-account this section converted ``logs/credentials.json``
+# into the per-exchange-name ``credentials/<uid>/<exchange>.enc``
+# layout. feat/exchange-account-management replaced that layout with
+# UUID-named blobs keyed via the ``exchange_accounts`` DB table, and
+# there is no automated path between the two (the new layout requires
+# operator-chosen metadata: alias, is_default). ``migrate_credentials``
+# is kept as a no-op stub so existing call sites keep working.
 
 
-class TestCredentialsMigration:
-
-    def _write_legacy_credentials(
-        self, sandbox, payload: dict[str, tuple[str, str]],
-    ) -> None:
-        """Create a pre-MT logs/credentials.json + logs/.credentials.key
-        with the given (exchange → (api_key, api_secret)) plaintext."""
-        from cryptography.fernet import Fernet
-
-        key = Fernet.generate_key()
-        f = Fernet(key)
-
+class TestCredentialsMigrationStub:
+    def test_migrate_credentials_is_noop(self, sandbox):
+        # Even with a legacy credentials.json present, the stub
+        # returns 0 and does not convert anything — operators recreate
+        # accounts via the Exchanges admin tile.
         (sandbox / "logs").mkdir(parents=True, exist_ok=True)
-        (sandbox / "logs" / ".credentials.key").write_bytes(key)
-
-        store = {}
-        for exchange, (api_key, api_secret) in payload.items():
-            store[exchange] = {
-                "api_key":    f.encrypt(api_key.encode()).decode("ascii"),
-                "api_secret": f.encrypt(api_secret.encode()).decode("ascii"),
-            }
-        (sandbox / "logs" / "credentials.json").write_text(
-            json.dumps(store), encoding="utf-8",
-        )
-
-    def test_no_credentials_file_is_noop(self, sandbox):
-        moved = mig.migrate_credentials()
-        assert moved == 0
-
-    def test_converts_legacy_to_per_user_enc(self, sandbox):
-        self._write_legacy_credentials(sandbox, {
-            "bitget": ("ak-b", "sc-b"),
-            "kraken": ("ak-k", "sc-k"),
-        })
-        moved = mig.migrate_credentials()
-        assert moved == 2
-
-        # Phase-2 artefacts exist.
-        assert (sandbox / "keys" / "1.key").exists()
-        assert (sandbox / "credentials" / "1" / "bitget.enc").exists()
-        assert (sandbox / "credentials" / "1" / "kraken.enc").exists()
-
-        # Re-read through the Phase-2 API returns the original plaintext.
-        # Audit r1-012: get_keys always surfaces a ``passphrase`` field
-        # (empty here — the legacy migration never carried one).
-        from core import credentials
-        assert credentials.get_keys("bitget", user_id=1) == {
-            "api_key": "ak-b", "api_secret": "sc-b", "passphrase": "",
-        }
-        assert credentials.get_keys("kraken", user_id=1) == {
-            "api_key": "ak-k", "api_secret": "sc-k", "passphrase": "",
-        }
+        (sandbox / "logs" / "credentials.json").write_text("{}", encoding="utf-8")
+        assert mig.migrate_credentials() == 0
 
 
 # ── End-to-end idempotence ──────────────────────────────────────────────────

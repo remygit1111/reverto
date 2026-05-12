@@ -62,9 +62,10 @@ class TestPathShape:
         p = paths.user_fernet_key_path(1)
         assert p == _sandboxed_base / "keys" / "1.key"
 
-    def test_exchange_creds_path(self, _sandboxed_base):
-        p = paths.exchange_creds_path(1, "bitget")
-        assert p == _sandboxed_base / "credentials" / "1" / "bitget.enc"
+    def test_uuid_creds_path(self, _sandboxed_base):
+        uid_uuid = "deadbeef" * 4
+        p = paths.uuid_creds_path(1, uid_uuid)
+        assert p == _sandboxed_base / "credentials" / "1" / f"{uid_uuid}.enc"
 
     def test_user_ids_partition_cleanly(self, _sandboxed_base):
         """Two users land in separate trees — the core multi-tenant
@@ -73,8 +74,9 @@ class TestPathShape:
             2, "shared",
         )
         assert paths.user_fernet_key_path(1) != paths.user_fernet_key_path(2)
-        assert paths.exchange_creds_path(1, "bitget") != paths.exchange_creds_path(
-            2, "bitget",
+        uid_uuid = "deadbeef" * 4
+        assert paths.uuid_creds_path(1, uid_uuid) != paths.uuid_creds_path(
+            2, uid_uuid,
         )
 
 
@@ -181,18 +183,18 @@ class TestIntegrationWithCredentials:
 
         # credentials.py caches its own _BASE_DIR at import time;
         # sandbox redirects it so keys/ + credentials/ land in tmp.
-        # Audit v26-06: the pre-Phase-3a system-key path (_LOG_DIR +
-        # _KEY_FILE) is gone, so no additional monkeypatches needed
-        # for that side.
         monkeypatch.setattr(credentials, "_BASE_DIR", _sandboxed_base)
 
-        credentials.save_keys("bitget", "ak", "sc", user_id=7, _skip_format_validation=True)
-        enc = paths.exchange_creds_path(7, "bitget")
+        uid_uuid = "deadbeef" * 4
+        credentials.save_keys_by_uuid(
+            uid_uuid, "bitget", "ak", "sc",
+            user_id=7, _skip_format_validation=True,
+        )
+        enc = paths.uuid_creds_path(7, uid_uuid)
         key = paths.user_fernet_key_path(7)
 
         assert enc.exists()
         assert key.exists()
-        # Both must live under the sandbox — not the real repo.
         assert str(enc).startswith(str(_sandboxed_base))
         assert str(key).startswith(str(_sandboxed_base))
 

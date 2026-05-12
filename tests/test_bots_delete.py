@@ -40,7 +40,7 @@ def _make_payload(name: str = "Pytest Delete Bot") -> dict:
         "bot": {
             "name": name,
             "mode": "paper",
-            "exchange": "bitget",
+            "exchange_account_id": 1,
             "pair": "BTC/USD",
             "contract_type": "inverse_perpetual",
             "leverage": {"enabled": False, "size": 1},

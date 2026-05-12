@@ -1,8 +1,9 @@
-"""Tests for main_live.py — slug validation, DRY_RUN env parsing.
+"""Tests for main_live.py — slug validation, DRY_RUN env parsing,
+and the authenticated-exchange helper.
 
-Full integration tests that spawn a subprocess + simulate stdin are
-out of scope for the unit test suite; instead we import the module
-directly and exercise the helper functions + regex.
+Subprocess + stdin integration tests are out of scope for the unit
+suite; instead we import the module directly and exercise the helper
+functions + regex.
 """
 
 import sys
@@ -16,8 +17,7 @@ import main_live  # noqa: E402
 
 class TestBotSlugRegex:
     """The path-traversal fix relies on a strict regex applied BEFORE
-    Path() construction. Confirm common attack inputs are rejected and
-    legitimate slugs accepted."""
+    Path() construction."""
 
     def test_accepts_plain_slug(self):
         assert main_live._BOT_SLUG_RE.match("btc_bot") is not None
@@ -46,8 +46,7 @@ class TestBotSlugRegex:
 
 
 class TestDryRunEnvParsing:
-    """DRY_RUN env var used to be strict `== "1"` which broke CI setups
-    that set DRY_RUN=true. Now case-insensitive across several common
+    """DRY_RUN env-var is case-insensitive across several common
     truthy strings."""
 
     @pytest.mark.parametrize("value", ["1", "true", "TRUE", "Yes", "y", "on"])
@@ -66,31 +65,38 @@ class TestDryRunEnvParsing:
 
 
 class TestAuthenticatedExchange:
-    """When live mode is requested without saved exchange credentials
-    the helper must return None so the caller exits cleanly rather
-    than attempting real orders against a read-only client."""
+    """Live boot must refuse to start when the exchange account has
+    no decryptable credentials or when the exchange-type is unknown."""
 
     def test_no_credentials_returns_none(self, monkeypatch):
-        monkeypatch.setattr("core.credentials.get_keys", lambda _name, user_id=1: None)
-        assert main_live._authenticated_exchange("bitget", user_id=1) is None
-
-    def test_bitget_requires_passphrase_source(self, monkeypatch):
-        """Even with saved keys, a passphrase must come from somewhere —
-        the per-user credentials store (audit r1-012 preferred path) or
-        the legacy BITGET_PASSPHRASE env-var. Neither present → None
-        (refuse to boot live)."""
         monkeypatch.setattr(
-            "core.credentials.get_keys",
-            lambda _name, user_id=1: {
+            "core.exchange_account_store.get_account_credentials",
+            lambda _aid: None,
+        )
+        assert main_live._authenticated_exchange(
+            "bitget", exchange_account_id=42, user_id=1,
+        ) is None
+
+    def test_bitget_requires_passphrase(self, monkeypatch):
+        """A Bitget account with creds but no passphrase must refuse to
+        boot rather than build an unauthenticated client downstream."""
+        monkeypatch.setattr(
+            "core.exchange_account_store.get_account_credentials",
+            lambda _aid: {
                 "api_key": "a", "api_secret": "b", "passphrase": "",
             },
         )
-        monkeypatch.delenv("BITGET_PASSPHRASE", raising=False)
-        assert main_live._authenticated_exchange("bitget", user_id=1) is None
+        assert main_live._authenticated_exchange(
+            "bitget", exchange_account_id=42, user_id=1,
+        ) is None
 
     def test_unknown_exchange_returns_none(self, monkeypatch):
         monkeypatch.setattr(
-            "core.credentials.get_keys",
-            lambda _name, user_id=1: {"api_key": "a", "api_secret": "b"},
+            "core.exchange_account_store.get_account_credentials",
+            lambda _aid: {
+                "api_key": "a", "api_secret": "b", "passphrase": "",
+            },
         )
-        assert main_live._authenticated_exchange("ftx", user_id=1) is None
+        assert main_live._authenticated_exchange(
+            "ftx", exchange_account_id=42, user_id=1,
+        ) is None

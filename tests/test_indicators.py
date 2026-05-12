@@ -474,7 +474,7 @@ class TestQFL:
 
 class TestConfigValidation:
     def _base(self, **kw):
-        return dict(name="test", mode="paper", exchange="bitget",
+        return dict(name="test", mode="paper", exchange_account_id=1,
                     dca={"base_order_size":0.001},
                     take_profit={"target_pct":3.0}, **kw)
 

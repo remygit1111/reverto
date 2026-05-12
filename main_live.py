@@ -57,7 +57,10 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def _print_live_banner(slug: str, config, dry_run: bool) -> None:
+def _print_live_banner(
+    slug: str, config, exchange_type: str, account_alias: str,
+    dry_run: bool,
+) -> None:
     """Operator-facing banner. Intentionally uses plain print (not
     logger) so it lands on stdout even when the engine is captured
     into a log file by the portal."""
@@ -70,7 +73,7 @@ def _print_live_banner(slug: str, config, dry_run: bool) -> None:
         f"\n"
         f"Slug             : {slug}\n"
         f"Bot name         : {config.name}\n"
-        f"Exchange         : {config.exchange.value}\n"
+        f"Exchange         : {exchange_type} ({account_alias})\n"
         f"Pair             : {config.pair}\n"
         f"Base order size  : {config.dca.base_order_size} BTC\n"
         f"Mode             : {mode_line}\n"
@@ -183,7 +186,24 @@ def main() -> None:
         )
         sys.exit(1)
 
-    _print_live_banner(slug, config, args.dry_run)
+    # Resolve the bot's exchange account before doing anything that
+    # depends on exchange_type. A missing or foreign-user account is
+    # a hard refusal — live engine boot must never silently fall back
+    # to a different exchange than the YAML pinned.
+    from core import exchange_account_store
+    account = exchange_account_store.get_account(config.exchange_account_id)
+    if account is None or account["user_id"] != user_id:
+        logger.error(
+            "Bot %s references exchange_account_id=%d which does not "
+            "exist for user_id=%d. Recreate the account via the "
+            "Exchanges admin tile and update the bot YAML.",
+            slug, config.exchange_account_id, user_id,
+        )
+        sys.exit(1)
+    exchange_type = str(account["exchange_type"])
+    account_alias = str(account["alias"])
+
+    _print_live_banner(slug, config, exchange_type, account_alias, args.dry_run)
     _require_confirmation(args.dry_run)
 
     # Exchange selection — Phase 1 dry-run is fine with the read-only
@@ -193,21 +213,23 @@ def main() -> None:
     # can't accidentally ship a live bot against a public-only client.
     dry_run_effective = args.dry_run or _env_is_truthy("DRY_RUN")
     if dry_run_effective:
-        exchange = PublicExchange(config.exchange.value)
+        exchange = PublicExchange(exchange_type)
         logger.info(
             "Using PublicExchange (dry-run) — real orders are not possible"
         )
     else:
-        exchange = _authenticated_exchange(config.exchange.value, user_id)
+        exchange = _authenticated_exchange(
+            exchange_type, config.exchange_account_id, user_id,
+        )
         if exchange is None:
             logger.error(
                 "Live mode requires exchange credentials — configure via "
-                "the portal (Exchanges → Add Keys) before launching."
+                "the portal (Exchanges admin tile) before launching."
             )
             sys.exit(1)
         logger.warning(
-            "Using AUTHENTICATED %s client — real orders WILL be placed",
-            config.exchange.value,
+            "Using AUTHENTICATED %s client (account %r) — real orders "
+            "WILL be placed", exchange_type, account_alias,
         )
     notifier = TelegramNotifier(notify_on=config.telegram.notify_on)
 
@@ -230,6 +252,7 @@ def main() -> None:
                 slug=slug,
                 dry_run=args.dry_run,
                 user_id=user_id,
+                exchange_type=exchange_type,
             )
     except LockTimeoutError:
         logger.error(
@@ -239,52 +262,70 @@ def main() -> None:
         )
         sys.exit(2)
 
-    _install_signal_handlers(engine)
+    _install_signal_handlers(engine, exchange_type)
 
     engine.start()
 
 
-def _authenticated_exchange(name: str, user_id: int):
+def _authenticated_exchange(
+    exchange_type: str, exchange_account_id: int, user_id: int,
+):
     """Build an authenticated exchange client for live (non-dry-run) use.
 
-    Loads credentials through ``core.credentials.get_keys`` under the
-    bot's owning user. Returns None when no credentials are saved —
-    the caller must refuse to boot in that case.
+    Loads credentials through
+    ``core.exchange_account_store.get_account_credentials`` which
+    resolves ``exchange_account_id`` → (credentials_uuid, decrypted
+    api_key/api_secret/passphrase). Returns None when the account
+    has no decryptable blob — caller must refuse to boot in that case.
 
-    Only Bitget is wired today; Kraken follows the same shape once
-    implemented. Audit r1-012: Bitget's passphrase comes from
-    ``core.credentials.get_bitget_passphrase`` which prefers the
-    per-user credentials store and only falls back to the legacy
-    ``BITGET_PASSPHRASE`` env-var while the operator is migrating.
-    If neither source yields a passphrase the helper raises and we
-    refuse to boot live — matches the pre-fix behaviour of returning
-    None on missing passphrase.
+    Bitget needs the third credential piece (passphrase) packaged into
+    the same encrypted blob; Kraken doesn't. The store guarantees a
+    stable dict shape with ``passphrase`` always present (empty string
+    when not stored), so a missing-passphrase Bitget account surfaces
+    here as a clean validation failure rather than a downstream ccxt
+    auth error.
     """
-    from core.credentials import get_bitget_passphrase, get_keys
-    keys = get_keys(name, user_id=user_id)
+    from core import exchange_account_store
+    keys = exchange_account_store.get_account_credentials(exchange_account_id)
     if not keys:
         return None
 
-    if name == "bitget":
-        from exchanges.bitget import BitgetExchange
-        try:
-            passphrase = get_bitget_passphrase(user_id)
-        except ValueError as e:
-            logger.error("Bitget passphrase unavailable for user %d: %s", user_id, e)
+    if exchange_type == "bitget":
+        if not keys.get("passphrase"):
+            logger.error(
+                "Bitget account id=%d missing stored passphrase "
+                "(audit r1-012). Delete + recreate the account "
+                "with a passphrase via the Exchanges admin tile.",
+                exchange_account_id,
+            )
             return None
+        from exchanges.bitget import BitgetExchange
         return BitgetExchange(
             api_key=keys["api_key"],
             api_secret=keys["api_secret"],
-            passphrase=passphrase,
+            passphrase=keys["passphrase"],
             paper=False,
         )
-
-    logger.error("Live trading not yet wired for exchange %r", name)
+    if exchange_type == "kraken":
+        from exchanges.kraken import KrakenExchange
+        return KrakenExchange(
+            api_key=keys["api_key"],
+            api_secret=keys["api_secret"],
+            paper=False,
+        )
+    logger.error(
+        "Live trading not yet wired for exchange %r", exchange_type,
+    )
     return None
 
 
-def _install_signal_handlers(engine: LiveEngine) -> None:
-    """Same SIGTERM → engine.stop() pattern as main_paper.py."""
+def _install_signal_handlers(engine: LiveEngine, exchange_type: str) -> None:
+    """Same SIGTERM → engine.stop() pattern as main_paper.py.
+
+    ``exchange_type`` is resolved at boot from the bot's
+    exchange_account and passed in here so the SIGTERM notification
+    carries the same label the operator sees in the portal — the
+    config itself only knows the account_id, not the exchange slug."""
     def _on_sigterm(_signum, _frame):
         logger.info("Received SIGTERM — stopping engine cleanly")
         try:
@@ -292,7 +333,7 @@ def _install_signal_handlers(engine: LiveEngine) -> None:
                 engine.notifier.notify_stop,
                 engine.config.name,
                 engine.config.mode.value,
-                engine.config.exchange.value,
+                exchange_type,
             )
             engine.stop()
         finally:

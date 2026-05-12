@@ -144,7 +144,24 @@ def main() -> None:
         )
         sys.exit(1)
 
-    exchange = PublicExchange(config.exchange.value)
+    # Resolve the bot's exchange account → exchange_type. Paper bots
+    # still need a real exchange-type for the public market-data
+    # endpoint (and for state-snapshot labels). A missing/foreign
+    # account is a hard refusal — falling back to a different
+    # exchange would silently flip the market data feed.
+    from core import exchange_account_store
+    account = exchange_account_store.get_account(config.exchange_account_id)
+    if account is None or account["user_id"] != user_id:
+        logger.error(
+            "Bot %s references exchange_account_id=%d which does not "
+            "exist for user_id=%d. Recreate the account via the "
+            "Exchanges admin tile and update the bot YAML.",
+            slug, config.exchange_account_id, user_id,
+        )
+        sys.exit(1)
+    exchange_type = str(account["exchange_type"])
+
+    exchange = PublicExchange(exchange_type)
     notifier = TelegramNotifier(notify_on=config.telegram.notify_on)
 
     # Engine construction runs _load_state internally. Hold an
@@ -167,6 +184,7 @@ def main() -> None:
                 manual_trigger_file=str(manual_trigger_file),
                 slug=slug,
                 user_id=user_id,
+                exchange_type=exchange_type,
             )
     except LockTimeoutError:
         logger.error(
@@ -176,12 +194,12 @@ def main() -> None:
         )
         sys.exit(2)
 
-    _install_signal_handlers(engine)
+    _install_signal_handlers(engine, exchange_type)
 
     engine.start()
 
 
-def _install_signal_handlers(engine: PaperEngine) -> None:
+def _install_signal_handlers(engine: PaperEngine, exchange_type: str) -> None:
     """Translate SIGTERM into a clean engine.stop() call.
 
     The portal stops bots via os.kill(pid, SIGTERM). Without an explicit
@@ -204,7 +222,7 @@ def _install_signal_handlers(engine: PaperEngine) -> None:
                 engine.notifier.notify_stop,
                 engine.config.name,
                 engine.config.mode.value,
-                engine.config.exchange.value,
+                exchange_type,
             )
             engine.stop()
         finally:

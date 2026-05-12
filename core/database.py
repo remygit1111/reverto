@@ -347,6 +347,31 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     "ON audit_findings(status, severity)",
     "CREATE INDEX IF NOT EXISTS idx_audit_findings_source "
     "ON audit_findings(source_doc)",
+    # v11 additive: per-user exchange account metadata. Replaces the
+    # one-account-per-exchange-type assumption with a real n-to-one
+    # model so an operator can keep "Bitget main" alongside
+    # "Bitget test" before live trading. ``credentials_uuid`` is the
+    # filename stem of the matching encrypted blob at
+    # ``credentials/<user_id>/<uuid>.enc``. is_default is enforced as
+    # at-most-one-per-(user,exchange_type) at the application layer
+    # (see core.exchange_account_store.set_default) — SQLite partial
+    # indexes are awkward and the application-layer guard is the
+    # mutating-call boundary anyway.
+    """
+    CREATE TABLE IF NOT EXISTS exchange_accounts (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        exchange_type    TEXT NOT NULL,
+        alias            TEXT NOT NULL,
+        credentials_uuid TEXT NOT NULL,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        last_tested_at   TEXT,
+        is_default       INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(user_id, exchange_type, alias)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_exchange_accounts_user_type "
+    "ON exchange_accounts(user_id, exchange_type)",
 )
 
 
@@ -457,8 +482,16 @@ def get_db() -> sqlite3.Connection:
 #     destructive guard explicitly does NOT trigger — v5 was the
 #     last destructive boundary and additive jumps fully above it
 #     run silently.
-#   * == 10 → no-op.
-SCHEMA_VERSION = 10
+#   * < 11 → ADDITIVE: introduces ``exchange_accounts`` for the
+#     multi-account exchange-management feature. Replaces the
+#     previous one-account-per-(user, exchange_type) layout in
+#     ``credentials/<user_id>/<exchange>.enc`` with a UUID-named
+#     blob keyed by an ``exchange_accounts`` row. No existing rows
+#     are touched; CREATE TABLE IF NOT EXISTS lazily lands the new
+#     table on the next boot. The destructive guard does NOT
+#     trigger — v5 was the last destructive boundary.
+#   * == 11 → no-op.
+SCHEMA_VERSION = 11
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,
