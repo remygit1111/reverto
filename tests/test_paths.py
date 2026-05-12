@@ -188,7 +188,7 @@ class TestIntegrationWithCredentials:
         uid_uuid = "deadbeef" * 4
         credentials.save_keys_by_uuid(
             uid_uuid, "bitget", "ak", "sc",
-            user_id=7, _skip_format_validation=True,
+            user_id=7,
         )
         enc = paths.uuid_creds_path(7, uid_uuid)
         key = paths.user_fernet_key_path(7)

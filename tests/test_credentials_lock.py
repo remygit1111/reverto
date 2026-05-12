@@ -40,7 +40,6 @@ class TestRotationLock:
         key = routed_store
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
 
         cm = creds._rotation_lock(key)
@@ -57,7 +56,6 @@ class TestRotationLock:
         key = routed_store
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
 
         creds.rotate_fernet_key(user_id=1)
@@ -73,7 +71,6 @@ class TestTimestampedBackups:
         key = routed_store
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
 
         creds.rotate_fernet_key(user_id=1)
@@ -93,7 +90,6 @@ class TestBackupRetention:
         key = routed_store
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
 
         creds.rotate_fernet_key(user_id=1)
@@ -118,7 +114,6 @@ class TestCrashRecovery:
         key = routed_store
         creds.save_keys_by_uuid(
             _UUID_A, "bitget", "a", "b", user_id=1,
-            _skip_format_validation=True,
         )
         enc_path = paths.uuid_creds_path(1, _UUID_A)
         original_key = key.read_bytes()
