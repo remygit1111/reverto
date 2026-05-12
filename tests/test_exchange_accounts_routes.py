@@ -93,9 +93,18 @@ def bob_client(fs_sandbox):
         _teardown_client(client)
 
 
-def _create_via_api(client, exchange_type, alias, **extra):
+def _create_via_api(
+    client, exchange_type, alias, market_type=None, **extra,
+):
+    # Default market_type by exchange picks the inverse-perpetual
+    # variant so tests against ``inverse_perpetual`` bots have a
+    # compatible account. Per-test overrides go through the
+    # ``market_type`` kwarg or ``extra``.
+    if market_type is None:
+        market_type = "coin_m" if exchange_type == "bitget" else "futures"
     body = {
         "exchange_type": exchange_type,
+        "market_type": market_type,
         "alias": alias,
         "api_key": _REALISTIC_BITGET_KEY if exchange_type == "bitget"
                    else _REALISTIC_KRAKEN_KEY,
@@ -129,12 +138,20 @@ class TestAuthGate:
 
 class TestSupportedExchanges:
 
-    def test_supported_list(self, admin_client):
+    def test_supported_list_shape(self, admin_client):
+        # New richer shape: each exchange entry has a ``name`` and a
+        # ``markets`` list of {key, label} pairs. Pin the shape since
+        # the frontend renders the market dropdown from it.
         r = admin_client.get("/api/exchanges/supported")
         assert r.status_code == 200
         body = r.json()
-        assert "bitget" in body["exchanges"]
-        assert "kraken" in body["exchanges"]
+        names = [e["name"] for e in body["exchanges"]]
+        assert "bitget" in names
+        assert "kraken" in names
+        bitget = next(e for e in body["exchanges"] if e["name"] == "bitget")
+        keys = [m["key"] for m in bitget["markets"]]
+        assert "coin_m" in keys
+        assert "usdt_m" in keys
 
 
 # ── Create + validation ───────────────────────────────────────────────────
@@ -157,6 +174,7 @@ class TestCreate:
     def test_bitget_without_passphrase_400(self, admin_client):
         r = admin_client.post("/api/exchange-accounts", json={
             "exchange_type": "bitget",
+            "market_type": "coin_m",
             "alias": "main",
             "api_key": _REALISTIC_BITGET_KEY,
             "api_secret": _REALISTIC_BITGET_SEC,
@@ -167,15 +185,49 @@ class TestCreate:
     def test_unknown_exchange_type_400(self, admin_client):
         r = admin_client.post("/api/exchange-accounts", json={
             "exchange_type": "ftx",
+            "market_type": "spot",
             "alias": "main",
             "api_key": "a", "api_secret": "b",
         })
         assert r.status_code == 400
 
-    def test_duplicate_alias_400(self, admin_client):
+    def test_unknown_market_type_400(self, admin_client):
+        # Bitget doesn't have an "options" market in the registry.
+        r = _create_via_api(
+            admin_client, "bitget", "main", market_type="options",
+        )
+        assert r.status_code == 400
+
+    def test_missing_market_type_422(self, admin_client):
+        # Pydantic required-field check fires before our handler.
+        r = admin_client.post("/api/exchange-accounts", json={
+            "exchange_type": "bitget",
+            "alias": "main",
+            "api_key": _REALISTIC_BITGET_KEY,
+            "api_secret": _REALISTIC_BITGET_SEC,
+            "passphrase": "p",
+        })
+        assert r.status_code == 422
+
+    def test_duplicate_alias_same_market_400(self, admin_client):
         _create_via_api(admin_client, "bitget", "main")
         r = _create_via_api(admin_client, "bitget", "main")
         assert r.status_code == 400
+
+    def test_same_alias_across_markets_allowed(self, admin_client):
+        # The UNIQUE constraint widened to (user, exchange, market,
+        # alias) in this PR — "main" can sit on both Coin-M and
+        # USDT-M Bitget accounts without colliding.
+        r1 = _create_via_api(
+            admin_client, "bitget", "main", market_type="coin_m",
+        )
+        r2 = _create_via_api(
+            admin_client, "bitget", "main", market_type="usdt_m",
+        )
+        assert r1.status_code == 200, r1.text
+        assert r2.status_code == 200, r2.text
+        assert r1.json()["account"]["market_type"] == "coin_m"
+        assert r2.json()["account"]["market_type"] == "usdt_m"
 
 
 # ── List + Get ─────────────────────────────────────────────────────────────
@@ -299,11 +351,13 @@ class TestDelete:
 
 class TestTestConnection:
 
-    def test_success_updates_last_tested_at(self, admin_client, monkeypatch):
+    def test_success_response_shape(self, admin_client, monkeypatch):
         # Stub the BitgetExchange constructor so no ccxt traffic
-        # leaves the test runner.
+        # leaves the test runner. The stub still needs the
+        # balance_currency attribute that the route reads.
         fake_client = MagicMock()
         fake_client.get_balance.return_value = 0.42
+        fake_client.balance_currency = "BTC"
 
         def _fake_bitget(*args, **kwargs):
             return fake_client
@@ -313,7 +367,6 @@ class TestTestConnection:
 
         r = _create_via_api(admin_client, "bitget", "main")
         aid = r.json()["account"]["id"]
-        # last_tested_at should still be null before the test runs.
         before = admin_client.get(f"/api/exchange-accounts/{aid}").json()
         assert before["last_tested_at"] is None
 
@@ -323,7 +376,11 @@ class TestTestConnection:
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is True
-        assert body["balance_btc"] == 0.42
+        # New richer shape: balance + currency + market + label.
+        assert body["balance"] == 0.42
+        assert body["currency"] == "BTC"
+        assert body["market"] == "coin_m"
+        assert body["market_label"] == "Coin-M Perpetual"
 
         after = admin_client.get(f"/api/exchange-accounts/{aid}").json()
         assert after["last_tested_at"] is not None

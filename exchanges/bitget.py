@@ -78,8 +78,19 @@ def _with_order_retries(op_name: str, fn, *args, client=None, symbol=None, **kwa
             #     should not crash the retry loop.
             if attempt > 0 and client is not None and client_order_id and symbol:
                 existing = None
+                # Propagate the same routing params (e.g. productType
+                # on Bitget) onto the idempotency lookup so the
+                # exchange's per-wallet order book is consulted, not
+                # the default USDT-M wallet. clientOrderId is the
+                # matcher and goes in params on the lookup call too.
+                lookup_params = {
+                    k: v for k, v in (kwargs.get("params") or {}).items()
+                    if k != "clientOrderId"
+                }
                 try:
-                    existing = client.fetch_order(client_order_id, symbol)
+                    existing = client.fetch_order(
+                        client_order_id, symbol, params=lookup_params,
+                    )
                 except ccxt.OrderNotFound:
                     # Expected path — no duplicate exists on the exchange.
                     existing = None
@@ -172,20 +183,44 @@ class BitgetExchange(BaseExchange):
         "BTC/USD": "BTC/USD:BTC"  # ccxt unified symbol for inverse perpetual
     }
 
-    def __init__(self, api_key: str, api_secret: str, passphrase: str, paper: bool = False):
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        passphrase: str,
+        market_type: str,
+        paper: bool = False,
+    ):
         super().__init__(api_key, api_secret, paper)
 
+        from core.markets import get_market_config
+        cfg = get_market_config("bitget", market_type)
+        self.market_type = market_type
+        self._balance_currency = cfg["balance_currency"]
+        # ccxt-level routing — ``ccxt_options`` lands on the client at
+        # construction (defaultType, defaultSubType). ``ccxt_params``
+        # is merged into every authenticated call below because
+        # Bitget's ccxt driver reads ``productType`` from per-call
+        # params, not from client options.
+        self._ccxt_params: dict = dict(cfg["ccxt_params"])
         self.client = ccxt.bitget({
             "apiKey": api_key,
             "secret": api_secret,
             "password": passphrase,
-            "options": {
-                "defaultType": "swap",
-            }
+            "options": dict(cfg["ccxt_options"]),
         })
 
         if paper:
             self.client.set_sandbox_mode(True)
+
+    def _merge_params(self, extra: Optional[dict] = None) -> dict:
+        """Merge the market-routing params with any per-call extras.
+        Keeps caller-supplied keys (e.g. ``clientOrderId``) winning
+        over registry defaults."""
+        merged = dict(self._ccxt_params)
+        if extra:
+            merged.update(extra)
+        return merged
 
     def _symbol(self, symbol: str) -> str:
         """Convert simple symbol to ccxt unified symbol."""
@@ -216,7 +251,9 @@ class BitgetExchange(BaseExchange):
         return self.client.fetch_ohlcv(self._symbol(symbol), timeframe, limit=limit)
 
     def get_position(self, symbol: str) -> Optional[Position]:
-        positions = self.client.fetch_positions([self._symbol(symbol)])
+        positions = self.client.fetch_positions(
+            [self._symbol(symbol)], params=self._merge_params(),
+        )
         for p in positions:
             if p["contracts"] and p["contracts"] > 0:
                 return Position(
@@ -233,14 +270,17 @@ class BitgetExchange(BaseExchange):
         return None
 
     def get_balance(self) -> float:
-        balance = self.client.fetch_balance()
-        return balance.get("BTC", {}).get("free", 0.0)
+        balance = self.client.fetch_balance(params=self._merge_params())
+        return float(
+            balance.get(self._balance_currency, {}).get("free", 0.0)
+        )
 
     def place_market_order(self, symbol: str, side: str, amount: float) -> Order:
         raw = _with_order_retries(
             "place_market_order",
             self.client.create_order,
             self._symbol(symbol), "market", side, amount,
+            params=self._merge_params(),
             client=self.client, symbol=self._symbol(symbol),
         )
         return self._parse_order(raw, symbol)
@@ -250,6 +290,7 @@ class BitgetExchange(BaseExchange):
             "place_limit_order",
             self.client.create_order,
             self._symbol(symbol), "limit", side, amount, price,
+            params=self._merge_params(),
             client=self.client, symbol=self._symbol(symbol),
         )
         return self._parse_order(raw, symbol)
@@ -260,6 +301,7 @@ class BitgetExchange(BaseExchange):
                 "cancel_order",
                 self.client.cancel_order,
                 order_id, self._symbol(symbol),
+                params=self._merge_params(),
             )
             return True
         except (InsufficientFundsError, RateLimitError, ExchangeNetworkError) as e:
@@ -279,12 +321,17 @@ class BitgetExchange(BaseExchange):
             return False
 
     def get_open_orders(self, symbol: str) -> list[Order]:
-        raw_orders = self.client.fetch_open_orders(self._symbol(symbol))
+        raw_orders = self.client.fetch_open_orders(
+            self._symbol(symbol), params=self._merge_params(),
+        )
         return [self._parse_order(o, symbol) for o in raw_orders]
 
     def set_leverage(self, symbol: str, leverage: int) -> bool:
         try:
-            self.client.set_leverage(leverage, self._symbol(symbol))
+            self.client.set_leverage(
+                leverage, self._symbol(symbol),
+                params=self._merge_params(),
+            )
             return True
         except Exception as e:
             logger.warning(

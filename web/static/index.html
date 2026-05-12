@@ -1052,6 +1052,7 @@
           <thead>
             <tr>
               <th>Exchange</th>
+              <th>Market</th>
               <th>Alias</th>
               <th>Default</th>
               <th>Last tested</th>
@@ -1059,7 +1060,7 @@
             </tr>
           </thead>
           <tbody id="admin-ex-tbody">
-            <tr><td colspan="5" class="cl-empty-cell">Loading…</td></tr>
+            <tr><td colspan="6" class="cl-empty-cell">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1080,6 +1081,12 @@
         <select id="admin-ex-type" required>
           <option value="bitget">Bitget</option>
           <option value="kraken">Kraken</option>
+        </select>
+      </label>
+      <label class="finding-edit-label">
+        Market
+        <select id="admin-ex-market" required>
+          <option value="">Loading…</option>
         </select>
       </label>
       <label class="finding-edit-label">

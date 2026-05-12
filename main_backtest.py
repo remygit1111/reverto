@@ -83,7 +83,7 @@ def main():
     # user_id (no per-user CLI flag exists yet) — match main_paper's
     # default of 1. A missing account refuses to boot so a backtest
     # never silently flips to a different exchange.
-    from core import exchange_account_store
+    from core import exchange_account_store, markets
     account = exchange_account_store.get_account(config.exchange_account_id)
     if account is None:
         print(
@@ -92,13 +92,26 @@ def main():
         )
         sys.exit(1)
     exchange_type = str(account["exchange_type"])
+    market_type = str(account["market_type"])
+
+    # Contract_type vs market_type compatibility check — backtests
+    # don't auth but the same rule applies, and an incompatible
+    # combination here would mean any forward-test → live promotion
+    # of this bot would fail anyway.
+    try:
+        markets.validate_contract_type(
+            config.contract_type, exchange_type, market_type,
+        )
+    except ValueError as e:
+        print(f"\n❌ {e}")
+        sys.exit(1)
 
     print(f"\n🔍 Reverto Backtest — {config.name}")
     print(f"   Paar      : {config.pair}")
     print(f"   Bot TF    : {config.timeframe}")
     print(f"   Alle TFs  : {', '.join(required_tfs)}")
     print(f"   Candles   : {args.limit} per timeframe")
-    print(f"   Exchange  : {exchange_type}")
+    print(f"   Exchange  : {exchange_type} ({market_type})")
     print(f"   Beginbal  : {args.balance} BTC")
     print(f"\n⏳ Historische data ophalen van {exchange_type}...")
 
