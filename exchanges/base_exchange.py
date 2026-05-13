@@ -74,12 +74,27 @@ class BaseExchange(ABC):
     """
     Abstract base class for all Reverto exchange integrations.
     Every exchange must implement these methods.
+
+    ``market_type`` (Bitget spot/coin_m/usdt_m/usdc_m, Kraken
+    spot/futures) selects which wallet the underlying ccxt client
+    routes to. Subclasses pull the right ``ccxt_options`` /
+    ``ccxt_params`` / ``balance_currency`` from
+    ``core.markets.get_market_config`` and store the resolved
+    settlement currency on ``self._balance_currency`` so
+    ``get_balance`` reads from the right key in
+    ``fetch_balance()``'s response.
     """
 
     def __init__(self, api_key: str, api_secret: str, paper: bool = False):
         self.api_key = api_key
         self.api_secret = api_secret
         self.paper = paper
+        # Subclasses overwrite these via core.markets.get_market_config
+        # during their own __init__. Default values keep tests that
+        # construct a mock without going through a real subclass from
+        # AttributeError'ing on access.
+        self.market_type: str = ""
+        self._balance_currency: str = "BTC"
 
     # ------------------------------------------------------------------
     # Market data
@@ -109,8 +124,19 @@ class BaseExchange(ABC):
 
     @abstractmethod
     def get_balance(self) -> float:
-        """Get available BTC balance (margin wallet)."""
+        """Get available balance in the wallet's native settlement
+        currency. Coin-margined inverse contracts and Kraken Futures
+        return BTC; Bitget spot / USDT-M return USDT; Bitget USDC-M
+        returns USDC; Kraken spot returns USD. The exact currency
+        read from ``ccxt.fetch_balance()`` is in
+        ``self._balance_currency`` — see ``core.markets``."""
         pass
+
+    @property
+    def balance_currency(self) -> str:
+        """Native settlement currency for ``get_balance()``. Set by
+        subclasses from ``core.markets.get_market_config``."""
+        return self._balance_currency
 
     # ------------------------------------------------------------------
     # Orders

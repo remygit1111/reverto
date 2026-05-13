@@ -347,7 +347,7 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     "ON audit_findings(status, severity)",
     "CREATE INDEX IF NOT EXISTS idx_audit_findings_source "
     "ON audit_findings(source_doc)",
-    # v11 additive: per-user exchange account metadata. Replaces the
+    # v11 / v12: per-user exchange account metadata. Replaces the
     # one-account-per-exchange-type assumption with a real n-to-one
     # model so an operator can keep "Bitget main" alongside
     # "Bitget test" before live trading. ``credentials_uuid`` is the
@@ -357,17 +357,28 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     # (see core.exchange_account_store.set_default) — SQLite partial
     # indexes are awkward and the application-layer guard is the
     # mutating-call boundary anyway.
+    #
+    # v12 added the ``market_type`` column (Bitget Spot vs Coin-M vs
+    # USDT-M vs USDC-M, Kraken Spot vs Futures) and widened the
+    # UNIQUE constraint to (user, exchange_type, market_type, alias)
+    # so the same alias can sit on two different wallets. v11→v12 is
+    # a destructive drop-and-recreate of this table only (the v11
+    # rows had no market_type and a NOT NULL ALTER would force every
+    # row to 'spot' — incorrect for Coin-M operators). The wider
+    # owned-table destructive guard does NOT trigger; see
+    # ``_apply_destructive_table_recreates``.
     """
     CREATE TABLE IF NOT EXISTS exchange_accounts (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         exchange_type    TEXT NOT NULL,
+        market_type      TEXT NOT NULL,
         alias            TEXT NOT NULL,
         credentials_uuid TEXT NOT NULL,
         created_at       TEXT NOT NULL DEFAULT (datetime('now')),
         last_tested_at   TEXT,
         is_default       INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(user_id, exchange_type, alias)
+        UNIQUE(user_id, exchange_type, market_type, alias)
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_exchange_accounts_user_type "
@@ -490,8 +501,20 @@ def get_db() -> sqlite3.Connection:
 #     are touched; CREATE TABLE IF NOT EXISTS lazily lands the new
 #     table on the next boot. The destructive guard does NOT
 #     trigger — v5 was the last destructive boundary.
-#   * == 11 → no-op.
-SCHEMA_VERSION = 11
+#   * < 12 → TABLE-LOCAL DESTRUCTIVE: adds ``market_type`` to
+#     ``exchange_accounts`` and widens the UNIQUE constraint to
+#     (user, exchange_type, market_type, alias). Done by DROPping
+#     and re-CREATEing only this one v11-introduced table —
+#     existing v11 rows had no market_type and silently defaulting
+#     them to 'spot' would have routed Coin-M operators to the
+#     wrong wallet. Owned-table destructive guard does NOT trigger
+#     because ``exchange_accounts`` is not on the ``_OWNED_TABLES``
+#     list (no deals/orders FK against it). The operator's
+#     ``.enc`` blobs are likewise wiped (see
+#     ``_apply_destructive_table_recreates``) so the orphan-file
+#     state stays clean.
+#   * == 12 → no-op.
+SCHEMA_VERSION = 12
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,
@@ -725,6 +748,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # runs on a DB that's already been migrated.
     if current < SCHEMA_VERSION:
         _apply_column_additions(conn)
+        _apply_destructive_table_recreates(conn, current)
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -752,6 +776,66 @@ def _apply_column_additions(conn: sqlite3.Connection) -> None:
         conn, "users",
         "totp_seed_encrypted TEXT DEFAULT NULL",
     )
+
+
+def _apply_destructive_table_recreates(
+    conn: sqlite3.Connection, current_version: int,
+) -> None:
+    """Drop and recreate tables whose schema change can't be expressed
+    as an additive ALTER. The targeted table must NOT be on
+    ``_OWNED_TABLES`` (which is the full destructive-migration guard
+    domain). Use this path only for tables introduced in a recent
+    version with no FK consumers and no operator-irreplaceable data.
+
+    v11 → v12: ``exchange_accounts`` gains a ``market_type`` column
+    and the UNIQUE constraint widens. ALTER TABLE ADD COLUMN
+    NOT NULL needs a DEFAULT, and defaulting every existing row to
+    ``'spot'`` would silently mis-route a Coin-M operator's bots to
+    the wrong wallet (the v11 schema implicitly used USDT-M). Dropping
+    + recreating instead, plus wiping the matching ``.enc`` blobs
+    under ``credentials/<user>/``, forces the operator to recreate
+    their account via the admin tile with an explicit market choice.
+    The operator confirmed (feat/exchange-account-market-type) that
+    no production rows need preservation.
+    """
+    if current_version < 12:
+        # Best-effort wipe of the .enc blobs that used to back the
+        # now-dropped rows. The DB drop will create orphan files
+        # otherwise — harmless functionally (nothing enumerates by
+        # filename) but noisy.
+        try:
+            row_iter = conn.execute(
+                "SELECT user_id, credentials_uuid FROM exchange_accounts",
+            ).fetchall()
+            for row in row_iter:
+                try:
+                    # Lazy import keeps core.database self-contained
+                    # for tools that don't need the credentials tree.
+                    from core.paths import uuid_creds_path
+                    enc = uuid_creds_path(
+                        int(row["user_id"]), str(row["credentials_uuid"]),
+                    )
+                    if enc.exists():
+                        enc.unlink()
+                except (OSError, ImportError) as e:
+                    logger.warning(
+                        "v11→v12 migration: could not unlink stale "
+                        ".enc file: %s", e,
+                    )
+        except sqlite3.OperationalError:
+            # exchange_accounts didn't exist (truly fresh install) —
+            # nothing to wipe; the CREATE TABLE in _SCHEMA_STATEMENTS
+            # builds the v12 shape directly.
+            pass
+        else:
+            logger.warning(
+                "v11→v12 migration: dropping exchange_accounts table "
+                "(market_type added, UNIQUE constraint widened). "
+                "Every existing exchange account row + its encrypted "
+                ".enc blob is wiped. Recreate accounts via the "
+                "Exchanges admin tile.",
+            )
+            conn.execute("DROP TABLE IF EXISTS exchange_accounts")
 
 
 def _add_column_if_missing(

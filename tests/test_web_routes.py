@@ -1573,8 +1573,8 @@ class TestOfflineDealClose:
         # exchange_type from the DB row to pick the public-ticker URL.
         conn.execute(
             "INSERT OR IGNORE INTO exchange_accounts "
-            "(id, user_id, exchange_type, alias, credentials_uuid) "
-            "VALUES (1, 1, 'bitget', 'test-fixture', 'deadbeef' || hex(randomblob(12)))"
+            "(id, user_id, exchange_type, market_type, alias, credentials_uuid) "
+            "VALUES (1, 1, 'bitget', 'coin_m', 'test-fixture', 'deadbeef' || hex(randomblob(12)))"
         )
         conn.commit()
 
@@ -2016,8 +2016,8 @@ class TestOfflineDealCloseLock:
         # exchange_type from the DB row to pick the public-ticker URL.
         conn.execute(
             "INSERT OR IGNORE INTO exchange_accounts "
-            "(id, user_id, exchange_type, alias, credentials_uuid) "
-            "VALUES (1, 1, 'bitget', 'test-fixture', 'deadbeef' || hex(randomblob(12)))"
+            "(id, user_id, exchange_type, market_type, alias, credentials_uuid) "
+            "VALUES (1, 1, 'bitget', 'coin_m', 'test-fixture', 'deadbeef' || hex(randomblob(12)))"
         )
         conn.commit()
 

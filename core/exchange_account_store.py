@@ -27,7 +27,7 @@ import sqlite3
 import uuid
 from typing import Optional
 
-from core import credentials
+from core import credentials, markets
 from core.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -39,12 +39,11 @@ MAX_ALIAS_LEN = 64
 MAX_API_KEY_LEN = 512
 MAX_API_SECRET_LEN = 512
 MAX_PASSPHRASE_LEN = 64
+MAX_MARKET_TYPE_LEN = 32
 
-# Supported exchange-type slugs. Mirrors web/routes/exchanges.py and
-# config.models.Exchange (the wizard dropdown). A future exchange
-# lands here + in the credentials format validator + in
-# exchanges/__init__.py.
-KNOWN_EXCHANGE_TYPES: tuple[str, ...] = ("bitget", "kraken")
+# Supported exchange-type slugs are derived from the markets registry
+# so adding a new exchange there flows everywhere automatically.
+KNOWN_EXCHANGE_TYPES: tuple[str, ...] = tuple(markets.MARKETS.keys())
 
 
 # ── Errors ────────────────────────────────────────────────────────────────
@@ -71,6 +70,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "id": row["id"],
         "user_id": row["user_id"],
         "exchange_type": row["exchange_type"],
+        "market_type": row["market_type"],
         "alias": row["alias"],
         "created_at": row["created_at"],
         "last_tested_at": row["last_tested_at"],
@@ -80,6 +80,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 def _validate_inputs(
     exchange_type: str,
+    market_type: str,
     alias: str,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
@@ -87,12 +88,16 @@ def _validate_inputs(
 ) -> None:
     """Argument-shape checks shared by create + update. Length caps
     raise ``AccountValidationError`` (a ``ValueError`` subclass) so
-    route handlers can surface them as HTTP 400 uniformly."""
-    if exchange_type not in KNOWN_EXCHANGE_TYPES:
-        raise AccountValidationError(
-            f"Unknown exchange_type {exchange_type!r}. "
-            f"Supported: {', '.join(KNOWN_EXCHANGE_TYPES)}"
-        )
+    route handlers can surface them as HTTP 400 uniformly.
+
+    Cross-validation of (exchange_type, market_type) goes through the
+    markets registry — adding a new exchange or market type updates
+    one dict and the check here picks it up automatically.
+    """
+    try:
+        markets.validate_combo(exchange_type, market_type)
+    except ValueError as e:
+        raise AccountValidationError(str(e)) from e
     if not alias or len(alias) > MAX_ALIAS_LEN:
         raise AccountValidationError(
             f"alias must be 1-{MAX_ALIAS_LEN} characters",
@@ -121,6 +126,7 @@ def _validate_inputs(
 def create_account(
     user_id: int,
     exchange_type: str,
+    market_type: str,
     alias: str,
     api_key: str,
     api_secret: str,
@@ -141,41 +147,43 @@ def create_account(
     enumerates by ``exchange_accounts.credentials_uuid``, so an orphan
     UUID is never visited.
 
+    ``market_type`` is validated against the
+    ``core.markets`` registry — unknown (exchange, market) combos
+    raise ``AccountValidationError`` so the route can surface them
+    as a clean 400.
+
     Bitget requires a passphrase (audit r1-012); validate that at the
     route layer, not here — this store function is also reachable from
     tests/admin scripts that may legitimately want to skip the rule.
     """
     _validate_inputs(
-        exchange_type, alias,
+        exchange_type, market_type, alias,
         api_key=api_key, api_secret=api_secret, passphrase=passphrase,
     )
 
-    # Uniqueness on (user_id, exchange_type, alias) is enforced by the
-    # DB UNIQUE constraint, but check up-front so callers see a clear
-    # message rather than an opaque IntegrityError. Race window is
-    # benign — a concurrent create that wins the insert will fail this
-    # caller's INSERT, which we still translate to a clean error.
+    # Uniqueness on (user_id, exchange_type, market_type, alias) is
+    # enforced by the DB UNIQUE constraint, but check up-front so
+    # callers see a clear message rather than an opaque IntegrityError.
+    # Race window is benign — a concurrent create that wins the insert
+    # will fail this caller's INSERT, which we still translate.
     conn = get_db()
     existing = conn.execute(
         "SELECT id FROM exchange_accounts "
-        "WHERE user_id = ? AND exchange_type = ? AND alias = ?",
-        (user_id, exchange_type, alias),
+        "WHERE user_id = ? AND exchange_type = ? "
+        "AND market_type = ? AND alias = ?",
+        (user_id, exchange_type, market_type, alias),
     ).fetchone()
     if existing is not None:
         raise AccountValidationError(
             f"alias {alias!r} already exists for "
-            f"exchange_type={exchange_type}",
+            f"exchange_type={exchange_type} market_type={market_type}",
         )
 
     credentials_uuid = uuid.uuid4().hex
 
     # Save the blob first. No DB write has happened yet, so a write
     # failure (disk full, permission error) leaves no orphan row to
-    # roll back. Pre-fix the credentials layer also raised
-    # CredentialFormatError on malformed input; that regex check was
-    # removed because legitimate Bitget keys started carrying
-    # underscores and were getting rejected. Format-correctness is
-    # now caught by the test-connection endpoint.
+    # roll back.
     credentials.save_keys_by_uuid(
         credentials_uuid, exchange_type, api_key, api_secret,
         user_id, passphrase=passphrase,
@@ -185,18 +193,22 @@ def create_account(
         with conn:
             cur = conn.execute(
                 "INSERT INTO exchange_accounts "
-                "(user_id, exchange_type, alias, credentials_uuid, "
-                " is_default) VALUES (?, ?, ?, ?, ?)",
+                "(user_id, exchange_type, market_type, alias, "
+                " credentials_uuid, is_default) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    user_id, exchange_type, alias, credentials_uuid,
-                    1 if is_default else 0,
+                    user_id, exchange_type, market_type, alias,
+                    credentials_uuid, 1 if is_default else 0,
                 ),
             )
             new_id = int(cur.lastrowid or 0)
             if is_default:
                 # Unset any other default for this (user, exchange_type)
                 # pair inside the same transaction so the at-most-one
-                # invariant holds even under a concurrent create.
+                # invariant holds even under a concurrent create. The
+                # default is per-exchange-type (not per-market) — that
+                # matches the wizard's "pick an account for Bitget"
+                # selector contract from PR #198.
                 conn.execute(
                     "UPDATE exchange_accounts SET is_default = 0 "
                     "WHERE user_id = ? AND exchange_type = ? "
@@ -209,12 +221,12 @@ def create_account(
         credentials.delete_keys_by_uuid(credentials_uuid, user_id)
         raise AccountValidationError(
             f"alias {alias!r} already exists for "
-            f"exchange_type={exchange_type}",
+            f"exchange_type={exchange_type} market_type={market_type}",
         ) from e
 
     logger.info(
-        "Created exchange account id=%d user=%d type=%s alias=%r",
-        new_id, user_id, exchange_type, alias,
+        "Created exchange account id=%d user=%d type=%s market=%s alias=%r",
+        new_id, user_id, exchange_type, market_type, alias,
     )
     return new_id
 

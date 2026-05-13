@@ -24,24 +24,30 @@ from exchanges.kraken import KrakenExchange  # noqa: E402
 
 # ── Construction helpers — bypass ccxt's actual client init ──────────────────
 
-def _make_bitget():
+def _make_bitget(market_type="coin_m"):
     """Build a BitgetExchange with a stubbed-out ccxt client so we can
-    drive `create_order` / `cancel_order` from the test."""
+    drive `create_order` / `cancel_order` from the test.
+    ``market_type`` defaults to coin_m because every test in this file
+    exercises the inverse-perpetual order path."""
     with patch("exchanges.bitget.ccxt.bitget") as mock_ctor:
         inst = MagicMock()
         mock_ctor.return_value = inst
         exc = BitgetExchange(
-            api_key="k", api_secret="s", passphrase="p", paper=False,
+            api_key="k", api_secret="s", passphrase="p",
+            market_type=market_type, paper=False,
         )
     exc.client = MagicMock()
     return exc
 
 
-def _make_kraken():
+def _make_kraken(market_type="futures"):
     with patch("exchanges.kraken.ccxt.krakenfutures") as mock_ctor:
         inst = MagicMock()
         mock_ctor.return_value = inst
-        exc = KrakenExchange(api_key="k", api_secret="s", paper=False)
+        exc = KrakenExchange(
+            api_key="k", api_secret="s",
+            market_type=market_type, paper=False,
+        )
     exc.client = MagicMock()
     return exc
 

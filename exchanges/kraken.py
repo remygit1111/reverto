@@ -65,16 +65,44 @@ class KrakenExchange(BaseExchange):
         "BTC/USD": "BTC/USD:BTC"  # ccxt unified symbol for Kraken inverse perpetual
     }
 
-    def __init__(self, api_key: str, api_secret: str, paper: bool = False):
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        market_type: str,
+        paper: bool = False,
+    ):
         super().__init__(api_key, api_secret, paper)
 
-        self.client = ccxt.krakenfutures({
+        from core.markets import get_market_config
+        cfg = get_market_config("kraken", market_type)
+        self.market_type = market_type
+        self._balance_currency = cfg["balance_currency"]
+        # Kraken splits spot and futures across two different ccxt
+        # classes (ccxt.kraken vs ccxt.krakenfutures). The registry's
+        # ccxt_client key picks which one to instantiate.
+        client_class = getattr(ccxt, cfg["ccxt_client"])
+        self.client = client_class({
             "apiKey": api_key,
             "secret": api_secret,
+            "options": dict(cfg["ccxt_options"]),
         })
 
         if paper:
-            self.client.set_sandbox_mode(True)
+            # ccxt.kraken (spot) does not have a sandbox URL — only
+            # ccxt.krakenfutures does. Skip the call when unsupported
+            # so a spot account in paper mode constructs cleanly. The
+            # paper-engine doesn't place real orders against the
+            # auth'd client anyway; ``paper=True`` here is purely a
+            # signalling flag.
+            try:
+                self.client.set_sandbox_mode(True)
+            except ccxt.NotSupported:
+                logger.info(
+                    "ccxt.%s has no sandbox URL — leaving live URL "
+                    "(paper=True is signalling only).",
+                    type(self.client).__name__,
+                )
 
     def _symbol(self, symbol: str) -> str:
         return self.SYMBOL_MAP.get(symbol, symbol)
@@ -113,7 +141,9 @@ class KrakenExchange(BaseExchange):
 
     def get_balance(self) -> float:
         balance = self.client.fetch_balance()
-        return balance.get("BTC", {}).get("free", 0.0)
+        return float(
+            balance.get(self._balance_currency, {}).get("free", 0.0)
+        )
 
     def place_market_order(self, symbol: str, side: str, amount: float) -> Order:
         raw = _with_order_retries(

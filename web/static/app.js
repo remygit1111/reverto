@@ -3921,13 +3921,46 @@ function _readCookie(name) {
 // always a delete-and-recreate flow.
 
 let _exAccountsCache = [];
+// Cached /api/exchanges/supported payload — populates the market
+// dropdown in the Add-account modal. Lazy-loaded once per session
+// and re-used on every modal open so the operator doesn't pay a
+// round-trip per dropdown change.
+let _exSupportedCache = null;
+
+async function _exFetchSupported() {
+  if (_exSupportedCache) return _exSupportedCache;
+  try {
+    const r = await fetch('/api/exchanges/supported', { credentials: 'include' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const payload = await r.json();
+    _exSupportedCache = payload.exchanges || [];
+  } catch (e) {
+    console.warn('[reverto] _exFetchSupported failed:', e);
+    _exSupportedCache = [];
+  }
+  return _exSupportedCache;
+}
+
+function _exMarketLabel(exchangeType, marketType) {
+  // Resolve a market_type slug → human label via the cached registry.
+  // Falls back to the raw slug if the cache is empty (renders before
+  // the operator opens the modal once).
+  if (!_exSupportedCache) return marketType || '';
+  const ex = _exSupportedCache.find((e) => e.name === exchangeType);
+  if (!ex) return marketType || '';
+  const m = (ex.markets || []).find((mk) => mk.key === marketType);
+  return m ? m.label : (marketType || '');
+}
 
 async function loadAdminExchanges() {
   const tbody = $('admin-ex-tbody');
   if (!tbody) return;
   _exAttachDOMListeners();
   tbody.innerHTML =
-    '<tr><td colspan="5" class="cl-empty-cell">Loading…</td></tr>';
+    '<tr><td colspan="6" class="cl-empty-cell">Loading…</td></tr>';
+  // Prefetch the supported-markets registry so the Market column
+  // can render labels without each row triggering its own fetch.
+  await _exFetchSupported();
   try {
     const r = await fetch('/api/exchange-accounts', { credentials: 'include' });
     if (r.status === 401) { _handle401(); return; }
@@ -3938,7 +3971,7 @@ async function loadAdminExchanges() {
   } catch (e) {
     console.warn('[reverto] loadAdminExchanges failed:', e);
     tbody.innerHTML =
-      '<tr><td colspan="5" class="cl-empty-cell">Failed to load accounts.</td></tr>';
+      '<tr><td colspan="6" class="cl-empty-cell">Failed to load accounts.</td></tr>';
   }
 }
 
@@ -3947,7 +3980,7 @@ function _renderExchangeAccounts(items) {
   if (!tbody) return;
   if (!items || items.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="5" class="cl-empty-cell">No accounts yet. Click <strong>+ Add account</strong> to create one.</td></tr>';
+      '<tr><td colspan="6" class="cl-empty-cell">No accounts yet. Click <strong>+ Add account</strong> to create one.</td></tr>';
     return;
   }
   const rows = items.map((acc) => {
@@ -3957,9 +3990,11 @@ function _renderExchangeAccounts(items) {
     const dflt = acc.is_default
       ? '<span class="cl-badge cl-badge-fix">Default</span>'
       : `<button type="button" class="hbtn hbtn-theme" data-set-default="${acc.id}">Set default</button>`;
+    const marketLabel = _exMarketLabel(acc.exchange_type, acc.market_type);
     return (
       '<tr>'
       + `<td>${safeText(acc.exchange_type)}</td>`
+      + `<td>${safeText(marketLabel)}</td>`
       + `<td>${safeText(acc.alias)}</td>`
       + `<td>${dflt}</td>`
       + `<td>${last}</td>`
@@ -3996,7 +4031,7 @@ function _exShowStatus(msg, isError = false) {
   el.style.color = isError ? 'var(--danger, #e25)' : '';
 }
 
-function openAddAccountModal() {
+async function openAddAccountModal() {
   $('admin-ex-type').value = 'bitget';
   $('admin-ex-alias').value = '';
   $('admin-ex-api-key').value = '';
@@ -4005,6 +4040,10 @@ function openAddAccountModal() {
   $('admin-ex-is-default').checked = false;
   $('admin-ex-form-error').classList.add('hidden');
   _exUpdatePassphraseVisibility();
+  // Make sure the supported-markets registry is in cache, then
+  // populate the market dropdown for the default exchange.
+  await _exFetchSupported();
+  _exPopulateMarketDropdown();
   // Use the same `.show` class every other modal in this file uses
   // (api-key-modal, profile-modal, …). An earlier draft toggled
   // `.active`, which the CSS does not target — the modal never
@@ -4024,6 +4063,24 @@ function _exUpdatePassphraseVisibility() {
   if (!row) return;
   const isBitget = $('admin-ex-type').value === 'bitget';
   row.style.display = isBitget ? '' : 'none';
+}
+
+function _exPopulateMarketDropdown() {
+  // Rebuild the market dropdown to reflect the currently-selected
+  // exchange. Cached registry is the source of truth so a new market
+  // type added in core/markets.py flows through one round-trip per
+  // session, not a code change here.
+  const sel = $('admin-ex-market');
+  if (!sel) return;
+  const exchangeType = $('admin-ex-type').value;
+  const ex = (_exSupportedCache || []).find((e) => e.name === exchangeType);
+  if (!ex || !ex.markets || !ex.markets.length) {
+    sel.innerHTML = '<option value="">No markets registered</option>';
+    return;
+  }
+  sel.innerHTML = ex.markets.map(
+    (m) => `<option value="${m.key}">${safeText(m.label)}</option>`,
+  ).join('');
 }
 
 function _exFormatErrorDetail(detail) {
@@ -4051,6 +4108,7 @@ async function submitAccountForm() {
   errBox.textContent = '';
   const body = {
     exchange_type: $('admin-ex-type').value,
+    market_type: $('admin-ex-market').value,
     alias: $('admin-ex-alias').value.trim(),
     api_key: $('admin-ex-api-key').value,
     api_secret: $('admin-ex-api-secret').value,
@@ -4066,6 +4124,7 @@ async function submitAccountForm() {
   // Bitget) so the message lines up with what the API would say.
   const missing = [];
   if (!body.exchange_type) missing.push('exchange');
+  if (!body.market_type) missing.push('market');
   if (!body.alias) missing.push('alias');
   if (!body.api_key) missing.push('api_key');
   if (!body.api_secret) missing.push('api_secret');
@@ -4112,8 +4171,12 @@ async function testAccountConnection(id) {
     if (r.status === 401) { _handle401(); return; }
     const data = await r.json().catch(() => ({}));
     if (data.ok) {
+      // New shape: balance + currency + market_label. Falls back to
+      // the slug if market_label isn't present (older server).
+      const market = data.market_label || data.market || '';
+      const onMarket = market ? ` on ${market}` : '';
       _exShowStatus(
-        `Test OK — balance ${data.balance_btc} BTC.`,
+        `Test OK — ${data.balance} ${data.currency || ''}${onMarket}.`,
       );
     } else {
       _exShowStatus(
@@ -4194,7 +4257,10 @@ function _exAttachDOMListeners() {
   const saveBtn = $('admin-ex-save-btn');
   if (saveBtn) saveBtn.addEventListener('click', submitAccountForm);
   const typeSel = $('admin-ex-type');
-  if (typeSel) typeSel.addEventListener('change', _exUpdatePassphraseVisibility);
+  if (typeSel) typeSel.addEventListener('change', () => {
+    _exUpdatePassphraseVisibility();
+    _exPopulateMarketDropdown();
+  });
   const overlay = $('admin-ex-modal');
   if (overlay) overlay.addEventListener('click', (ev) => {
     // Only dismiss on direct backdrop clicks. Clicks that bubble up
