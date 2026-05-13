@@ -136,6 +136,39 @@ def _seed_snapshot(
     return int(cur.lastrowid or 0)
 
 
+# ── ISO 8601 timestamp helper ─────────────────────────────────────────────
+
+
+class TestFormatCapturedAtIso:
+    """The helper bridges SQLite's space-separated default format
+    to ISO 8601 UTC so JavaScript parsers don't drift across
+    browsers. Pin every branch."""
+
+    def test_empty_string_passthrough(self):
+        assert portfolio_routes._format_captured_at_iso("") == ""
+
+    def test_none_passthrough(self):
+        assert portfolio_routes._format_captured_at_iso(None) is None
+
+    def test_db_default_format_gets_t_and_z(self):
+        assert portfolio_routes._format_captured_at_iso(
+            "2026-05-13 20:00:02",
+        ) == "2026-05-13T20:00:02Z"
+
+    def test_already_iso_with_z_passes_through(self):
+        s = "2026-05-13T20:00:02Z"
+        assert portfolio_routes._format_captured_at_iso(s) == s
+
+    def test_already_iso_with_offset_passes_through(self):
+        s = "2026-05-13T20:00:02+00:00"
+        assert portfolio_routes._format_captured_at_iso(s) == s
+
+    def test_t_separator_without_offset_gets_z(self):
+        assert portfolio_routes._format_captured_at_iso(
+            "2026-05-13T20:00:02",
+        ) == "2026-05-13T20:00:02Z"
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────
 
 
@@ -197,6 +230,24 @@ class TestLatest:
         body = bob_client.get("/api/portfolio/latest").json()
         assert body["accounts"] == []
 
+    def test_captured_at_serialised_as_iso_z(self, admin_client):
+        """End-to-end check that the SQLite-default timestamp on a
+        seeded row flows through the response as ``...Z`` ISO 8601.
+        Guards the JS parser bug that motivated this PR — a wire
+        format without a timezone marker confuses ``new Date()``."""
+        admin = user_store.get_user_by_username("admin")
+        _seed_account(admin.id, 11)
+        # Use a captured_at in the DB-default space-separated form
+        # so we exercise the conversion path explicitly.
+        _seed_snapshot(
+            admin.id, 11,
+            captured_at="2026-05-13 20:00:02",
+        )
+        body = admin_client.get("/api/portfolio/latest").json()
+        captured = body["accounts"][0]["captured_at"]
+        assert captured == "2026-05-13T20:00:02Z"
+        assert body["totals"]["as_of"] == "2026-05-13T20:00:02Z"
+
 
 # ── /history ──────────────────────────────────────────────────────────────
 
@@ -233,11 +284,28 @@ class TestHistory:
         body = admin_client.get(
             "/api/portfolio/history?range=all",
         ).json()
-        # Find the aggregated point.
-        point = next(p for p in body["points"] if p["captured_at"] == ts)
+        # The route Z-suffixes ISO timestamps on the way out so the
+        # frontend's ``new Date()`` parses them as UTC unambiguously.
+        expected_ts = ts + "Z"
+        point = next(
+            p for p in body["points"] if p["captured_at"] == expected_ts
+        )
         assert point["total_usd"] == pytest.approx(25.0)
         assert point["per_account"]["11"] == 10.0
         assert point["per_account"]["12"] == 15.0
+
+    def test_history_points_are_iso_z(self, admin_client):
+        """History points use ISO 8601 UTC on the wire even when the
+        seeded row used the SQLite space-separated default."""
+        admin = user_store.get_user_by_username("admin")
+        _seed_account(admin.id, 11)
+        _seed_snapshot(
+            admin.id, 11, captured_at="2026-05-13 09:00:00",
+        )
+        body = admin_client.get(
+            "/api/portfolio/history?range=all",
+        ).json()
+        assert body["points"][0]["captured_at"] == "2026-05-13T09:00:00Z"
 
 
 # ── /per-bot ──────────────────────────────────────────────────────────────

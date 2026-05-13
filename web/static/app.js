@@ -2782,18 +2782,49 @@ function renderPortfolioChart(points) {
   }
   if (empty) empty.classList.add('hidden');
   if (!_chartLibAvailable()) return;
+  // Per-chart timezone formatter — overrides the default
+  // _tzFormatter so axis ticks (tickMarkFormatter) and crosshair
+  // tooltip (localization.timeFormatter) agree. Without this both
+  // would use the main-chart's timezone setting, which is what
+  // caused the operator's "X-axis 20:00 vs hover 22:00" report.
+  const _pfFmt = _buildChartTzFormatter(_portfolioChartTimezone);
   _pfHistoryChart = _lwcCreateChart(el, {
     ..._chartLayoutOpts(),
     width: el.clientWidth || 800,
     height: 280,
+    localization: { timeFormatter: _pfFmt.full },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: _pfFmt.short,
+    },
   });
+  // Populate + wire the timezone dropdown once per chart-init. We
+  // re-init on every range change (the chart is rebuilt), so the
+  // dropdown is re-populated each time — matches the wizard/
+  // backtest-candle pattern.
+  const _pfTzSel = $('pf-chart-tz');
+  if (_pfTzSel) {
+    _populateTzDropdown(_pfTzSel, _portfolioChartTimezone);
+    _pfTzSel.onchange = () => {
+      _portfolioChartTimezone = _normalizeTzFromLS(_pfTzSel.value);
+      try { localStorage.setItem(_PF_CHART_TZ_LS_KEY, _portfolioChartTimezone); } catch (e) {}
+      if (_pfHistoryChart) {
+        const f = _buildChartTzFormatter(_portfolioChartTimezone);
+        _pfHistoryChart.applyOptions({
+          localization: { timeFormatter: f.full },
+          timeScale: { tickMarkFormatter: f.short },
+        });
+      }
+    };
+  }
   _pfHistorySeries = _pfHistoryChart.addSeries(_LWC().LineSeries, {
     color: _cssVar('--accent', '#26a69a'), lineWidth: 2,
   });
   _pfHistorySeries.setData(points.map(p => {
-    // captured_at is ISO; LightweightCharts wants either a unix
-    // second or a YYYY-MM-DD. Convert ISO → seconds for finer-grained
-    // intraday rendering.
+    // captured_at is ISO 8601 UTC ("...Z") after the backend fix
+    // in this PR. The endsWith('Z') guard remains a no-op safety
+    // net for cached responses from older portal builds.
     const ts = p.captured_at + (p.captured_at.endsWith('Z') ? '' : 'Z');
     return { time: Math.floor(new Date(ts).getTime() / 1000), value: p.total_usd };
   }));
@@ -7711,12 +7742,14 @@ function _tzFormatter(ts) {
 // neither was wired to a timezone before this PR.
 const _WIZARD_CHART_TZ_LS_KEY   = 'reverto.wizard_chart_timezone';
 const _BT_CANDLE_TZ_LS_KEY      = 'reverto.backtest_candle_timezone';
+const _PF_CHART_TZ_LS_KEY       = 'reverto.portfolio_chart_timezone';
 
 // Audit r1.1-004: same normalisation for the wizard + backtest
 // sites as the main-chart path above. Corrupt / unknown LS values
 // collapse to 'local' before they land in module-scope state.
 let _wizardChartTimezone   = _normalizeTzFromLS(localStorage.getItem(_WIZARD_CHART_TZ_LS_KEY) || 'local');
 let _btCandleChartTimezone = _normalizeTzFromLS(localStorage.getItem(_BT_CANDLE_TZ_LS_KEY)   || 'local');
+let _portfolioChartTimezone = _normalizeTzFromLS(localStorage.getItem(_PF_CHART_TZ_LS_KEY)   || 'local');
 
 function _populateTzDropdown(sel, current) {
   // Shared population helper. Called by the main-chart + wizard +
