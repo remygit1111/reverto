@@ -2407,11 +2407,11 @@ function createPanelChart(container, config) {
       height: canvasHost.clientHeight || 200,
     });
     state._candleSeries = state._chart.addSeries(LWC.CandlestickSeries, {
-      upColor: _cssVar('--accent', '#26a69a'),
+      upColor: _cssVar('--chart-up', '#26a69a'),
       downColor: _cssVar('--red', '#ef5350'),
-      borderUpColor: _cssVar('--accent', '#26a69a'),
+      borderUpColor: _cssVar('--chart-up', '#26a69a'),
       borderDownColor: _cssVar('--red', '#ef5350'),
-      wickUpColor: _cssVar('--accent', '#26a69a'),
+      wickUpColor: _cssVar('--chart-up', '#26a69a'),
       wickDownColor: _cssVar('--red', '#ef5350'),
     });
     // Register with the module-scoped active-panels set so
