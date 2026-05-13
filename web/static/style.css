@@ -3275,3 +3275,50 @@ html.compact .modal-card { padding: 19px; }
 .login-totp-cancel:hover {
   text-decoration: none;
 }
+
+/* ── Portfolio tab ──────────────────────────────────────────────────────── */
+/* Top row mirrors the .summary-bar layout but with a single "Total
+   value" card on the left and the controls (currency toggle +
+   manual-refresh button) on the right. */
+.portfolio-top {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 20px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+.portfolio-total-card { flex: 1 1 320px; }
+.portfolio-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+  align-items: flex-end;
+  min-width: 220px;
+}
+.portfolio-currency-toggle {
+  display: inline-flex;
+  gap: 4px;
+}
+.portfolio-currency-toggle .hbtn-theme.active {
+  background: var(--accent);
+  color: #fff;
+}
+.portfolio-refresh-hint {
+  font-size: 12px;
+  color: var(--muted, #888);
+  min-height: 1em;
+}
+.portfolio-range-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.portfolio-range-bar .hbtn-theme.active {
+  background: var(--accent);
+  color: #fff;
+}
+.portfolio-chart {
+  width: 100%;
+  min-height: 280px;
+}

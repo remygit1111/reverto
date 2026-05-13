@@ -383,6 +383,36 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_exchange_accounts_user_type "
     "ON exchange_accounts(user_id, exchange_type)",
+    # v13 additive: hourly portfolio snapshots, captured by
+    # main_scheduler.py and surfaced via /api/portfolio/*. Storing the
+    # USD rate alongside the converted value (not just balance_usd)
+    # means historical charts stay accurate even if CoinGecko revises
+    # past prices, and ``rate_source`` lets us audit how each row was
+    # priced when the two sources diverge. ON DELETE CASCADE on both
+    # FKs keeps the table consistent if a user or an exchange account
+    # is removed — there is no reason to keep portfolio rows pointing
+    # at a deleted parent.
+    """
+    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id              INTEGER NOT NULL
+                              REFERENCES users(id) ON DELETE CASCADE,
+        exchange_account_id  INTEGER NOT NULL
+                              REFERENCES exchange_accounts(id)
+                              ON DELETE CASCADE,
+        captured_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        balance_native       REAL NOT NULL,
+        currency             TEXT NOT NULL,
+        balance_usd          REAL NOT NULL,
+        usd_rate             REAL NOT NULL,
+        rate_source          TEXT NOT NULL,
+        source               TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_portfolio_user_captured "
+    "ON portfolio_snapshots(user_id, captured_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_portfolio_account_captured "
+    "ON portfolio_snapshots(exchange_account_id, captured_at DESC)",
 )
 
 
@@ -513,8 +543,14 @@ def get_db() -> sqlite3.Connection:
 #     ``.enc`` blobs are likewise wiped (see
 #     ``_apply_destructive_table_recreates``) so the orphan-file
 #     state stays clean.
-#   * == 12 → no-op.
-SCHEMA_VERSION = 12
+#   * < 13 → ADDITIVE: introduces the ``portfolio_snapshots`` table
+#     backing the Portfolio tab + hourly scheduler. No existing rows
+#     are touched; ``_SCHEMA_STATEMENTS`` runs every ``init_db()``
+#     with ``CREATE TABLE IF NOT EXISTS`` semantics so the new table
+#     + its indexes land lazily on the next boot. Destructive guard
+#     does NOT trigger — v5 was the last destructive boundary.
+#   * == 13 → no-op.
+SCHEMA_VERSION = 13
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,

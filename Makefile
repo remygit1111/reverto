@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin seed-findings deploy deploy-marketing rollback backup restore
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin seed-findings deploy deploy-marketing rollback backup restore scheduler-status scheduler-restart scheduler-logs
 
 # ── Default target ───────────────────────────────────────────────────────────
 help:
@@ -272,3 +272,17 @@ migrate-fs:
 # on a NULL password_hash).
 setup-admin:
 	$(PYTHON) scripts/setup_admin.py
+
+# ── Portfolio snapshot scheduler (systemd service) ──────────────────────────
+# The reverto-scheduler service runs main_scheduler.py as a long-
+# running process that captures hourly portfolio snapshots. Install
+# steps are in deploy/README.md; these targets are the day-to-day
+# control surface.
+scheduler-status:
+	@sudo systemctl status reverto-scheduler
+
+scheduler-restart:
+	@sudo systemctl restart reverto-scheduler
+
+scheduler-logs:
+	@tail -f logs/scheduler.log
