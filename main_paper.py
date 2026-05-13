@@ -179,7 +179,10 @@ def main() -> None:
         sys.exit(1)
 
     exchange = PublicExchange(exchange_type)
-    notifier = TelegramNotifier(notify_on=config.telegram.notify_on)
+    # Per-user notifier — chat_id + notify_on resolved from
+    # telegram_configs at construction time. Gracefully no-ops if
+    # the operator hasn't run the /start link flow yet.
+    notifier = TelegramNotifier(user_id=user_id)
 
     # Engine construction runs _load_state internally. Hold an
     # advisory cross-process lock on a sibling path so a portal-side

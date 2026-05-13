@@ -208,21 +208,16 @@ def _build_portal_notifier(
 ) -> Optional[TelegramNotifier]:
     """Construct a TelegramNotifier for portal-origin close events.
 
-    Returns None (no notification) when Telegram env-vars aren't set
-    — ``TelegramNotifier.__init__`` raises ValueError in that case,
-    which we translate to "silent, don't block the close". The close
-    is the critical path; Telegram is a side channel.
+    Returns None when TELEGRAM_BOT_TOKEN isn't set (operator chose
+    not to wire Telegram at all). When the env-var IS set but the
+    user has not run the /start link flow, we still return the
+    notifier — its internal ``_enabled = False`` makes every
+    ``notify_*`` call a silent no-op, which is the right contract:
+    the close path must never block on a side channel.
     """
     try:
-        notify_on = getattr(
-            getattr(bot_config, "telegram", None), "notify_on", None,
-        )
-        return TelegramNotifier(notify_on=notify_on)
+        return TelegramNotifier(user_id=user_id)
     except ValueError as e:
-        # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing — documented
-        # path for operators who haven't configured Telegram. We log
-        # at INFO rather than WARNING because this is a conscious
-        # deployment choice, not an error.
         logger.info(
             "Portal close for %s/%s: Telegram notifier unavailable (%s) — "
             "close will proceed without notification",
@@ -230,9 +225,6 @@ def _build_portal_notifier(
         )
         return None
     except Exception as e:
-        # Any other instantiation failure → skip notification but
-        # don't block the close. Log at WARNING because this is
-        # unexpected (we already documented the no-env case above).
         logger.warning(
             "Portal close for %s/%s: unexpected TelegramNotifier error "
             "(%s) — close will proceed without notification",
