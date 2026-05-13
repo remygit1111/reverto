@@ -2641,6 +2641,232 @@ function goNewBot() {
   fetchWizardChartData();
 }
 
+// ── Portfolio tab ────────────────────────────────────────────────────────
+// Portfolio data lands hourly via main_scheduler.py. The tab pulls
+// /api/portfolio/latest on every navigation + auto-refreshes the
+// history chart when the range buttons flip. The currency toggle is
+// pure UI — the backend always returns both native + USD and the
+// frontend picks which to render.
+
+let _pfCurrency = 'USD';      // 'USD' | 'NATIVE'
+let _pfRange = '24h';
+let _pfHistoryChart = null;
+let _pfHistorySeries = null;
+
+function goPortfolio(fromPop = false) {
+  _resetHeaderForTopLevel();
+  _setActiveTab('nav-portfolio-btn');
+  showPage('portfolio');
+  // No live ticker — idle the overview poller while the operator is
+  // on the Portfolio tab. Hourly data doesn't benefit from sub-minute
+  // refreshes.
+  clearInterval(overviewInterval);
+  overviewInterval = null;
+  if (!fromPop) _pushHistory('portfolio', '#portfolio');
+  loadPortfolio();
+  loadPortfolioHistory(_pfRange);
+  loadPerBotBreakdown();
+}
+
+async function loadPortfolio() {
+  try {
+    const r = await fetch('/api/portfolio/latest');
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) return;
+    const data = await r.json();
+    renderPortfolioTotals(data);
+    renderAccountsTable(data);
+    updateRefreshButton(data);
+  } catch (e) {
+    // network error — leave the prior render in place
+  }
+}
+
+function renderPortfolioTotals(data) {
+  const totalEl = $('pf-total-value');
+  const asOfEl = $('pf-as-of');
+  if (!totalEl || !asOfEl) return;
+  const accounts = data.accounts || [];
+  const totals = data.totals || {};
+  if (!accounts.length) {
+    totalEl.textContent = '—';
+    asOfEl.textContent = 'no snapshots yet';
+    return;
+  }
+  if (_pfCurrency === 'USD') {
+    totalEl.textContent = '$' + Number(totals.balance_usd || 0).toFixed(2);
+  } else {
+    // Native = list each currency on its own line.
+    const parts = Object.entries(totals.by_currency || {}).map(([k, v]) =>
+      `${Number(v).toFixed(8)} ${safeText(k)}`,
+    );
+    totalEl.textContent = parts.join(' · ') || '—';
+  }
+  asOfEl.textContent = totals.as_of
+    ? `as of ${new Date(totals.as_of + (totals.as_of.endsWith('Z') ? '' : 'Z')).toLocaleString()}`
+    : 'no snapshots yet';
+}
+
+function renderAccountsTable(data) {
+  const tbody = $('pf-accounts-tbody');
+  if (!tbody) return;
+  const accounts = data.accounts || [];
+  if (!accounts.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-config-msg">No snapshots yet — the first hourly capture lands at the next top-of-hour.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = accounts.map(a => {
+    const balDisplay = _pfCurrency === 'USD'
+      ? '$' + Number(a.balance_usd || 0).toFixed(2)
+      : `${Number(a.balance_native || 0).toFixed(8)} ${safeText(a.currency)}`;
+    const capturedTs = a.captured_at + (a.captured_at.endsWith('Z') ? '' : 'Z');
+    return `<tr>
+      <td>${safeText(a.alias)}</td>
+      <td>${safeText(a.exchange_type)}</td>
+      <td>${safeText(a.market_label || a.market_type)}</td>
+      <td>${balDisplay}</td>
+      <td>$${Number(a.balance_usd || 0).toFixed(2)}</td>
+      <td title="${safeText(a.source)} via ${safeText(a.rate_source)}">${new Date(capturedTs).toLocaleString()}</td>
+    </tr>`;
+  }).join('');
+}
+
+function updateRefreshButton(data) {
+  const btn = $('pf-refresh-btn');
+  const hint = $('pf-refresh-hint');
+  if (!btn || !hint) return;
+  if (data.manual_allowed) {
+    btn.disabled = false;
+    hint.textContent = '';
+  } else {
+    btn.disabled = true;
+    if (data.manual_next_allowed_at) {
+      const ts = data.manual_next_allowed_at;
+      const when = new Date(ts + (ts.endsWith('Z') ? '' : ''));
+      hint.textContent = `Next refresh allowed at ${when.toLocaleTimeString()}`;
+    } else {
+      hint.textContent = 'Manual refresh limited to 1/hour';
+    }
+  }
+}
+
+async function loadPortfolioHistory(range) {
+  _pfRange = range;
+  document.querySelectorAll('[data-pf-range]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.pfRange === range);
+  });
+  try {
+    const r = await fetch('/api/portfolio/history?range=' + encodeURIComponent(range));
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) return;
+    const data = await r.json();
+    renderPortfolioChart(data.points || []);
+  } catch (e) {
+    // ignore
+  }
+}
+
+function renderPortfolioChart(points) {
+  const el = $('pf-history-chart');
+  const empty = $('pf-history-empty');
+  if (!el) return;
+  if (_pfHistoryChart) {
+    try { _pfHistoryChart.remove(); } catch (e) {}
+    _pfHistoryChart = null;
+    _pfHistorySeries = null;
+  }
+  el.innerHTML = '';
+  if (!points.length) {
+    if (empty) empty.classList.remove('hidden');
+    return;
+  }
+  if (empty) empty.classList.add('hidden');
+  if (!_chartLibAvailable()) return;
+  _pfHistoryChart = _lwcCreateChart(el, {
+    ..._chartLayoutOpts(),
+    width: el.clientWidth || 800,
+    height: 280,
+  });
+  _pfHistorySeries = _pfHistoryChart.addSeries(_LWC().LineSeries, {
+    color: _cssVar('--accent', '#26a69a'), lineWidth: 2,
+  });
+  _pfHistorySeries.setData(points.map(p => {
+    // captured_at is ISO; LightweightCharts wants either a unix
+    // second or a YYYY-MM-DD. Convert ISO → seconds for finer-grained
+    // intraday rendering.
+    const ts = p.captured_at + (p.captured_at.endsWith('Z') ? '' : 'Z');
+    return { time: Math.floor(new Date(ts).getTime() / 1000), value: p.total_usd };
+  }));
+  _pfHistoryChart.timeScale().fitContent();
+}
+
+async function loadPerBotBreakdown() {
+  try {
+    const r = await fetch('/api/portfolio/per-bot');
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) return;
+    const data = await r.json();
+    renderPerBotTable(data.bots || []);
+  } catch (e) {
+    // ignore
+  }
+}
+
+function renderPerBotTable(bots) {
+  const tbody = $('pf-bots-tbody');
+  if (!tbody) return;
+  if (!bots.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-config-msg">No live bots — paper bots are intentionally excluded from this view.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = bots.map(b => `<tr>
+    <td>${safeText(b.bot_name || b.bot_slug)}</td>
+    <td>${b.open_positions_count}</td>
+    <td>$${Number(b.open_position_value_usd || 0).toFixed(2)}</td>
+    <td>$${Number(b.realized_pnl_usd || 0).toFixed(2)}</td>
+    <td>$${Number(b.unrealized_pnl_usd || 0).toFixed(2)}</td>
+    <td>$${Number(b.total_pnl_usd || 0).toFixed(2)}</td>
+    <td>${b.trade_count}</td>
+  </tr>`).join('');
+}
+
+async function triggerManualSnapshot() {
+  const btn = $('pf-refresh-btn');
+  const hint = $('pf-refresh-hint');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/portfolio/snapshot/manual', { method: 'POST' });
+    if (r.status === 401) { _handle401(); return; }
+    if (r.status === 429) {
+      const body = await r.json().catch(() => ({}));
+      const next = body.detail && body.detail.next_allowed_at;
+      if (hint && next) {
+        const when = new Date(next + (next.endsWith('Z') ? '' : ''));
+        hint.textContent = `Next refresh allowed at ${when.toLocaleTimeString()}`;
+      }
+      return;
+    }
+    // Reload table + chart with the fresh row(s).
+    await loadPortfolio();
+    await loadPortfolioHistory(_pfRange);
+  } catch (e) {
+    // ignore
+  }
+}
+
+function updateCurrencyToggle(target) {
+  _pfCurrency = target;
+  ['pf-toggle-usd', 'pf-toggle-native'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    const wants = id === 'pf-toggle-usd' ? 'USD' : 'NATIVE';
+    el.classList.toggle('active', wants === target);
+  });
+  // Re-render with the most-recent payload — no re-fetch needed,
+  // backend always returned both currencies.
+  loadPortfolio();
+}
+
 // ── Admin SPA tabs ───────────────────────────────────────────────────────
 // The Roadmap + Changelog tabs used to live here as logged-in nav
 // entries (and briefly as public-shell tabs for logged-out visitors).
@@ -6486,6 +6712,7 @@ function _routeFromHash() {
     case 'deals':     goDeals(true); break;
     case 'workspace': goWorkspace(true); break;
     case 'backtests': goBacktests(true); break;
+    case 'portfolio': goPortfolio(true); break;
     case 'admin':     goAdmin(true); break;
     case 'overview':  goOverview(true); break;
     default:          goOverview(true); break;
@@ -9491,6 +9718,18 @@ function setupEventListeners() {
   if (deDcaChk) deDcaChk.addEventListener('change', _deUpdateDcaDisabled);
   const navBtBtn = $('nav-backtests-btn');
   if (navBtBtn) navBtBtn.addEventListener('click', () => goBacktests());
+  const navPfBtn = $('nav-portfolio-btn');
+  if (navPfBtn) navPfBtn.addEventListener('click', () => goPortfolio());
+  // Portfolio-tab in-page controls.
+  document.querySelectorAll('[data-pf-range]').forEach(btn => {
+    btn.addEventListener('click', () => loadPortfolioHistory(btn.dataset.pfRange));
+  });
+  const pfUsdBtn = $('pf-toggle-usd');
+  if (pfUsdBtn) pfUsdBtn.addEventListener('click', () => updateCurrencyToggle('USD'));
+  const pfNativeBtn = $('pf-toggle-native');
+  if (pfNativeBtn) pfNativeBtn.addEventListener('click', () => updateCurrencyToggle('NATIVE'));
+  const pfRefreshBtn = $('pf-refresh-btn');
+  if (pfRefreshBtn) pfRefreshBtn.addEventListener('click', triggerManualSnapshot);
   const histGearBtn = $('bt-history-gear-btn');
   if (histGearBtn) histGearBtn.addEventListener('click', () => {
     const menu = $('bt-history-gear-menu');
@@ -10240,6 +10479,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       case 'deals':    goDeals(true); break;
       case 'workspace': goWorkspace(true); break;
       case 'backtests': goBacktests(true); break;
+      case 'portfolio': goPortfolio(true); break;
       case 'admin':    goAdmin(true, s.sub || null); break;
       case 'overview':
       default:         goOverview(true); break;

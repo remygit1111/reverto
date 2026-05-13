@@ -38,6 +38,10 @@ from pydantic import BaseModel, Field
 
 from core import exchange_account_store, markets, paths
 from core.credentials import CredentialFormatError
+from core.exchange_clients import (
+    ExchangeClientError,
+    build_authenticated_exchange,
+)
 from core.user import User
 from web.app import _audit, _request_actor, _request_user, limiter
 
@@ -159,44 +163,11 @@ def _safe_error_message(exc: Exception) -> str:
     return msg[:200] if msg else type(exc).__name__
 
 
-def _instantiate_authenticated_exchange(
-    exchange_type: str, market_type: str, creds: dict,
-):
-    """Build an authenticated exchange client for the test-connection
-    endpoint. Returns the client or raises a clean ValueError on
-    misconfiguration. Bitget needs a passphrase; absence at this
-    layer is treated as misconfiguration.
-
-    ``market_type`` selects the wallet routing — the exchange client
-    pulls ccxt_options / ccxt_params / balance_currency from
-    ``core.markets`` and routes ``fetch_balance`` / order calls to
-    the right wallet.
-
-    Imports are deferred to function scope so the module-load path
-    doesn't pull ccxt into routes/exchanges.py — a route module
-    should stay cheap to import."""
-    if exchange_type == "bitget":
-        if not creds.get("passphrase"):
-            raise ValueError(
-                "Bitget account is missing a stored passphrase",
-            )
-        from exchanges.bitget import BitgetExchange
-        return BitgetExchange(
-            api_key=creds["api_key"],
-            api_secret=creds["api_secret"],
-            passphrase=creds["passphrase"],
-            market_type=market_type,
-            paper=False,
-        )
-    if exchange_type == "kraken":
-        from exchanges.kraken import KrakenExchange
-        return KrakenExchange(
-            api_key=creds["api_key"],
-            api_secret=creds["api_secret"],
-            market_type=market_type,
-            paper=False,
-        )
-    raise ValueError(f"Unsupported exchange_type {exchange_type!r}")
+# The authenticated-client constructor moved to
+# ``core.exchange_clients.build_authenticated_exchange`` so the new
+# scheduler (``main_scheduler.py``) can build the same clients without
+# importing ``web/routes/exchanges.py`` (which would pull in the whole
+# FastAPI app). The route below uses the shared helper.
 
 
 # ── Routes ────────────────────────────────────────────────────────────────
@@ -392,10 +363,23 @@ async def test_account_connection(
             detail="Stored credentials are unreadable",
         )
     try:
-        client = _instantiate_authenticated_exchange(
+        client = build_authenticated_exchange(
             account["exchange_type"], account["market_type"], creds,
         )
         balance = client.get_balance()
+    except ExchangeClientError as e:
+        # Misconfiguration (unknown exchange_type, missing passphrase
+        # on a Bitget row): treat as a clean operator-facing error
+        # rather than a generic test-failure.
+        logger.warning(
+            "Cannot build client for account %d: %s", account_id, e,
+        )
+        _audit(
+            "exchange_account_test",
+            f"{account_id}:fail", actor,
+            user_id=user.id, request=request,
+        )
+        return {"ok": False, "error": _safe_error_message(e)}
     except Exception as e:  # noqa: BLE001 — ccxt raises many shapes
         logger.warning(
             "Test-connection failed for account %d: %s", account_id, e,
