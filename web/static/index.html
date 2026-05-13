@@ -659,6 +659,23 @@
   </div>
 </div>
 
+<!-- First-time wizard banner: shown to authenticated users who have
+     not connected their Telegram yet AND have not dismissed it this
+     session. Hidden by default; app.js flips the visibility after
+     /api/telegram/config returns. -->
+<div id="telegram-banner" class="telegram-banner hidden" data-auth-only hidden>
+  <span class="telegram-banner-icon">🔔</span>
+  <span class="telegram-banner-text">
+    Connect Telegram to receive bot alerts.
+  </span>
+  <button type="button" class="btn-primary telegram-banner-connect" id="telegram-banner-connect-btn">
+    Connect now
+  </button>
+  <button type="button" class="hbtn hbtn-theme telegram-banner-dismiss" id="telegram-banner-dismiss-btn">
+    Later
+  </button>
+</div>
+
 <!-- ── Main nav ────────────────────────────────────────────────────────────── -->
 <nav id="main-nav">
   <button class="tab active" id="nav-overview-btn">Overview</button>
@@ -946,6 +963,12 @@
             Manage exchange API connections for paper and live trading.
           </div>
         </a>
+        <a class="card cl-admin-card" id="admin-card-telegram" href="#admin/telegram">
+          <div class="cl-admin-card-title">Telegram</div>
+          <div class="cl-admin-card-desc">
+            Connect your Telegram account to receive bot notifications.
+          </div>
+        </a>
       </div>
     </div>
     <div id="admin-bots-overview" class="admin-subpage hidden">
@@ -1138,6 +1161,74 @@
         </table>
       </div>
       <div id="admin-ex-status" class="cl-empty" hidden></div>
+    </div>
+
+    <div id="admin-telegram" class="admin-subpage hidden">
+      <div class="cl-breadcrumb">
+        <a href="#admin" class="admin-back-link">&larr; Back to Admin</a>
+      </div>
+      <div class="cl-admin-header">
+        <div class="section-title">Telegram alerts</div>
+      </div>
+      <div id="admin-tg-disconnected" class="card hidden">
+        <p>
+          Connect your Telegram account to receive bot alerts (entry,
+          DCA, TP/SL, liquidation warnings, error events).
+        </p>
+        <p>
+          Click the button below to generate a one-time link. The link
+          opens our shared bot in Telegram — tap <strong>Start</strong>
+          there and your account is connected.
+        </p>
+        <button type="button" class="btn-primary" id="admin-tg-connect-btn">
+          Connect Telegram
+        </button>
+        <div id="admin-tg-link-card" class="hidden">
+          <p>
+            Open this link in Telegram (it expires in 1 hour):
+          </p>
+          <p>
+            <a id="admin-tg-link-url" href="#" target="_blank" rel="noopener"></a>
+          </p>
+          <p class="card-sub" id="admin-tg-link-expires"></p>
+          <p class="card-sub">
+            After tapping <strong>Start</strong> in Telegram, this page
+            will update automatically (within ~10 seconds).
+          </p>
+        </div>
+      </div>
+      <div id="admin-tg-connected" class="card hidden">
+        <div class="tg-connected-row">
+          <div>
+            <div class="card-label">Connected chat</div>
+            <div class="card-value" id="admin-tg-chat-id">—</div>
+            <div class="card-sub" id="admin-tg-connected-at">—</div>
+            <div class="card-sub" id="admin-tg-last-message">—</div>
+          </div>
+          <div class="tg-connected-actions">
+            <button type="button" class="hbtn hbtn-theme" id="admin-tg-test-btn">
+              Send test message
+            </button>
+            <button type="button" class="hbtn hbtn-theme btn-danger" id="admin-tg-disconnect-btn">
+              Disconnect
+            </button>
+          </div>
+        </div>
+        <div class="section-title">Event preferences</div>
+        <p class="card-sub">
+          Pick which events trigger a Telegram message. Safety alerts
+          (errors, liquidation warnings, bot shutdown) are always sent
+          even if un-ticked — they are too important to mute by
+          accident.
+        </p>
+        <div class="tg-notify-grid" id="admin-tg-notify-grid"></div>
+        <div class="tg-notify-actions">
+          <button type="button" class="btn-primary" id="admin-tg-save-prefs-btn">
+            Save preferences
+          </button>
+          <span class="tg-save-status" id="admin-tg-save-status"></span>
+        </div>
+      </div>
     </div>
   </div>
 </div>

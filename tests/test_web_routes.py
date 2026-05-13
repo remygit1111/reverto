@@ -1910,7 +1910,19 @@ class TestOfflineDealClose:
 
         # Make TelegramNotifier instantiate cleanly in-test.
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        # Per-user model: pretend the bot's owner has connected
+        # Telegram so the notifier becomes enabled instead of
+        # silently no-op'ing.
+        from core import telegram_config_store as _tcs
+        monkeypatch.setattr(
+            _tcs, "get_config",
+            lambda _uid: {
+                "user_id": 1, "chat_id": "123",
+                "notify_on": ["manual_close", "manual_cancel"],
+                "connected_at": "2026-01-01T00:00:00",
+                "last_message_at": None,
+            },
+        )
 
         # Capture manual_close calls without sending real messages.
         captured: list[tuple] = []
@@ -1947,7 +1959,16 @@ class TestOfflineDealClose:
         import notifications.telegram as _tg_mod
 
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+        from core import telegram_config_store as _tcs
+        monkeypatch.setattr(
+            _tcs, "get_config",
+            lambda _uid: {
+                "user_id": 1, "chat_id": "123",
+                "notify_on": ["manual_close", "manual_cancel"],
+                "connected_at": "2026-01-01T00:00:00",
+                "last_message_at": None,
+            },
+        )
 
         captured: list[tuple] = []
 

@@ -2890,6 +2890,246 @@ function goAdmin(fromPop = false, subRoute = null) {
   if (subRoute === 'bots') loadAdminBotsOverview();
   if (subRoute === 'findings') loadAdminFindings();
   if (subRoute === 'exchanges') loadAdminExchanges();
+  if (subRoute === 'telegram') loadTelegramAdminPage();
+}
+
+// ── Telegram admin tab ──────────────────────────────────────────────────
+// The shared @RevertoAlertsBot model: each user connects their own
+// chat once via a /start link token. The admin page renders one of
+// two states (disconnected vs connected) based on
+// /api/telegram/config and polls the same endpoint every 10s while
+// a fresh link is outstanding so the operator sees the transition
+// without a manual refresh.
+
+const TG_EVENT_TYPES = [
+  { key: 'startup',          label: 'Bot startup' },
+  { key: 'stop',             label: 'Bot stop' },
+  { key: 'restart',          label: 'Bot restart' },
+  { key: 'error',            label: 'Bot error',            alwaysOn: true },
+  { key: 'liquidation_warn', label: 'Liquidation warning',  alwaysOn: true },
+  { key: 'shutdown',         label: 'Bot shutdown',         alwaysOn: true },
+  { key: 'entry',            label: 'Deal entry' },
+  { key: 'dca_trigger',      label: 'DCA trigger' },
+  { key: 'tp_hit',           label: 'TP hit' },
+  { key: 'sl_hit',           label: 'SL hit' },
+  { key: 'schedule_open',    label: 'Schedule open' },
+  { key: 'schedule_close',   label: 'Schedule close' },
+  { key: 'manual_close',     label: 'Manual close' },
+  { key: 'manual_cancel',    label: 'Manual cancel' },
+];
+
+let _tgPollTimer = null;
+let _tgPendingLinkToken = null;
+
+function loadTelegramAdminPage() {
+  _stopTelegramPolling();
+  loadTelegramConfig();
+}
+
+async function loadTelegramConfig() {
+  try {
+    const r = await fetch('/api/telegram/config');
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.connected) {
+      renderTelegramConnected(data);
+      // Connected → stop polling, dismiss banner globally.
+      _stopTelegramPolling();
+      _hideTelegramBanner();
+    } else {
+      renderTelegramDisconnected();
+    }
+  } catch (e) { /* ignore — leave prior render */ }
+}
+
+function renderTelegramDisconnected() {
+  const disc = $('admin-tg-disconnected');
+  const conn = $('admin-tg-connected');
+  if (disc) disc.classList.remove('hidden');
+  if (conn) conn.classList.add('hidden');
+  // If we have a pending link token, keep its card visible.
+  const linkCard = $('admin-tg-link-card');
+  if (linkCard && !_tgPendingLinkToken) linkCard.classList.add('hidden');
+}
+
+function renderTelegramConnected(config) {
+  const disc = $('admin-tg-disconnected');
+  const conn = $('admin-tg-connected');
+  if (disc) disc.classList.add('hidden');
+  if (conn) conn.classList.remove('hidden');
+  const chatEl = $('admin-tg-chat-id');
+  if (chatEl) chatEl.textContent = config.chat_id_masked || '—';
+  const since = $('admin-tg-connected-at');
+  if (since && config.connected_at) {
+    const ts = config.connected_at + (config.connected_at.endsWith('Z') ? '' : 'Z');
+    since.textContent = 'Connected ' + new Date(ts).toLocaleString();
+  }
+  const last = $('admin-tg-last-message');
+  if (last) {
+    if (config.last_message_at) {
+      const ts = config.last_message_at + (config.last_message_at.endsWith('Z') ? '' : 'Z');
+      last.textContent = 'Last alert ' + new Date(ts).toLocaleString();
+    } else {
+      last.textContent = 'No alerts sent yet.';
+    }
+  }
+  _tgPendingLinkToken = null;
+  renderTelegramNotifyGrid(config.notify_on || []);
+}
+
+function renderTelegramNotifyGrid(notifyOn) {
+  const grid = $('admin-tg-notify-grid');
+  if (!grid) return;
+  const set = new Set(notifyOn);
+  grid.innerHTML = TG_EVENT_TYPES.map(ev => {
+    const checked = set.has(ev.key) ? 'checked' : '';
+    const tip = ev.alwaysOn
+      ? '<span class="tg-always-on" title="Always sent regardless of this checkbox.">⚠ Always sent</span>'
+      : '';
+    return `<label class="tg-notify-row">
+      <input type="checkbox" data-tg-event="${ev.key}" ${checked}>
+      <span>${safeText(ev.label)}</span>
+      ${tip}
+    </label>`;
+  }).join('');
+}
+
+async function generateLinkToken() {
+  const status = $('admin-tg-save-status');
+  try {
+    const r = await fetch('/api/telegram/link', { method: 'POST' });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) {
+      if (status) status.textContent = 'Could not generate link — try again later.';
+      return;
+    }
+    const data = await r.json();
+    _tgPendingLinkToken = data.token;
+    const linkCard = $('admin-tg-link-card');
+    const linkUrl = $('admin-tg-link-url');
+    const expires = $('admin-tg-link-expires');
+    if (linkUrl) {
+      linkUrl.textContent = data.telegram_url;
+      linkUrl.href = data.telegram_url;
+    }
+    if (expires && data.expires_at) {
+      const ts = data.expires_at + (data.expires_at.endsWith('Z') ? '' : 'Z');
+      expires.textContent = 'Expires ' + new Date(ts).toLocaleString();
+    }
+    if (linkCard) linkCard.classList.remove('hidden');
+    // Pop the t.me URL in a new tab so the operator can flip back
+    // and forth between Telegram + portal during the connect flow.
+    try { window.open(data.telegram_url, '_blank', 'noopener'); } catch (e) {}
+    _startTelegramPolling();
+  } catch (e) {
+    if (status) status.textContent = 'Network error — try again.';
+  }
+}
+
+function _startTelegramPolling() {
+  _stopTelegramPolling();
+  // Poll /api/telegram/config every 10s so the admin page flips to
+  // the "Connected" state as soon as the webhook consumes the token.
+  _tgPollTimer = setInterval(loadTelegramConfig, 10000);
+}
+
+function _stopTelegramPolling() {
+  if (_tgPollTimer) {
+    clearInterval(_tgPollTimer);
+    _tgPollTimer = null;
+  }
+}
+
+async function saveTelegramNotifyOn() {
+  const grid = $('admin-tg-notify-grid');
+  const status = $('admin-tg-save-status');
+  if (!grid) return;
+  const events = Array.from(
+    grid.querySelectorAll('input[type=checkbox][data-tg-event]'),
+  ).filter(el => el.checked).map(el => el.dataset.tgEvent);
+  try {
+    const r = await fetch('/api/telegram/notify-on', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events }),
+    });
+    if (r.status === 401) { _handle401(); return; }
+    if (!r.ok) {
+      if (status) status.textContent = 'Save failed.';
+      return;
+    }
+    if (status) status.textContent = 'Saved.';
+    setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+  } catch (e) {
+    if (status) status.textContent = 'Network error.';
+  }
+}
+
+async function testTelegramMessage() {
+  const status = $('admin-tg-save-status');
+  try {
+    const r = await fetch('/api/telegram/test-message', { method: 'POST' });
+    if (r.status === 401) { _handle401(); return; }
+    if (status) {
+      status.textContent = r.ok
+        ? 'Test message sent.'
+        : 'Test message failed — check your Telegram app.';
+      setTimeout(() => { if (status) status.textContent = ''; }, 4000);
+    }
+  } catch (e) {
+    if (status) status.textContent = 'Network error.';
+  }
+}
+
+async function disconnectTelegram() {
+  if (!confirm('Disconnect Telegram? You will stop receiving bot alerts until you reconnect.')) return;
+  try {
+    const r = await fetch('/api/telegram/config', { method: 'DELETE' });
+    if (r.status === 401) { _handle401(); return; }
+    if (r.ok) loadTelegramConfig();
+  } catch (e) { /* ignore */ }
+}
+
+// ── First-time-wizard banner ────────────────────────────────────────────
+// Session-local dismissal (sessionStorage) — every fresh browser
+// session shows the banner again to a still-unconnected user. The
+// banner DOM is in index.html and stays display:none unless this
+// helper flips it.
+
+const _TG_BANNER_KEY = 'reverto.tg.banner.dismissed';
+
+async function checkTelegramBanner() {
+  if (sessionStorage.getItem(_TG_BANNER_KEY) === '1') return;
+  try {
+    const r = await fetch('/api/telegram/config');
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.connected) {
+      _hideTelegramBanner();
+      return;
+    }
+    _showTelegramBanner();
+  } catch (e) { /* ignore */ }
+}
+
+function _showTelegramBanner() {
+  const el = $('telegram-banner');
+  if (!el) return;
+  el.classList.remove('hidden');
+  el.removeAttribute('hidden');
+}
+
+function _hideTelegramBanner() {
+  const el = $('telegram-banner');
+  if (!el) return;
+  el.classList.add('hidden');
+  el.setAttribute('hidden', '');
+}
+
+function _dismissTelegramBannerForSession() {
+  sessionStorage.setItem(_TG_BANNER_KEY, '1');
+  _hideTelegramBanner();
 }
 
 function _showAdminSubpage(name) {
@@ -9607,6 +9847,28 @@ function setupEventListeners() {
     e.preventDefault();
     goAdmin(false, 'findings');
   });
+  const adminTelegramCard = $('admin-card-telegram');
+  if (adminTelegramCard) adminTelegramCard.addEventListener('click', (e) => {
+    e.preventDefault();
+    goAdmin(false, 'telegram');
+  });
+  // Telegram admin subpage controls.
+  const tgConnectBtn = $('admin-tg-connect-btn');
+  if (tgConnectBtn) tgConnectBtn.addEventListener('click', generateLinkToken);
+  const tgTestBtn = $('admin-tg-test-btn');
+  if (tgTestBtn) tgTestBtn.addEventListener('click', testTelegramMessage);
+  const tgDisconnectBtn = $('admin-tg-disconnect-btn');
+  if (tgDisconnectBtn) tgDisconnectBtn.addEventListener('click', disconnectTelegram);
+  const tgSavePrefsBtn = $('admin-tg-save-prefs-btn');
+  if (tgSavePrefsBtn) tgSavePrefsBtn.addEventListener('click', saveTelegramNotifyOn);
+  // First-time wizard banner controls.
+  const tgBannerConnect = $('telegram-banner-connect-btn');
+  if (tgBannerConnect) tgBannerConnect.addEventListener('click', () => {
+    _dismissTelegramBannerForSession();
+    goAdmin(false, 'telegram');
+  });
+  const tgBannerDismiss = $('telegram-banner-dismiss-btn');
+  if (tgBannerDismiss) tgBannerDismiss.addEventListener('click', _dismissTelegramBannerForSession);
   // Roadmap modal buttons — wired here so the create / edit
   // handlers exist regardless of how the user reached the
   // admin tab.
@@ -10449,6 +10711,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.body.classList.add('auth-checked');
 
   refreshProfileInitial();
+  // First-time wizard: if the user has not connected Telegram and
+  // has not dismissed the banner this session, show it.
+  checkTelegramBanner();
 
   // Start the connection ticker so the header indicator stays
   // truthful between WS state-changes and HTTP fetch successes.

@@ -82,40 +82,63 @@ def _make_permanent_open_callback(exchange_name: str):
     "exception" line.
     """
     def _callback(breaker_name: str, reason: str) -> None:
+        # Module-level breaker fan-out: there is no single user_id
+        # in scope here (the wrapper is shared across tenants), so
+        # the alert goes to every connected user. Operationally,
+        # everyone running bots on the affected exchange needs to
+        # know — gating this on user-level notify_on would silently
+        # drop a critical infra alert.
         try:
+            from core import telegram_config_store
             from notifications.telegram import TelegramNotifier
-            try:
-                # No notify_on filter — circuit-breaker permanent
-                # open is operational severity, not bot-config-
-                # event-filterable.
-                notifier = TelegramNotifier()
-            except ValueError:
-                logger.info(
-                    "CircuitBreaker '%s' permanent-open: Telegram "
-                    "credentials not configured; skipping alert. "
-                    "Reason: %s",
-                    breaker_name, reason,
-                )
-                return
-            notifier.send(
-                "⚠️ <b>Circuit breaker PERMANENT OPEN</b>\n"
-                f"Exchange: {exchange_name}\n"
-                f"Breaker:  {breaker_name}\n"
-                f"Reason:   {reason}\n"
-                f"Action:   investigate API credentials or pair "
-                "config; restart the service or call "
-                "<code>breaker.reset()</code> to clear."
-            )
-        except Exception:  # noqa: BLE001
-            # Defence-in-depth: the CircuitBreaker class also
-            # wraps the callback in try/except. A notifier crash
-            # here MUST NOT propagate up the breaker call-stack
-            # and accidentally re-raise into the chart-route
-            # error path.
+        except Exception:  # noqa: BLE001 — defence-in-depth
             logger.exception(
-                "Failed to send permanent-open notification for %s",
+                "Failed to import notifier dependencies for %s",
                 exchange_name,
             )
+            return
+        message = (
+            "⚠️ <b>Circuit breaker PERMANENT OPEN</b>\n"
+            f"Exchange: {exchange_name}\n"
+            f"Breaker:  {breaker_name}\n"
+            f"Reason:   {reason}\n"
+            f"Action:   investigate API credentials or pair "
+            "config; restart the service or call "
+            "<code>breaker.reset()</code> to clear."
+        )
+        try:
+            user_ids = telegram_config_store.all_connected_user_ids()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to enumerate connected users for %s",
+                exchange_name,
+            )
+            return
+        if not user_ids:
+            logger.info(
+                "CircuitBreaker '%s' permanent-open: no users have "
+                "connected Telegram; skipping fan-out. Reason: %s",
+                breaker_name, reason,
+            )
+            return
+        for uid in user_ids:
+            try:
+                TelegramNotifier(user_id=uid).send(message)
+            except ValueError:
+                # TELEGRAM_BOT_TOKEN missing entirely — nothing to
+                # send to anyone. Bail out, log once.
+                logger.info(
+                    "CircuitBreaker '%s' permanent-open: "
+                    "TELEGRAM_BOT_TOKEN not set; skipping. "
+                    "Reason: %s", breaker_name, reason,
+                )
+                return
+            except Exception:  # noqa: BLE001
+                # One bad notifier mustn't poison the fan-out.
+                logger.exception(
+                    "Failed to send permanent-open notification "
+                    "for %s to user=%d", exchange_name, uid,
+                )
     return _callback
 
 
