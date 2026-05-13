@@ -3323,6 +3323,22 @@ html.compact .modal-card { padding: 19px; }
   min-height: 280px;
 }
 
+/* Subtle "• Updated HH:MM" badge that fades in next to the
+   "as of …" line for ~3s after each auto-refresh fires. Uses
+   var(--muted) so it reads as ancillary information against
+   the same theme palette the surrounding card-sub text uses. */
+.pf-auto-refresh-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 250ms ease;
+}
+.pf-auto-refresh-badge.visible {
+  opacity: 1;
+}
+
 /* ── Telegram banner + admin page ─────────────────────────────────── */
 /* First-time-wizard banner. Sits between the header chrome and the
    page contents so it's always visible until dismissed. */

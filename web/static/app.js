@@ -2580,6 +2580,7 @@ function _pushHistory(view, hash, extra = {}) {
 }
 
 function goOverview(fromPop = false) {
+  _deactivatePortfolioAutoRefresh();
   _resetHeaderForTopLevel();
   _setActiveTab('nav-overview-btn');
   showPage('overview');
@@ -2589,6 +2590,7 @@ function goOverview(fromPop = false) {
 }
 
 function goBots(fromPop = false) {
+  _deactivatePortfolioAutoRefresh();
   _resetHeaderForTopLevel();
   _setActiveTab('nav-bots-btn');
   showPage('bots');
@@ -2598,6 +2600,7 @@ function goBots(fromPop = false) {
 }
 
 function goDeals(fromPop = false) {
+  _deactivatePortfolioAutoRefresh();
   _resetHeaderForTopLevel();
   _setActiveTab('nav-deals-btn');
   showPage('deals');
@@ -2607,6 +2610,7 @@ function goDeals(fromPop = false) {
 }
 
 function goWorkspace(fromPop = false) {
+  _deactivatePortfolioAutoRefresh();
   _resetHeaderForTopLevel();
   _setActiveTab('nav-workspace-btn');
   showPage('workspace');
@@ -2620,6 +2624,7 @@ function goWorkspace(fromPop = false) {
 }
 
 function goBacktests(fromPop = false) {
+  _deactivatePortfolioAutoRefresh();
   _resetHeaderForTopLevel();
   _setActiveTab('nav-backtests-btn');
   showPage('backtests');
@@ -2633,6 +2638,7 @@ function goBacktests(fromPop = false) {
 }
 
 function goNewBot() {
+  _deactivatePortfolioAutoRefresh();
   _resetHeaderForTopLevel();
   _setActiveTab('nav-bots-btn');  // new bot lives logically under Bots
   showPage('new-bot');
@@ -2653,6 +2659,15 @@ let _pfRange = '24h';
 let _pfHistoryChart = null;
 let _pfHistorySeries = null;
 
+// Auto-refresh timer state. Single setTimeout handle that fires
+// 30s after each top-of-hour while goPortfolio is the active page
+// AND the browser tab is visible. Cleared on page-switch + tab-
+// hide; rescheduled on tab-visible. setTimeout (not setInterval)
+// so each fire reschedules itself off the current clock — avoids
+// drift over many hours.
+let _pfAutoRefreshTimer = null;
+let _pfAutoRefreshActive = false;
+
 function goPortfolio(fromPop = false) {
   _resetHeaderForTopLevel();
   _setActiveTab('nav-portfolio-btn');
@@ -2666,6 +2681,11 @@ function goPortfolio(fromPop = false) {
   loadPortfolio();
   loadPortfolioHistory(_pfRange);
   loadPerBotBreakdown();
+  // Auto-refresh after the next hourly snapshot. Idempotent —
+  // calling goPortfolio twice replaces the prior timer cleanly via
+  // _scheduleNextPortfolioRefresh's clearTimeout.
+  _pfAutoRefreshActive = true;
+  _scheduleNextPortfolioRefresh();
 }
 
 async function loadPortfolio() {
@@ -2898,6 +2918,104 @@ function updateCurrencyToggle(target) {
   loadPortfolio();
 }
 
+// ── Auto-refresh after the hourly snapshot ─────────────────────────────
+// The scheduler writes a portfolio_snapshots row at the top of every
+// hour (14:00:00, 15:00:00, ...). The portal-side timer fires 30s
+// later (14:00:30, 15:00:30, ...) so the new row is durable in the
+// DB before we GET /api/portfolio/latest. Each fire reschedules
+// itself off the wall clock — no drift across many hours.
+
+// Pure helper, kept testable: ms from ``now`` to the next
+// "next top-of-hour plus 30 seconds". Always returns ≥ 1ms so the
+// caller's setTimeout never fires synchronously.
+function _msUntilNextPortfolioRefresh(now) {
+  const next = new Date(now.getTime());
+  next.setHours(now.getHours() + 1, 0, 30, 0);
+  const ms = next.getTime() - now.getTime();
+  return ms > 0 ? ms : 1;
+}
+
+function _scheduleNextPortfolioRefresh() {
+  if (_pfAutoRefreshTimer) {
+    clearTimeout(_pfAutoRefreshTimer);
+    _pfAutoRefreshTimer = null;
+  }
+  if (!_pfAutoRefreshActive) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  const ms = _msUntilNextPortfolioRefresh(new Date());
+  _pfAutoRefreshTimer = setTimeout(_autoRefreshPortfolio, ms);
+}
+
+async function _autoRefreshPortfolio() {
+  _pfAutoRefreshTimer = null;
+  if (!_pfAutoRefreshActive) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  try {
+    await loadPortfolio();
+    await loadPortfolioHistory(_pfRange);
+    _showAutoRefreshBadge();
+  } catch (e) {
+    // Network blip — leave the prior render in place. The next
+    // hourly tick will retry on its own.
+  }
+  // Reschedule unconditionally; the next call's gate will drop it
+  // if the operator navigated away between the await chain firing
+  // and now.
+  _scheduleNextPortfolioRefresh();
+}
+
+function _showAutoRefreshBadge() {
+  const asOfEl = $('pf-as-of');
+  if (!asOfEl) return;
+  let badge = $('pf-auto-refresh-badge');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.id = 'pf-auto-refresh-badge';
+    badge.className = 'pf-auto-refresh-badge';
+    asOfEl.parentNode.insertBefore(badge, asOfEl.nextSibling);
+  }
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  badge.textContent = `• Updated ${hh}:${mm}`;
+  badge.classList.add('visible');
+  if (badge._hideTimer) clearTimeout(badge._hideTimer);
+  badge._hideTimer = setTimeout(() => {
+    badge.classList.remove('visible');
+  }, 3000);
+}
+
+function _handlePortfolioVisibilityChange() {
+  if (!_pfAutoRefreshActive) return;
+  if (document.hidden) {
+    if (_pfAutoRefreshTimer) {
+      clearTimeout(_pfAutoRefreshTimer);
+      _pfAutoRefreshTimer = null;
+    }
+    return;
+  }
+  // Tab back in foreground. We may have missed one or more top-of-
+  // hour ticks while hidden — refresh once immediately and let the
+  // chain reschedule from there. Cheap (two GETs) and simpler than
+  // tracking the last refresh moment.
+  _autoRefreshPortfolio();
+}
+
+function _deactivatePortfolioAutoRefresh() {
+  _pfAutoRefreshActive = false;
+  if (_pfAutoRefreshTimer) {
+    clearTimeout(_pfAutoRefreshTimer);
+    _pfAutoRefreshTimer = null;
+  }
+}
+
+// Register once at module load. The handler short-circuits on
+// !_pfAutoRefreshActive so leaving it permanently registered is
+// safe even when the operator never visits the Portfolio tab.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', _handlePortfolioVisibilityChange);
+}
+
 // ── Admin SPA tabs ───────────────────────────────────────────────────────
 // The Roadmap + Changelog tabs used to live here as logged-in nav
 // entries (and briefly as public-shell tabs for logged-out visitors).
@@ -2906,6 +3024,7 @@ function updateCurrencyToggle(target) {
 // admin editing UI via #admin/{roadmap,changelog}-manage below.
 
 function goAdmin(fromPop = false, subRoute = null) {
+  _deactivatePortfolioAutoRefresh();
   _resetHeaderForTopLevel();
   _setActiveTab('nav-admin-btn');
   showPage('admin');
