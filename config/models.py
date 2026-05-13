@@ -159,22 +159,11 @@ class ScheduleConfig(BaseModel):
     blackout_dates: list[str] = []
 
 
-class TelegramConfig(BaseModel):
-    model_config = _STRICT
-    # Controls which events trigger a Telegram notification.
-    # Valid values: entry, dca_trigger, tp_hit, sl_hit, liquidation_warn,
-    #               schedule_open, schedule_close, error, startup, shutdown
-    # "shutdown" is a legacy synonym kept for back-compat — new bots use
-    # "stop" / "restart" which fire on portal-driven lifecycle events.
-    notify_on: list[Literal[
-        "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn",
-        "schedule_open", "schedule_close", "error", "startup",
-        "shutdown", "stop", "restart"
-    ]] = [
-        "entry", "dca_trigger", "tp_hit", "sl_hit", "liquidation_warn",
-        "schedule_open", "schedule_close", "error", "startup",
-        "shutdown", "stop", "restart"
-    ]
+# TelegramConfig removed in feat/telegram-per-user-shared-bot —
+# notification preferences are now user-level (admin UI) rather than
+# bot-level (YAML). Bot YAMLs that still carry a ``telegram:`` block
+# will fail Pydantic strict validation on load; operator must
+# remove the block before the next bot restart.
 
 
 class BotConfig(BaseModel):
@@ -212,7 +201,11 @@ class BotConfig(BaseModel):
     stop_loss: StopLossConfig = StopLossConfig()
     ml: MLConfig = MLConfig()
     schedule: ScheduleConfig = ScheduleConfig()
-    telegram: TelegramConfig = TelegramConfig()
+    # Per-bot ``telegram:`` block removed — notification preferences
+    # now live in the per-user admin UI (telegram_configs table).
+    # Bot YAMLs with a residual ``telegram:`` block are rejected by
+    # the strict Pydantic config so a stale YAML can't silently
+    # bypass the new gate.
     # Drawdown guard — defaults to disabled so existing YAMLs stay valid
     # without modification. Defined in core/drawdown_guard.py to keep the
     # guard + its config colocated; re-exported here via the BotConfig

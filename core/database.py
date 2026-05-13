@@ -413,6 +413,40 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     "ON portfolio_snapshots(user_id, captured_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_portfolio_account_captured "
     "ON portfolio_snapshots(exchange_account_id, captured_at DESC)",
+    # v14 additive: per-user Telegram chat metadata + the one-time
+    # link tokens that map @RevertoAlertsBot /start events to the
+    # right user_id. ``user_id`` is PRIMARY KEY (one chat per user),
+    # ``notify_on`` is a JSON-encoded list of event-type strings —
+    # the application validates each entry against the constants in
+    # ``notifications.telegram`` before writing. CASCADE keeps the
+    # row consistent with the parent ``users`` row across deletes.
+    """
+    CREATE TABLE IF NOT EXISTS telegram_configs (
+        user_id          INTEGER PRIMARY KEY
+                          REFERENCES users(id) ON DELETE CASCADE,
+        chat_id          TEXT NOT NULL,
+        notify_on        TEXT NOT NULL DEFAULT '[]',
+        connected_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        last_message_at  TEXT
+    )
+    """,
+    # Link-token tickets minted by /api/telegram/link and consumed
+    # by the /api/telegram/webhook handler when the user taps Start
+    # in @RevertoAlertsBot. One-time tickets — ``used_at`` is the
+    # consume marker. Expired tokens are dropped by the scheduler's
+    # hourly cleanup tick.
+    """
+    CREATE TABLE IF NOT EXISTS telegram_link_tokens (
+        token       TEXT PRIMARY KEY,
+        user_id     INTEGER NOT NULL
+                     REFERENCES users(id) ON DELETE CASCADE,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at  TEXT NOT NULL,
+        used_at     TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_telegram_tokens_expires "
+    "ON telegram_link_tokens(expires_at)",
 )
 
 
@@ -549,8 +583,15 @@ def get_db() -> sqlite3.Connection:
 #     with ``CREATE TABLE IF NOT EXISTS`` semantics so the new table
 #     + its indexes land lazily on the next boot. Destructive guard
 #     does NOT trigger — v5 was the last destructive boundary.
-#   * == 13 → no-op.
-SCHEMA_VERSION = 13
+#   * < 14 → ADDITIVE: introduces ``telegram_configs`` (per-user
+#     chat metadata) + ``telegram_link_tokens`` (one-time tickets
+#     for the /start link flow against the shared
+#     @RevertoAlertsBot). No existing rows are touched; CREATE
+#     TABLE IF NOT EXISTS lazily lands both tables + the cleanup
+#     index on the next boot. Destructive guard does NOT trigger —
+#     v5 was the last destructive boundary.
+#   * == 14 → no-op.
+SCHEMA_VERSION = 14
 
 # Version at which the last destructive drop-and-recreate landed. Any
 # upgrade that crosses this boundary (stored ``user_version`` below it,

@@ -35,6 +35,7 @@ from core import (
     exchange_account_store,
     portfolio_store,
     price_feed,
+    telegram_config_store,
 )
 from core.exchange_clients import (
     ExchangeClientError,
@@ -227,7 +228,22 @@ def run_tick(*, source: str = "auto") -> tuple[int, int]:
 
     Exposed as a module-level function so tests can drive a single
     iteration without spinning up the loop.
+
+    Side effect: expired telegram_link_tokens are dropped at the
+    top of the tick. The cleanup is sub-millisecond and dropping
+    it in here saves a separate scheduler-cron entry.
     """
+    try:
+        deleted = telegram_config_store.cleanup_expired_tokens()
+        if deleted:
+            logger.info(
+                "Expired Telegram link tokens deleted: %d", deleted,
+            )
+    except Exception as e:  # noqa: BLE001 — never abort the snapshot run
+        logger.warning(
+            "cleanup_expired_tokens failed (snapshot run continues): %s", e,
+        )
+
     user_ids = _all_user_ids()
     succeeded = 0
     attempted = 0

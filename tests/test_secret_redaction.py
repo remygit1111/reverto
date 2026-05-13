@@ -184,9 +184,11 @@ def _make_telegram_notifier(monkeypatch):
     matches the lazy-import pattern of the other tests in this file.
     """
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", _TG_TOKEN_SENTINEL)
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", _TG_CHAT_ID_SENTINEL)
+    # Per-user model: bind directly to a sentinel chat_id via the
+    # explicit override (no DB lookup needed). Original purpose of
+    # the test — token secrecy on send — is unchanged.
     from notifications.telegram import TelegramNotifier
-    return TelegramNotifier()
+    return TelegramNotifier(chat_id_override=_TG_CHAT_ID_SENTINEL)
 
 
 def _assert_no_secret_in_caplog(caplog, *secrets):

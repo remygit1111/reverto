@@ -45,7 +45,7 @@ def _engine(sl_type="fixed", sl_pct=6.0, tp_pct=3.0, max_orders=5,
     cfg.entry.indicators = []
     cfg.schedule.trading_windows = []; cfg.schedule.blackout_dates = []
     cfg.schedule.timezone = "Europe/Amsterdam"
-    cfg.telegram.notify_on = []; cfg.ml.enabled = False
+    cfg.ml.enabled = False  # telegram config moved to per-user store
     return PaperEngine(config=cfg, exchange=MagicMock(),
                        notifier=_notifier(), initial_balance_btc=0.1)
 

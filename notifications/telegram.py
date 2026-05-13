@@ -1,11 +1,26 @@
 # notifications/telegram.py
-# Handles all Telegram notifications for Reverto.
-# Uses httpx directly for thread-safe synchronous sending.
-# Respects notify_on configuration — only sends events the user has enabled.
+# Per-user Telegram notifier (shared @RevertoAlertsBot model).
+#
+# Every TelegramNotifier instance is bound to a single user_id. Token
+# still comes from the shared ``TELEGRAM_BOT_TOKEN`` env-var because
+# one Telegram bot fans out to many chats; chat_id is looked up
+# per-user from the ``telegram_configs`` table.
+#
+# Graceful degradation: if the user has not run the /start link flow
+# yet, the constructor sets ``_enabled = False`` and every notify_*
+# method becomes a silent no-op. Bots still boot, log "user not
+# connected" at INFO, and keep trading — Telegram is a side channel.
+#
+# Safety events (ERROR, LIQ_WARN, SHUTDOWN) ALWAYS send to connected
+# users regardless of ``notify_on`` — the backend enforces this in
+# ``_is_enabled`` so the UI cannot accidentally mute a critical
+# alert through a stale checkbox.
 
-import httpx
 import logging
 import os
+from typing import Optional
+
+import httpx
 from dotenv import load_dotenv
 
 from paper.errors import TickerError
@@ -16,7 +31,9 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_BASE = "https://api.telegram.org/bot"
 
-# Event type constants — used to match against notify_on config
+# Event type constants — used to match against the per-user
+# ``notify_on`` list. The store module references this set when it
+# validates an admin-supplied preference update; keep both in sync.
 EVENT_STARTUP        = "startup"
 EVENT_SHUTDOWN       = "shutdown"
 EVENT_STOP           = "stop"
@@ -29,38 +46,111 @@ EVENT_LIQ_WARN       = "liquidation_warn"
 EVENT_SCHEDULE_OPEN  = "schedule_open"
 EVENT_SCHEDULE_CLOSE = "schedule_close"
 EVENT_ERROR          = "error"
-# Portal-triggered manual close / cancel (bot stopped, operator
-# clicked close in the UI). Distinct from TP/SL so recipients can
-# trace operator-initiated events separately from engine-driven ones.
 EVENT_MANUAL_CLOSE   = "manual_close"
 EVENT_MANUAL_CANCEL  = "manual_cancel"
 
+# Safety events that always reach a connected user, bypassing
+# ``notify_on``. Operators may have un-ticked these in the UI; the
+# backend ignores that for the three classes of event where the
+# operator absolutely needs the ping.
+_ALWAYS_ON_EVENTS: frozenset = frozenset({
+    EVENT_ERROR, EVENT_LIQ_WARN, EVENT_SHUTDOWN,
+})
+
 
 class TelegramNotifier:
+    """Per-user Telegram notifier.
+
+    Construct one per user_id. The constructor looks up the user's
+    chat_id + notify_on from ``core.telegram_config_store``; if no
+    config exists, every ``notify_*`` method silently no-ops
+    (``_enabled = False``).
+
+    ``notify_on=None`` (default) means "use the user's stored
+    preferences". Callers can override with an explicit list — the
+    portal-restart path uses this so a single notify call doesn't
+    have to round-trip the store twice.
+
+    ``chat_id_override`` is reserved for tests + the webhook's
+    welcome-reply path (where we know the chat_id directly from the
+    incoming Update and don't want a DB round-trip).
     """
-    Sends Telegram notifications for all Reverto events.
-    Uses httpx directly — fully thread-safe, no asyncio required.
-    Token is stored privately and never embedded in stored URLs.
 
-    Respects notify_on from the bot config — only events listed there
-    will generate a Telegram message.
-    """
-
-    def __init__(self, token: str = None, chat_id: str = None,
-                 notify_on: list[str] = None):
-        self._token = token or os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
-
-        if not self._token or not self.chat_id:
+    def __init__(
+        self,
+        user_id: Optional[int] = None,
+        notify_on: Optional[list[str]] = None,
+        *,
+        chat_id_override: Optional[str] = None,
+    ):
+        self._token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if not self._token:
             raise ValueError(
-                "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env"
+                "TELEGRAM_BOT_TOKEN must be set in .env (shared "
+                "@RevertoAlertsBot token).",
             )
 
-        # Default: send all events if no filter provided
-        self._notify_on = set(notify_on) if notify_on else None
+        self._user_id = user_id
+
+        if chat_id_override is not None:
+            # Test / webhook-reply path. The notifier is bound to a
+            # specific chat_id directly; no DB lookup, no notify_on
+            # filter unless the caller supplied one.
+            self.chat_id = str(chat_id_override)
+            self._enabled = True
+            self._notify_on = set(notify_on) if notify_on else None
+            return
+
+        if user_id is None:
+            raise ValueError(
+                "TelegramNotifier requires either user_id or "
+                "chat_id_override",
+            )
+
+        # Lazy import — keeps notifications.telegram importable in
+        # the rare contexts that don't have core.database set up
+        # yet (e.g. unit tests that monkey-patch the store before
+        # instantiating).
+        from core import telegram_config_store
+        config = telegram_config_store.get_config(user_id)
+        if config is None:
+            logger.info(
+                "TelegramNotifier(user=%d): user has not run the "
+                "/start flow yet — notifications disabled until "
+                "they connect.", user_id,
+            )
+            self._enabled = False
+            self.chat_id = None
+            self._notify_on = set()
+            return
+
+        self._enabled = True
+        self.chat_id = config["chat_id"]
+        if notify_on is not None:
+            self._notify_on = set(notify_on)
+        else:
+            self._notify_on = set(config.get("notify_on") or [])
+
+    # ------------------------------------------------------------------
+    # Gate helpers
+    # ------------------------------------------------------------------
 
     def _is_enabled(self, event_type: str) -> bool:
-        """Returns True if this event type should be sent."""
+        """True iff this event should hit the wire.
+
+        Three layers:
+          1. ``_enabled = False`` → never send (user not connected).
+          2. Safety events bypass the per-user preference list.
+          3. Otherwise the event must appear in ``notify_on``.
+
+        ``notify_on=None`` is preserved as "send everything" so
+        explicit-override callers (the portal-restart path) keep
+        their unfiltered semantics.
+        """
+        if not self._enabled:
+            return False
+        if event_type in _ALWAYS_ON_EVENTS:
+            return True
         if self._notify_on is None:
             return True
         return event_type in self._notify_on
@@ -69,8 +159,16 @@ class TelegramNotifier:
     # Core send method
     # ------------------------------------------------------------------
 
-    def send(self, message: str):
-        """Send a message via Telegram — thread-safe synchronous call."""
+    def send(self, message: str) -> None:
+        """Synchronous HTTP send. Swallows network failures so a
+        Telegram outage cannot wedge an engine tick.
+
+        No-op when the notifier is disabled. The early-return keeps
+        the body of ``notify_*`` methods clean — they all guard on
+        ``_is_enabled`` first.
+        """
+        if not self._enabled:
+            return
         url = f"{_TELEGRAM_BASE}{self._token}/sendMessage"
         try:
             response = httpx.post(
@@ -78,29 +176,41 @@ class TelegramNotifier:
                 json={
                     "chat_id": self.chat_id,
                     "text": message,
-                    "parse_mode": "HTML"
+                    "parse_mode": "HTML",
                 },
-                timeout=10
+                timeout=10,
             )
             if response.status_code != 200:
-                # Audit v26-09: log only status_code + body-length,
-                # not response.text. If Telegram's error format ever
-                # echoes request-URL (which contains the bot token),
-                # response.text would leak that into portal.log. Body
-                # length is enough to distinguish "empty error" from
-                # "verbose error" for debugging; content itself is
-                # not needed at runtime.
+                # Audit v26-09: log only status_code + body length,
+                # never response.text — error bodies may echo the
+                # URL and the URL contains the bot token.
                 logger.error(
                     "Telegram error %d (body %d bytes)",
                     response.status_code, len(response.text or ""),
                 )
+                return
         except httpx.TimeoutException:
-            # Do not log the URL (contains token) — log only the error type
             logger.error("Telegram send failed: request timed out")
+            return
         except httpx.RequestError:
             logger.error("Telegram send failed: network error")
-        except Exception as e:
+            return
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Telegram send failed: {type(e).__name__}")
+            return
+
+        # Touch last_message_at so the admin UI can render
+        # "last alert N minutes ago". Best-effort — DB unavailable
+        # here is acceptable.
+        if self._user_id is not None:
+            try:
+                from core import telegram_config_store
+                telegram_config_store.touch_last_message_at(self._user_id)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "touch_last_message_at failed for user=%d: %s",
+                    self._user_id, e,
+                )
 
     # ------------------------------------------------------------------
     # Bot lifecycle
@@ -225,15 +335,6 @@ class TelegramNotifier:
     # ------------------------------------------------------------------
     # Portal-triggered manual close / cancel
     # ------------------------------------------------------------------
-    #
-    # Sent when the operator clicks the UI close button while the bot
-    # is stopped — the portal runs DealCloseHandler directly instead
-    # of writing a sentinel for the tick loop. Kept distinct from
-    # notify_take_profit / notify_stop_loss so the Telegram recipient
-    # can tell operator-initiated events apart from engine-driven
-    # ones. Wrench / prohibit emoji match that "operator intervention"
-    # framing — TP/SL's green/red targets stay reserved for automatic
-    # closes that hit a price target.
 
     def notify_manual_close(self, bot_name: str, symbol: str, price: float,
                             pnl_btc: float, pnl_pct: float):
@@ -249,10 +350,6 @@ class TelegramNotifier:
         )
 
     def notify_manual_cancel(self, bot_name: str, symbol: str):
-        """Cancel doesn't realise PnL — the exchange position (if
-        any) stays open and the operator manages it manually. No
-        price field because the cancel is state-only bookkeeping,
-        not a trade."""
         if not self._is_enabled(EVENT_MANUAL_CANCEL):
             return
         self.send(
@@ -283,7 +380,10 @@ class TelegramNotifier:
 
     def notify_liquidation_emergency(self, bot_name: str, symbol: str,
                                       distance_pct: float):
-        # Emergency always sends regardless of notify_on
+        # Emergency always sends (when connected). Bypasses notify_on
+        # via the EVENT_LIQ_WARN entry in _ALWAYS_ON_EVENTS.
+        if not self._enabled:
+            return
         self.send(
             f"🚨 <b>EMERGENCY — CRITICAL LIQUIDATION RISK</b>\n"
             f"Bot      : {bot_name}\n"
@@ -307,31 +407,12 @@ class TelegramNotifier:
 
     def notify_error_persistent(self, bot_name: str, err: TickerError):
         """Rich error notification used when the paper/live engine has
-        classified a failure as persistent — either an exhausted
-        transient-retry streak or a non-transient error class that no
-        retry will help.
+        classified a failure as persistent.
 
-        Severity-emoji follows the classification: non-transient failures
-        (auth errors, bugs in our own code) render as ⛔ "Bot blocked"
-        because they need operator intervention; exhausted-transient
-        failures render as ⚠️ "Bot degraded" because the engine is still
-        retrying but is structurally failing to make progress.
-
-        Audit B-02: the non-transient label is "blocked" rather than
-        "stopped" — the engine subprocess is still in its tick-loop
-        when this notification fires, just unable to make progress
-        until the operator intervenes. Saying "stopped" to the operator
-        was misleading because process-state and progress-state are
-        different things; "blocked" frames the message around what the
-        operator needs to do (unblock by fixing the root cause) rather
-        than implying the bot has already exited. Auto-stop on the
-        engine side (transitioning ``self.running = False``) is tracked
-        separately under v27-backlog B-02 — this fix is a UX-text-tweak
-        only.
-
-        Distinct from ``notify_error`` which takes a free-form string —
-        that entry point stays for callers outside the engine tick path
-        (insufficient-balance refusals, reconciler timeouts, etc.)."""
+        ERROR is in ``_ALWAYS_ON_EVENTS`` so a connected user always
+        receives this regardless of their notify_on preferences —
+        operational alerts override granular filtering.
+        """
         if not self._is_enabled(EVENT_ERROR):
             return
         if err.is_transient:
