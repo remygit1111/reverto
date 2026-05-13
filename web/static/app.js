@@ -3142,10 +3142,12 @@ function _showAdminSubpage(name) {
   const subBots = $('admin-bots-overview');
   const subFindings = $('admin-findings');
   const subEx = $('admin-exchanges');
+  const subTg = $('admin-telegram');
   if (!index) return;
-  const subs = [subCl, subRm, subBots, subFindings, subEx].filter(Boolean);
+  const subs = [subCl, subRm, subBots, subFindings, subEx, subTg].filter(Boolean);
   const knownSubs = new Set([
     'changelog-manage', 'roadmap-manage', 'bots', 'findings', 'exchanges',
+    'telegram',
   ]);
   const showIndex = !knownSubs.has(name);
   index.classList.toggle('hidden', !showIndex);
@@ -3155,6 +3157,7 @@ function _showAdminSubpage(name) {
   if (name === 'bots' && subBots) subBots.classList.remove('hidden');
   if (name === 'findings' && subFindings) subFindings.classList.remove('hidden');
   if (name === 'exchanges' && subEx) subEx.classList.remove('hidden');
+  if (name === 'telegram' && subTg) subTg.classList.remove('hidden');
 }
 
 // ── Admin — Bot Overview (cross-user) ────────────────────────────────────
