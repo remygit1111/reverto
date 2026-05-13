@@ -77,6 +77,41 @@ def _market_label(exchange_type: str, market_type: str) -> str:
         return market_type
 
 
+def _format_captured_at_iso(captured_at: Optional[str]) -> Optional[str]:
+    """Convert a DB timestamp string into ISO 8601 with explicit
+    UTC marker.
+
+    SQLite's ``datetime('now')`` DEFAULT writes ``"2026-05-13
+    20:00:02"`` — space-separated, no timezone suffix. JavaScript's
+    ``new Date()`` parses that inconsistently across browsers (some
+    treat it as local time, some as UTC). Convert to
+    ``"2026-05-13T20:00:02Z"`` so the wire format is unambiguous
+    and the portfolio chart's axis ticks + crosshair tooltip stay
+    in sync.
+
+    Pass-through:
+      * ``""`` / ``None`` — return unchanged (caller decides how
+        to render an absent timestamp).
+      * Already contains a ``+`` offset or a trailing ``Z`` —
+        return unchanged (don't double-stamp).
+      * Already T-separated but no offset — append ``Z``.
+
+    Defensive against a future schema migration that switches the
+    DB column to ISO-on-write: any input that already looks
+    well-formed is left alone.
+    """
+    if not captured_at:
+        return captured_at
+    s = captured_at.strip()
+    if "T" not in s:
+        s = s.replace(" ", "T", 1)
+    if s.endswith("Z") or "+" in s or "-" in s[10:]:
+        # Already carries explicit offset (Z, +HH:MM, or a
+        # negative offset somewhere after the date part).
+        return s
+    return s + "Z"
+
+
 def _live_bot_slugs(user_id: int) -> set[str]:
     """Read every YAML under ``config/bots/<user_id>/`` and return the
     slugs whose mode is ``live``.
@@ -172,7 +207,7 @@ async def get_portfolio_latest(
             "balance_usd": row["balance_usd"],
             "usd_rate": row["usd_rate"],
             "rate_source": row["rate_source"],
-            "captured_at": row["captured_at"],
+            "captured_at": _format_captured_at_iso(row["captured_at"]),
             "source": row["source"],
         })
         total_usd += row["balance_usd"]
@@ -188,11 +223,12 @@ async def get_portfolio_latest(
         "totals": {
             "balance_usd": total_usd,
             "by_currency": by_currency,
-            "as_of": most_recent,
+            "as_of": _format_captured_at_iso(most_recent),
         },
         "manual_allowed": allowed,
         "manual_next_allowed_at": (
-            next_at.isoformat() if next_at is not None else None
+            _format_captured_at_iso(next_at.isoformat())
+            if next_at is not None else None
         ),
     }
 
@@ -249,6 +285,12 @@ async def get_portfolio_history(
     # Group by captured_at. Multiple accounts captured in the same
     # tick share a captured_at down to the second precision SQLite
     # uses; that's exactly the row-set we want to aggregate.
+    #
+    # The dict key stays in the DB-native form for accurate
+    # lexicographic ordering during the sort; ``_format_captured_at_iso``
+    # only runs on the way out so the wire format is unambiguous
+    # ISO 8601 UTC (``Z``-suffixed) — fixes the chart-timezone
+    # mismatch on the frontend.
     grouped: dict[str, dict] = {}
     for r in rows:
         ts = r["captured_at"]
@@ -259,6 +301,8 @@ async def get_portfolio_history(
         entry["per_account"][str(r["exchange_account_id"])] = r["balance_usd"]
 
     points = sorted(grouped.values(), key=lambda x: x["captured_at"])
+    for p in points:
+        p["captured_at"] = _format_captured_at_iso(p["captured_at"])
     return {"range": range, "points": points}
 
 
@@ -405,7 +449,8 @@ async def trigger_manual_snapshot(
             detail={
                 "error": "Manual snapshot limited to 1/hour",
                 "next_allowed_at": (
-                    next_at.isoformat() if next_at is not None else None
+                    _format_captured_at_iso(next_at.isoformat())
+                    if next_at is not None else None
                 ),
             },
         )
