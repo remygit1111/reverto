@@ -1,0 +1,27 @@
+[Unit]
+Description=Reverto portfolio snapshot scheduler
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=bot
+Group=bot
+WorkingDirectory=/home/bot/reverto
+ExecStart=/home/bot/reverto/.venv/bin/python3 /home/bot/reverto/main_scheduler.py
+Restart=on-failure
+RestartSec=10
+# stdout + stderr appended to the same log file the loop already
+# writes via RotatingFileHandler. The unit's append doesn't rotate,
+# but the python-side handler caps the file at 5 MB × 3 generations,
+# so the appended stream stays bounded too.
+StandardOutput=append:/home/bot/reverto/logs/scheduler.log
+StandardError=append:/home/bot/reverto/logs/scheduler.log
+
+# Same env contract as the portal service (PYTHONUNBUFFERED so log
+# lines flush immediately; other secrets remain in the operator's
+# shell profile / .env).
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
