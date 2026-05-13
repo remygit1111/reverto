@@ -149,7 +149,7 @@ def main() -> None:
     # endpoint (and for state-snapshot labels). A missing/foreign
     # account is a hard refusal — falling back to a different
     # exchange would silently flip the market data feed.
-    from core import exchange_account_store
+    from core import exchange_account_store, markets
     account = exchange_account_store.get_account(config.exchange_account_id)
     if account is None or account["user_id"] != user_id:
         logger.error(
@@ -160,6 +160,23 @@ def main() -> None:
         )
         sys.exit(1)
     exchange_type = str(account["exchange_type"])
+    market_type = str(account["market_type"])
+
+    # Paper bots don't reach an auth'd exchange, but the same
+    # contract_type ↔ market_type rule applies — if it's wrong here,
+    # promoting the bot to live later would refuse anyway. Catching
+    # at paper boot keeps the operator's mental model consistent.
+    try:
+        markets.validate_contract_type(
+            config.contract_type, exchange_type, market_type,
+        )
+    except ValueError as e:
+        logger.error(
+            "Bot %s: %s. Pick a compatible account in the bot YAML or "
+            "create a new account on the right market via the Exchanges "
+            "admin tile.", slug, e,
+        )
+        sys.exit(1)
 
     exchange = PublicExchange(exchange_type)
     notifier = TelegramNotifier(notify_on=config.telegram.notify_on)

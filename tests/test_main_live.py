@@ -74,7 +74,7 @@ class TestAuthenticatedExchange:
             lambda _aid: None,
         )
         assert main_live._authenticated_exchange(
-            "bitget", exchange_account_id=42, user_id=1,
+            "bitget", "coin_m", exchange_account_id=42, user_id=1,
         ) is None
 
     def test_bitget_requires_passphrase(self, monkeypatch):
@@ -87,7 +87,7 @@ class TestAuthenticatedExchange:
             },
         )
         assert main_live._authenticated_exchange(
-            "bitget", exchange_account_id=42, user_id=1,
+            "bitget", "coin_m", exchange_account_id=42, user_id=1,
         ) is None
 
     def test_unknown_exchange_returns_none(self, monkeypatch):
@@ -98,5 +98,5 @@ class TestAuthenticatedExchange:
             },
         )
         assert main_live._authenticated_exchange(
-            "ftx", exchange_account_id=42, user_id=1,
+            "ftx", "spot", exchange_account_id=42, user_id=1,
         ) is None

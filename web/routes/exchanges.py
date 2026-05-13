@@ -36,7 +36,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core import exchange_account_store, paths
+from core import exchange_account_store, markets, paths
 from core.credentials import CredentialFormatError
 from core.user import User
 from web.app import _audit, _request_actor, _request_user, limiter
@@ -56,6 +56,12 @@ _KNOWN_EXCHANGES = exchange_account_store.KNOWN_EXCHANGE_TYPES
 
 class _AccountCreateBody(BaseModel):
     exchange_type: str = Field(min_length=1, max_length=32)
+    # Bitget: spot / coin_m / usdt_m / usdc_m. Kraken: spot / futures.
+    # See core.markets — that registry is the source of truth for
+    # valid combinations.
+    market_type: str = Field(
+        min_length=1, max_length=exchange_account_store.MAX_MARKET_TYPE_LEN,
+    )
     alias: str = Field(
         min_length=1, max_length=exchange_account_store.MAX_ALIAS_LEN,
     )
@@ -154,12 +160,17 @@ def _safe_error_message(exc: Exception) -> str:
 
 
 def _instantiate_authenticated_exchange(
-    exchange_type: str, creds: dict,
+    exchange_type: str, market_type: str, creds: dict,
 ):
     """Build an authenticated exchange client for the test-connection
     endpoint. Returns the client or raises a clean ValueError on
     misconfiguration. Bitget needs a passphrase; absence at this
     layer is treated as misconfiguration.
+
+    ``market_type`` selects the wallet routing — the exchange client
+    pulls ccxt_options / ccxt_params / balance_currency from
+    ``core.markets`` and routes ``fetch_balance`` / order calls to
+    the right wallet.
 
     Imports are deferred to function scope so the module-load path
     doesn't pull ccxt into routes/exchanges.py — a route module
@@ -174,6 +185,7 @@ def _instantiate_authenticated_exchange(
             api_key=creds["api_key"],
             api_secret=creds["api_secret"],
             passphrase=creds["passphrase"],
+            market_type=market_type,
             paper=False,
         )
     if exchange_type == "kraken":
@@ -181,6 +193,7 @@ def _instantiate_authenticated_exchange(
         return KrakenExchange(
             api_key=creds["api_key"],
             api_secret=creds["api_secret"],
+            market_type=market_type,
             paper=False,
         )
     raise ValueError(f"Unsupported exchange_type {exchange_type!r}")
@@ -195,10 +208,18 @@ async def list_supported_exchanges(
     request: Request,
     user: User = Depends(_request_user),
 ):
-    """Static list of exchange-type slugs the codebase supports.
-    Renamed from the pre-multi-account ``/api/exchanges`` to make space
-    for the per-account list endpoint."""
-    return {"exchanges": list(_KNOWN_EXCHANGES)}
+    """List of exchange-type slugs and their supported market types
+    (Bitget: spot/coin_m/usdt_m/usdc_m; Kraken: spot/futures). The
+    frontend reads this once per session and uses it to populate the
+    market dropdown after the exchange dropdown is chosen. Shape:
+
+      {"exchanges": [{"name": "bitget", "markets": [
+          {"key": "spot",   "label": "Spot"},
+          {"key": "coin_m", "label": "Coin-M Perpetual"},
+          ...
+      ]}, ...]}
+    """
+    return {"exchanges": markets.supported_exchanges_payload()}
 
 
 @router.get("/api/exchange-accounts")
@@ -239,6 +260,7 @@ async def create_user_account(
         new_id = exchange_account_store.create_account(
             user_id=user.id,
             exchange_type=body.exchange_type,
+            market_type=body.market_type,
             alias=body.alias,
             api_key=body.api_key,
             api_secret=body.api_secret,
@@ -371,7 +393,7 @@ async def test_account_connection(
         )
     try:
         client = _instantiate_authenticated_exchange(
-            account["exchange_type"], creds,
+            account["exchange_type"], account["market_type"], creds,
         )
         balance = client.get_balance()
     except Exception as e:  # noqa: BLE001 — ccxt raises many shapes
@@ -400,8 +422,20 @@ async def test_account_connection(
         f"{account_id}:ok", actor,
         user_id=user.id, request=request,
     )
+    # Pull the human-readable market label from the registry so the
+    # frontend doesn't have to maintain a parallel mapping.
+    try:
+        market_cfg = markets.get_market_config(
+            account["exchange_type"], account["market_type"],
+        )
+        market_label = market_cfg["display_label"]
+    except ValueError:
+        market_label = account["market_type"]
     return {
         "ok": True,
-        "balance_btc": float(balance) if balance is not None else 0.0,
+        "balance": float(balance) if balance is not None else 0.0,
+        "currency": client.balance_currency,
+        "market": account["market_type"],
+        "market_label": market_label,
         "tested_at": now,
     }
