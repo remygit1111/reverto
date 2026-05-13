@@ -665,6 +665,7 @@
   <button class="tab" id="nav-deals-btn">Active Deals</button>
   <button class="tab" id="nav-workspace-btn">Workspace</button>
   <button class="tab" id="nav-bots-btn">Bots</button>
+  <button class="tab" id="nav-portfolio-btn">Portfolio</button>
   <button class="tab" id="nav-backtests-btn">Backtest History</button>
   <button class="tab" id="nav-admin-btn" data-admin-only hidden>Admin</button>
 </nav>
@@ -770,6 +771,78 @@
       </thead>
       <tbody id="bt-history-body">
         <tr><td colspan="13" class="empty-config-msg">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Portfolio                                                           -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<div id="view-portfolio" class="page">
+  <div class="portfolio-top">
+    <div class="card portfolio-total-card">
+      <div class="card-label">Total portfolio value</div>
+      <div class="card-value" id="pf-total-value">—</div>
+      <div class="card-sub" id="pf-as-of">no snapshots yet</div>
+    </div>
+    <div class="portfolio-controls">
+      <div class="portfolio-currency-toggle">
+        <button type="button" class="hbtn hbtn-theme active" id="pf-toggle-usd">USD</button>
+        <button type="button" class="hbtn hbtn-theme" id="pf-toggle-native">Native</button>
+      </div>
+      <button type="button" class="btn-primary" id="pf-refresh-btn" disabled>Refresh now</button>
+      <div class="portfolio-refresh-hint" id="pf-refresh-hint"></div>
+    </div>
+  </div>
+
+  <div class="section-title">Value over time</div>
+  <div class="card">
+    <div class="portfolio-range-bar">
+      <button type="button" class="hbtn hbtn-theme active" data-pf-range="24h">24h</button>
+      <button type="button" class="hbtn hbtn-theme" data-pf-range="7d">7d</button>
+      <button type="button" class="hbtn hbtn-theme" data-pf-range="30d">30d</button>
+      <button type="button" class="hbtn hbtn-theme" data-pf-range="all">All</button>
+    </div>
+    <div id="pf-history-chart" class="portfolio-chart"></div>
+    <div id="pf-history-empty" class="empty-config-msg hidden">No snapshots yet — the first hourly capture lands at the next top-of-hour.</div>
+  </div>
+
+  <div class="section-title">Per exchange</div>
+  <div class="card card-no-pad">
+    <table class="cl-admin-table">
+      <thead>
+        <tr>
+          <th>Alias</th>
+          <th>Exchange</th>
+          <th>Market</th>
+          <th>Balance</th>
+          <th>USD value</th>
+          <th>Captured</th>
+        </tr>
+      </thead>
+      <tbody id="pf-accounts-tbody">
+        <tr><td colspan="6" class="empty-config-msg">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Per bot <span class="card-sub">live bots only</span></div>
+  <div class="card card-no-pad">
+    <table class="cl-admin-table">
+      <thead>
+        <tr>
+          <th>Bot</th>
+          <th>Open positions</th>
+          <th>Open value (USD)</th>
+          <th>Realized PnL (USD)</th>
+          <th>Unrealized PnL (USD)</th>
+          <th>Total PnL (USD)</th>
+          <th>Trades</th>
+        </tr>
+      </thead>
+      <tbody id="pf-bots-tbody">
+        <tr><td colspan="7" class="empty-config-msg">Loading…</td></tr>
       </tbody>
     </table>
   </div>
