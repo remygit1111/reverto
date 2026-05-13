@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin seed-findings deploy deploy-marketing rollback backup restore scheduler-status scheduler-restart scheduler-logs
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin seed-findings deploy deploy-marketing rollback backup restore scheduler-status scheduler-restart scheduler-logs telegram-register-webhook telegram-clear-webhook
 
 # ── Default target ───────────────────────────────────────────────────────────
 help:
@@ -286,3 +286,34 @@ scheduler-restart:
 
 scheduler-logs:
 	@tail -f logs/scheduler.log
+
+# ── Telegram webhook registration ───────────────────────────────────────────
+# Point the shared @RevertoAlertsBot at the portal's webhook URL.
+# Both env-vars MUST be in .env (loaded by start.sh + present in the
+# operator's interactive shell). The URL secret in the path is the
+# only auth surface — Telegram does not sign webhook requests, so
+# the secret must be a strong random string (`python3 -c "import
+# secrets; print(secrets.token_hex(16))"`).
+#
+# Run once after each .env change. Telegram remembers the URL until
+# we explicitly clear it via `make telegram-clear-webhook`.
+telegram-register-webhook:
+	@if [ -z "$$TELEGRAM_BOT_TOKEN" ] || [ -z "$$TELEGRAM_WEBHOOK_SECRET" ]; then \
+		echo "TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET must be set in .env"; \
+		exit 1; \
+	fi
+	@curl -s -X POST "https://api.telegram.org/bot$${TELEGRAM_BOT_TOKEN}/setWebhook" \
+		-d "url=https://app.reverto.bot/api/telegram/webhook/$${TELEGRAM_WEBHOOK_SECRET}" \
+		-d "allowed_updates[]=message"
+	@echo ""
+	@echo "Webhook registered. Verify with:"
+	@echo "  curl -s \"https://api.telegram.org/bot$$TELEGRAM_BOT_TOKEN/getWebhookInfo\" | python3 -m json.tool"
+
+telegram-clear-webhook:
+	@if [ -z "$$TELEGRAM_BOT_TOKEN" ]; then \
+		echo "TELEGRAM_BOT_TOKEN must be set in .env"; \
+		exit 1; \
+	fi
+	@curl -s -X POST "https://api.telegram.org/bot$${TELEGRAM_BOT_TOKEN}/deleteWebhook"
+	@echo ""
+	@echo "Webhook cleared."

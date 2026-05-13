@@ -18,11 +18,11 @@ from paper.errors import TickerError  # noqa: E402
 
 @pytest.fixture
 def notifier(monkeypatch):
-    """TelegramNotifier wired against fake token/chat env — send() is
-    replaced per-test with a capturing stub."""
+    """TelegramNotifier wired against a sentinel chat — send() is
+    replaced per-test with a capturing stub. Uses the
+    ``chat_id_override`` test path so no DB row is required."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
-    return TelegramNotifier()
+    return TelegramNotifier(chat_id_override="123")
 
 
 def _ticker_err(**overrides) -> TickerError:
@@ -233,20 +233,27 @@ class TestPersistentErrorAction:
         assert "portal logs" in cap["body"].lower()
 
 
-class TestPersistentErrorRespectsNotifyOn:
-    """notify_on filter must apply to the new persistent path the same
-    way it applies to the legacy notify_error — a user who opted out of
-    'error' events must not receive the degraded/stopped message."""
+class TestPersistentErrorAlwaysSent:
+    """ERROR is one of the always-on safety events (per
+    feat/telegram-per-user-shared-bot). A user who unchecked the
+    ``error`` preference in the UI STILL receives the persistent
+    notify — silencing an error alert by accident is a worse failure
+    mode than over-notifying."""
 
-    def test_event_error_disabled_suppresses_persistent_notify(
+    def test_event_error_unchecked_still_sends_persistent_notify(
         self, monkeypatch,
     ):
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
-        n = TelegramNotifier(notify_on=["startup"])  # no "error"
+        # notify_on omits "error" — safety override should kick in.
+        n = TelegramNotifier(
+            notify_on=["startup"], chat_id_override="1",
+        )
         cap = _capture_send(n)
         n.notify_error_persistent("MyBot", _ticker_err())
-        assert cap == {}, "error-disabled users must not receive persistent-notify"
+        assert cap, (
+            "ERROR is a safety event and must reach the user even "
+            "when notify_on omits it."
+        )
 
 
 # ── Manual close / cancel (portal-triggered) ────────────────────────────
@@ -285,20 +292,20 @@ class TestNotifyManualClose:
 
     def test_respects_notify_on_filter(self, monkeypatch):
         """notify_on=['tp_hit'] (no 'manual_close') must suppress the
-        portal-origin notification — same filter model as every other
-        event on the notifier."""
+        portal-origin notification — manual_close is NOT a safety
+        event, so the per-user preference still gates it."""
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
-        n = TelegramNotifier(notify_on=["tp_hit"])
+        n = TelegramNotifier(
+            notify_on=["tp_hit"], chat_id_override="1",
+        )
         cap = _capture_send(n)
         n.notify_manual_close("MyBot", "BTC/USD", 80000.0, 0.0, 0.0)
         assert cap == {}
 
     def test_default_notify_on_passes_through(self, notifier):
         """Default ``notify_on=None`` sends every event — the portal
-        close is no exception. Pins that a fresh install without a
-        telegram.notify_on config gets manual-close notifications
-        out of the box."""
+        close is no exception. Pins that an unfiltered notifier
+        (override path) gets manual-close notifications by default."""
         cap = _capture_send(notifier)
         notifier.notify_manual_close(
             "MyBot", "BTC/USD", 80000.0, 0.0, 0.0,
@@ -326,8 +333,9 @@ class TestNotifyManualCancel:
 
     def test_respects_notify_on_filter(self, monkeypatch):
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
-        monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
-        n = TelegramNotifier(notify_on=["tp_hit"])
+        n = TelegramNotifier(
+            notify_on=["tp_hit"], chat_id_override="1",
+        )
         cap = _capture_send(n)
         n.notify_manual_cancel("MyBot", "BTC/USD")
         assert cap == {}

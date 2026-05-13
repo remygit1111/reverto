@@ -2020,10 +2020,12 @@ async def restart_bot(user_id: int, slug: str) -> dict:
     # Fire restart notification before tearing the subprocess down.
     # The portal owns the restart lifecycle, so the bot itself never
     # gets a chance to send this from inside its own engine loop.
+    # Notifier resolves chat_id from the bot owner's telegram_config
+    # — silent no-op if they haven't connected yet.
     cfg = None
     try:
         cfg = load_bot_config(bot.config_file)
-        notifier = TelegramNotifier(notify_on=cfg.telegram.notify_on)
+        notifier = TelegramNotifier(user_id=user_id)
         notifier.notify_restart(cfg.name)
     except Exception as e:
         logger.warning("restart notify failed for %s: %s", slug, e)
@@ -2519,6 +2521,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
         if path in _PUBLIC_PATHS or path.startswith("/static/"):
+            return await call_next(request)
+        # Telegram webhook: auth surface is the URL-path secret,
+        # not a session cookie. The handler verifies the secret +
+        # 404s on mismatch so an unauthenticated bypass cannot reach
+        # the consume_link_token path with a guessed token.
+        if path.startswith("/api/telegram/webhook/"):
             return await call_next(request)
 
         if _verify_session_cookie(request.cookies.get(_SESSION_COOKIE)):
@@ -3691,6 +3699,8 @@ from web.routes import exchanges as _exchanges_routes  # noqa: E402
 from web.routes import marketing as _marketing_routes  # noqa: E402
 from web.routes import portfolio as _portfolio_routes  # noqa: E402
 from web.routes import roadmap as _roadmap_routes  # noqa: E402
+from web.routes import telegram as _telegram_routes  # noqa: E402
+from web.routes import telegram_webhook as _telegram_webhook_routes  # noqa: E402
 
 app.include_router(_admin_routes.router)
 app.include_router(_admin_bots_routes.router)
@@ -3707,6 +3717,8 @@ app.include_router(_exchanges_routes.router)
 app.include_router(_marketing_routes.router)
 app.include_router(_portfolio_routes.router)
 app.include_router(_roadmap_routes.router)
+app.include_router(_telegram_routes.router)
+app.include_router(_telegram_webhook_routes.router)
 
 
 def run_portal(host="0.0.0.0", port=8080):

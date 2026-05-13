@@ -3322,3 +3322,65 @@ html.compact .modal-card { padding: 19px; }
   width: 100%;
   min-height: 280px;
 }
+
+/* ── Telegram banner + admin page ─────────────────────────────────── */
+/* First-time-wizard banner. Sits between the header chrome and the
+   page contents so it's always visible until dismissed. */
+.telegram-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  margin: 0 0 12px 0;
+  background: var(--card-bg, #1a1c20);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.telegram-banner.hidden { display: none; }
+.telegram-banner-icon { font-size: 18px; }
+.telegram-banner-text { flex: 1; }
+.telegram-banner-connect,
+.telegram-banner-dismiss { white-space: nowrap; }
+
+/* Connected vs disconnected cards on the Telegram admin page. */
+.tg-connected-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.tg-connected-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+.tg-notify-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.tg-notify-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.tg-always-on {
+  color: var(--muted, #888);
+  font-size: 11px;
+  margin-left: auto;
+}
+.tg-notify-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+.tg-save-status {
+  color: var(--muted, #888);
+  font-size: 12px;
+}

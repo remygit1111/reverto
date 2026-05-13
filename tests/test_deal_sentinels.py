@@ -71,7 +71,8 @@ def _make_engine(tmp_path, monkeypatch):
     cfg.schedule.trading_windows = []
     cfg.schedule.blackout_dates = []
     cfg.schedule.timezone = "Europe/Amsterdam"
-    cfg.telegram.notify_on = []
+    # telegram-config moved to per-user store; cfg.telegram is gone
+
     cfg.ml.enabled = False
 
     engine = PaperEngine(
