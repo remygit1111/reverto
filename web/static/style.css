@@ -3332,9 +3332,14 @@ html.compact .modal-card { padding: 19px; }
   gap: 12px;
   padding: 10px 16px;
   margin: 0 0 12px 0;
-  background: var(--card-bg, #1a1c20);
+  /* Match the .card palette so light + dark themes both render
+     correctly. ``--card-bg`` in the original rule never existed
+     in the theme system; the hardcoded #1a1c20 fallback was
+     always used, breaking light mode. */
+  background: var(--surface);
   border: 1px solid var(--accent);
   border-radius: 8px;
+  color: var(--text);
   font-size: 14px;
 }
 .telegram-banner.hidden { display: none; }
