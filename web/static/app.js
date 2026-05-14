@@ -2791,6 +2791,7 @@ function renderPortfolioChart(points) {
   const empty = $('pf-history-empty');
   if (!el) return;
   if (_pfHistoryChart) {
+    _unregisterChart(_pfHistoryChart);
     try { _pfHistoryChart.remove(); } catch (e) {}
     _pfHistoryChart = null;
     _pfHistorySeries = null;
@@ -2808,7 +2809,7 @@ function renderPortfolioChart(points) {
   // would use the main-chart's timezone setting, which is what
   // caused the operator's "X-axis 20:00 vs hover 22:00" report.
   const _pfFmt = _buildChartTzFormatter(_portfolioChartTimezone);
-  _pfHistoryChart = _lwcCreateChart(el, {
+  _pfHistoryChart = _registerChart(_lwcCreateChart(el, {
     ..._chartLayoutOpts(),
     width: el.clientWidth || 800,
     height: 280,
@@ -2818,7 +2819,7 @@ function renderPortfolioChart(points) {
       secondsVisible: false,
       tickMarkFormatter: _pfFmt.short,
     },
-  });
+  }));
   // Populate + wire the timezone dropdown once per chart-init. We
   // re-init on every range change (the chart is rebuilt), so the
   // dropdown is re-populated each time — matches the wizard/
@@ -7904,18 +7905,45 @@ function _chartLayoutOpts() {
   };
 }
 
+// Auto-tracked set of every live chart instance. Charts add
+// themselves via _registerChart() at creation time and remove
+// themselves via _unregisterChart() at teardown. _applyChartTheme()
+// iterates this Set so new chart types get free theme support
+// without needing to update the theme function.
+const _activeCharts = new Set();
+
+// Same idea for candlestick series, which keep their bull/bear
+// colours on the series object (not the parent chart's layout).
+const _activeCandleSeries = new Set();
+
+function _registerChart(chart) {
+  if (chart) _activeCharts.add(chart);
+  return chart;
+}
+
+function _unregisterChart(chart) {
+  if (chart) _activeCharts.delete(chart);
+}
+
+function _registerCandleSeries(series) {
+  if (series) _activeCandleSeries.add(series);
+  return series;
+}
+
+function _unregisterCandleSeries(series) {
+  if (series) _activeCandleSeries.delete(series);
+}
+
 function _applyChartTheme() {
-  // Re-apply the layout options to every live chart instance after a
-  // theme switch so the operator sees the new palette without having
-  // to reopen the tab. No-ops cleanly when a chart isn't mounted.
+  // Apply layout (background, text, grid) to every active chart.
+  // Charts auto-register via _registerChart() at creation time so
+  // this loop doesn't need to know about specific chart types.
   const opts = _chartLayoutOpts();
-  for (const chart of [_chartMain, _wizardChart]) {
-    if (!chart) continue;
+  for (const chart of _activeCharts) {
     try { chart.applyOptions(opts); } catch (e) {}
   }
-  // Candlestick series colours live on the series, not the chart, so
-  // applyOptions on the chart alone leaves the bodies + wicks at their
-  // creation-time colours. Push the up/down palette onto every live
+  // Candlestick series colours live on the series, not the parent
+  // chart's layout, so push the up/down palette onto every active
   // candle series too.
   const c = getChartColors();
   const seriesOpts = {
@@ -7926,14 +7954,11 @@ function _applyChartTheme() {
     wickUpColor:    c.upColor,
     wickDownColor:  c.downColor,
   };
-  for (const series of [_chartCandles, _wizardCandles]) {
-    if (!series) continue;
+  for (const series of _activeCandleSeries) {
     try { series.applyOptions(seriesOpts); } catch (e) {}
   }
   // Workspace chart-panels keep their own live set of LWC instances
-  // inside chart_module.js. The helper below iterates every active
-  // panel and re-applies the same layout + candle-series palette
-  // that the loops above applied to the main/wizard charts.
+  // inside chart_module.js, which has its own registry pattern.
   if (window.RevertoChart
       && typeof window.RevertoChart.applyThemeToAll === 'function') {
     try { window.RevertoChart.applyThemeToAll(); } catch (e) {}
@@ -8079,6 +8104,8 @@ function teardownChartTab() {
   _chartNoMoreData = false;
   _chartMainToggleOverlay('chart-main-loading', false);
   _chartMainToggleOverlay('chart-main-no-more', false);
+  _unregisterChart(_chartMain);
+  _unregisterCandleSeries(_chartCandles);
   try { if (_chartMain) _chartMain.remove(); } catch (e) {}
   _chartMain = null;
   _chartCandles = null;
@@ -8137,7 +8164,7 @@ function initCharts() {
   // with the main-chart's own so the dropdown at #chart-tz drives
   // both axis ticks and crosshair tooltip.
   const _mainFmt = _buildChartTzFormatter(_chartTimezone);
-  _chartMain = _lwcCreateChart(mainEl, {
+  _chartMain = _registerChart(_lwcCreateChart(mainEl, {
     ...opts,
     localization: { timeFormatter: _mainFmt.full },
     timeScale: {
@@ -8147,15 +8174,15 @@ function initCharts() {
     },
     width:  mainEl.clientWidth,
     height: mainEl.clientHeight || 500,
-  });
-  _chartCandles = _chartMain.addSeries(_LWC().CandlestickSeries, {
+  }));
+  _chartCandles = _registerCandleSeries(_chartMain.addSeries(_LWC().CandlestickSeries, {
     upColor:        _cssVar('--chart-up', '#26a69a'),
     downColor:      _cssVar('--red',    '#ef5350'),
     borderUpColor:  _cssVar('--chart-up', '#26a69a'),
     borderDownColor:_cssVar('--red',    '#ef5350'),
     wickUpColor:    _cssVar('--chart-up', '#26a69a'),
     wickDownColor:  _cssVar('--red',    '#ef5350'),
-  });
+  }));
 
   if (_hasIndicator('BOLLINGER')) {
     _chartSeries.bbUpper  = _chartMain.addSeries(_LWC().LineSeries, { color: _cssVar('--blue', '#5b8dee'), lineWidth: 1 });
@@ -9251,7 +9278,7 @@ function initWizardChart() {
   const sk = $('wizard-chart-skeleton');
   if (sk) sk.classList.remove('chart-skeleton-hidden');
   const _wizardFmt = _buildChartTzFormatter(_wizardChartTimezone);
-  _wizardChart = _lwcCreateChart(el, {
+  _wizardChart = _registerChart(_lwcCreateChart(el, {
     ..._chartLayoutOpts(),
     localization: { timeFormatter: _wizardFmt.full },
     timeScale: {
@@ -9261,7 +9288,7 @@ function initWizardChart() {
     },
     width:  el.clientWidth,
     height: el.clientHeight || 250,
-  });
+  }));
   // Populate + wire the wizard timezone dropdown once per init —
   // teardown nulls _wizardChart so a re-init re-runs this block
   // with the fresh instance.
@@ -9280,14 +9307,14 @@ function initWizardChart() {
       }
     };
   }
-  _wizardCandles = _wizardChart.addSeries(_LWC().CandlestickSeries, {
+  _wizardCandles = _registerCandleSeries(_wizardChart.addSeries(_LWC().CandlestickSeries, {
     upColor:        _cssVar('--chart-up', '#26a69a'),
     downColor:      _cssVar('--red',    '#ef5350'),
     borderUpColor:  _cssVar('--chart-up', '#26a69a'),
     borderDownColor:_cssVar('--red',    '#ef5350'),
     wickUpColor:    _cssVar('--chart-up', '#26a69a'),
     wickDownColor:  _cssVar('--red',    '#ef5350'),
-  });
+  }));
   if (typeof ResizeObserver !== 'undefined') {
     _wizardResizeObs = new ResizeObserver(entries => {
       for (const e of entries) {
@@ -9341,6 +9368,8 @@ function teardownWizardChart() {
   document.querySelectorAll('.chart-tool[data-wtool]').forEach(b => {
     b.classList.toggle('active', b.dataset.wtool === 'select');
   });
+  _unregisterChart(_wizardChart);
+  _unregisterCandleSeries(_wizardCandles);
   try { if (_wizardChart) _wizardChart.remove(); } catch (e) {}
   _wizardChart = null;
   _wizardCandles = null;
@@ -12906,8 +12935,8 @@ function btRestoreResultsForSlug(slug) {
     });
     const note = $('bt-open-deals-note');
     if (note) { note.textContent = ''; note.classList.add('hidden'); }
-    if (_btEquityChart) { try { _btEquityChart.remove(); } catch (e) {} _btEquityChart = null; }
-    if (_btMonthlyChart) { try { _btMonthlyChart.remove(); } catch (e) {} _btMonthlyChart = null; }
+    if (_btEquityChart) { _unregisterChart(_btEquityChart); try { _btEquityChart.remove(); } catch (e) {} _btEquityChart = null; }
+    if (_btMonthlyChart) { _unregisterChart(_btMonthlyChart); try { _btMonthlyChart.remove(); } catch (e) {} _btMonthlyChart = null; }
     const eqEl = $('bt-equity-chart'); if (eqEl) eqEl.innerHTML = '';
   }
 }
@@ -13196,14 +13225,14 @@ function btRenderResults(res) {
 
   // Equity curve chart
   const eqEl = $('bt-equity-chart');
-  if (_btEquityChart) { try { _btEquityChart.remove(); } catch (e) {} _btEquityChart = null; }
+  if (_btEquityChart) { _unregisterChart(_btEquityChart); try { _btEquityChart.remove(); } catch (e) {} _btEquityChart = null; }
   eqEl.innerHTML = '';
   if (typeof LightweightCharts !== 'undefined') {
-    _btEquityChart = _lwcCreateChart(eqEl, {
+    _btEquityChart = _registerChart(_lwcCreateChart(eqEl, {
       ..._chartLayoutOpts(),
       width: eqEl.clientWidth || 800,
       height: 300,
-    });
+    }));
     const eqSeries = _btEquityChart.addSeries(_LWC().LineSeries, {
       color: _cssVar('--accent', '#26a69a'), lineWidth: 2,
     });
@@ -13217,14 +13246,14 @@ function btRenderResults(res) {
 
   // Monthly PnL histogram
   const mEl = $('bt-monthly-chart');
-  if (_btMonthlyChart) { try { _btMonthlyChart.remove(); } catch (e) {} _btMonthlyChart = null; }
+  if (_btMonthlyChart) { _unregisterChart(_btMonthlyChart); try { _btMonthlyChart.remove(); } catch (e) {} _btMonthlyChart = null; }
   mEl.innerHTML = '';
   if (typeof LightweightCharts !== 'undefined' && res.monthly_pnl.length) {
-    _btMonthlyChart = _lwcCreateChart(mEl, {
+    _btMonthlyChart = _registerChart(_lwcCreateChart(mEl, {
       ..._chartLayoutOpts(),
       width: mEl.clientWidth || 800,
       height: 200,
-    });
+    }));
     const hist = _btMonthlyChart.addSeries(_LWC().HistogramSeries, {});
     const green = _cssVar('--accent', '#26a69a');
     const red = _cssVar('--red', '#ef5350');
@@ -13316,14 +13345,14 @@ function btRenderWizardResults(res) {
   ].join('');
 
   const eqEl = $('wbt-equity-chart');
-  if (_wbtEquityChart) { try { _wbtEquityChart.remove(); } catch (e) {} _wbtEquityChart = null; }
+  if (_wbtEquityChart) { _unregisterChart(_wbtEquityChart); try { _wbtEquityChart.remove(); } catch (e) {} _wbtEquityChart = null; }
   eqEl.innerHTML = '';
   if (typeof LightweightCharts !== 'undefined') {
-    _wbtEquityChart = _lwcCreateChart(eqEl, {
+    _wbtEquityChart = _registerChart(_lwcCreateChart(eqEl, {
       ..._chartLayoutOpts(),
       width: eqEl.clientWidth || 600,
       height: 240,
-    });
+    }));
     const series = _wbtEquityChart.addSeries(_LWC().LineSeries, {
       color: _cssVar('--accent', '#26a69a'), lineWidth: 2,
     });
@@ -13457,11 +13486,15 @@ function btInitChart(candles, deals) {
   _btLastDeals = deals;
   const el = $('bt-chart-container');
   if (!el || !_chartLibAvailable()) return;
-  if (_btCandleChart) { try { _btCandleChart.remove(); } catch (e) {} }
+  if (_btCandleChart) {
+    _unregisterChart(_btCandleChart);
+    _unregisterCandleSeries(_btCandleSeries);
+    try { _btCandleChart.remove(); } catch (e) {}
+  }
   _btMarkersPrimitive = null;
   _btDealLines = [];
   const _btFmt = _buildChartTzFormatter(_btCandleChartTimezone);
-  _btCandleChart = _lwcCreateChart(el, {
+  _btCandleChart = _registerChart(_lwcCreateChart(el, {
     ..._chartLayoutOpts(),
     localization: { timeFormatter: _btFmt.full },
     timeScale: {
@@ -13471,7 +13504,7 @@ function btInitChart(candles, deals) {
     },
     width: el.clientWidth || 800,
     height: 500,
-  });
+  }));
   // Show + populate the backtest-candle timezone toolbar next to
   // the chart. The toolbar is hidden by default (display:none in
   // HTML) so it doesn't flash while the backtest is still running.
@@ -13492,14 +13525,14 @@ function btInitChart(candles, deals) {
       }
     };
   }
-  _btCandleSeries = _btCandleChart.addSeries(_LWC().CandlestickSeries, {
+  _btCandleSeries = _registerCandleSeries(_btCandleChart.addSeries(_LWC().CandlestickSeries, {
     upColor: _cssVar('--chart-up', '#26a69a'),
     downColor: _cssVar('--red', '#ef5350'),
     borderUpColor: _cssVar('--chart-up', '#26a69a'),
     borderDownColor: _cssVar('--red', '#ef5350'),
     wickUpColor: _cssVar('--chart-up', '#26a69a'),
     wickDownColor: _cssVar('--red', '#ef5350'),
-  });
+  }));
   _btCandleSeries.setData(candles);
   _btRenderOverlays(candles);
   _btCandleChart.timeScale().fitContent();
@@ -13695,6 +13728,8 @@ function btShowDealOnChart(dealIdx) {
 }
 
 function btCleanupChart() {
+  _unregisterChart(_btCandleChart);
+  _unregisterCandleSeries(_btCandleSeries);
   if (_btCandleChart) { try { _btCandleChart.remove(); } catch (e) {} }
   _btCandleChart = null; _btCandleSeries = null;
   _btLastDeals = null; _btLastCandles = null;
