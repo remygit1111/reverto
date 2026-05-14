@@ -14,8 +14,7 @@ Typical recovery sequence after a crashed rotation:
         logs/.credentials.key.bak.20260418153022
 
     # 4. Verify credentials decrypt:
-    .venv/bin/python -c "from core.credentials import get_keys; \\
-        print(get_keys('bitget') is not None)"
+    make recover-test
 
     # 5. Restart portal
     make start
