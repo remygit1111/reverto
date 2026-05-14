@@ -281,10 +281,9 @@ setup-admin:
 # per account.
 recover-test:
 	@.venv/bin/python -c "from core import exchange_account_store; \
-		from core.credentials import get_keys_by_uuid; \
 		accounts = exchange_account_store.list_accounts(user_id=1); \
 		print(f'Checking {len(accounts)} account(s) for user_id=1:'); \
-		[print(f\"  {a['alias']}: {'OK' if get_keys_by_uuid(a['credentials_uuid'], 1) else 'FAIL'}\") for a in accounts]"
+		[print(f\"  {a['alias']}: {'OK' if exchange_account_store.get_account_credentials(a['id']) else 'FAIL'}\") for a in accounts]"
 
 # ── Portfolio snapshot scheduler (systemd service) ──────────────────────────
 # The reverto-scheduler service runs main_scheduler.py as a long-
@@ -312,7 +311,7 @@ scheduler-logs:
 # we explicitly clear it via `make telegram-clear-webhook`.
 telegram-register-webhook:
 	@if [ ! -f .env ]; then echo ".env not found"; exit 1; fi; \
-	set -a; . .env; set +a; \
+	set -a; . ./.env; set +a; \
 	if [ -z "$$TELEGRAM_BOT_TOKEN" ] || [ -z "$$TELEGRAM_WEBHOOK_SECRET" ]; then \
 		echo "TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET must be set in .env"; \
 		exit 1; \
@@ -326,7 +325,7 @@ telegram-register-webhook:
 
 telegram-clear-webhook:
 	@if [ ! -f .env ]; then echo ".env not found"; exit 1; fi; \
-	set -a; . .env; set +a; \
+	set -a; . ./.env; set +a; \
 	if [ -z "$$TELEGRAM_BOT_TOKEN" ]; then \
 		echo "TELEGRAM_BOT_TOKEN must be set in .env"; \
 		exit 1; \
