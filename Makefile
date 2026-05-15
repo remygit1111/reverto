@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin recover-test seed-findings deploy deploy-marketing rollback backup restore scheduler-status scheduler-restart scheduler-logs telegram-register-webhook telegram-clear-webhook
+.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin recover-test seed-findings deploy deploy-marketing rollback backup restore scheduler-status scheduler-restart scheduler-logs telegram-register-webhook telegram-clear-webhook release
 
 # ── Default target ───────────────────────────────────────────────────────────
 help:
@@ -333,3 +333,28 @@ telegram-clear-webhook:
 	curl -s -X POST "https://api.telegram.org/bot$${TELEGRAM_BOT_TOKEN}/deleteWebhook"; \
 	echo ""; \
 	echo "Webhook cleared."
+
+# ── Release — BSL 1.1 license bump ──────────────────────────────────────────
+# Automate LICENSE updates for new releases under BSL 1.1.
+# Usage: make release VERSION=0.6.0
+# Bumps the Licensed Work version and rolls the Change Date 4 years
+# forward. See docs/RELEASES.md + docs/plugin_split_decisions.md O2.
+release:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION not set. Usage: make release VERSION=0.6.0"; \
+		exit 1; \
+	fi
+	@today=$$(date +%Y-%m-%d); \
+	change_date=$$(date -d "+4 years" +%Y-%m-%d); \
+	echo "Updating LICENSE for v$(VERSION)..."; \
+	echo "  Release date: $$today"; \
+	echo "  Change Date:  $$change_date"; \
+	sed -i.bak "s/^Licensed Work:.*/Licensed Work:        Reverto v$(VERSION)/" LICENSE; \
+	sed -i.bak "s/^                      The Licensed Work is (c) 2026.*/                      The Licensed Work is (c) 2026 Remy Fokkens/" LICENSE; \
+	sed -i.bak "s/^Change Date:.*/Change Date:          $$change_date/" LICENSE; \
+	rm -f LICENSE.bak; \
+	echo ""; \
+	echo "LICENSE updated. Remember to:"; \
+	echo "  1. Add a row to docs/RELEASES.md for v$(VERSION) (Change Date: $$change_date)"; \
+	echo "  2. Commit: git add LICENSE docs/RELEASES.md && git commit -m 'Release v$(VERSION)'"; \
+	echo "  3. Tag: git tag v$(VERSION) && git push origin v$(VERSION)"
