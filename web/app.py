@@ -3192,6 +3192,17 @@ async def _fetch_ohlcv_range(
     for _ in range(max_pages):
         if since >= end_ms:
             break
+        # Skip pages whose `since` is at/past the current time.
+        # Bitget rejects future-dated `since` with error 40017, which
+        # burns 3 retry attempts per page. The previous page already
+        # returned every candle available, so breaking here is safe.
+        now_ms = int(time.time() * 1000)
+        if since >= now_ms - tf_ms:
+            logger.info(
+                "Stopping at page %d for %s %s: since=%d at/past current time (now_ms=%d)",
+                pages_fetched + 1, symbol, timeframe, since, now_ms,
+            )
+            break
         if pages_fetched > 0:
             await asyncio.sleep(_CANDLES_PAGE_SLEEP_S)
         page = await _fetch_ohlcv_page_with_retry(
