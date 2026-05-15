@@ -41,6 +41,16 @@ Reverto targets **inverse perpetual contracts** specifically (where margin and P
 
 ## Status
 
+**Current version: Reverto v0.5.0**
+
+Check the running version:
+
+```bash
+python main_paper.py --version
+```
+
+See [docs/RELEASES.md](docs/RELEASES.md) for the release history and [LICENSE](LICENSE) for current license terms.
+
 Reverto is functional for paper trading and backtesting. The live-trading scaffold exists but requires careful configuration and review before deploying real capital.
 
 This project is published as a snapshot of working code. The original maintainer (`remy1111`) uses Reverto for personal trading. There is no commercial roadmap and no service-level agreement.
