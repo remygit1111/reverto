@@ -48,6 +48,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _REPO = Path(__file__).resolve().parent.parent
 _WEB_APP = _REPO / "web" / "app.py"
 _PAPER_ENGINE = _REPO / "paper" / "paper_engine.py"
+# Phase 2 Task 2.1 moved _write_state (and the heartbeat / schema-version
+# stamping it does) out of paper/paper_engine.py into the extracted
+# TradingEngine base. The two source-text guards below scan both files so
+# they keep asserting the field is stamped wherever the engine code lives.
+_TRADING_ENGINE = _REPO / "core" / "trading_engine.py"
 
 
 # ─── W1: process-group isolation ─────────────────────────────────────────────
@@ -110,9 +115,14 @@ def test_paper_engine_stamps_heartbeat_on_state_write():
     """The engine's ``_write_state`` must include ``last_heartbeat``
     in every snapshot so the portal can detect a silent exit.
     """
-    src = _PAPER_ENGINE.read_text(encoding="utf-8")
+    src = (
+        _PAPER_ENGINE.read_text(encoding="utf-8")
+        + "\n"
+        + _TRADING_ENGINE.read_text(encoding="utf-8")
+    )
 
-    # The constant + the field both live in paper_engine.py.
+    # The constant + the field live in the engine code (TradingEngine
+    # base after Task 2.1; PaperEngine before it).
     assert "HEARTBEAT_INTERVAL_SEC" in src
     assert '"last_heartbeat"' in src, (
         "paper_engine._write_state must stamp last_heartbeat in the "
@@ -380,7 +390,11 @@ def test_bot_state_includes_schema_version_stamp():
     in every snapshot — that is the on-disk signal the portal reads
     for mismatch detection.
     """
-    src = _PAPER_ENGINE.read_text(encoding="utf-8")
+    src = (
+        _PAPER_ENGINE.read_text(encoding="utf-8")
+        + "\n"
+        + _TRADING_ENGINE.read_text(encoding="utf-8")
+    )
 
     assert "STATE_SCHEMA_VERSION" in src
     assert '"state_schema_version"' in src, (
