@@ -321,4 +321,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    from core._version import __version__
+
+    if "--version" in sys.argv:
+        print(f"Reverto v{__version__}")
+        sys.exit(0)
     main()

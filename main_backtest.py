@@ -12,6 +12,8 @@ import argparse
 import logging
 import sys
 
+from core._version import __version__
+
 logging.basicConfig(
     level=logging.WARNING,  # Quiet — only the report in the terminal
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -23,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description="Reverto Backtest Engine")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"Reverto v{__version__}",
+    )
     parser.add_argument(
         "--config",
         default="config/bots/btc_backtest.yaml",
