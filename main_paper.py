@@ -18,6 +18,7 @@ from pathlib import Path
 from config.config_loader import load_bot_config
 from config.models import Mode
 from core import paths
+from core._version import __version__
 from core.file_lock import LockTimeoutError, exclusive_lock
 from core.logging_setup import (
     configure_bot_file_logging,
@@ -53,6 +54,11 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Reverto paper trading engine")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"Reverto v{__version__}",
+    )
     parser.add_argument(
         "--bot",
         default=None,

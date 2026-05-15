@@ -11,7 +11,17 @@
 import logging
 import os
 import atexit
+import sys
 from logging.handlers import RotatingFileHandler
+
+# --version short-circuit must run before any module-level side effects
+# below (PID-file write, log dir creation) so it is safe to query even
+# while a portal is running.
+if "--version" in sys.argv:
+    from core._version import __version__
+
+    print(f"Reverto v{__version__}")
+    sys.exit(0)
 
 from core.logging_setup import RequestIdFilter
 
