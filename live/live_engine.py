@@ -121,6 +121,12 @@ class LiveEngine(PaperEngine):
             exchange, max_skew_seconds=clock_skew_tolerance,
         )
         self._paused_by_clock_skew: bool = False
+        # Saved _paused_by_drawdown value while clock-skew forces the
+        # drawdown flag on for one tick. _pre_tick_hook stashes the
+        # prior value here; _post_tick_hook restores it (via the
+        # TradingEngine._tick try/finally). Only meaningful while
+        # _paused_by_clock_skew is True.
+        self._prev_drawdown_for_skew: bool = False
 
         # Order reconciler — Phase 1 scaffolding runs the timeout pass
         # only (the commented-out fetch_order branch lights up in
@@ -159,14 +165,18 @@ class LiveEngine(PaperEngine):
         )
 
     # ------------------------------------------------------------------
-    # Tick override — clock-skew gate
+    # Tick hooks — clock-skew gate + periodic reconciler
     # ------------------------------------------------------------------
 
-    def _tick(self) -> None:
-        """Override of PaperEngine._tick that pre-checks exchange clock
-        skew. When the local clock has drifted beyond tolerance we skip
-        order-placement entirely for this tick; state writing still
-        proceeds so the dashboard reflects the paused state.
+    def _pre_tick_hook(self) -> None:
+        """Pre-check exchange clock skew before the main tick body.
+
+        When the local clock has drifted beyond tolerance we skip
+        order-placement for this tick by flipping the drawdown-pause
+        flag (which _check_entry / _check_dca both honour); state
+        writing still proceeds so the dashboard reflects the paused
+        state. _post_tick_hook restores the flag and skips the
+        reconciler for the skewed tick.
         """
         skew, ok = self.clock_monitor.check()
         if not ok:
@@ -179,24 +189,32 @@ class LiveEngine(PaperEngine):
             # Skipping entry / DCA / order actions is simplest by
             # flipping the existing drawdown-pause flag — _check_entry
             # and _check_dca both honour it. We flip only for this
-            # tick; the next tick re-checks skew.
-            prev_drawdown = self._paused_by_drawdown
+            # tick; the next tick re-checks skew. The saved value is
+            # restored by _post_tick_hook via TradingEngine._tick's
+            # try/finally.
+            self._prev_drawdown_for_skew = self._paused_by_drawdown
             self._paused_by_drawdown = True
-            try:
-                super()._tick()
-            finally:
-                self._paused_by_drawdown = prev_drawdown
             return
 
         if self._paused_by_clock_skew:
             logger.info("Clock skew back within tolerance (%.2fs) — resuming", skew)
         self._paused_by_clock_skew = False
-        super()._tick()
+
+    def _post_tick_hook(self) -> None:
+        """Restore the drawdown flag (if the pre-hook flipped it for
+        clock skew) and otherwise run the periodic reconciler.
+
+        Runs in TradingEngine._tick's finally block, so it executes
+        even when the main tick body raises.
+        """
+        if self._paused_by_clock_skew:
+            self._paused_by_drawdown = self._prev_drawdown_for_skew
+            return  # SKIP reconciler when clock-skew paused
 
         # Periodic reconciler pass. In Phase 1 this only surfaces
         # timeout-pending orders; Phase 3 wires the real fetch_order
-        # branch. Running it here (not inside super()._tick) keeps
-        # PaperEngine tick semantics untouched.
+        # branch. Running it here (not inside the main tick body)
+        # keeps PaperEngine tick semantics untouched.
         self._reconcile_tick_counter += 1
         if self._reconcile_tick_counter >= RECONCILE_EVERY_N_TICKS:
             self._reconcile_tick_counter = 0
