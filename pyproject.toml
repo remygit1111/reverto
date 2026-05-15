@@ -1,0 +1,34 @@
+# Reverto - BTC/USD inverse perpetual DCA bot platform
+#
+# This file provides project metadata only. Reverto is currently an
+# application, not a pip-installable package. Dependencies are managed
+# via requirements.txt; this file does not duplicate them.
+#
+# Phase 3 of the plugin-split work (see docs/plugin_split_decisions.md)
+# will introduce a separate `reverto-live` pip package in its own repo
+# with its own pyproject.toml. The framework (this repo) may also gain
+# build-system configuration at that point.
+
+[project]
+name = "reverto"
+version = "0.5.0"
+description = "BTC/USD inverse perpetual DCA bot platform"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Remy Fokkens" }
+]
+keywords = ["crypto", "trading", "bot", "dca", "bitcoin"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+]
+
+[project.urls]
+Repository = "https://github.com/remygit1111/reverto"
