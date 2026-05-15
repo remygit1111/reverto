@@ -780,175 +780,206 @@ class TradingEngine(ABC):
     # ------------------------------------------------------------------
 
     def _tick(self):
-        """Single iteration of the main loop."""
-        # Prometheus instrumentation — best-effort. Failure to record
-        # metrics must never kill the tick.
+        """Single iteration of the main loop.
+
+        Subclasses can extend behavior via _pre_tick_hook (runs before
+        the main body) and _post_tick_hook (runs after, guaranteed to
+        execute via try/finally even if the body raises).
+        """
+        self._pre_tick_hook()
         try:
-            from web import metrics as _m
-            _m.record_tick(
-                self._bot_slug or "unknown", self.config.mode.value,
-            )
-            _tick_ctx = _m.tick_duration_seconds.labels(
-                bot_slug=self._bot_slug or "unknown",
-            ).time()
-            _tick_ctx.__enter__()
-        except Exception:
-            _tick_ctx = None
-
-        try:
-            ticker = self.exchange.get_ticker(self.config.pair)
-
-            # Prefer mark price — matches real exchange TP/SL behaviour
-            if ticker.mark_price is not None:
-                price = float(ticker.mark_price)
-            else:
-                price = ticker.last
-                logger.debug("mark_price unavailable — falling back to ticker.last")
-
-            self._current_price = price
-            logger.debug(f"{self.config.pair} price: ${price:,.2f}")
-
-            is_open = self.guard.is_open()
-
-            self._check_schedule_transition(is_open)
-            self._fetch_closes_if_needed()
-            self._refresh_wick_candle()
-
-            # Always update indicator snapshot (regardless of schedule)
-            # so the dashboard shows current values during off-hours.
-            bot_tf = self.config.timeframe
-            if self._closes_per_tf.get(bot_tf):
-                self._last_snapshot = self.indicator_engine.get_indicator_snapshot(
-                    self._closes_per_tf, bot_tf,
-                    highs_per_tf=self._highs_per_tf,
-                    lows_per_tf=self._lows_per_tf,
-                )
-
-            self._monitor_open_deals(price)
-            self._update_liq_guard(price)
-
-            # Drawdown guard — observes equity after open-deal monitoring
-            # so unrealised PnL is already reflected in balance+PnL sums.
-            # Triggers are translated into either a hard stop() or a
-            # soft pause (skip new entries, keep managing open deals).
-            self._update_drawdown_guard(price)
-            if self._paused_by_drawdown:
-                # Fall-through: still run sentinels and write state so
-                # the portal reflects the paused state, just don't look
-                # for new entries.
-                pass
-
-            # Manual trigger: the portal writes a sentinel file to force
-            # an immediate deal open, bypassing schedule + indicators.
-            self._check_manual_trigger(price)
-            self._check_deal_sentinels(price)
-
-            if is_open and not self._paused_by_drawdown:
-                self._check_entry(price)
-
-            # Write state for portal after every tick
-            self._write_state(price, is_open)
-
-            # Post-tick metric updates. Outside the metrics try so a
-            # broken metric.set() doesn't hide a real tick error.
+            # Prometheus instrumentation — best-effort. Failure to record
+            # metrics must never kill the tick.
             try:
                 from web import metrics as _m
-                slug = self._bot_slug or "unknown"
-                _m.set_balance(slug, self.state.balance_btc)
-                _m.set_open_deals(
-                    slug, len(self.state.get_open_deals_snapshot()),
+                _m.record_tick(
+                    self._bot_slug or "unknown", self.config.mode.value,
                 )
-                peak = self.drawdown_guard.peak_value
-                if peak and peak > 0:
-                    equity = self._current_equity_btc(price)
-                    dd_pct = max(0.0, (peak - equity) / peak * 100)
-                    _m.set_drawdown_pct(slug, dd_pct)
-            except Exception as _metrics_err:
-                # Metrics are best-effort — missing web/metrics module
-                # or registry errors must never break a tick. Debug-log
-                # so operators can find the failure if they dig.
-                logger.debug("tick metrics update failed: %s", _metrics_err)
+                _tick_ctx = _m.tick_duration_seconds.labels(
+                    bot_slug=self._bot_slug or "unknown",
+                ).time()
+                _tick_ctx.__enter__()
+            except Exception:
+                _tick_ctx = None
 
-            # Successful tick completed — end any transient-error streak
-            # and clear the persistent-notify latch so a future streak
-            # can fire a fresh notification. Cumulative _tick_error_count
-            # is intentionally NOT reset here (it feeds log-verbosity
-            # rate-limiting which is a per-run protection, not per-streak).
-            if self._consecutive_tick_errors > 0:
-                self._consecutive_tick_errors = 0
-                self._persistent_notify_sent = False
-
-        except NotImplementedError:
-            # LiveEngine's _place_market_order raises this when the
-            # operator flipped dry_run off before Phase 3. The whole
-            # point is to make real-order refusal LOUD — never swallow
-            # it into the tick-loop retry.
-            raise
-        except Exception as e:
-            self._tick_error_count += 1
-            self._consecutive_tick_errors += 1
             try:
-                from web import metrics as _m
-                # Pass the exception itself — classify_error maps it to
-                # a bounded-cardinality label so Prometheus doesn't grow
-                # a time-series per exception subclass.
-                _m.record_tick_error(self._bot_slug or "unknown", e)
-            except Exception as _metrics_err:
-                logger.debug(
-                    "record_tick_error failed: %s", _metrics_err,
-                )
+                ticker = self.exchange.get_ticker(self.config.pair)
 
-            # Classify once so every downstream consumer (log line,
-            # Telegram notification, future metrics tag) reads the same
-            # transient-vs-persistent verdict.
-            err = classify_exception(
-                e,
-                exchange=self.exchange_type,
-                endpoint="tick",
-                symbol=self.config.pair,
-                retry_attempt=self._consecutive_tick_errors,
-                max_retries=TICK_ERROR_PERSISTENT_THRESHOLD,
-            )
-            log_line = format_log_line(err, bot=self._bot_slug or "unknown")
+                # Prefer mark price — matches real exchange TP/SL behaviour
+                if ticker.mark_price is not None:
+                    price = float(ticker.mark_price)
+                else:
+                    price = ticker.last
+                    logger.debug("mark_price unavailable — falling back to ticker.last")
 
-            # First N errors: log the full traceback for debugging.
-            # After that fall back to the structured line so a broken
-            # exchange endpoint can't flood the log.
-            if self._tick_error_count <= TICK_ERROR_TRACEBACK_LIMIT:
-                logger.exception("Tick failure %s", log_line)
-            else:
-                logger.error("Tick failure %s", log_line)
+                self._current_price = price
+                logger.debug(f"{self.config.pair} price: ${price:,.2f}")
 
-            # Notification gate. Transient errors stay silent while the
-            # streak is still within the retry window — a single 429 or
-            # momentary network blip recovers on the next tick and never
-            # needs to reach Telegram. Non-transient errors (auth, bugs
-            # in our own code) notify on the first occurrence because no
-            # further retry will help without operator action. The latch
-            # caps one streak at one persistent notification so a
-            # prolonged outage doesn't repeat-spam the channel.
-            should_notify = (
-                not self._persistent_notify_sent
-                and (
-                    not err.is_transient
-                    or self._consecutive_tick_errors >= TICK_ERROR_PERSISTENT_THRESHOLD
-                )
-            )
-            if should_notify:
-                self._persistent_notify_sent = True
-                self._notify(
-                    self.notifier.notify_error_persistent,
-                    self.config.name,
-                    err,
-                )
-        finally:
-            if _tick_ctx is not None:
-                try:
-                    _tick_ctx.__exit__(None, None, None)
-                except Exception as _ctx_err:
-                    logger.debug(
-                        "tick timer context exit failed: %s", _ctx_err,
+                is_open = self.guard.is_open()
+
+                self._check_schedule_transition(is_open)
+                self._fetch_closes_if_needed()
+                self._refresh_wick_candle()
+
+                # Always update indicator snapshot (regardless of schedule)
+                # so the dashboard shows current values during off-hours.
+                bot_tf = self.config.timeframe
+                if self._closes_per_tf.get(bot_tf):
+                    self._last_snapshot = self.indicator_engine.get_indicator_snapshot(
+                        self._closes_per_tf, bot_tf,
+                        highs_per_tf=self._highs_per_tf,
+                        lows_per_tf=self._lows_per_tf,
                     )
+
+                self._monitor_open_deals(price)
+                self._update_liq_guard(price)
+
+                # Drawdown guard — observes equity after open-deal monitoring
+                # so unrealised PnL is already reflected in balance+PnL sums.
+                # Triggers are translated into either a hard stop() or a
+                # soft pause (skip new entries, keep managing open deals).
+                self._update_drawdown_guard(price)
+                if self._paused_by_drawdown:
+                    # Fall-through: still run sentinels and write state so
+                    # the portal reflects the paused state, just don't look
+                    # for new entries.
+                    pass
+
+                # Manual trigger: the portal writes a sentinel file to force
+                # an immediate deal open, bypassing schedule + indicators.
+                self._check_manual_trigger(price)
+                self._check_deal_sentinels(price)
+
+                if is_open and not self._paused_by_drawdown:
+                    self._check_entry(price)
+
+                # Write state for portal after every tick
+                self._write_state(price, is_open)
+
+                # Post-tick metric updates. Outside the metrics try so a
+                # broken metric.set() doesn't hide a real tick error.
+                try:
+                    from web import metrics as _m
+                    slug = self._bot_slug or "unknown"
+                    _m.set_balance(slug, self.state.balance_btc)
+                    _m.set_open_deals(
+                        slug, len(self.state.get_open_deals_snapshot()),
+                    )
+                    peak = self.drawdown_guard.peak_value
+                    if peak and peak > 0:
+                        equity = self._current_equity_btc(price)
+                        dd_pct = max(0.0, (peak - equity) / peak * 100)
+                        _m.set_drawdown_pct(slug, dd_pct)
+                except Exception as _metrics_err:
+                    # Metrics are best-effort — missing web/metrics module
+                    # or registry errors must never break a tick. Debug-log
+                    # so operators can find the failure if they dig.
+                    logger.debug("tick metrics update failed: %s", _metrics_err)
+
+                # Successful tick completed — end any transient-error streak
+                # and clear the persistent-notify latch so a future streak
+                # can fire a fresh notification. Cumulative _tick_error_count
+                # is intentionally NOT reset here (it feeds log-verbosity
+                # rate-limiting which is a per-run protection, not per-streak).
+                if self._consecutive_tick_errors > 0:
+                    self._consecutive_tick_errors = 0
+                    self._persistent_notify_sent = False
+
+            except NotImplementedError:
+                # LiveEngine's _place_market_order raises this when the
+                # operator flipped dry_run off before Phase 3. The whole
+                # point is to make real-order refusal LOUD — never swallow
+                # it into the tick-loop retry.
+                raise
+            except Exception as e:
+                self._tick_error_count += 1
+                self._consecutive_tick_errors += 1
+                try:
+                    from web import metrics as _m
+                    # Pass the exception itself — classify_error maps it to
+                    # a bounded-cardinality label so Prometheus doesn't grow
+                    # a time-series per exception subclass.
+                    _m.record_tick_error(self._bot_slug or "unknown", e)
+                except Exception as _metrics_err:
+                    logger.debug(
+                        "record_tick_error failed: %s", _metrics_err,
+                    )
+
+                # Classify once so every downstream consumer (log line,
+                # Telegram notification, future metrics tag) reads the same
+                # transient-vs-persistent verdict.
+                err = classify_exception(
+                    e,
+                    exchange=self.exchange_type,
+                    endpoint="tick",
+                    symbol=self.config.pair,
+                    retry_attempt=self._consecutive_tick_errors,
+                    max_retries=TICK_ERROR_PERSISTENT_THRESHOLD,
+                )
+                log_line = format_log_line(err, bot=self._bot_slug or "unknown")
+
+                # First N errors: log the full traceback for debugging.
+                # After that fall back to the structured line so a broken
+                # exchange endpoint can't flood the log.
+                if self._tick_error_count <= TICK_ERROR_TRACEBACK_LIMIT:
+                    logger.exception("Tick failure %s", log_line)
+                else:
+                    logger.error("Tick failure %s", log_line)
+
+                # Notification gate. Transient errors stay silent while the
+                # streak is still within the retry window — a single 429 or
+                # momentary network blip recovers on the next tick and never
+                # needs to reach Telegram. Non-transient errors (auth, bugs
+                # in our own code) notify on the first occurrence because no
+                # further retry will help without operator action. The latch
+                # caps one streak at one persistent notification so a
+                # prolonged outage doesn't repeat-spam the channel.
+                should_notify = (
+                    not self._persistent_notify_sent
+                    and (
+                        not err.is_transient
+                        or self._consecutive_tick_errors >= TICK_ERROR_PERSISTENT_THRESHOLD
+                    )
+                )
+                if should_notify:
+                    self._persistent_notify_sent = True
+                    self._notify(
+                        self.notifier.notify_error_persistent,
+                        self.config.name,
+                        err,
+                    )
+            finally:
+                if _tick_ctx is not None:
+                    try:
+                        _tick_ctx.__exit__(None, None, None)
+                    except Exception as _ctx_err:
+                        logger.debug(
+                            "tick timer context exit failed: %s", _ctx_err,
+                        )
+        finally:
+            self._post_tick_hook()
+
+    def _pre_tick_hook(self) -> None:
+        """Extension point before the main tick body. Default: no-op.
+
+        Subclasses can use this to perform pre-tick state checks (e.g.
+        clock skew validation) and set instance flags that the main
+        body and _post_tick_hook will consult.
+        """
+        pass
+
+    def _post_tick_hook(self) -> None:
+        """Extension point after the main tick body. Default: no-op.
+
+        Runs in a finally block, so it executes even when the main body
+        raises. Subclasses can use this to:
+        - Restore state flags set by _pre_tick_hook
+        - Run periodic maintenance (e.g. reconciler)
+
+        Subclasses should consult instance flags set by _pre_tick_hook
+        to decide whether to skip work this iteration.
+        """
+        pass
 
     # ------------------------------------------------------------------
     # Schedule transition detection
