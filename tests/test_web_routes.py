@@ -1458,6 +1458,89 @@ class TestCandlePagination:
         # Should have given up after exactly 2 empty pages (not spun to max_pages)
         assert empties[0] == 2
 
+    def test_fetch_ohlcv_range_stops_at_current_time(self, monkeypatch):
+        """When end_ms is in the future, the walk stops before issuing a
+        fetch whose `since` is at/past the current time. Bitget rejects
+        future-dated `since` with error 40017 and the helper burns 3
+        retries per such page, so the early-break must fire first."""
+        import asyncio
+        from web import app as webapp
+
+        tf_ms = webapp._TF_SECONDS["1h"] * 1000
+        now_ms = 1_778_800_000_000
+        # Freeze the clock the function reads via time.time().
+        monkeypatch.setattr(webapp.time, "time", lambda: now_ms / 1000.0)
+
+        start_ms = now_ms - 5 * tf_ms   # 5 hours ago
+        end_ms = now_ms + 2 * tf_ms     # 2 hours into the future
+
+        call_log = []
+
+        async def fake_page(client, symbol, timeframe, since_ms_arg, limit):
+            # One candle per page → cursor advances exactly tf_ms each
+            # iteration, so the walk would otherwise march straight past
+            # `now` toward the future-dated end_ms.
+            call_log.append(since_ms_arg)
+            return [[since_ms_arg, 100.0, 101.0, 99.0, 100.5, 10.0]]
+
+        monkeypatch.setattr(webapp, "_fetch_ohlcv_page_with_retry", fake_page)
+
+        bars = asyncio.run(webapp._fetch_ohlcv_range(
+            client=object(), symbol="BTC/USD", timeframe="1h",
+            start_ms=start_ms, end_ms=end_ms,
+        ))
+
+        # Core invariant: no page was ever requested with a `since` at or
+        # past the current time minus one timeframe (the 40017 zone).
+        threshold = now_ms - tf_ms
+        assert call_log, "expected at least one page fetch"
+        assert max(call_log) < threshold, (
+            f"fetched a future-dated page: max since={max(call_log)} "
+            f"is >= threshold {threshold}"
+        )
+        # Walk covers now-5tf, now-4tf, now-3tf, now-2tf then breaks at
+        # since=now-tf — exactly 4 pages, not the 7 it would take to
+        # reach the future end_ms (3 of which would hit 40017).
+        assert len(call_log) == 4
+        assert len(bars) == 4
+
+    def test_fetch_ohlcv_range_past_end_ms_unaffected(self, monkeypatch):
+        """Regression: the current-time early-break must not interfere
+        with the original `since >= end_ms` short-circuit when the whole
+        requested range is safely in the past."""
+        import asyncio
+        from web import app as webapp
+
+        tf_ms = webapp._TF_SECONDS["1h"] * 1000
+        now_ms = 1_778_800_000_000
+        monkeypatch.setattr(webapp.time, "time", lambda: now_ms / 1000.0)
+
+        # Entire range is ~1000 hours in the past.
+        start_ms = now_ms - 1000 * tf_ms
+        end_ms = start_ms + 400 * tf_ms  # still ~600h before `now`
+
+        pages = [
+            self._page(start_ms + i * 200 * tf_ms, 200, tf_ms)
+            for i in range(2)
+        ]
+        call_log = []
+
+        async def fake_page(client, symbol, timeframe, since_ms_arg, limit):
+            call_log.append(since_ms_arg)
+            for page in pages:
+                if page and page[0][0] == since_ms_arg:
+                    return page
+            return []
+
+        monkeypatch.setattr(webapp, "_fetch_ohlcv_page_with_retry", fake_page)
+
+        bars = asyncio.run(webapp._fetch_ohlcv_range(
+            client=object(), symbol="BTC/USD", timeframe="1h",
+            start_ms=start_ms, end_ms=end_ms,
+        ))
+        # All 400 bars stitched; the new check never fired (range is past).
+        assert len(bars) == 400
+
 
 # ── Deal management endpoints ─────────────────────────────────────────────────
 
