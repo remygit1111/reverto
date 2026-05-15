@@ -49,16 +49,60 @@ _provider: Optional[LiveProvider] = None
 _loaded: bool = False
 
 
-def load_live_provider() -> Optional[LiveProvider]:
-    """Load the live trading plugin, if installed.
+def _load_builtin_provider() -> Optional[LiveProvider]:
+    """Fall back to the in-tree BuiltinLiveProvider scaffold.
 
-    Returns the plugin's provider object on success, or None if the
-    plugin is not installed or is incompatible. Result is cached;
-    subsequent calls return the same value without re-importing.
+    ⚠️ TEMPORARY — Phase 3.7 deletes live/builtin_provider.py and this
+    fallback together when the real reverto-live pip package ships.
+
+    Used only when the external reverto_live package is *not
+    installed* (ImportError). An external plugin that IS installed
+    but malformed/incompatible never reaches here — those are
+    operator errors surfaced as None by load_live_provider().
+    """
+    try:
+        from live.builtin_provider import provider as _builtin
+    except ImportError as e:
+        logger.error(
+            "BuiltinLiveProvider import failed: %s — framework "
+            "live functionality unavailable",
+            e,
+        )
+        return None
+
+    if _builtin.interface_version != SUPPORTED_INTERFACE_VERSION:
+        logger.error(
+            "BuiltinLiveProvider interface_version=%d does not match "
+            "framework SUPPORTED_INTERFACE_VERSION=%d",
+            _builtin.interface_version,
+            SUPPORTED_INTERFACE_VERSION,
+        )
+        return None
+
+    logger.info(
+        "Using BuiltinLiveProvider (in-tree scaffold) — Phase 3 will "
+        "replace it with the reverto_live pip package"
+    )
+    return _builtin
+
+
+def load_live_provider() -> Optional[LiveProvider]:
+    """Load the live trading plugin.
+
+    Prefers the external `reverto_live` pip package. When that
+    package is not installed, falls back to the framework-internal
+    BuiltinLiveProvider scaffold (temporary — removed in Phase 3.7).
+    Result is cached; subsequent calls return the same value without
+    re-importing.
+
+    Returns None only when the external plugin is installed but
+    malformed/incompatible, or when even the built-in scaffold fails
+    to import (which should never happen in practice).
 
     Returns:
-        LiveProvider instance if plugin is loaded successfully.
-        None if plugin is not installed, malformed, or incompatible.
+        LiveProvider instance (external plugin, else built-in
+        scaffold) on success. None when the external plugin is
+        installed-but-broken or the scaffold itself is unavailable.
     """
     global _provider, _loaded
 
@@ -70,12 +114,11 @@ def load_live_provider() -> Optional[LiveProvider]:
     try:
         module = importlib.import_module("reverto_live")
     except ImportError:
-        logger.info(
-            "Live plugin (reverto_live) not installed — "
-            "framework runs in paper-only mode"
-        )
-        _provider = None
-        return None
+        # External plugin not installed — use the in-tree scaffold
+        # so the framework stays live-capable during the Phase 2-3
+        # interim window.
+        _provider = _load_builtin_provider()
+        return _provider
 
     if not hasattr(module, "provider"):
         logger.error(
