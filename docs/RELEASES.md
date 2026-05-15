@@ -23,7 +23,7 @@ implications:
 
 | Version | Released | Change Date | Status | Notes |
 |---------|----------|-------------|--------|-------|
-| v0.x-dev | 2026-05-15 | 2030-05-15 | BSL 1.1 | Initial BSL release. Previous versions under Apache 2.0. |
+| v0.5.0 | 2026-05-15 | 2030-05-15 | BSL 1.1 | Initial BSL release. Previous versions under Apache 2.0. |
 
 ## Pre-BSL history
 
