@@ -18,18 +18,17 @@ by wrapping the still-in-tree `live/` package. It exists during the
 During this window the framework needs a working LiveProvider so
 Tasks 2.5-2.7 can refactor web/ routes against a real provider.
 
-## Why delegate / snapshot from web/ ?
+## Why own / snapshot logic from web/ ?
 
-- ``start_bot_dry_run`` *delegates* to ``web.app.start_bot_dry_run``
-  (imported inside the method so there is no circular import at
-  module load). The spec sketched a "duplicate the validation then
-  call the original" pattern, but the real
-  ``web.app.start_bot_dry_run`` already performs every validation
-  AND calls ``registry.begin_start()`` itself — running the
-  validation twice would invoke ``begin_start()`` a second time and
-  always fail with "Bot is already starting". Pure delegation is
-  behaviourally identical to the production path and side-effect
-  safe.
+- ``start_bot_dry_run`` is the FULL implementation as of Phase 2
+  Task 2.5 (validation + registry gate + subprocess spawn). The
+  ownership inverted: ``web/app.py:start_bot_dry_run`` is now a
+  thin wrapper that delegates *to* this provider. The framework
+  internals it needs (``_BOT_SLUG_RE``, ``_bot_subprocess_env``,
+  ``BASE_DIR``, ``PYTHON_BIN``, ``registry``) are imported inside
+  the method so there is no circular import at module load
+  (core.plugin_loader imports this module). The implementation is
+  byte-equivalent to the pre-2.5 web/app.py version.
 - ``list_live_slugs`` is a verbatim snapshot of the *current*
   ``web/routes/portfolio.py:_live_bot_slugs`` (the real logic reads
   a nested ``bot:`` block, case-insensitively — not a flat
@@ -82,11 +81,23 @@ class BuiltinLiveProvider:
     ) -> dict:
         """Spawn a LIVE-mode bot in dry-run via main_live.py.
 
-        Delegates to web.app.start_bot_dry_run (the production code
-        path) rather than duplicating its ~70 lines of validation +
-        subprocess spawn. The import is performed inside the method
-        so there is no circular import at module load time
-        (core.plugin_loader imports this module).
+        Full implementation: validation + registry gate + subprocess
+        spawn. Phase 2 Task 2.5 moved this implementation out of
+        web/app.py:start_bot_dry_run to here (that function is now a
+        thin delegation wrapper).
+
+        Framework internals (_BOT_SLUG_RE, _bot_subprocess_env,
+        BASE_DIR, PYTHON_BIN, registry) are imported lazily inside
+        this method to avoid a circular import at module load —
+        core.plugin_loader imports this module, and web/app.py is
+        fully loaded by the time this method is ever called. This
+        tight coupling is intentional and temporary: Phase 3.7
+        deletes this file; the real reverto-live plugin owns its own
+        copy of this logic with its own architectural choices.
+
+        Byte-equivalent to the pre-2.5 web/app.py implementation:
+        same validation order, error messages, env handling,
+        subprocess args, PID-wait loop, and try/finally end_start.
 
         Args:
             user_id: tenant owning the bot
@@ -96,9 +107,92 @@ class BuiltinLiveProvider:
             {"ok": True, "message": str} on success
             {"ok": False, "error": str} on failure
         """
-        from web.app import start_bot_dry_run as _web_start_bot_dry_run
+        import asyncio
+        import subprocess
+        import time
 
-        return await _web_start_bot_dry_run(user_id, slug)
+        from web.app import (
+            _BOT_SLUG_RE,
+            _bot_subprocess_env,
+            BASE_DIR,
+            PYTHON_BIN,
+            registry,
+        )
+        from config.config_loader import load_bot_config
+
+        # Defense-in-depth: the route handler validates slug via
+        # _BOT_SLUG_RE and main_live.py's own regex re-validates. Belt-
+        # and-braces here so any non-route caller (tests, scripts) still
+        # gets a safe early-exit instead of reaching subprocess.Popen.
+        if not _BOT_SLUG_RE.match(slug):
+            return {"ok": False, "error": f"Invalid bot slug: {slug!r}"}
+        bot = await registry.get(user_id, slug)
+        if not bot:
+            return {"ok": False, "error": f"Unknown bot: {slug}"}
+        if bot.running:
+            return {"ok": False, "error": f"{slug} already running (PID {bot.pid})"}
+
+        # Only live-mode bots may be launched dry-run. A paper bot would
+        # fail the hard mode check inside main_live.py, but bouncing it at
+        # the portal is friendlier than letting the subprocess exit 1 and
+        # surface as a silent no-op.
+        try:
+            cfg = load_bot_config(bot.config_file)
+        except Exception as e:
+            return {"ok": False, "error": f"Could not load config: {e}"}
+        if cfg.mode != Mode.LIVE:
+            return {
+                "ok": False,
+                "error": (
+                    f"{slug} is mode={cfg.mode.value}; dry-run is only for live-mode bots"
+                ),
+            }
+
+        if not await registry.begin_start(user_id, slug):
+            return {"ok": False, "error": "Bot is already starting"}
+
+        try:
+            paths.user_pid_dir(user_id)
+
+            # Same allowlist-only env as start_bot (r1-023). DRY_RUN is
+            # set explicitly below because this spawn path deliberately
+            # asks main_live.py to skip its input() confirmation.
+            env = _bot_subprocess_env(user_id)
+            env["PYTHONPATH"] = str(BASE_DIR)
+            # main_live.py prompts the operator on non-dry-run launches and
+            # also respects DRY_RUN=1 as a bypass — set it explicitly so a
+            # non-TTY portal subprocess never hangs on input().
+            env["DRY_RUN"] = "1"
+
+            # ``start_new_session=True`` ≡ ``preexec_fn=os.setsid`` — see the
+            # commentary on ``start_bot`` for the full rationale. Identical
+            # PGID-isolation argument applies to live-mode dry-run subprocs.
+            with open(bot.log_file, "a") as log_out:
+                proc = subprocess.Popen(
+                    [PYTHON_BIN, str(BASE_DIR / "main_live.py"),
+                     "--bot", slug, "--user-id", str(user_id), "--dry-run"],
+                    cwd=str(BASE_DIR),
+                    stdout=log_out,
+                    stderr=log_out,
+                    env=env,
+                    start_new_session=True,  # ≡ preexec_fn=os.setsid
+                )
+            logger.info(f"Bot {slug} started in DRY-RUN (PID {proc.pid})")
+
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if bot.pid_file.exists():
+                    break
+                await asyncio.sleep(0.1)
+
+            return {
+                "ok": True,
+                "message": f"{slug} started in DRY-RUN (PID {proc.pid})",
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await registry.end_start(user_id, slug)
 
     async def is_live_config(self, config: BotConfig) -> bool:
         """Determine whether a config will boot under LiveEngine.
