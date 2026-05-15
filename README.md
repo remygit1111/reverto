@@ -127,7 +127,31 @@ For the explicit declaration that this repository is published as personal-use s
 
 ## License
 
-Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
+Reverto is licensed under the Business Source License 1.1 (BSL).
+
+**What this means:**
+
+- The source code is publicly available for inspection and audit.
+- You may use Reverto freely for non-production purposes including
+  evaluation, paper trading, and backtesting.
+- Production use (live trading with real funds) requires either:
+  - A separate commercial license from the Licensor, or
+  - Use together with a separately-licensed Reverto Live Plugin
+- Four years after each release, that specific version automatically
+  converts to Apache License 2.0 (see [docs/RELEASES.md](docs/RELEASES.md)
+  for the conversion schedule).
+
+**Why BSL?**
+
+The BSL provides a rolling commercial protection window while keeping
+the source code transparent. Crypto traders can audit how Reverto
+handles API keys, while preventing direct commercial redistribution
+during the protection period.
+
+For the full license terms, see [LICENSE](LICENSE).
+
+For background on the licensing strategy, see
+[docs/plugin_split_decisions.md](docs/plugin_split_decisions.md) O2.
 
 ## Author
 
