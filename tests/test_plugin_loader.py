@@ -33,14 +33,19 @@ class TestPluginLoader:
         sys.modules.pop("reverto_live", None)
         plugin_loader.reset_cache()
 
-    def test_plugin_not_installed_returns_none(self):
-        """When reverto_live is not installed, loader returns None."""
+    def test_external_plugin_not_installed_uses_builtin(self):
+        """When reverto_live is not installed, the loader falls back
+        to the in-tree BuiltinLiveProvider scaffold (Task 2.4)."""
+        from live.builtin_provider import BuiltinLiveProvider
+
         # Ensure reverto_live is not in sys.modules
         sys.modules.pop("reverto_live", None)
 
         result = plugin_loader.load_live_provider()
 
-        assert result is None
+        assert result is not None
+        assert isinstance(result, BuiltinLiveProvider)
+        assert result.interface_version == SUPPORTED_INTERFACE_VERSION
 
     def test_plugin_installed_returns_provider(self):
         """When reverto_live is installed with valid provider,
@@ -108,17 +113,37 @@ class TestPluginLoader:
         assert first is second
         assert first is mock_provider
 
-    def test_loader_caches_none_result(self):
-        """When plugin not installed, subsequent calls also return
-        None without re-importing.
+    def test_external_plugin_takes_precedence(self):
+        """When a valid external reverto_live IS installed, it is
+        returned — the in-tree BuiltinLiveProvider is NOT used.
         """
+        from live.builtin_provider import BuiltinLiveProvider
+
+        mock_module = MagicMock()
+        mock_provider = MagicMock()
+        mock_provider.interface_version = SUPPORTED_INTERFACE_VERSION
+        mock_module.provider = mock_provider
+
+        with patch.dict(sys.modules, {"reverto_live": mock_module}):
+            result = plugin_loader.load_live_provider()
+
+        assert result is mock_provider
+        assert not isinstance(result, BuiltinLiveProvider)
+
+    def test_loader_caches_builtin_fallback(self):
+        """When the external plugin is not installed, the builtin
+        fallback is cached — subsequent calls return the same
+        instance without re-importing.
+        """
+        from live.builtin_provider import BuiltinLiveProvider
+
         sys.modules.pop("reverto_live", None)
 
         first = plugin_loader.load_live_provider()
         second = plugin_loader.load_live_provider()
 
-        assert first is None
-        assert second is None
+        assert first is second
+        assert isinstance(first, BuiltinLiveProvider)
 
     def test_reset_cache_allows_reload(self):
         """After reset_cache(), loader re-imports and may return
@@ -141,10 +166,13 @@ class TestPluginLoader:
         cached = plugin_loader.load_live_provider()
         assert cached is mock_provider
 
-        # With reset, loader re-imports and finds no plugin
+        # With reset, loader re-imports, finds no external plugin,
+        # and falls back to the in-tree BuiltinLiveProvider scaffold.
+        from live.builtin_provider import BuiltinLiveProvider
+
         plugin_loader.reset_cache()
         after_reset = plugin_loader.load_live_provider()
-        assert after_reset is None
+        assert isinstance(after_reset, BuiltinLiveProvider)
 
 
 class TestLiveProviderProtocol:
@@ -188,3 +216,42 @@ class TestLiveProviderProtocol:
 
         # This should not raise — runtime_checkable allows isinstance
         assert isinstance(mock, LiveProvider)
+
+
+class TestBuiltinLiveProvider:
+    """Verify the temporary in-tree BuiltinLiveProvider scaffold
+    (live/builtin_provider.py — deleted in Phase 3.7)."""
+
+    def test_builtin_provider_implements_protocol(self):
+        """The module-level `provider` singleton structurally
+        satisfies the LiveProvider Protocol.
+        """
+        from live.builtin_provider import BuiltinLiveProvider, provider
+
+        assert isinstance(provider, BuiltinLiveProvider)
+        assert isinstance(provider, LiveProvider)
+        assert provider.interface_version == SUPPORTED_INTERFACE_VERSION
+
+    def test_builtin_is_live_config_returns_true_for_live_mode(self):
+        """is_live_config() is True for a live-mode config."""
+        import asyncio
+
+        from config.models import Mode
+        from live.builtin_provider import BuiltinLiveProvider
+
+        cfg = MagicMock()
+        cfg.mode = Mode.LIVE
+        result = asyncio.run(BuiltinLiveProvider().is_live_config(cfg))
+        assert result is True
+
+    def test_builtin_is_live_config_returns_false_for_paper_mode(self):
+        """is_live_config() is False for a non-live config."""
+        import asyncio
+
+        from config.models import Mode
+        from live.builtin_provider import BuiltinLiveProvider
+
+        cfg = MagicMock()
+        cfg.mode = Mode.PAPER
+        result = asyncio.run(BuiltinLiveProvider().is_live_config(cfg))
+        assert result is False
