@@ -112,6 +112,9 @@ For detailed self-hoster documentation:
 - [docs/architecture.md](docs/architecture.md) — codebase overview
 - [docs/exchange-permissions.md](docs/exchange-permissions.md) — API key permissions
 - [SECURITY.md](SECURITY.md) — security disclosure policy
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to engage with the project
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community guidelines
+- [NOTICE.md](NOTICE.md) — license intent and compliance responsibilities
 
 ## Configuration
 
