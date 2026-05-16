@@ -28,27 +28,41 @@
         ▼                      ▼
 ┌──────────────────┐    ┌──────────────────┐
 │ PaperEngine      │    │ LiveEngine       │
-│ + StateIO (v22)  │    │ + ClockMonitor   │
-│                  │◄───┤ + OrderReconcile │
-│  - tick loop     │    │                  │
-│  - DCA per-tick  │    │  - dry-run log   │
-│  - TP/SL checks  │    │  - skew gate     │
-│  - sentinels     │    │  - reconcile/N   │
-│  - guards:       │    └──────────────────┘
-│    liquidation   │
-│    drawdown      │     (config caps removed v25 —
-│    schedule      │      wizard advisory warnings
-│    balance       │      via /validate-config)
-└────────┬─────────┘
-         │ writes
-         ▼
+│ (77 LoC thin)    │    │ + ClockMonitor   │
+│ + _deduct_balance│◄───┤ + _tick hooks    │
+│   (simulated)    │    │ + OrderReconcile │
+└────────┬─────────┘    └────────┬─────────┘
+         │ extends               │ extends (via PaperEngine)
+         └──────────┬────────────┘
+                    ▼
 ┌──────────────────────────────────────┐
+│ TradingEngine (ABC)                   │
+│  core/trading_engine.py (~1908 LoC)   │
+│  - tick loop + _pre/_post_tick hooks  │
+│  - DCA per-tick / TP / SL             │
+│  - sentinels                          │
+│  - guards: liquidation / drawdown /   │
+│    schedule / balance                 │
+│  - StateIO (v22), notifications       │
+└────────┬──────────────────────────────┘
+         │ writes        (config caps removed v25 —
+         ▼                wizard advisory warnings
+┌──────────────────────────────────────┐  via /validate-config)
 │  Shared state                         │
 │  • logs/<slug>.state.json (atomic)    │
 │  • logs/reverto.db (SQLite + WAL)     │
 │  • logs/<slug>.manual_trigger, ...    │
 └──────────────────────────────────────┘
 ```
+
+> The engine hierarchy is `LiveEngine → PaperEngine → TradingEngine
+> (ABC)`. Plugin-split Phase 2 Task 2.1 extracted all shared trading
+> logic into `TradingEngine`; PaperEngine is now a 77-LoC thin
+> subclass. LiveEngine still inherits via PaperEngine (Phase 3
+> rewires it to inherit `TradingEngine` directly). See
+> docs/plugin_split_design.md §2.4 for the full TradingEngine
+> hierarchy and the LiveProvider Protocol that mediates Phase 3
+> plugin separation.
 
 ## Web layer structure (post-v22 refactor)
 
@@ -131,12 +145,18 @@ before the first boot on v3.
 
 ### User resolution (engines)
 
-`PaperEngine.__init__` and `LiveEngine.__init__` receive
-`user_id=1` as default; `main_paper.py` and `main_live.py` pass
-it explicitly. Every `deal_store` call inside the engine uses
-`self.user_id`. Phase 2 will derive the user from the bot-YAML
-folder (per-user directory layout) without further signature
-changes.
+The engine constructor receives `user_id=1` as default;
+`main_paper.py` and `main_live.py` pass it explicitly. Every
+`deal_store` call inside the engine uses `self.user_id`. The
+multi-tenant Phase 2 (per-user directory layout, documented above)
+derives the user from the bot-YAML folder without further
+signature changes.
+
+> After plugin-split Phase 2 Task 2.1 the constructor body lives in
+> `TradingEngine.__init__`; `PaperEngine` inherits it unchanged and
+> `LiveEngine` extends it via `super().__init__(...)`. (This is the
+> *plugin-split* Phase 2, distinct from the multi-tenant Phase 2
+> referenced in the previous sentence.)
 
 ### Credentials (Phase 1 = global)
 
@@ -232,9 +252,11 @@ paper/
 ```
 
 `StateIO` is responsible for all `state.json` persistence.
-`PaperEngine._load_state` / `_write_state` / `_clear_state`
-delegate to `self._state_io`. Per-bot file isolation makes
-locking unnecessary (a bot always has only one writer).
+`TradingEngine._load_state` / `_write_state` / `_clear_state`
+(moved from `PaperEngine` by plugin-split Phase 2 Task 2.1;
+inherited unchanged by both subclasses) delegate to
+`self._state_io`. Per-bot file isolation makes locking unnecessary
+(a bot always has only one writer).
 
 Backwards-compat: `paper.paper_engine` re-exports `_deal_to_dict`
 and `_dict_to_deal` as aliases so existing tests can keep using
@@ -303,6 +325,82 @@ swept by `_load_state` before any deal hydration.
 | `closed_deals[]`     | Last N (CLOSED_DEALS_UI_CAP) for the UI         |
 | `drawdown_guard`     | Peak + triggered + reason — **persisted**       |
 | `paused_by_drawdown` | Blocks new entries until operator resets        |
+
+## Plugin architecture (plugin-split Phase 2)
+
+> ⚠️ "Plugin-split Phase 2" is distinct from the "Multi-tenant
+> Phase 2" documented earlier in this file. See
+> docs/plugin_split_*.md for the full plan.
+
+### Class hierarchy
+
+After plugin-split Phase 2 Tasks 2.1–2.2:
+
+```
+TradingEngine (ABC)        — core/trading_engine.py (~1908 LoC)
+├── PaperEngine            — paper/paper_engine.py (77 LoC thin subclass)
+    └── LiveEngine         — live/live_engine.py (inherits via PaperEngine)
+```
+
+`TradingEngine` owns all shared trading logic: tick loop, DCA,
+TP/SL, sentinels, guards, state I/O, notifications. It declares
+exactly one `@abstractmethod`:
+
+- `_deduct_balance` — the balance gate. `PaperEngine` implements
+  it as a simulated in-memory check (its only method). `LiveEngine`
+  additionally provides `_place_market_order` / `_get_current_price`
+  for real-exchange order execution.
+
+`_tick` has two extension hooks (Task 2.2): `_pre_tick_hook` and
+`_post_tick_hook` (default no-ops on `TradingEngine`). `LiveEngine`
+fills them with the clock-skew gate and the periodic reconciler;
+`PaperEngine` uses the no-op defaults. LiveEngine no longer
+overrides `_tick` itself — it inherits `TradingEngine._tick` and
+only supplies the hooks.
+
+### LiveProvider Protocol
+
+`core/live_provider.py` defines the `LiveProvider` Protocol (PEP
+544, `@runtime_checkable`) that the closed-source live plugin
+(`reverto-live`, Phase 3) implements. The framework calls this
+Protocol; the plugin provides the implementation. Methods
+(`interface_version = 1`):
+
+- `start_bot_dry_run(user_id, slug) -> dict` (async) — spawn
+  `main_live.py` subprocess in dry-run mode
+- `is_live_config(config) -> bool` (async) — config introspection
+- `list_live_slugs(user_id) -> set[str]` (async) — portal data hook
+- `on_breaker_permanent_open(name, reason) -> None` (sync) —
+  Telegram fan-out for permanent circuit-breaker latches
+
+### Plugin loader
+
+`core/plugin_loader.py` lazily imports the plugin via
+`importlib.import_module("reverto_live")`. If the external plugin
+is not installed it falls back to the framework-internal
+`BuiltinLiveProvider` (`live/builtin_provider.py`) — a temporary
+scaffold deleted in Phase 3.7 when `reverto-live` becomes the only
+provider. Validation chain: external plugin found → `provider`
+attribute present → `interface_version` matches → use it; on any
+failure, fall through to `BuiltinLiveProvider`. The loader never
+raises and caches the result; it returns `None` only in the
+extreme case where even `BuiltinLiveProvider` is unloadable.
+
+### Framework callers using the Protocol
+
+- `web/app.py:start_bot_dry_run` — delegates to
+  `provider.start_bot_dry_run()` (Task 2.5)
+- `web/app.py:restart_bot` — uses `provider.is_live_config()` for
+  paper-vs-live restart dispatch (Task 2.6)
+- `web/routes/portfolio.py:_live_bot_slugs` — delegates to
+  `provider.list_live_slugs()` (Task 2.7)
+- `exchanges/public_exchange.py:_make_permanent_open_callback` —
+  delegates the Telegram fan-out via
+  `provider.on_breaker_permanent_open()`, with a CRITICAL-log
+  fallback when no provider is available (Task 2.8)
+
+See docs/plugin_split_design.md §2.3 for the full Protocol
+specification and rationale.
 
 ## Operator interventions
 
@@ -486,6 +584,19 @@ Detailed design rationale + threat model:
   branch.
 - **web.metrics** — every counter / gauge / histogram is defined in
   one place. Engines instrument via `record_tick`, `set_balance`, etc.
+- **core.trading_engine.TradingEngine** — abstract base class for
+  all trading engines; `PaperEngine` and `LiveEngine` subclass it.
+  Subclass-required: `_deduct_balance` (the single
+  `@abstractmethod`). Subclass-overridable hooks: `_pre_tick_hook`,
+  `_post_tick_hook` (default no-ops). Added by plugin-split Phase 2
+  Task 2.1 (hooks: Task 2.2).
+- **core.live_provider.LiveProvider** — Protocol (PEP 544,
+  `@runtime_checkable`) for the external live-trading plugin.
+  Framework calls it via `core.plugin_loader.load_live_provider()`;
+  returns `None` only on extreme failure (the in-tree
+  `BuiltinLiveProvider` scaffold always loads as fallback until
+  Phase 3.7). Interface version 1. Added by plugin-split Phase 2
+  Task 2.3.
 
 ## Extension points
 
@@ -503,15 +614,28 @@ Detailed design rationale + threat model:
   <domain> as _<domain>_routes` + `app.include_router(_<domain>_routes.router)`.
   Follow the existing patterns — see `web/routes/exchanges.py` for the
   minimal 3-endpoint template.
+- **Live trading plugin**: implement the
+  `core.live_provider.LiveProvider` Protocol in a separate pip
+  package exposing a module-level `provider` attribute with
+  `interface_version = 1`. `core/plugin_loader.py` loads it via
+  `importlib.import_module("reverto_live")` and falls through to
+  the in-tree `BuiltinLiveProvider` scaffold (deleted in Phase
+  3.7) if no external plugin is installed. See
+  docs/plugin_split_design.md §2.3 for the Protocol specification.
 
 ## Refactor roadmap — deliberately deferred
 
-- **paper_engine.py TickLoop/DealMonitor extract** — considered in
-  v22, deferred. All tick-related logic sits in one class today.
-  Splitting would require extracting `_monitor_open_deals`,
-  `_check_entry`, `_check_dca`, `_check_tp`, `_check_sl` — high
-  risk of state-synchronisation bugs without direct architectural
-  gain. Revisit when the file grows past 2000 lines.
+- **paper_engine.py TickLoop/DealMonitor extract** — *partially
+  completed* by plugin-split Phase 2 Task 2.1: the
+  `TradingEngine` ABC extraction moved all engine logic into
+  `core/trading_engine.py` and shrank `PaperEngine` from 1913 →
+  77 LoC. The further TickLoop/DealMonitor *decomposition* was
+  NOT done — `TradingEngine` remains a single ~1900-line class;
+  splitting out `_monitor_open_deals`, `_check_entry`,
+  `_check_dca`, `_check_tp`, `_check_sl` still carries
+  state-synchronisation risk without direct architectural gain.
+  Revisit if `TradingEngine` grows substantially or a new
+  subclass needs different tick semantics.
 - **_close_deal_at_price DRY refactor** — TP and SL branches have
   structurally different flows (SL trailing peak, TP indicator
   groups). Refactor risk > gain.
