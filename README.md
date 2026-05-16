@@ -1,20 +1,26 @@
 # Reverto
 
-> **An open-source automated trading framework for BTC/USD inverse perpetual contracts on Bitget and Kraken.** Self-hosted, designed for personal use, published for educational and research purposes.
+[![Version](https://img.shields.io/github/v/release/remygit1111/reverto)](https://github.com/remygit1111/reverto/releases)
+[![License](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org)
+[![Tests](https://img.shields.io/badge/tests-2113%20passing-success)](#)
+
+> **An open-source (BSL 1.1) automated trading framework for BTC/USD inverse perpetual contracts on Bitget and Kraken.** Self-hosted, paper-trading-ready out of the box, with a commercial Live Plugin coming in a future release.
+
+> ⚠️ **Trading cryptocurrencies involves substantial financial risk. You may lose all your capital.** Read [DISCLAIMERS.md](DISCLAIMERS.md) before deploying any code from this repository.
 
 ---
 
-## ⚠️ Important Notice
+## Table of Contents
 
-**This software is for educational and research purposes.** It is NOT a financial service, NOT a hosted product, and the maintainers do NOT offer commercial support.
-
-- **Trading cryptocurrencies involves substantial financial risk.** You may lose all your capital.
-- **No guarantees of profitability.** Backtest results do not predict future performance.
-- **Use at your own risk.** The software is provided "as is" without warranties of any kind. See [LICENSE](LICENSE) for full terms.
-- **Regulatory compliance is your responsibility.** If you deploy this software for live trading, you are responsible for compliance with applicable laws in your jurisdiction (including but not limited to the EU's MiCA regulation).
-- **The maintainers are not financial advisors.** Nothing in this repository constitutes financial advice.
-
-If you intend to use this software, you should fully understand the code, the trading strategies, and the risks involved. **If you don't, don't use it.**
+- [What is Reverto?](#what-is-reverto)
+- [Who is this for?](#who-is-this-for)
+- [Status](#status)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [License](#license)
+- [Author](#author)
 
 ---
 
@@ -25,19 +31,31 @@ Reverto is a Python-based automated trading framework that runs DCA (Dollar-Cost
 - **Multi-bot architecture** with per-bot configuration and isolated state
 - **Paper trading engine** for strategy validation without real capital
 - **Backtest engine** for historical strategy evaluation
-- **Live trading scaffold** for real-money deployment (requires explicit configuration)
+- **Live trading scaffold** for real-money deployment (commercial Live Plugin coming separately)
 - **Web portal** with TOTP 2FA, per-user encrypted credentials, and a workspace dashboard
 - **Indicator library** with RSI, EMA crossover, MACD, Bollinger Bands, PSAR, Supertrend, and more
 - **Telegram notifications** for trade alerts and lifecycle events
 
 Reverto targets **inverse perpetual contracts** specifically (where margin and PnL are denominated in the base asset, e.g., BTC). The math, position sizing, and liquidation logic differ from linear perpetuals.
 
-## What Reverto is NOT
+## Who is this for?
 
-- **Not a service.** This is software you run yourself on your own infrastructure.
-- **Not MiCA-compliant for commercial use.** If you want to offer this to others as a paid service in the EU, you will need to obtain CASP authorization separately. The maintainers do not provide such authorization.
-- **Not a guaranteed profit machine.** Trading bots can and do lose money.
-- **Not actively maintained as a product.** Bug fixes and improvements come on a best-effort basis.
+**You might like Reverto if:**
+
+- You want to self-host a Bitcoin DCA bot on your own infrastructure
+- You're comfortable with Python, Linux, and managing your own API keys
+- You prefer transparency (audit the code) over convenience (hosted service)
+- You want to evaluate the strategies via paper trading before risking real capital
+- You're interested in BTC inverse perpetual futures specifically
+
+**Reverto is probably NOT for you if:**
+
+- You want a "set and forget" hosted service
+- You don't have a technical background (Python, Linux, command line)
+- You expect support and SLAs typical of paid commercial products
+- You're trading anything other than BTC inverse perpetuals (no spot, no linear perps)
+
+See [DISCLAIMERS.md](DISCLAIMERS.md) for the full list of caveats and what Reverto is NOT.
 
 ## Status
 
@@ -51,7 +69,7 @@ python main_paper.py --version
 
 See [docs/RELEASES.md](docs/RELEASES.md) for the release history and [LICENSE](LICENSE) for current license terms.
 
-Reverto is functional for paper trading and backtesting. The framework — paper trading, backtest engine, indicators, web portal — is published under BSL 1.1 (see License section below) and free for non-production use.
+Reverto is functional for paper trading and backtesting. The framework — paper trading, backtest engine, indicators, web portal — is published under BSL 1.1 (see [License](#license) section) and free for non-production use.
 
 The live trading capability currently ships as an in-tree scaffold; it is being separated into a commercial `reverto-live` plugin in a future release. The framework will continue to be free; the live plugin will be sold separately. Pricing and availability will be announced at [reverto.bot](https://reverto.bot) when ready.
 
@@ -109,33 +127,68 @@ See [.env.example](.env.example) for the complete list.
 
 ## Architecture
 
+High-level component overview:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Portal (web/app.py via main_web.py)                         │
+│  ├── FastAPI: auth, routing, WebSocket log streaming         │
+│  ├── TOTP 2FA + per-user encrypted exchange credentials      │
+│  ├── BotRegistry — manages bot lifecycle from YAML config    │
+│  └── Spawns bots as subprocesses (paper or live)             │
+└────────────────┬────────────────────────────────────────────-┘
+                 │ subprocess.Popen
+      ┌──────────┴──────────┐
+      ▼                     ▼
+┌────────────────┐    ┌────────────────┐
+│ main_paper.py  │    │ main_live.py   │
+│   (per bot)    │    │   (per bot)    │
+│                │    │                │
+│ Paper trading  │    │ Live trading   │
+│ engine         │    │ engine         │
+└───────┬────────┘    └───────┬────────┘
+        │                     │
+        ▼                     ▼
+┌──────────────────┐    ┌──────────────────┐
+│ PaperEngine      │    │ LiveEngine       │
+│ + simulated      │    │ + real exchange  │
+│   fills          │    │   orders         │
+└────────┬─────────┘    └────────┬─────────┘
+         │                       │
+         └───────────┬───────────┘
+                     ▼
+         ┌──────────────────────────┐
+         │ TradingEngine (ABC)      │
+         │ Shared: tick loop, DCA,  │
+         │ TP/SL, sentinels, state, │
+         │ notifications            │
+         └──────────────────────────┘
+                     │
+                     ▼
+         ┌──────────────────────────┐
+         │ BaseExchange             │
+         │ Bitget + Kraken adapters │
+         │ via ccxt                 │
+         └──────────────────────────┘
+```
+
+Directory layout:
+
 ```
 ~/reverto/
-├── core/              Shared business logic (positions, indicators, paths)
-├── paper/             Paper-trading engine
+├── core/              Shared business logic (trading engine, indicators, paths)
+├── paper/             Paper-trading engine (subclass of TradingEngine)
 ├── backtest/          Backtest engine
-├── live/              Live-trading scaffold
+├── live/              Live-trading scaffold (separating to plugin in future release)
 ├── exchanges/         Bitget + Kraken adapters via ccxt
 ├── strategies/        DCA strategy + indicator implementations
 ├── web/               FastAPI portal (auth, dashboard, API)
 ├── notifications/     Telegram notifier
 ├── config/            Pydantic config models
-└── tests/             ~1925 tests covering core paths
+└── tests/             2113 tests covering core paths
 ```
 
-Each bot runs as a separate `main_paper.py` (or `main_live.py`) subprocess managed by the portal.
-
-## Disclaimers
-
-By cloning, modifying, or running this software, you acknowledge:
-
-1. The maintainers provide no warranty, express or implied (see [LICENSE](LICENSE)).
-2. You are responsible for testing and validating the software for your use case.
-3. You are responsible for the security of your exchange API keys and trading capital.
-4. You are responsible for regulatory compliance in your jurisdiction.
-5. Past performance (backtest or paper) does not predict future results.
-
-For the explicit declaration that this repository is published as personal-use software, see [PERSONAL_USE_DECLARATION.md](PERSONAL_USE_DECLARATION.md).
+Each bot runs as a separate `main_paper.py` (or `main_live.py`) subprocess managed by the portal. See [docs/architecture.md](docs/architecture.md) for the full architecture overview including the LiveProvider Protocol that mediates the future plugin separation.
 
 ## License
 
@@ -173,4 +226,4 @@ The Reverto framework is open-source (BSL 1.1) and self-hosted. A separately-lic
 
 ---
 
-*Reverto is independent software and is not affiliated with Bitget, Kraken, or any other exchange. Names and trademarks are the property of their respective owners.*
+**Before deploying:** Read [DISCLAIMERS.md](DISCLAIMERS.md) and [LICENSE](LICENSE).
