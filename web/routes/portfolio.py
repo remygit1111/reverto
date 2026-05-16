@@ -29,13 +29,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from core import (
     exchange_account_store,
     markets,
-    paths,
     portfolio_store,
     price_feed,
 )
@@ -112,35 +110,26 @@ def _format_captured_at_iso(captured_at: Optional[str]) -> Optional[str]:
     return s + "Z"
 
 
-def _live_bot_slugs(user_id: int) -> set[str]:
-    """Read every YAML under ``config/bots/<user_id>/`` and return the
-    slugs whose mode is ``live``.
+async def _live_bot_slugs(user_id: int) -> set[str]:
+    """Get slugs of live-mode bots for the given user.
 
-    We scan YAML rather than join against a "bots" DB table because
-    there is no such table — bot config is the YAML source of truth.
-    Paper bots are intentionally excluded from the per-bot breakdown
-    (paper has no real exposure).
+    Delegates to the loaded LiveProvider (BuiltinLiveProvider in
+    Phase 2, the real reverto-live plugin from Phase 3 onwards).
+    Returns an empty set if no provider is available — safer than
+    failing the route, since paper bots and the rest of the
+    portfolio page still render.
 
-    Malformed YAML is skipped silently — the broader system already
-    surfaces those errors via load_bot_config; this helper doesn't
-    need to second-guess.
+    Phase 2 Task 2.7: this function used to inline a YAML scan
+    over config/bots/<user_id>/. That logic now lives in the
+    provider (BuiltinLiveProvider has a verbatim copy from Task
+    2.4). See docs/plugin_split_design.md §2.3 for the rationale.
     """
-    user_dir = paths.user_bots_dir(user_id)
-    if not user_dir.exists():
+    from core.plugin_loader import load_live_provider
+
+    provider = load_live_provider()
+    if provider is None:
         return set()
-    live: set[str] = set()
-    for yaml_path in user_dir.glob("*.yaml"):
-        try:
-            data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
-            continue
-        block = data.get("bot") if isinstance(data, dict) else None
-        if not isinstance(block, dict):
-            continue
-        mode = block.get("mode")
-        if isinstance(mode, str) and mode.lower() == "live":
-            live.add(yaml_path.stem)
-    return live
+    return await provider.list_live_slugs(user_id)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────
@@ -344,7 +333,7 @@ async def get_per_bot_breakdown(
     portfolio table-row uses the current rate, so consistency wins
     over precision.
     """
-    live_slugs = _live_bot_slugs(user.id)
+    live_slugs = await _live_bot_slugs(user.id)
     if not live_slugs:
         return {"bots": []}
 
