@@ -376,3 +376,76 @@ class TestPublicExchangePermanentClassifier:
             "on_permanent_open; without the callback, a permanent "
             "error reaches the latch but no operator alert fires."
         )
+
+
+class TestPermanentOpenProviderDelegation:
+    """Phase 2 Task 2.8: the framework's permanent-open callback
+    delegates the fan-out to the loaded LiveProvider, and logs
+    CRITICAL (never silently) when no provider is available."""
+
+    def test_provider_callback_invoked_on_permanent_open(self):
+        """When a provider is loaded, the framework callback calls
+        provider.on_breaker_permanent_open(name, reason) and does
+        NOT fall through to the CRITICAL no-provider branch."""
+        from unittest.mock import MagicMock, patch
+
+        from exchanges.public_exchange import _make_permanent_open_callback
+
+        mock_provider = MagicMock()
+        cb = _make_permanent_open_callback("bitget")
+
+        with patch(
+            "core.plugin_loader.load_live_provider",
+            return_value=mock_provider,
+        ):
+            cb("public-bitget", "expired API key")
+
+        mock_provider.on_breaker_permanent_open.assert_called_once_with(
+            "public-bitget", "expired API key",
+        )
+
+    def test_provider_exception_is_contained(self):
+        """A provider that raises must not propagate back into the
+        breaker — the wrapper swallows and logs it."""
+        from unittest.mock import MagicMock, patch
+
+        from exchanges.public_exchange import _make_permanent_open_callback
+
+        mock_provider = MagicMock()
+        mock_provider.on_breaker_permanent_open.side_effect = RuntimeError(
+            "plugin blew up"
+        )
+        cb = _make_permanent_open_callback("kraken")
+
+        with patch(
+            "core.plugin_loader.load_live_provider",
+            return_value=mock_provider,
+        ):
+            # Must not raise.
+            cb("public-kraken", "auth failure")
+
+    def test_critical_log_when_provider_missing(self, caplog):
+        """When load_live_provider() returns None, the callback logs
+        a CRITICAL record so the latched breaker is never silent."""
+        import logging
+        from unittest.mock import patch
+
+        from exchanges.public_exchange import _make_permanent_open_callback
+
+        cb = _make_permanent_open_callback("bitget")
+
+        with patch(
+            "core.plugin_loader.load_live_provider",
+            return_value=None,
+        ):
+            with caplog.at_level(
+                logging.CRITICAL, logger="exchanges.public_exchange",
+            ):
+                cb("public-bitget", "no provider scenario")
+
+        crit = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert crit, "expected a CRITICAL log when no provider is available"
+        msg = crit[0].getMessage()
+        assert "PERMANENT OPEN" in msg
+        assert "no LiveProvider is registered" in msg
+        assert "public-bitget" in msg
