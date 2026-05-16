@@ -62,83 +62,56 @@ def _is_permanent_error(exc: BaseException) -> bool:
 
 
 def _make_permanent_open_callback(exchange_name: str):
-    """Build a one-shot callback that fires a Telegram alert when
-    the breaker for ``exchange_name`` first transitions into
+    """Build a one-shot callback that delegates to the LiveProvider
+    when the breaker for ``exchange_name`` first transitions into
     PERMANENT_OPEN.
 
-    The callback is idempotent at the breaker layer (see
-    ``CircuitBreaker._enter_permanent_open``) — a verlopen API
-    key triggers ONE Telegram message per service lifetime, not
-    one per failed retry. Operator clears via ``breaker.reset()``
-    or by restarting the service after fixing the root cause.
+    The actual fan-out (Telegram broadcast to every connected user)
+    is owned by the live provider — BuiltinLiveProvider in Phase 2,
+    the real reverto-live plugin from Phase 3 onwards. If no provider
+    is available the framework logs a CRITICAL message so operators
+    still see the breaker latched even when alerts are unreachable
+    (Aanpak 3 — loud failure, never silent, for safety infra).
 
-    The notifier import is lazy (inside the closure) so a
-    circular-import in ``notifications.telegram`` cannot break
-    module-load on this exchange wrapper. Notifier instantiation
-    can also raise (missing ``TELEGRAM_BOT_TOKEN`` /
-    ``TELEGRAM_CHAT_ID`` env-vars) — that path swallows the
-    ValueError and logs at INFO so a dev-mode deploy without
-    Telegram credentials does not surface a misleading
-    "exception" line.
+    The callback is idempotent at the breaker layer (see
+    ``CircuitBreaker._enter_permanent_open``) — a verlopen API key
+    triggers ONE provider call per service lifetime, not one per
+    failed retry. Operator clears via ``breaker.reset()`` or by
+    restarting after fixing the root cause.
+
+    Phase 2 Task 2.8 moved the Telegram fan-out body from this file
+    to BuiltinLiveProvider.on_breaker_permanent_open. See
+    docs/task_2_8_design_analysis.md for the design rationale.
     """
     def _callback(breaker_name: str, reason: str) -> None:
-        # Module-level breaker fan-out: there is no single user_id
-        # in scope here (the wrapper is shared across tenants), so
-        # the alert goes to every connected user. Operationally,
-        # everyone running bots on the affected exchange needs to
-        # know — gating this on user-level notify_on would silently
-        # drop a critical infra alert.
-        try:
-            from core import telegram_config_store
-            from notifications.telegram import TelegramNotifier
-        except Exception:  # noqa: BLE001 — defence-in-depth
-            logger.exception(
-                "Failed to import notifier dependencies for %s",
-                exchange_name,
-            )
-            return
-        message = (
-            "⚠️ <b>Circuit breaker PERMANENT OPEN</b>\n"
-            f"Exchange: {exchange_name}\n"
-            f"Breaker:  {breaker_name}\n"
-            f"Reason:   {reason}\n"
-            f"Action:   investigate API credentials or pair "
-            "config; restart the service or call "
-            "<code>breaker.reset()</code> to clear."
-        )
-        try:
-            user_ids = telegram_config_store.all_connected_user_ids()
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Failed to enumerate connected users for %s",
-                exchange_name,
-            )
-            return
-        if not user_ids:
-            logger.info(
-                "CircuitBreaker '%s' permanent-open: no users have "
-                "connected Telegram; skipping fan-out. Reason: %s",
-                breaker_name, reason,
-            )
-            return
-        for uid in user_ids:
+        from core.plugin_loader import load_live_provider
+
+        provider = load_live_provider()
+        if provider is not None:
             try:
-                TelegramNotifier(user_id=uid).send(message)
-            except ValueError:
-                # TELEGRAM_BOT_TOKEN missing entirely — nothing to
-                # send to anyone. Bail out, log once.
-                logger.info(
-                    "CircuitBreaker '%s' permanent-open: "
-                    "TELEGRAM_BOT_TOKEN not set; skipping. "
-                    "Reason: %s", breaker_name, reason,
-                )
-                return
-            except Exception:  # noqa: BLE001
-                # One bad notifier mustn't poison the fan-out.
+                provider.on_breaker_permanent_open(breaker_name, reason)
+            except Exception:  # noqa: BLE001 — provider failure must
+                # not propagate back into CircuitBreaker (the breaker
+                # already wraps this in its own try/except, but a
+                # contained log here is the actionable signal).
                 logger.exception(
-                    "Failed to send permanent-open notification "
-                    "for %s to user=%d", exchange_name, uid,
+                    "CircuitBreaker '%s' permanent-open: provider "
+                    "callback failed. Exchange: %s. Reason: %s",
+                    breaker_name, exchange_name, reason,
                 )
+            return
+
+        # No provider — CRITICAL so the latched breaker does not
+        # disappear silently. Operator must watch logs in this case.
+        logger.critical(
+            "CRITICAL: CircuitBreaker '%s' for %s is PERMANENT OPEN "
+            "but no LiveProvider is registered for fan-out. "
+            "Reason: %s. Operator action: investigate API credentials "
+            "or pair config; restart the service or call "
+            "breaker.reset() to clear. Telegram alerts are NOT being "
+            "sent for this breaker latch.",
+            breaker_name, exchange_name, reason,
+        )
     return _callback
 
 
