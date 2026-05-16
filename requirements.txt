@@ -31,7 +31,6 @@ mdurl==0.1.2
 multidict==6.7.1
 numpy==2.2.6
 pandas==3.0.2
-pandas-ta==0.4.71b0
 prometheus_client==0.25.0
 propcache==0.4.1
 pycares==5.0.1
@@ -49,8 +48,6 @@ setuptools==82.0.1
 six==1.17.0
 slowapi==0.1.9
 starlette==1.0.0
-threadpoolctl==3.6.0
-tqdm==4.67.3
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzlocal==5.3.1
