@@ -23,7 +23,7 @@ from typing import Optional
 from uuid import uuid4
 
 from config.config_loader import load_bot_config
-from config.models import BotConfig, Mode
+from config.models import BotConfig
 from core import paths, user_store
 from core.database import DatabaseMigrationError, init_db as _init_db
 from core.ids import DEAL_ID_RE
@@ -1986,10 +1986,21 @@ async def restart_bot(user_id: int, slug: str) -> dict:
         await asyncio.sleep(0.1)
 
     # Dispatch by mode — live bots restart back into dry-run (Phase 1
-    # only supports that), paper bots restart into paper. If config
-    # loading failed above, fall through to the paper path — that's the
-    # historical behaviour.
-    if cfg is not None and cfg.mode == Mode.LIVE:
+    # only supports that), paper bots restart into paper. The live
+    # decision is delegated to the LiveProvider (Task 2.6) so the
+    # plugin can apply its own criteria (licensing, plugin-specific
+    # config fields). Fall through to the paper path when config
+    # loading failed above OR the provider is unavailable — the
+    # historical/safe behaviour (never dispatch to live on doubt).
+    is_live = False
+    if cfg is not None:
+        from core.plugin_loader import load_live_provider
+
+        provider = load_live_provider()
+        if provider is not None:
+            is_live = await provider.is_live_config(cfg)
+
+    if is_live:
         return await start_bot_dry_run(user_id, slug)
     return await start_bot(user_id, slug)
 
