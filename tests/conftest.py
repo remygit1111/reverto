@@ -115,3 +115,64 @@ def deal():
 @pytest.fixture
 def notifier():
     return make_notifier()
+
+
+# ── LiveProvider mocking ─────────────────────────────────────────
+
+
+@pytest.fixture
+def mock_live_provider(monkeypatch):
+    """Mocked LiveProvider for tests that need to control live-mode
+    behavior without spinning up BuiltinLiveProvider.
+
+    The mock satisfies the LiveProvider Protocol structurally:
+    - ``interface_version`` attribute set to SUPPORTED_INTERFACE_VERSION
+    - All four Protocol methods (3 async + 1 sync) as MagicMock/
+      AsyncMock with sensible defaults
+
+    Tests can override specific method behaviors::
+
+        def test_something(mock_live_provider):
+            mock_live_provider.is_live_config = AsyncMock(return_value=True)
+            # ... rest of test ...
+
+    The fixture patches ``core.plugin_loader.load_live_provider`` to
+    return this mock, and resets the loader cache before and after
+    the test for isolation.
+
+    Use this fixture in tests that exercise code paths calling
+    ``load_live_provider()`` where you want to control the provider's
+    return values. For tests that need to verify the "no provider"
+    (None) case, use explicit ``monkeypatch.setattr(
+    "core.plugin_loader.load_live_provider", lambda: None)`` instead.
+
+    Added in Phase 2 Task 2.9 per docs/plugin_split_migration.md §3.1.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from core.live_provider import SUPPORTED_INTERFACE_VERSION
+    from core import plugin_loader
+
+    mock = MagicMock()
+    mock.interface_version = SUPPORTED_INTERFACE_VERSION
+
+    # Three async methods with sensible defaults
+    mock.start_bot_dry_run = AsyncMock(
+        return_value={"ok": True, "message": "mocked"}
+    )
+    mock.is_live_config = AsyncMock(return_value=False)
+    mock.list_live_slugs = AsyncMock(return_value=set())
+
+    # One sync callback
+    mock.on_breaker_permanent_open = MagicMock()
+
+    # Patch the loader and reset cache
+    plugin_loader.reset_cache()
+    monkeypatch.setattr(
+        "core.plugin_loader.load_live_provider",
+        lambda: mock,
+    )
+
+    yield mock
+
+    # Cleanup: reset cache so subsequent tests get fresh state
+    plugin_loader.reset_cache()
