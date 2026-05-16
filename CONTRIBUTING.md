@@ -33,16 +33,16 @@ a best-effort basis.
 
 Useful issues include:
 
-- **Clear title** — describe the problem, not your reaction to it.
+- **Clear title**: describe the problem, not your reaction to it.
   "Bot crashes when restart_bot called twice in 1s" is better than
   "broken".
-- **Reproduction steps** — exact commands, configuration, or
+- **Reproduction steps**: exact commands, configuration, or
   scenarios that trigger the issue.
-- **Expected vs actual behavior** — what did you expect to happen?
+- **Expected vs actual behavior**: what did you expect to happen?
   What actually happened?
-- **Environment details** — Reverto version (`python main_paper.py
+- **Environment details**: Reverto version (`python main_paper.py
   --version`), Python version, OS, exchange.
-- **Logs or error messages** — relevant excerpts, redacted of
+- **Logs or error messages**: relevant excerpts, redacted of
   secrets.
 
 For security vulnerabilities, do NOT open a public issue. See
@@ -68,7 +68,7 @@ Please **don't** open issues for:
   [reverto.bot](https://reverto.bot) when ready. Speculation
   isn't productive in the issue tracker.
 - **General Bitcoin or crypto discussion.** Reddit, Twitter/X,
-  Stack Exchange — many better venues exist.
+  Stack Exchange. Many better venues exist.
 
 ---
 
@@ -79,7 +79,7 @@ discussions, etc.), you agree to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 The short version: be respectful, stay on-topic, and remember that
-this is a volunteer-maintained open-source project.
+this is a volunteer-maintained project.
 
 ---
 

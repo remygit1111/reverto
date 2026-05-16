@@ -6,13 +6,13 @@ no authentication.
 
 ## Structure
 
-- `index.html` — landing page with hero + About section
-- `roadmap.html` — roadmap timeline (renders `/data/roadmap.json`)
-- `changelog.html` — changelog list (renders `/data/changelog.json`)
-- `maintenance.html` — 5xx fallback served by Caddy `handle_errors`
-- `css/marketing.css` — site styling (self-contained; ships its
-  own design tokens — does not depend on the app's stylesheet)
-- `js/render.js` — JSON-to-DOM render logic for roadmap +
+- `index.html`: landing page with hero + About section
+- `roadmap.html`: roadmap timeline (renders `/data/roadmap.json`)
+- `changelog.html`: changelog list (renders `/data/changelog.json`)
+- `maintenance.html`: 5xx fallback served by Caddy `handle_errors`
+- `css/marketing.css`: site styling (self-contained; ships its
+  own design tokens, does not depend on the app's stylesheet)
+- `js/render.js`: JSON-to-DOM render logic for roadmap +
   changelog (mirrors `web/static/app.js::_rmRenderPhase` and
   `_clRenderEntry`)
 
@@ -49,8 +49,8 @@ Roadmap and changelog content is auto-exported by the app to
   changelog entry, `data/changelog.json` is regenerated.
 
 The writes are best-effort: a failure logs `WARNING` /
-`ERROR` to portal.log but does NOT block the DB mutation —
-the database is the source of truth.
+`ERROR` to portal.log but does NOT block the DB mutation.
+The database is the source of truth.
 
 If the snapshots drift from the database (e.g. after a
 transient permissions issue), an admin can hit the
@@ -61,7 +61,7 @@ force-rewrites both files.
 ## Snapshot shape
 
 Both JSON files mirror what the in-app SPA's public API
-endpoints (`/api/roadmap` and `/api/changelog`) return — same
+endpoints (`/api/roadmap` and `/api/changelog`) return: same
 fields, same `body_html` / `description_html` pre-rendered
 through bleach. The marketing site's `render.js` and the app
 SPA share the same render conventions for that reason.
@@ -69,7 +69,7 @@ SPA share the same render conventions for that reason.
 ## Architecture
 
 The marketing site is intentionally simple. No Python, no
-database, no authentication — it minimises attack surface and
+database, no authentication. It minimises attack surface and
 keeps the public-facing reverto.bot fast and easy to maintain.
 
 For the application itself (login required), visit

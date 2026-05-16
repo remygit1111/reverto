@@ -16,14 +16,14 @@ public discussion before a fix has shipped.
 
 **Do** use one of these channels:
 
-- **Preferred — GitHub Security Advisory.** Visit the repository
+- **Preferred: GitHub Security Advisory.** Visit the repository
   on GitHub, open the **Security** tab, and click **Report a
   vulnerability**. This creates a private advisory only the
   maintainers can read.
 - **Fallback.** If GitHub Security Advisories are not available
   for the fork you found this in, open a public GitHub Issue
   titled **`[SECURITY] Request private disclosure channel`** and
-  ask the maintainer to provide a private channel — without
+  ask the maintainer to provide a private channel, without
   including any vulnerability details in the public issue.
 
 We do not currently publish a dedicated security email. If you
@@ -35,16 +35,16 @@ is the path with the cleanest audit trail.
 
 A useful report includes:
 
-- **Description** — what the vulnerability is, in one or two
+- **Description**: what the vulnerability is, in one or two
   sentences.
-- **Reproduction steps** — exact commands, requests, or
+- **Reproduction steps**: exact commands, requests, or
   configuration that exposes the issue. A minimal reproduction is
   far more useful than a long screencast.
-- **Affected versions / commits** — the commit SHA you tested
+- **Affected versions / commits**: the commit SHA you tested
   against (or the version tag if releases exist by then).
-- **Impact** — what can an attacker do? Read another user's
+- **Impact**: what can an attacker do? Read another user's
   data? Place trades they shouldn't? Bypass authentication?
-- **Suggested fix** — optional. If you know how to close it,
+- **Suggested fix**: optional. If you know how to close it,
   share what you have. We won't take offence if a maintainer
   writes a different patch.
 
@@ -53,18 +53,18 @@ on wording before public disclosure.
 
 ## Response timeline
 
-This is a volunteer-maintained open-source project. There is no
+This is a volunteer-maintained project. There is no
 guaranteed SLA. Best-effort response targets:
 
-- **Acknowledgement** — within 7 days.
-- **Initial assessment** — within 14 days, including a
+- **Acknowledgement**: within 7 days.
+- **Initial assessment**: within 14 days, including a
   preliminary severity call and a rough fix ETA.
-- **Fix or response** — within 30 days for confirmed
+- **Fix or response**: within 30 days for confirmed
   vulnerabilities. Complex issues may take longer; we'll keep
   you in the loop.
 
 If you don't hear back inside the acknowledgement window, please
-nudge — reports occasionally get buried under other work.
+nudge. Reports occasionally get buried under other work.
 
 ## Supported versions
 
@@ -79,7 +79,7 @@ receive them.
 ## Disclosure policy
 
 After a fix has shipped on `main`, the vulnerability may be
-publicly disclosed — typically 30 to 90 days after the fix,
+publicly disclosed, typically 30 to 90 days after the fix,
 depending on how widely the unfixed code is in use. The exact
 timing is coordinated with the reporter.
 
@@ -114,7 +114,7 @@ vulnerabilities:
 - **Theoretical issues without a concrete attack path.** "X
   could in principle be insecure" without a proof-of-concept or
   a clear scenario isn't actionable. We're happy to discuss
-  hardening proposals as regular issues — just not as security
+  hardening proposals as regular issues, just not as security
   reports.
 - **Self-DoS via misconfiguration.** Setting
   `max_orders=50` and burning through a `max_cumulative_size: null`

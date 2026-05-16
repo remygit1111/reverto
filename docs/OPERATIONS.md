@@ -7,8 +7,8 @@ setup see [INSTALL.md](INSTALL.md); for codebase architecture see
 
 ## First-time setup
 
-On a fresh install — or after a destructive schema migration (see
-"Schema migrations" below) — the admin password must be set manually
+On a fresh install (or after a destructive schema migration, see
+"Schema migrations" below) the admin password must be set manually
 before login is possible. The `users` table seeds an admin row, but
 `password_hash` is `NULL`: `verify_password()` fails closed on NULL,
 so without setup-admin every login returns 401.
@@ -38,11 +38,11 @@ python3 -c 'import secrets; print("REVERTO_SECRET_KEY=" + secrets.token_hex(32))
 
 `start.sh` sources `.env` before launching the portal process.
 `make(1)` uses `/bin/sh` and does not read `.bashrc`, so `.env` is
-the single source of truth — also after `make restart` from a new
+the single source of truth, also after `make restart` from a new
 SSH session. `.env` is in `.gitignore` and never leaves the host.
 
 Without `REVERTO_API_KEY` / `REVERTO_SECRET_KEY` Reverto generates
-ephemeral keys with a WARNING; that's OK for an initial trial but
+ephemeral keys with a WARNING. That's OK for an initial trial but
 loses all sessions on every restart.
 
 **Step 3: initialize database**
@@ -69,7 +69,7 @@ is 12 characters (`PASSWORD_MIN_LENGTH` in `core/user_store.py`,
 shared with `/api/auth/change-password`); shorter passwords are
 rejected.
 
-The script is idempotent — re-invoking it with a different env var
+The script is idempotent. Re-invoking it with a different env var
 overwrites the hash. Note: setup-admin does **not** bump
 `session_epoch`, so existing sessions remain valid until they
 expire or the user explicitly logs out.
@@ -93,7 +93,7 @@ Two paths:
   Password. This calls `/api/auth/change-password`, which also
   bumps `session_epoch` so every other open session is logged out
   immediately.
-- **Via CLI**: `REVERTO_ADMIN_PW="new" make setup-admin` — fast
+- **Via CLI**: `REVERTO_ADMIN_PW="new" make setup-admin`, fast
   but does not bump the epoch, so old sessions remain valid.
 
 
@@ -105,7 +105,7 @@ needed.
 
 **Non-destructive migrations** (`ADD COLUMN`, new tables without
 existing-data conflicts) run automatically on `make start`. No
-opt-in, no backup needed — nothing is being dropped.
+opt-in, no backup needed, since nothing is being dropped.
 
 **Destructive migrations** (DROP + CREATE of owned tables) require
 an explicit operator opt-in since audit v26-10 (2026-04-20). This
@@ -150,7 +150,7 @@ To proceed:
    until you are sure the new schema works correctly.
 
 5. **Post-migration: re-run setup-admin** if the destructive
-   migration touched the users table (as v3 → v4 Phase-3a does).
+   migration touched the users table (as v3 to v4 Phase-3a does).
    Without a fresh password_hash, login is impossible again. See
    "First-time setup" step 4.
 
@@ -170,7 +170,7 @@ cp logs/pre-migration-backup-YYYYMMDD-HHMMSS.db logs/reverto.db
 git log --oneline    # find the last pre-migration commit
 git checkout <sha>   # or check out the branch from before the upgrade
 
-# 4. Start again — init_db() sees a DB at the old version and the
+# 4. Start again. init_db() sees a DB at the old version and the
 #    code expects the same version, so no migration is needed.
 make start
 ```
@@ -212,13 +212,13 @@ make rollback ARGS="--to abc123"  # to a specific SHA
 
 If any commit being rolled back touched `core/database.py`, the
 script halts and requires explicit confirmation. Schema migrations
-are forward-only in Reverto — older code does not know how to
+are forward-only in Reverto. Older code does not know how to
 read data written against a newer schema, so a naive rollback
 leaves the DB + code out of sync.
 
 **If you get the migration warning, choose one:**
 
-- **Option A — Restore DB from backup (safest):**
+- **Option A: Restore DB from backup (safest):**
 
   ```bash
   # 1. Stop the portal first
@@ -232,7 +232,7 @@ leaves the DB + code out of sync.
   make rollback
   ```
 
-- **Option B — Fix forward (preferred for most cases):**
+- **Option B: Fix forward (preferred for most cases):**
 
   Instead of rolling back, write a new commit that addresses the
   regression. Keeps schema + code aligned and leaves a cleaner
@@ -240,11 +240,11 @@ leaves the DB + code out of sync.
 
 ### What rollback does NOT do
 
-- **Does NOT** touch bots — they keep running with their existing
+- **Does NOT** touch bots; they keep running with their existing
   subprocesses + state files.
-- **Does NOT** restore the DB from backup — see the
-  schema-migration section above.
-- **Does NOT** push to the remote — the reset is local-only until
+- **Does NOT** restore the DB from backup (see the
+  schema-migration section above).
+- **Does NOT** push to the remote. The reset is local-only until
   you explicitly `git push --force-with-lease origin main`. Only
   push if you want other operators pulling the reverted state.
 
@@ -262,9 +262,9 @@ make restart
 
 After every rollback:
 
-1. Open the portal in a browser — confirm the UI loads.
-2. `tail -30 logs/portal.log` — confirm the portal started cleanly.
-3. `ps aux | grep main_paper` — confirm bots are still running.
+1. Open the portal in a browser; confirm the UI loads.
+2. `tail -30 logs/portal.log`; confirm the portal started cleanly.
+3. `ps aux | grep main_paper`; confirm bots are still running.
 4. Test the specific flow that was broken pre-rollback.
 
 
@@ -277,64 +277,64 @@ is a VPS-follow-up, not in this procedure.
 
 ### What gets backed up
 
-- `logs/reverto.db` — SQLite database (users, bots, deals,
+- `logs/reverto.db`: SQLite database (users, bots, deals,
   orders, chart-annotations, backtest-runs).
-- `credentials/` — per-user encrypted `.enc` files.
-- `keys/` — per-user Fernet master keys (required to decrypt
-  the `.enc` files — losing these makes the backup useless).
-- `logs/.credentials.key` — legacy master key (legacy;
-  copied if still present on disk).
-- `logs/.auth.json` — legacy auth-state (same deal).
+- `credentials/`: per-user encrypted `.enc` files.
+- `keys/`: per-user Fernet master keys (required to decrypt
+  the `.enc` files; losing these makes the backup useless).
+- `logs/.credentials.key`: legacy master key (copied if still
+  present on disk).
+- `logs/.auth.json`: legacy auth-state (same deal).
 
 NOT backed up (regenerable or tracked elsewhere):
 
-- Code itself — `git`.
-- Bot YAML configs (`config/bots/`) — also in git.
-- Bot state files (`logs/*/state.json`) — regenerated from DB.
-- Bot log files (`logs/*/*.log`) — operational history, large,
+- Code itself: `git`.
+- Bot YAML configs (`config/bots/`): also in git.
+- Bot state files (`logs/*/state.json`): regenerated from DB.
+- Bot log files (`logs/*/*.log`): operational history, large,
   acceptable to lose.
-- `.venv/` — `pip install -r requirements.txt` reproduces.
+- `.venv/`: `pip install -r requirements.txt` reproduces.
 
-### Credentials in backups — what to expect
+### Credentials in backups: what to expect
 
 A common point of confusion on a freshly-deployed VPS: the first
 few daily backups contain **empty** `credentials/` and `keys/`
 directories. **This is correct behaviour, not a bug.** What you
 should see at each lifecycle stage:
 
-**Stage 1 — fresh VPS, no exchange credentials saved yet.** The
+**Stage 1: fresh VPS, no exchange credentials saved yet.** The
 `credentials/<user_id>/` and `keys/` directories may exist (the
 portal lazily creates `credentials/<user_id>/` whenever any code
 path in `core.credentials` queries it, including the
 `/api/exchanges` listing endpoint that the SPA hits on first load),
-but they're empty — no `.enc` files, no `.key` files. Your backup
+but they're empty: no `.enc` files, no `.key` files. Your backup
 will faithfully copy these empty directories. Audit r3-010 captured
-this — operators were briefly confused, runbook now clarifies.
+this (operators were briefly confused, runbook now clarifies).
 
-**Stage 2 — you've saved Bitget or Kraken credentials via
+**Stage 2: you've saved Bitget or Kraken credentials via
 `/api/exchanges/{name}/keys`.** First save also generates the
 per-user Fernet master key. Your next daily backup contains:
 
-- `credentials/<user_id>/bitget.enc` — Fernet-encrypted JSON blob
+- `credentials/<user_id>/bitget.enc`: Fernet-encrypted JSON blob
   carrying api_key + api_secret + (Bitget only) passphrase.
-- `credentials/<user_id>/kraken.enc` — same shape, no passphrase.
-- `keys/<user_id>.key` — per-user Fernet master key (0600). **You
-  cannot decrypt the `.enc` files without this** — losing the
+- `credentials/<user_id>/kraken.enc`: same shape, no passphrase.
+- `keys/<user_id>.key`: per-user Fernet master key (0600). **You
+  cannot decrypt the `.enc` files without this**; losing the
   matching key file makes the backup unusable.
 
 The `.enc` extension signals "encrypted blob"; never `.json` (which
 would imply plaintext). If you see a plaintext `.json` under
-`credentials/`, that's a bug — file an issue.
+`credentials/`, that's a bug; file an issue.
 
-**Stage 3 — you've rotated the Fernet key (security ops, audit
+**Stage 3: you've rotated the Fernet key (security ops, audit
 trail, or post-incident).** `rotate_fernet_key(user_id)` writes a
 backup of the previous key alongside the new one:
 
-- `keys/<user_id>.key` — current key.
-- `keys/<user_id>.key.bak.YYYYMMDDHHMMSS` — previous key, kept by
+- `keys/<user_id>.key`: current key.
+- `keys/<user_id>.key.bak.YYYYMMDDHHMMSS`: previous key, kept by
   the rotation routine for recovery from a half-completed rotation.
   These accumulate; cleanup is operator-driven (older than 7 days
-  is safe to remove on a healthy install — search `rotate_fernet_key`
+  is safe to remove on a healthy install; search `rotate_fernet_key`
   in `core/credentials.py` for the contract).
 
 Your backup includes ALL of `keys/`, including the `.bak.*` history.
@@ -349,14 +349,14 @@ LATEST=$(ls -t ~/reverto/backups/ | grep -E "^20[0-9]{2}-" | head -1)
 ls -la ~/reverto/backups/${LATEST}/
 cat ~/reverto/backups/${LATEST}/MANIFEST.txt
 ls -la ~/reverto/backups/${LATEST}/credentials/ 2>/dev/null \
-    || echo "(credentials/ not in this backup — fresh-VPS expected)"
+    || echo "(credentials/ not in this backup, fresh-VPS expected)"
 ls -la ~/reverto/backups/${LATEST}/keys/ 2>/dev/null \
-    || echo "(keys/ not in this backup — fresh-VPS expected)"
+    || echo "(keys/ not in this backup, fresh-VPS expected)"
 ```
 
 The `credentials/` and `keys/` directories are skipped entirely
 when they don't exist on the source filesystem (see `backup.sh:88,
-96`); the backup directory simply lacks them. They appear once
+96`). The backup directory simply lacks them. They appear once
 the portal has materialised the `credentials/<user_id>/` path
 (typically the first time a logged-in user opens the Exchanges
 page) or once you save a credential.
@@ -364,7 +364,7 @@ page) or once you save a credential.
 **Restore-time implication.** Restoring an old backup taken before
 you saved any credentials yields an empty `credentials/` tree
 post-restore. If you want post-backup-time credentials back, you'll
-re-save them via the portal UI — the encryption key (`keys/<uid>.key`)
+re-save them via the portal UI. The encryption key (`keys/<uid>.key`)
 restored from the backup is necessary anyway, since freshly-saved
 creds are encrypted under the per-user key that the running code
 loads from disk.
@@ -466,7 +466,7 @@ make start
 ### Testing restores (recommended monthly)
 
 A backup that hasn't been test-restored is a wish, not a
-backup. Once a month — or before any VPS migration — verify:
+backup. Once a month (or before any VPS migration) verify:
 
 1. Take a fresh backup: `make backup`.
 2. On a non-production machine copy the repo elsewhere,
@@ -480,8 +480,8 @@ can be undone.
 
 This guide covers on-host backups only. Off-host replication is
 an off-host replication path (rsync to a separate machine or
-an S3-compatible endpoint) so a full-host failure — disk
-corruption, ransomware, lost VPS — doesn't take the backups
+an S3-compatible endpoint) so a full-host failure (disk
+corruption, ransomware, lost VPS) doesn't take the backups
 with it. Tracked on the VPS roadmap.
 
 
@@ -491,7 +491,7 @@ When a user has TOTP enabled but loses access to their authenticator
 app (lost phone, app deleted, secret corrupted), the operator can
 reset TOTP via the admin-reset wrapper script.
 
-**Procedure (recommended — produces audit-log entry):**
+**Procedure (recommended, produces audit-log entry):**
 
 ```bash
 # 1. SSH to the VPS as the bot user
@@ -534,10 +534,10 @@ Requires SSH access to the VPS plus sudo rights on the bot user
 account. Not exposed via the portal (no reset endpoint in the UI).
 Both the audit row and the SSH login log capture the recovery.
 
-**Emergency fallback — raw SQL (no audit-log entry):**
+**Emergency fallback, raw SQL (no audit-log entry):**
 
-If the wrapper cannot run — broken Python environment,
-`logs/` filesystem unwritable, or `init_db()` itself failing —
+If the wrapper cannot run (broken Python environment,
+`logs/` filesystem unwritable, or `init_db()` itself failing)
 the raw SQL path remains:
 
 ```bash
@@ -558,8 +558,8 @@ sqlite3 ~/reverto/logs/reverto.db \
 # Expected: <name>|0
 ```
 
-The raw SQL path produces **NO application-layer audit row** —
-that's why it's the fallback, not the primary path. Operator
+The raw SQL path produces **NO application-layer audit row**.
+That's why it's the fallback, not the primary path. Operator
 must record the reset out-of-band (incident log, ticket, email)
 for compliance and forensic continuity. Treat as last resort.
 
@@ -624,9 +624,9 @@ start this without going through `make live-dry`.
   the dialog → portal spawns `main_live.py --bot <slug> --dry-run`
   with `DRY_RUN=1` in the env (the confirmation prompt is skipped).
 - **Running state**: the "Running" pill gets a yellow banner
-  **🟡 DRY RUN — no real orders placed** while the bot runs. This
+  **🟡 DRY RUN, no real orders placed** while the bot runs. This
   stays until Phase 3 allows real execution.
-- **Stop / Restart**: work unchanged. Restart is mode-aware — a
+- **Stop / Restart**: work unchanged. Restart is mode-aware: a
   live bot restarts as dry-run again, a paper bot as paper.
 - **API**: `POST /api/bots/<slug>/start-dry-run` (auth, rate-limited
   20/min, audited as `bot_start_dry_run`). Paper-mode bots are
@@ -648,7 +648,7 @@ curl -X POST -H "X-API-Key: $REVERTO_API_KEY" \
 ```
 
 Effect: every running bot gets SIGTERM. Open positions on the exchange
-are **not** auto-closed — the operator reconciles manually if needed.
+are **not** auto-closed; the operator reconciles manually if needed.
 Recommended when a drawdown alert fires or a suspected runaway DCA.
 
 
@@ -656,7 +656,7 @@ Recommended when a drawdown alert fires or a suspected runaway DCA.
 
 Use case: finishing a parity test, staging reset, debug after a
 corrupt state. Throws away **ALL** deal / order / annotation
-history — NOT idempotent. Always back up `logs/reverto.db` first.
+history. NOT idempotent. Always back up `logs/reverto.db` first.
 
 Preparation:
 
@@ -671,7 +671,7 @@ make wipe-deals
 
 What it does:
 
-1. Acquires an exclusive `fcntl.flock` on `logs/.wipe.lock` —
+1. Acquires an exclusive `fcntl.flock` on `logs/.wipe.lock`;
    concurrent wipe invocations are blocked (`RuntimeError:
    Another wipe operation is already in progress`).
 2. Scans `logs/<user_id>/pids/*.pid` + `os.kill(pid, 0)`; if any
@@ -698,7 +698,7 @@ reset state.json (open=0, closed=0).
 If `RuntimeError: already in progress` persists indefinitely
 without an actual wipe running: check `fuser logs/.wipe.lock`,
 then optionally `rm logs/.wipe.lock` (the lock file is safe to
-delete if no process is holding it open — flock is
+delete if no process is holding it open; flock is
 kernel-advisory, stale files cause no harm).
 
 
@@ -750,7 +750,7 @@ drawdown_guard:
 
 Portal → **Bots** → ⋮ menu on a bot card → **Duplicate**. The
 prompt asks for a new slug (only `[A-Za-z0-9_-]+`). Server-side
-copy — no deal history, no state, no credentials are copied
+copy: no deal history, no state, no credentials are copied
 along. The duplicate starts with empty state and must be started
 itself via the portal.
 
@@ -758,7 +758,7 @@ itself via the portal.
 
 Portal → **Bots** → ⋮ → **Export**. The browser downloads
 `<slug>.yaml` with a metadata header (Reverto git SHA, export
-timestamp, original slug). Strategy only — no credentials, no
+timestamp, original slug). Strategy only: no credentials, no
 state.
 
 ### Import bot config
@@ -766,7 +766,7 @@ state.
 Portal → **Bots** page → **Import Bot** button next to **New
 Bot**. Upload a `.yaml` or `.yml` file. The prompt asks for a
 target slug (default: filename without extension). Validation via
-`config.models.BotConfig` — malformed YAML or schema conflict
+`config.models.BotConfig`; malformed YAML or schema conflict
 shows a toast with the exact error message.
 
 Name conflict (target slug already exists): response 409, the
@@ -802,7 +802,7 @@ make restart
 (without the env var) uses the default again.
 
 The portal UI also has a filter dropdown per bot-log tab (ALL /
-WARNING + ERROR). That is **client-side visibility** — it does
+WARNING + ERROR). That is **client-side visibility**; it does
 not affect what the engine writes to disk, only what the browser
 shows.
 

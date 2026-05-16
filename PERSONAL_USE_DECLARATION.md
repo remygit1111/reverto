@@ -10,19 +10,19 @@ This declaration covers the **operation of the Reverto instance at `app.reverto.
 - The future commercial Reverto Live Plugin (a separately-licensed pip package planned for a future release)
 - Use of the Reverto framework by third parties (each operator is responsible for their own compliance under BSL 1.1)
 
-The Reverto framework being BSL-licensed and a commercial Live Plugin being planned does NOT contradict this declaration's "no revenue" clause — this declaration is about how `app.reverto.bot` is operated by the maintainer, not about the framework or plugin business model.
+The Reverto framework being BSL-licensed and a commercial Live Plugin being planned does NOT contradict this declaration's "no revenue" clause. This declaration is about how `app.reverto.bot` is operated by the maintainer, not about the framework or plugin business model.
 
 ## Statement
 
 I, the maintainer of this Reverto repository (`remy1111`), operate a personal instance of Reverto at `app.reverto.bot` for my own automated cryptocurrency trading. This instance:
 
-1. **Has a single user account** — my own. No registration is offered to third parties.
+1. **Has a single user account**, my own. No registration is offered to third parties.
 2. **Trades exclusively on my own exchange accounts** using my own capital. No third-party funds are managed, custodied, or routed through this instance.
 3. **Generates no revenue** from any source. No fees, subscriptions, donations, or other compensation are received in connection with the operation of this instance.
-4. **Is not advertised as a service** to third parties. Any public-facing references to `reverto.bot` are made in the context of the open-source project, not as an invitation to use a hosted service.
+4. **Is not advertised as a service** to third parties. Any public-facing references to `reverto.bot` are made in the context of the source-available project, not as an invitation to use a hosted service.
 5. **Provides no support, advice, or recommendations** to others regarding the use of this instance or of cryptocurrency trading more generally.
 
-## Open-Source Repository
+## Source-Available Repository
 
 The Reverto codebase is published under the Business Source License 1.1 (BSL) at:
 

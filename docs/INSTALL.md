@@ -4,7 +4,7 @@ This guide takes a self-hoster from a clean machine to a running
 Reverto portal with one paper bot. It assumes you are comfortable
 on a Linux command line, have used `pip` and `venv` before, and
 can read a `.env` file. It does NOT cover trading-strategy design,
-exchange-specific quirks, or production-grade hardening — those
+exchange-specific quirks, or production-grade hardening. Those
 are in [CONFIGURATION.md](CONFIGURATION.md), [exchange-permissions.md](exchange-permissions.md),
 and [OPERATIONS.md](OPERATIONS.md) respectively.
 
@@ -26,7 +26,7 @@ For ongoing maintenance after install, switch to
   bots and authenticated paper-mode features. See
   [exchange-permissions.md](exchange-permissions.md) for the
   exact permissions to enable.
-- **Basic familiarity with terminal commands** — running scripts,
+- **Basic familiarity with terminal commands**: running scripts,
   editing files, reading logs.
 
 This guide does not cover Docker. A Docker reference setup is
@@ -53,7 +53,7 @@ source .venv/bin/activate
 ```
 
 The `Makefile` and the start scripts call `.venv/bin/python3`
-directly, so the venv path is fixed — don't rename `.venv`.
+directly, so the venv path is fixed. Don't rename `.venv`.
 
 ### 3. Install dependencies
 
@@ -101,7 +101,7 @@ and the browser refuses to send it over plain HTTP, so login looks
 broken even though the credentials are correct.
 
 Exchange credentials and Telegram tokens are optional at install
-time — you can add them later via the portal UI. See
+time. You can add them later via the portal UI. See
 [CONFIGURATION.md](CONFIGURATION.md) for the full list of
 environment variables.
 
@@ -134,7 +134,7 @@ This calls `scripts/setup_admin.py`, which writes a bcrypt hash
 must be at least 12 characters; `setup_admin` rejects shorter
 ones.
 
-The script is idempotent — re-running it with a different
+The script is idempotent. Re-running it with a different
 password overwrites the hash. It does NOT bump `session_epoch`,
 so any open sessions stay valid until they expire.
 
@@ -165,7 +165,7 @@ state file at `logs/<user_id>/<slug>.state.json` is rewritten on
 every tick.
 
 If you don't yet have exchange credentials, paper-mode bots still
-work — they fetch tickers from the exchange's public endpoints.
+work. They fetch tickers from the exchange's public endpoints.
 For live or live-dry bots, save credentials via the portal's
 Exchanges page first; see
 [exchange-permissions.md](exchange-permissions.md) for the
@@ -211,12 +211,12 @@ start above. A few VPS-specific notes:
   Caddy auto-provisions Let's Encrypt certificates. nginx + certbot
   is the equivalent in a more verbose configuration.
 - **Drop `REVERTO_INSECURE_COOKIES=1`** from `.env` once you are
-  behind TLS — it stays unset/empty in production. The session
+  behind TLS. It stays unset/empty in production. The session
   cookie's `Secure` flag is non-negotiable in production.
 
 ### Keeping the portal alive across reboots
 
-The simplest path is `make start` from a tmux/screen session — fine
+The simplest path is `make start` from a tmux/screen session, fine
 for a single-operator setup that you check daily. For a
 restart-on-reboot guarantee, write a tiny systemd unit. The repo
 does not ship one because the right invocation depends on your
@@ -259,12 +259,12 @@ graceful-stop windows, and the auto-restart budget interaction.
 
 The hardening that matters most for a self-hosted Reverto:
 
-- **Daily backups** — schedule `scripts/backup.sh` via cron.
+- **Daily backups**: schedule `scripts/backup.sh` via cron.
   Procedure in [OPERATIONS.md](OPERATIONS.md) "Backup and restore".
-- **TLS** — see the reverse-proxy paragraph above.
-- **Firewall** — deny inbound everything except SSH + 443. The
+- **TLS**: see the reverse-proxy paragraph above.
+- **Firewall**: deny inbound everything except SSH + 443. The
   portal does not need any other inbound port.
-- **Off-host backups** — `scripts/backup.sh` writes to
+- **Off-host backups**: `scripts/backup.sh` writes to
   `backups/` on the same host today. Mirror it elsewhere with
   `rsync`, S3, or your favourite block-storage replication; a
   ransomware event that takes the host also takes the local
@@ -276,7 +276,7 @@ this guide stops at "the portal is reachable and you can log in".
 ## Docker (advanced)
 
 Reverto can run in Docker. The repo does NOT currently include a
-production Dockerfile — [deployment.md](deployment.md) carries a
+production Dockerfile. [deployment.md](deployment.md) carries a
 reference Dockerfile and `docker-compose.yml` (with Prometheus +
 Grafana sidecars) that you can adapt. A self-hoster who lands on
 a working Docker setup is welcome to contribute it back as a
@@ -284,7 +284,7 @@ tested addition to the repo.
 
 If you go down the Docker path:
 
-- Persist `logs/` and `config/bots/` as named volumes — losing
+- Persist `logs/` and `config/bots/` as named volumes. Losing
   either wipes credentials and configs.
 - Keep secrets out of the image. Use `env_file:` or Docker
   secrets to inject `.env`, never `COPY .env` into a layer.
@@ -295,14 +295,14 @@ If you go down the Docker path:
 
 After install, confirm the install is healthy:
 
-1. **Portal reachable** — `curl http://localhost:8080/healthz`
+1. **Portal reachable**: `curl http://localhost:8080/healthz`
    returns 200. The browser login page loads at
    `http://localhost:8080/`.
-2. **Login works** — username `admin` + the password from
+2. **Login works**: username `admin` + the password from
    step 6 returns a session cookie and lands on the dashboard.
-3. **Bot creation succeeds** — the wizard accepts your config
+3. **Bot creation succeeds**: the wizard accepts your config
    without a 4xx response.
-4. **Bot generates orders** — start a paper bot with permissive
+4. **Bot generates orders**: start a paper bot with permissive
    entry conditions; within a few minutes the dashboard shows
    the first base order in the open-deals panel and ticks update
    via the WebSocket.
@@ -311,14 +311,14 @@ If any step fails, see Troubleshooting below.
 
 ## Next steps
 
-- [CONFIGURATION.md](CONFIGURATION.md) — every env var, every
+- [CONFIGURATION.md](CONFIGURATION.md): every env var, every
   bot-YAML field, strategy options.
-- [OPERATIONS.md](OPERATIONS.md) — daily ops: backups, restores,
+- [OPERATIONS.md](OPERATIONS.md): daily ops: backups, restores,
   schema migrations, credential rotation, emergency stop.
-- [exchange-permissions.md](exchange-permissions.md) — which
+- [exchange-permissions.md](exchange-permissions.md): which
   Bitget / Kraken API permissions to enable (and which to leave
   off).
-- [architecture.md](architecture.md) — codebase tour: the engine,
+- [architecture.md](architecture.md): codebase tour: the engine,
   the portal, the persistence layer.
 
 ## Troubleshooting
@@ -356,7 +356,7 @@ chmod -R u+rwX,go-rwx logs/ keys/ credentials/ 2>/dev/null || true
 
 A first start should leave `logs/reverto.db` at schema v4. If you
 upgraded code that bumped the schema and now `init_db()` refuses
-to boot, you have a destructive migration on your hands — see
+to boot, you have a destructive migration on your hands. See
 [OPERATIONS.md](OPERATIONS.md) "Schema migrations" for the opt-in
 flow + restore procedure. Don't blindly add
 `REVERTO_DESTRUCTIVE_MIGRATE=1`; read the section first.
@@ -364,7 +364,7 @@ flow + restore procedure. Don't blindly add
 ### Login returns 401 even with the right password
 
 The most common cause is `REVERTO_INSECURE_COOKIES` not set on a
-local `http://` install — the browser silently drops the session
+local `http://` install. The browser silently drops the session
 cookie because it's flagged `Secure`. Check `.env` for the line,
 restart the portal, clear the browser cookie, log in again.
 
@@ -380,6 +380,6 @@ If `REVERTO_API_KEY` or `REVERTO_SECRET_KEY` are missing from
 on startup. Sessions don't survive a restart in that mode. Add
 both keys (step 4) and `make restart`.
 
-For ongoing operational issues — bots crashing, drawdown
-triggers, log-level overrides — see
+For ongoing operational issues (bots crashing, drawdown
+triggers, log-level overrides), see
 [OPERATIONS.md](OPERATIONS.md) "Common errors + fixes".

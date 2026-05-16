@@ -5,7 +5,7 @@
 > Dit document beschrijft de juridische en commerciële grenzen
 > waarbinnen Reverto moet opereren om problemen met MiCA/CASP,
 > aansprakelijkheid en marketing-regelgeving te voorkomen. Het is een
-> eigen checklist en referentie — geen juridisch advies, geen
+> eigen checklist en referentie, geen juridisch advies en geen
 > vervanging voor een echte jurist bij commerciële launch.
 >
 > Bij twijfel over een nieuwe feature, marketing-uiting, of
@@ -31,7 +31,7 @@ De gekozen strategische richting is:
 - **Niche-positionering**: BTC inverse perpetual DCA voor self-host
   prosumers
 
-### 1.2 Het kernprincipe — software vs. dienst
+### 1.2 Het kernprincipe: software vs. dienst
 
 Het verschil tussen MiCA-veilig en MiCA-vergunningplichtig zit in één
 fundamenteel onderscheid:
@@ -63,7 +63,7 @@ niet naar de technische verpakking. Implicaties:
 - **De zelftest**: zou de architectuur er hetzelfde uit zien als MiCA
   niet bestond? Als het antwoord "nee" is, is het waarschijnlijk
   ontwijking. Bestaande open source bots (Freqtrade, Hummingbot,
-  OctoBot, Gunbot) bestaan in hun huidige vorm los van MiCA — daarom
+  OctoBot, Gunbot) bestaan in hun huidige vorm los van MiCA. Daarom
   is hun architectuur verdedigbaar.
 
 - **Eén ecosysteem onder één merk = één dienst** voor anti-
@@ -75,7 +75,7 @@ niet naar de technische verpakking. Implicaties:
 
 ## 2. MiCA/CASP architectuur-grenzen
 
-### 2.1 Verboden architecturen — HARDE LIJN
+### 2.1 Verboden architecturen: HARDE LIJN
 
 De volgende constructies zijn ❌ niet toegestaan, omdat ze direct CASP-
 exposure creëren:
@@ -109,14 +109,14 @@ aanbevelingen produceren.**
 Een "Reverto-trained model" dat zegt "koop nu" is functioneel een
 signaal-generator. Advies-territorium.
 
-### 2.2 Toegestane architecturen — VEILIGE BASIS
+### 2.2 Toegestane architecturen: VEILIGE BASIS
 
 De volgende constructies zijn ✅ waarschijnlijk veilig (gebaseerd op
 precedent: Freqtrade, Hummingbot, OctoBot, Gunbot opereren al jaren in
 EU zonder MiCA-issues):
 
 **✅ Self-host software die de gebruiker zelf draait.**
-Open source, source-available, of closed source — allemaal veilig
+Open source, source-available, of closed source: allemaal veilig
 mits gebruiker volledig zelf host.
 
 **✅ Software die externe webhooks ontvangt (bv. van TradingView).**
@@ -137,7 +137,7 @@ rendementsclaims.
 De bot werkt met willekeurige signaal-bronnen (TradingView, eigen
 scripts, derde-partij services). Geen lock-in op één bron.
 
-### 2.3 Grijze zones — VERMIJDEN ZONDER JURIDISCH ADVIES
+### 2.3 Grijze zones: VERMIJDEN ZONDER JURIDISCH ADVIES
 
 De volgende zijn niet automatisch verboden, maar vereisen schriftelijk
 advies van een MiCA-jurist voor commerciële launch:
@@ -182,7 +182,7 @@ Voor elke nieuwe feature of architectuur-keuze:
 
 ## 3. Marketing-grenzen
 
-### 3.1 Toon en framing — VEILIG
+### 3.1 Toon en framing: VEILIG
 
 Reverto-marketing **moet** beschrijvend en technisch zijn, vergelijkbaar
 met hoe Freqtrade, Hummingbot of een Linux-distributie zichzelf
@@ -190,7 +190,7 @@ positioneren.
 
 **✅ Toegestane formuleringen:**
 
-- "Open source crypto trading bot for self-hosted use"
+- "Source-available crypto trading bot for self-hosted use"
 - "DCA strategie-engine voor BTC perpetuals"
 - "Connects to exchanges via your own API keys"
 - "Supports webhooks from TradingView and custom sources"
@@ -198,7 +198,7 @@ positioneren.
 - "Software may contain bugs that result in financial loss. Do not
   use with funds you cannot afford to lose."
 
-### 3.2 Toon en framing — VERBODEN
+### 3.2 Toon en framing: VERBODEN
 
 **❌ Verboden formuleringen:**
 
@@ -209,7 +209,7 @@ positioneren.
 - "Average user returns of X%"
 - "Make money trading crypto with Reverto"
 - "Voor jouw situatie raden wij Reverto aan" (gepersonaliseerd advies)
-- "Reverto Pro Strategy Bundle — guaranteed entries"
+- "Reverto Pro Strategy Bundle: guaranteed entries"
 
 ### 3.3 De vuistregel
 
@@ -217,24 +217,24 @@ Hou de toon dichter bij **"een Linux-distributie pitchen"** dan bij
 **"een hedge fund pitchen"**. Bij twijfel: zou een toezichthouder dit
 als advies of rendementsbelofte kunnen lezen? Zo ja: herformuleren.
 
-### 3.4 Disclaimers — VERPLICHT op publicatie
+### 3.4 Disclaimers: VERPLICHT op publicatie
 
 Bij elke publieke uiting (README, productpagina, marketing-content):
 
-- **Use at your own risk** — software wordt geleverd zonder garanties
-- **Not financial advice** — Reverto geeft geen advies
-- **Trading involves substantial risk of loss** — algemene risico-
+- **Use at your own risk**: software wordt geleverd zonder garanties
+- **Not financial advice**: Reverto geeft geen advies
+- **Trading involves substantial risk of loss**: algemene risico-
   waarschuwing
 - **You are responsible for compliance with applicable laws in your
-  jurisdiction** — verschuift compliance-verantwoordelijkheid naar
+  jurisdiction**: verschuift compliance-verantwoordelijkheid naar
   gebruiker
-- **Software may contain bugs that result in financial loss** —
+- **Software may contain bugs that result in financial loss**:
   expliciete bug-waiver
 
 Deze disclaimers worden prominent geplaatst (README top, productpagina
 hero-sectie, NOTICE.md), niet weggestopt op regel 47.
 
-### 3.5 Community-interactie — RICHTLIJNEN
+### 3.5 Community-interactie: RICHTLIJNEN
 
 In Discord/GitHub Issues/Reddit:
 
@@ -273,7 +273,7 @@ Disclaimers zijn geen magisch schild:
 
 - **Opzet of grove schuld kan niet uitgesloten worden** in NL
   (Burgerlijk Wetboek)
-- **Disclaimers moeten prominent** zijn — niet weggestopt
+- **Disclaimers moeten prominent** zijn, niet weggestopt
 - **Consumentenrechten** kunnen sommige clausules ondergraven, maar
   vereisen een consumentrelatie (bij gratis open source: geen relatie)
 
@@ -297,11 +297,11 @@ Voor een commerciële launch zijn de volgende stappen aanbevolen:
 3. **Beperkingen op direct/indirect schade** opnemen
 4. **Bedrijfsstructuur overwegen** (zie sectie 5)
 5. **Bekende issues openlijk documenteren** (CHANGELOG, Known Issues
-   in README) — voorkomt "verzwegen defect"-claims
+   in README): voorkomt "verzwegen defect"-claims
 6. **Geen "production-ready" claims** doen voor componenten die nog
    experimenteel zijn (live trading bv.)
 
-### 4.5 Bekende issues — discipline
+### 4.5 Bekende issues: discipline
 
 Een eerlijke "Known Limitations"-lijst in README of CHANGELOG is
 juridisch waardevol:
@@ -427,7 +427,7 @@ Bij elke nieuwe feature of architectuur-keuze, beantwoord:
 
 ---
 
-## 8. Escalatie — wanneer een jurist raadplegen
+## 8. Escalatie: wanneer een jurist raadplegen
 
 Niet alle vragen kunnen via dit document worden beantwoord. Raadpleeg
 een NL fintech/crypto-jurist (Bird & Bird, Loyens & Loeff, Charco &

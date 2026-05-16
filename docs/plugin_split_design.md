@@ -1,4 +1,4 @@
-# Plugin Split — Phase 1 Design
+# Plugin Split: Phase 1 Design
 
 > **Status.** Phase 1 deliverable (design only, no code changes). Companion documents: [plugin_split_audit.md](plugin_split_audit.md), [plugin_split_migration.md](plugin_split_migration.md).
 >
@@ -106,16 +106,16 @@ def kind(self) -> Literal["paper", "live"]: ...
 
 **Concrete methods that subclasses *may* override:**
 
-- `_tick()` — LiveEngine overrides to insert clock-skew pre-check + reconciler tick. Marked `_tick_hook_before/_after()` or kept overridable.
-- `_deduct_balance()` — paper consults `PaperState.balance_btc`; live consults the real exchange balance. Default in base is a no-op (treat as gateless); subclasses replace.
+- `_tick()`: LiveEngine overrides to insert clock-skew pre-check + reconciler tick. Marked `_tick_hook_before/_after()` or kept overridable.
+- `_deduct_balance()`: paper consults `PaperState.balance_btc`; live consults the real exchange balance. Default in base is a no-op (treat as gateless); subclasses replace.
 
 #### `PaperEngine(TradingEngine)` (framework, `paper/paper_engine.py`)
 
 After refactor, shrinks from 1913 → ~250 LoC. Owns:
 
 - `_deduct_balance()` (the only PAPER-bucket method from the audit).
-- `_place_market_order()` — synthetic fill, balance update in `PaperState`.
-- `_get_current_price()` — read from polled `Ticker.mark_price` / `Ticker.last`.
+- `_place_market_order()`: synthetic fill, balance update in `PaperState`.
+- `_get_current_price()`: read from polled `Ticker.mark_price` / `Ticker.last`.
 - `kind()` returns `"paper"`.
 
 #### `LiveEngine(TradingEngine)` (plugin, `reverto_live/live_engine.py`)
@@ -124,8 +124,8 @@ Owns:
 
 - Clock-skew monitor (`ClockMonitor`) and the `_tick()` override that gates on it.
 - `OrderReconciler` and the per-N-tick reconciliation pass.
-- `_place_market_order()` — dry-run synthetic in Phase 1; ccxt call in Phase 3.
-- `_get_current_price()` — real-time ticker via `BaseExchange.get_ticker()`.
+- `_place_market_order()`: dry-run synthetic in Phase 1; ccxt call in Phase 3.
+- `_get_current_price()`: real-time ticker via `BaseExchange.get_ticker()`.
 - `kind()` returns `"live"`.
 
 ### Trade-offs considered
@@ -147,7 +147,7 @@ The plugin's entry-point. Framework calls this; plugin implements it.
 **Location of implementation in plugin:** `reverto_live/__init__.py` exports `provider` attribute.
 
 ```python
-# core/live_provider.py — in framework
+# core/live_provider.py (in framework)
 
 from typing import Protocol, Optional, Literal
 from config.models import BotConfig
@@ -207,11 +207,11 @@ class LiveProvider(Protocol):
 
 - The plugin lives in a separate package; the framework cannot `from reverto_live import BaseLiveProvider` (circular). Protocols let the plugin satisfy the interface structurally without importing anything from framework.
 - Protocols permit easy mocking: tests inject `Mock(spec=LiveProvider)`.
-- `interface_version` field is a runtime check, not a type check — Protocol matches that flexibility.
+- `interface_version` field is a runtime check, not a type check; Protocol matches that flexibility.
 
 ---
 
-## 2.4 `TradingEngine` base class — detailed design
+## 2.4 `TradingEngine` base class: detailed design
 
 ### Constructor
 
@@ -240,7 +240,7 @@ class TradingEngine(abc.ABC):
 
 Identical to today's `PaperEngine.__init__`. The constructor stays in the base because all setup is shared. The only thing the subclasses do extra is:
 
-- `PaperEngine`: nothing — inherits constructor verbatim.
+- `PaperEngine`: nothing; inherits constructor verbatim.
 - `LiveEngine`: calls `super().__init__()`, then wires `ClockMonitor` + `OrderReconciler`.
 
 ### Method inventory (post-refactor)
@@ -274,7 +274,7 @@ LiveEngine adds two pre-tick gates (clock skew) and a per-N-tick reconciliation 
 - **Option A: Template method.** Base `_tick()` calls `self._pre_tick_hook()` and `self._post_tick_hook()`. PaperEngine implements both as no-ops; LiveEngine implements clock-skew + reconciliation.
 - **Option B: Full override.** LiveEngine overrides `_tick()` entirely (today's behaviour).
 
-**Recommend Option A** — explicit hook points make the base contract clearer and avoid copy-pasting the 175-line `_tick()` body into the plugin. The hooks can be inlined later if they grow in number.
+**Recommend Option A.** Explicit hook points make the base contract clearer and avoid copy-pasting the 175-line `_tick()` body into the plugin. The hooks can be inlined later if they grow in number.
 
 ---
 
@@ -293,13 +293,13 @@ Per the audit (§1.1.7), the only web files with runtime coupling are:
 ### UI degradation when plugin is absent
 
 - **Dry-run button** in the bot detail page: hidden if `await live_provider.is_live_config(cfg)` returns False (i.e. always, when plugin absent).
-- **`/api/portfolio/per-bot`** returns `{"bots": []}`. The frontend already renders an empty state — no JS change required.
+- **`/api/portfolio/per-bot`** returns `{"bots": []}`. The frontend already renders an empty state, so no JS change is required.
 - **Bot creation wizard** does not currently offer "live" as a mode option to non-admin users in the standard build; will be hidden entirely when plugin is absent.
 - **Admin emergency-stop** still works for paper bots (it only kills child PIDs); no plugin dependency.
 
 ### No new live-only route file
 
-The audit considered adding a `web/routes/live.py` for plugin-specific endpoints. Recommendation: **don't** — the only "live-specific" endpoints today are the two dry-run lifecycle hooks, which are conceptually generic lifecycle operations. Hiding them behind the `live_provider` interface keeps the route file count stable.
+The audit considered adding a `web/routes/live.py` for plugin-specific endpoints. Recommendation: **don't**. The only "live-specific" endpoints today are the two dry-run lifecycle hooks, which are conceptually generic lifecycle operations. Hiding them behind the `live_provider` interface keeps the route file count stable.
 
 If Phase 3+ introduces genuinely live-only routes (e.g. `/api/live/reconciliation-status`), they live in the plugin's own FastAPI router and are mounted at framework boot if the plugin is present:
 
@@ -322,7 +322,7 @@ if live_provider is not None and hasattr(live_provider, "router"):
 ### Loader
 
 ```python
-# core/plugin_loader.py — in framework
+# core/plugin_loader.py (in framework)
 
 import importlib
 import logging
@@ -338,7 +338,7 @@ _load_attempted = False
 
 def load_live_provider() -> Optional[LiveProvider]:
     """Lazily load the live-trading plugin. Returns None if absent or
-    incompatible. Cached after first call — restart the framework to
+    incompatible. Cached after first call; restart the framework to
     pick up plugin install/upgrade.
     """
     global _cached_provider, _load_attempted
@@ -374,7 +374,7 @@ def load_live_provider() -> Optional[LiveProvider]:
 ### Version-mismatch handling
 
 - The framework hardcodes `_FRAMEWORK_INTERFACE_VERSION`. Bump it whenever a method is added to `LiveProvider` that the framework will call unconditionally.
-- The plugin exposes `provider.interface_version`. Operators upgrading framework but not plugin (or vice versa) get a clear `incompatible` log line and live trading is disabled — they don't get cryptic `AttributeError` at runtime.
+- The plugin exposes `provider.interface_version`. Operators upgrading framework but not plugin (or vice versa) get a clear `incompatible` log line and live trading is disabled; they don't get cryptic `AttributeError` at runtime.
 - Optional methods (e.g. `on_breaker_permanent_open`) do not require a version bump; framework checks `hasattr(provider, "on_breaker_permanent_open")` before calling.
 
 ### Crash isolation
@@ -395,7 +395,7 @@ def load_live_provider() -> Optional[LiveProvider]:
 
 ### `Mode` enum
 
-The enum stays — it is a useful YAML serialisation surface, and `Mode.BACKTEST` keeps the trinary semantics. Three options were considered:
+The enum stays; it is a useful YAML serialisation surface, and `Mode.BACKTEST` keeps the trinary semantics. Three options were considered:
 
 | Option | Pros | Cons |
 |---|---|---|
@@ -448,7 +448,7 @@ The audit (§1.1.4) classifies each field:
 | Phase 4-5 (first commercial users) | Plugin distributed as a tarball gated on license server. Operator runs `pip install ./reverto_live-1.0.0.tar.gz` after purchase. |
 | Phase 6+ (mature) | Private PyPI index (e.g. `--index-url https://pypi.reverto.bot/simple/` with token auth). |
 
-PyPI public listing is **not recommended** — the plugin is closed-source and a public listing invites scrapers, mirror sites, and license bypass attempts.
+PyPI public listing is **not recommended**. The plugin is closed-source and a public listing invites scrapers, mirror sites, and license bypass attempts.
 
 ### Installation, upgrade, licence delivery
 
@@ -460,12 +460,12 @@ pip install ./reverto_live-1.0.0-cp311-none-any.whl    # plugin, from purchased 
 # Upgrade:
 pip install --upgrade reverto reverto-live
 
-# License token (option A — env var, recommended):
+# License token (option A: env var, recommended):
 export REVERTO_LIVE_LICENSE_KEY=...        # in .env, read by plugin at import
 make start
 ```
 
-License-token delivery via env var is the same surface as Telegram bot tokens and Fernet keys — the operator already keeps `.env` secret. CLI args were considered and rejected (would leak into `ps` output).
+License-token delivery via env var is the same surface as Telegram bot tokens and Fernet keys; the operator already keeps `.env` secret. CLI args were considered and rejected (would leak into `ps` output).
 
 ---
 
@@ -513,10 +513,10 @@ This is the **only** new conftest fixture required. The existing 115 framework t
 
 ### What does NOT need to change
 
-- `tests/test_paper_engine.py` — instantiates `PaperEngine`, which is still in the framework. Imports may need to drop the `Mode.LIVE` reference (currently absent) but otherwise verbatim.
-- `tests/test_state_recovery.py` — paper-only flow. Stays.
-- `tests/test_drawdown_guard.py` — guard is framework. Stays.
-- `tests/test_web_routes.py` — paper bots only. Stays. (A new test for the live-dispatch branch needs the mock provider, but the existing tests pass unchanged.)
+- `tests/test_paper_engine.py`: instantiates `PaperEngine`, which is still in the framework. Imports may need to drop the `Mode.LIVE` reference (currently absent) but otherwise verbatim.
+- `tests/test_state_recovery.py`: paper-only flow. Stays.
+- `tests/test_drawdown_guard.py`: guard is framework. Stays.
+- `tests/test_web_routes.py`: paper bots only. Stays. (A new test for the live-dispatch branch needs the mock provider, but the existing tests pass unchanged.)
 
 ---
 

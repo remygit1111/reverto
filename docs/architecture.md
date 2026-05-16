@@ -9,7 +9,7 @@
 │  ├── Lifespan: state watcher, log tailer         │
 │  ├── WebSockets: /ws/logs/{slug}, /ws/state      │
 │  ├── Routes: web/routes/*.py (8 modules, v22)    │
-│  └── BotRegistry — filesystem scan config/bots/  │
+│  └── BotRegistry - filesystem scan config/bots/  │
 └────────────────┬────────────────────────────────-┘
                  │ subprocess.Popen (SIGTERM to stop)
       ┌──────────┴──────────┐
@@ -45,7 +45,7 @@
 │    schedule / balance                 │
 │  - StateIO (v22), notifications       │
 └────────┬──────────────────────────────┘
-         │ writes        (config caps removed v25 —
+         │ writes        (config caps removed v25,
          ▼                wizard advisory warnings
 ┌──────────────────────────────────────┐  via /validate-config)
 │  Shared state                         │
@@ -96,12 +96,12 @@ web/
 
 **Design principles:**
 
-- Each route module is independent of other route modules —
+- Each route module is independent of other route modules:
   zero cross-imports inside `web/routes/`.
 - All modules import shared state (limiter, registry, session
   helpers, `_BOT_SLUG_RE`, ...) only from `web.app`.
 - The circular-import pattern works by calling `include_router()`
-  at the bottom of `web/app.py` — at that point all module-level
+  at the bottom of `web/app.py`; at that point all module-level
   names in `web.app` are already defined.
 - WebSocket endpoints (`/ws/logs/{slug}`, `/ws/state`) stay in
   `web/app.py` because `include_router` does not work cleanly
@@ -119,7 +119,7 @@ For Phase 1 everything runs on `user_id=1` (the seeded admin row).
 The request layer resolves via `_request_user` in `web/app.py`,
 which returns a `User` instance; Phase 2 will tie that lookup to
 the session cookie. The store interface (`core/deal_store.py`)
-requires `user_id` explicitly on every function — there are no
+requires `user_id` explicitly on every function. There are no
 silent defaults. That choice prevents a future call site from
 accidentally leaking cross-user data.
 
@@ -135,7 +135,7 @@ accidentally leaking cross-user data.
 ### Migration contract
 
 From pre-MT (SCHEMA_VERSION ≤ 2) to v3 is a **destructive drop +
-recreate** — an `ALTER TABLE` that adds a NOT NULL FK column to an
+recreate**. An `ALTER TABLE` that adds a NOT NULL FK column to an
 existing table with rows is, in SQLite, a full table rewrite with
 its own failure modes. `_migrate_schema` logs a WARNING, drops
 owned tables in FK-safe order, and lets `_SCHEMA_STATEMENTS`
@@ -160,8 +160,8 @@ signature changes.
 
 ### Credentials (Phase 1 = global)
 
-`core/credentials.py` requires `user_id` but does not yet use it
-— Phase 1 shared one `logs/credentials.json` + one Fernet master
+`core/credentials.py` requires `user_id` but does not yet use it.
+Phase 1 shared one `logs/credentials.json` + one Fernet master
 key between all users. Phase 2 (below) actually wires up the
 per-user key files and per-exchange `.enc` files.
 
@@ -183,7 +183,7 @@ construction goes through `core/paths.py`; never hardcoded strings.
 
 System files (`logs/reverto.db`, `logs/audit.log`,
 `logs/portal.log`, `logs/.credentials.key`,
-`logs/.api_key_ephemeral`) stay in their existing location — they
+`logs/.api_key_ephemeral`) stay in their existing location. They
 are operator/system state, not tenant data. Phase-3a removed
 `logs/.auth.json` from the runtime paths; on the first
 `init_db()` it is automatically archived to
@@ -193,11 +193,11 @@ are operator/system state, not tenant data. Phase-3a removed
 
 The `BotRegistry` keys on `(user_id, slug)` instead of just
 `slug`. Two different users can use the same slug name without
-conflict — their state/log/pid/config files each live under their
+conflict; their state/log/pid/config files each live under their
 own `<user_id>/` subdir. `BotInfo.user_id` is the new field that
 every file-path helper reads.
 
-### Per-user Fernet key — cryptographic isolation
+### Per-user Fernet key: cryptographic isolation
 
 `core/credentials.py` maintains two independent key systems:
 
@@ -207,7 +207,7 @@ every file-path helper reads.
   with full filesystem access. This is the primary security
   property of Phase 2.
 - **System key** (`logs/.credentials.key`) remains for
-  `save_encrypted` / `load_encrypted` — generic Fernet helpers
+  `save_encrypted` / `load_encrypted`, generic Fernet helpers
   for any system-level encrypted files outside the
   exchange-credentials scope. Phase-3a deprecated the portal-auth
   blob (`.auth.json`); password_hash + session_epoch now live in
@@ -244,9 +244,9 @@ paper/
 │                             (1397 lines, was 1542 pre-v22)
 ├── paper_state.py         ← PaperState, PaperDeal, PaperOrder
 └── state_io.py            ← StateIO class (NEW v22)
-    ├── load()             — with orphan .tmp cleanup
-    ├── write()            — atomic tmp + replace
-    ├── mark_stopped()     — preserves the other fields
+    ├── load()             - with orphan .tmp cleanup
+    ├── write()            - atomic tmp + replace
+    ├── mark_stopped()     - preserves the other fields
     ├── cleanup_orphan_tmps()
     └── deal_to_dict / dict_to_deal
 ```
@@ -296,7 +296,7 @@ suffix prevents collisions inside the same minute (10 000
 possibilities → 1-in-10 000 per bot per minute).
 
 Generation via `core/ids.py:generate_deal_id()`. Persistence via
-`core.deal_store.create_deal()` — INSERT-only, collisions raise
+`core.deal_store.create_deal()`. INSERT-only, collisions raise
 `sqlite3.IntegrityError`. The retry-on-collision logic lives in
 `paper/paper_engine.py:_db_create_deal_with_retry` (max 3
 attempts, mutating `deal.id` in place so the caller uses the new
@@ -305,7 +305,7 @@ id after a retry).
 Edge case: NTP-backward clock corrections can repeat the
 `YYYYMMDDHHMM-` prefix. The UNIQUE constraint on `deals.id`
 catches that and the retry regenerates the suffix. The compound
-probability of 3 consecutive collisions is ~1e-12 — effectively
+probability of 3 consecutive collisions is ~1e-12, effectively
 impossible.
 
 ## State file lifecycle
@@ -321,9 +321,9 @@ swept by `_load_state` before any deal hydration.
 | `running`            | Portal uses this to differentiate live vs dead  |
 | `balance_btc`        | Current balance; restored on restart            |
 | `fees_paid_btc`      | Cumulative fees for dashboard                   |
-| `open_deals[]`       | Full deal serialisation — orders + peak + trig  |
+| `open_deals[]`       | Full deal serialisation: orders + peak + trig   |
 | `closed_deals[]`     | Last N (CLOSED_DEALS_UI_CAP) for the UI         |
-| `drawdown_guard`     | Peak + triggered + reason — **persisted**       |
+| `drawdown_guard`     | Peak + triggered + reason, **persisted**        |
 | `paused_by_drawdown` | Blocks new entries until operator resets        |
 
 ## Plugin architecture (plugin-split Phase 2)
@@ -337,16 +337,16 @@ swept by `_load_state` before any deal hydration.
 After plugin-split Phase 2 Tasks 2.1–2.2:
 
 ```
-TradingEngine (ABC)        — core/trading_engine.py (~1908 LoC)
-├── PaperEngine            — paper/paper_engine.py (77 LoC thin subclass)
-    └── LiveEngine         — live/live_engine.py (inherits via PaperEngine)
+TradingEngine (ABC)        - core/trading_engine.py (~1908 LoC)
+├── PaperEngine            - paper/paper_engine.py (77 LoC thin subclass)
+    └── LiveEngine         - live/live_engine.py (inherits via PaperEngine)
 ```
 
 `TradingEngine` owns all shared trading logic: tick loop, DCA,
 TP/SL, sentinels, guards, state I/O, notifications. It declares
 exactly one `@abstractmethod`:
 
-- `_deduct_balance` — the balance gate. `PaperEngine` implements
+- `_deduct_balance`: the balance gate. `PaperEngine` implements
   it as a simulated in-memory check (its only method). `LiveEngine`
   additionally provides `_place_market_order` / `_get_current_price`
   for real-exchange order execution.
@@ -355,7 +355,7 @@ exactly one `@abstractmethod`:
 `_post_tick_hook` (default no-ops on `TradingEngine`). `LiveEngine`
 fills them with the clock-skew gate and the periodic reconciler;
 `PaperEngine` uses the no-op defaults. LiveEngine no longer
-overrides `_tick` itself — it inherits `TradingEngine._tick` and
+overrides `_tick` itself. It inherits `TradingEngine._tick` and
 only supplies the hooks.
 
 ### LiveProvider Protocol
@@ -366,11 +366,11 @@ only supplies the hooks.
 Protocol; the plugin provides the implementation. Methods
 (`interface_version = 1`):
 
-- `start_bot_dry_run(user_id, slug) -> dict` (async) — spawn
+- `start_bot_dry_run(user_id, slug) -> dict` (async): spawn
   `main_live.py` subprocess in dry-run mode
-- `is_live_config(config) -> bool` (async) — config introspection
-- `list_live_slugs(user_id) -> set[str]` (async) — portal data hook
-- `on_breaker_permanent_open(name, reason) -> None` (sync) —
+- `is_live_config(config) -> bool` (async): config introspection
+- `list_live_slugs(user_id) -> set[str]` (async): portal data hook
+- `on_breaker_permanent_open(name, reason) -> None` (sync):
   Telegram fan-out for permanent circuit-breaker latches
 
 ### Plugin loader
@@ -378,7 +378,7 @@ Protocol; the plugin provides the implementation. Methods
 `core/plugin_loader.py` lazily imports the plugin via
 `importlib.import_module("reverto_live")`. If the external plugin
 is not installed it falls back to the framework-internal
-`BuiltinLiveProvider` (`live/builtin_provider.py`) — a temporary
+`BuiltinLiveProvider` (`live/builtin_provider.py`), a temporary
 scaffold deleted in Phase 3.7 when `reverto-live` becomes the only
 provider. Validation chain: external plugin found → `provider`
 attribute present → `interface_version` matches → use it; on any
@@ -388,13 +388,13 @@ extreme case where even `BuiltinLiveProvider` is unloadable.
 
 ### Framework callers using the Protocol
 
-- `web/app.py:start_bot_dry_run` — delegates to
+- `web/app.py:start_bot_dry_run`: delegates to
   `provider.start_bot_dry_run()` (Task 2.5)
-- `web/app.py:restart_bot` — uses `provider.is_live_config()` for
+- `web/app.py:restart_bot`: uses `provider.is_live_config()` for
   paper-vs-live restart dispatch (Task 2.6)
-- `web/routes/portfolio.py:_live_bot_slugs` — delegates to
+- `web/routes/portfolio.py:_live_bot_slugs`: delegates to
   `provider.list_live_slugs()` (Task 2.7)
-- `exchanges/public_exchange.py:_make_permanent_open_callback` —
+- `exchanges/public_exchange.py:_make_permanent_open_callback`:
   delegates the Telegram fan-out via
   `provider.on_breaker_permanent_open()`, with a CRITICAL-log
   fallback when no provider is available (Task 2.8)
@@ -416,7 +416,7 @@ make wipe-deals
 Refuses to run when there are active bot subprocesses (via
 pid-file scan + `os.kill(pid, 0)` liveness check). Takes an
 exclusive `fcntl.flock` on `logs/.wipe.lock` to prevent
-concurrent wipes — two parallel wipe-deals processes cannot
+concurrent wipes. Two parallel wipe-deals processes cannot
 destructively interleave. See `docs/OPERATIONS.md` for the full
 flow + recovery.
 
@@ -430,8 +430,8 @@ REVERTO_LOG_LEVEL=DEBUG make restart
 ```
 
 Works for `main_paper.py` and `main_live.py`. The portal UI has a
-separate dropdown filter per bot-log tab (ALL / WARNING+ERROR) —
-that is client-side visibility, it does not affect what is
+separate dropdown filter per bot-log tab (ALL / WARNING+ERROR).
+That is client-side visibility, it does not affect what is
 written to disk.
 
 ### Bot config import / export / duplicate
@@ -440,7 +440,7 @@ Available via the kebab menu (⋮) on each bot card in the portal.
 
 - **Export** produces YAML with a metadata header (Reverto
   version, export timestamp, original slug). No credentials, no
-  state, no deal history — purely the strategy config.
+  state, no deal history, purely the strategy config.
 - **Import** validates the uploaded YAML via
   `config.models.BotConfig` (full Pydantic schema check).
   Slug conflict → 409; operator picks another name.
@@ -453,7 +453,7 @@ Available via the kebab menu (⋮) on each bot card in the portal.
 On a fresh install or after a destructive schema migration (v<4
 → v4, or future similar bumps), `users.password_hash` for the
 seeded admin row is `NULL`. Login is blocked until
-`scripts/setup_admin.py` has been run — typically via:
+`scripts/setup_admin.py` has been run, typically via:
 
 ```bash
 REVERTO_ADMIN_PW="<password>" make setup-admin
@@ -480,7 +480,7 @@ deploy; Layer 2 is opt-in per user; Layer 3 binds the result to a
 session cookie that the rest of the portal validates on every
 request.
 
-### Layer 1 — Password authentication
+### Layer 1: Password authentication
 
 - Bcrypt-hashed passwords (rounds=12) stored in
   `users.password_hash`.
@@ -497,7 +497,7 @@ request.
   known-breached passwords without leaking the new password to the
   network.
 
-### Layer 2 — Two-factor authentication (TOTP, opt-in)
+### Layer 2: Two-factor authentication (TOTP, opt-in)
 
 Optional second factor for users who enable it via
 `POST /auth/totp/setup` → scan QR → `POST /auth/totp/verify`. The
@@ -513,7 +513,7 @@ with the exchange-credential pattern, Phase 2 per-user filesystem).
 **Enrollment flow:**
 1. Authenticated user `POST /auth/totp/setup` → server generates a
    fresh secret, server-renders an SVG QR (no CDN-loaded JS QR
-   library — see `docs/security-model.md` for the supply-chain
+   library; see `docs/security-model.md` for the supply-chain
    rationale), and sets a 10-min uid-bound pending-state cookie.
 2. User scans the QR with an authenticator app.
 3. `POST /auth/totp/verify` with the first 6-digit code.
@@ -532,22 +532,22 @@ with the exchange-credential pattern, Phase 2 per-user filesystem).
    the TOTP step cannot reset the counter for free).
 
 **Disable flow:**
-Requires BOTH the current password AND a current valid TOTP code
-— a stolen session alone or a stolen device alone is insufficient.
+Requires BOTH the current password AND a current valid TOTP code.
+A stolen session alone or a stolen device alone is insufficient.
 For operator-side recovery when a user has lost the authenticator
 app, see `docs/OPERATIONS.md` "TOTP recovery".
 
-### Layer 3 — Session cookies
+### Layer 3: Session cookies
 
 - HttpOnly + Secure + SameSite=Strict.
 - Signed via `itsdangerous.URLSafeTimedSerializer` with a
   per-purpose salt so the three cookie types cannot be replayed
   across each other.
 - Three cookie types:
-  - **session** (24h TTL) — issued on full login success.
-  - **pending-totp-enrollment** (10 min, uid-bound) — issued by
+  - **session** (24h TTL): issued on full login success.
+  - **pending-totp-enrollment** (10 min, uid-bound): issued by
     `/auth/totp/setup`, consumed by `/auth/totp/verify`.
-  - **pending-login-totp** (2 min) — issued by `/auth/login` when
+  - **pending-login-totp** (2 min): issued by `/auth/login` when
     `user.totp_enabled`, consumed by `/auth/login/totp`.
 - Validation on every request (`web.app._request_user`) checks: a
   valid signature, the cookie's claimed user_id resolves to an
@@ -569,28 +569,28 @@ Detailed design rationale + threat model:
 
 ## Key inter-module contracts
 
-- **exchanges.base_exchange** — the `BaseExchange` ABC is the single
+- **exchanges.base_exchange**: the `BaseExchange` ABC is the single
   interface every engine talks to. New exchanges subclass it; engines
   remain framework-agnostic.
-- **core.drawdown_guard.DrawdownGuard** — engines feed equity or
+- **core.drawdown_guard.DrawdownGuard**: engines feed equity or
   balance into `update()`; the guard returns True on trigger and the
   engine decides `pause` vs `stop`. `to_dict()`/`from_dict()` let the
   peak survive restarts.
-- **core.credentials** — Fernet-encrypted at rest. `rotate_fernet_key`
+- **core.credentials**: Fernet-encrypted at rest. `rotate_fernet_key`
   mass re-encrypts every credential atomically (see OPERATIONS.md
   "Credential rotation").
-- **live.order_reconciliation** — tracks pending orders + timeouts.
+- **live.order_reconciliation**: tracks pending orders + timeouts.
   Scaffolding only in Phase 1; Phase 3 wires the `fetch_order` polling
   branch.
-- **web.metrics** — every counter / gauge / histogram is defined in
+- **web.metrics**: every counter / gauge / histogram is defined in
   one place. Engines instrument via `record_tick`, `set_balance`, etc.
-- **core.trading_engine.TradingEngine** — abstract base class for
+- **core.trading_engine.TradingEngine**: abstract base class for
   all trading engines; `PaperEngine` and `LiveEngine` subclass it.
   Subclass-required: `_deduct_balance` (the single
   `@abstractmethod`). Subclass-overridable hooks: `_pre_tick_hook`,
   `_post_tick_hook` (default no-ops). Added by plugin-split Phase 2
   Task 2.1 (hooks: Task 2.2).
-- **core.live_provider.LiveProvider** — Protocol (PEP 544,
+- **core.live_provider.LiveProvider**: Protocol (PEP 544,
   `@runtime_checkable`) for the external live-trading plugin.
   Framework calls it via `core.plugin_loader.load_live_provider()`;
   returns `None` only on extreme failure (the in-tree
@@ -604,7 +604,7 @@ Detailed design rationale + threat model:
   `exchanges.public_exchange.CLIENTS`, add CCXT symbol map. ~150 LoC.
 - **New indicator**: add module under `strategies/indicators/`,
   implement `check_<name>_signal`, register in `IndicatorEngine`.
-- **New guard**: follow the `DrawdownGuard` shape — `update()`,
+- **New guard**: follow the `DrawdownGuard` shape, namely `update()`,
   `is_triggered`, `to_dict`/`from_dict`. Wire into `_tick` after the
   existing guards so it observes the post-monitor state.
 - **New route domain**: add `web/routes/<domain>.py` with `router =
@@ -612,7 +612,7 @@ Detailed design rationale + threat model:
   + `@limiter.limit(...)` + `Depends(_request_actor)` where auth
   required. At the bottom of `web/app.py`, add `from web.routes import
   <domain> as _<domain>_routes` + `app.include_router(_<domain>_routes.router)`.
-  Follow the existing patterns — see `web/routes/exchanges.py` for the
+  Follow the existing patterns. See `web/routes/exchanges.py` for the
   minimal 3-endpoint template.
 - **Live trading plugin**: implement the
   `core.live_provider.LiveProvider` Protocol in a separate pip
@@ -623,29 +623,29 @@ Detailed design rationale + threat model:
   3.7) if no external plugin is installed. See
   docs/plugin_split_design.md §2.3 for the Protocol specification.
 
-## Refactor roadmap — deliberately deferred
+## Refactor roadmap: deliberately deferred
 
-- **paper_engine.py TickLoop/DealMonitor extract** — *partially
+- **paper_engine.py TickLoop/DealMonitor extract**: *partially
   completed* by plugin-split Phase 2 Task 2.1: the
   `TradingEngine` ABC extraction moved all engine logic into
   `core/trading_engine.py` and shrank `PaperEngine` from 1913 →
   77 LoC. The further TickLoop/DealMonitor *decomposition* was
-  NOT done — `TradingEngine` remains a single ~1900-line class;
+  NOT done. `TradingEngine` remains a single ~1900-line class;
   splitting out `_monitor_open_deals`, `_check_entry`,
   `_check_dca`, `_check_tp`, `_check_sl` still carries
   state-synchronisation risk without direct architectural gain.
   Revisit if `TradingEngine` grows substantially or a new
   subclass needs different tick semantics.
-- **_close_deal_at_price DRY refactor** — TP and SL branches have
+- **_close_deal_at_price DRY refactor**: TP and SL branches have
   structurally different flows (SL trailing peak, TP indicator
   groups). Refactor risk > gain.
-- **Wick-slippage cap** — changes PnL semantics; existing tests
+- **Wick-slippage cap**: changes PnL semantics; existing tests
   anchor the current behaviour. Worthwhile in Phase 3 once
   paper/live divergence can be measured against real slippage.
-- **Decimal precision for DCA sizing** — Phase 3 blocker for
+- **Decimal precision for DCA sizing**: Phase 3 blocker for
   exchange fill reconciliation. Exchange min-qty rounding
   compensates for the float drift in practice until then.
-- **Split web/app.py further** — 1447 lines remain (middleware +
+- **Split web/app.py further**: 1447 lines remain (middleware +
   lifespan + shared helpers + WS + BotRegistry + auth primitives).
   Further extraction is conceivable (session helpers →
   `web/auth_primitives.py`, WS → `web/websockets.py`), but
