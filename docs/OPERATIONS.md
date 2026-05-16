@@ -377,17 +377,18 @@ On your production host:
 crontab -e
 ```
 
-Add:
+Add (replace `/path/to/reverto` with your actual installation
+directory, and adjust the user comment to match your setup):
 
 ```
 # Reverto daily backup at 03:00 UTC
-0 3 * * * cd /home/bot/reverto && ./scripts/backup.sh >> \
+0 3 * * * cd /path/to/reverto && ./scripts/backup.sh >> \
     logs/backup.log 2>&1
 ```
 
-Cron runs the script as the `bot` user; permissions (600 files,
-700 dirs) are applied inside the script so the cron-environment
-UMASK doesn't matter.
+Cron runs the script as the service user (e.g. `bot`);
+permissions (600 files, 700 dirs) are applied inside the script
+so the cron-environment UMASK doesn't matter.
 
 ### Manual backup
 
