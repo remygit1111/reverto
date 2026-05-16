@@ -1,4 +1,4 @@
-# Reverto — Notice and Intent
+# Reverto: Notice and Intent
 
 Copyright 2026 remy1111
 
@@ -11,7 +11,7 @@ each release.
 
 ## Project Intent
 
-Reverto is open-source software published for **educational,
+Reverto is source-available software published for **educational,
 research, and personal-use purposes**. The original author and
 maintainer (`remy1111`) uses Reverto for their own personal
 automated trading and has chosen to release the framework code
@@ -26,7 +26,7 @@ backtesting.
 A separate commercial **Reverto Live Plugin** (`reverto-live`) is
 planned for a future release. The Live Plugin will be sold
 separately under different licensing terms and provides the
-live-trading capability that the open-source framework intentionally
+live-trading capability that the source-available framework intentionally
 leaves as scaffolding only.
 
 This repository is **not** an offer of services. The maintainer
@@ -78,8 +78,8 @@ further detail on the maintainer's personal instance.
 
 The commercial Reverto Live Plugin (planned for future release)
 will be distributed under its own license terms separate from
-this BSL-licensed framework. Information about the Live Plugin —
-pricing, availability, license terms, distribution channel — will
+this BSL-licensed framework. Information about the Live Plugin
+(pricing, availability, license terms, distribution channel) will
 be published at [reverto.bot](https://reverto.bot) when ready.
 
 The Live Plugin business is operated by the maintainer in a

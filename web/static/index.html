@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reverto — Bitcoin bots</title>
+<title>Reverto: Bitcoin bots</title>
 
 <!-- Anti-flash gate. Body stays hidden until app.js's DOMContentLoaded
      handler completes the /auth/status check and the correct view
@@ -12,7 +12,7 @@
      for ~50-200ms before JavaScript redirects to /login.
 
      The 3-second inline-script fallback reveals the body even if
-     app.js fails to parse, fails to load, or hangs — a network glitch
+     app.js fails to parse, fails to load, or hangs, so a network glitch
      can never leave the page permanently blank. Inline + early so it
      fires before app.js needs to be downloaded + parsed. -->
 <style>
@@ -21,7 +21,7 @@
 </style>
 <!-- Anti-flash safety-net. CSP whitelists this exact script via a
      SHA-256 hash in web/app.py (search ``_INLINE_SCRIPT_CSP_HASH``).
-     Modifying this script — even adding/removing whitespace —
+     Modifying this script (even adding/removing whitespace)
      requires regenerating the hash, otherwise the browser will
      refuse to execute it and the body stays hidden if app.js
      never lands. -->
@@ -38,7 +38,7 @@
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/roadmap.css?v=1">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
-<!-- SRI — audit r1-074. Regenerate hashes when bumping versions:
+<!-- SRI, audit r1-074. Regenerate hashes when bumping versions:
      curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A -->
 <link rel="stylesheet"
       href="https://unpkg.com/gridstack@11.5.1/dist/gridstack.min.css"
@@ -53,7 +53,7 @@
   <span class="logo-sub" id="hdr-context">Built for Bitcoin.</span>
   <div class="header-spacer"></div>
   <span class="header-pair" id="hdr-pair">BTC/USD</span>
-  <span class="header-price" id="hdr-price">—</span>
+  <span class="header-price" id="hdr-price">-</span>
   <div id="hdr-pill" class="hidden">
     <div id="status-pill" class="pill stopped">
       <div class="dot"></div>
@@ -122,7 +122,7 @@
       <label class="profile-label">Username</label>
       <input id="profile-username" class="modal-input" type="text" readonly>
       <label class="profile-label">Display name</label>
-      <input id="profile-display-name" class="modal-input" type="text" maxlength="40" placeholder="Optional — used for the avatar initial">
+      <input id="profile-display-name" class="modal-input" type="text" maxlength="40" placeholder="Optional, used for the avatar initial">
     </section>
 
     <!-- PR 5b: wrapped in a <form> so password managers treat the
@@ -158,7 +158,7 @@
 
     <!-- Phase B PR 2: TOTP 2FA enrollment + disable. Status surfaced
          from /auth/status (totp_enabled). The two action buttons each
-         open a sub-modal — see #totp-enroll-modal and #totp-disable-
+         open a sub-modal, see #totp-enroll-modal and #totp-disable-
          modal below. PR 3 will add the corresponding step on
          /auth/login. -->
     <section class="profile-section" id="profile-totp-section">
@@ -189,7 +189,7 @@
 <!-- ── TOTP enrollment modal (Phase B PR 2) ──────────────────────────────────
      QR code is rendered server-side as inline SVG in the
      /auth/totp/setup response (qr_svg field). No CDN dependency,
-     no SRI hash to maintain — keeps v27-04 supply-chain surface
+     no SRI hash to maintain, which keeps v27-04 supply-chain surface
      closed.
 -->
 <div id="totp-enroll-modal" class="modal-overlay">
@@ -251,8 +251,8 @@
 </div>
 
 <!-- ── TOTP disable modal (Phase B PR 2) ─────────────────────────────────────
-     Dual-factor: password + current TOTP code. Both required —
-     either alone is insufficient to remove the second factor.
+     Dual-factor: password + current TOTP code. Both required.
+     Either alone is insufficient to remove the second factor.
 -->
 <div id="totp-disable-modal" class="modal-overlay">
   <!-- rhav2-004: aria-modal + role="dialog" + aria-labelledby.
@@ -325,7 +325,7 @@
       <div class="profile-section-title">Interface</div>
       <label class="settings-checkbox-row">
         <input type="checkbox" id="settings-compact">
-        <span>Compact mode — reduces padding and margins by 20%</span>
+        <span>Compact mode: reduces padding and margins by 20%</span>
       </label>
     </section>
 
@@ -400,7 +400,7 @@
 
 <!-- ── Bot delete confirmation modal (PT-v4-FS-001) ─────────────────────────
      Pre-fix the delete used a one-click confirm() prompt that paired with
-     a YAML-only purge — easy to misclick into "yes" and lose a bot's
+     a YAML-only purge, easy to misclick into "yes" and lose a bot's
      state forever. Post-fix the operator must type the slug to confirm,
      mirroring the high-stakes-delete UX of GitHub repo deletion. -->
 <div id="bot-delete-modal" class="modal-overlay">
@@ -481,7 +481,7 @@
 <!-- ── Sweep modal ────────────────────────────────────────────────────────── -->
 <div id="sweep-modal" class="modal-overlay">
   <div class="modal-card sweep-modal-card" role="dialog" aria-modal="true" aria-labelledby="sweep-modal-title">
-    <div class="modal-title" id="sweep-modal-title">🔄 Auto Optimize — Parameter Sweep</div>
+    <div class="modal-title" id="sweep-modal-title">🔄 Auto Optimize: Parameter Sweep</div>
 
     <!-- Sweep parameter tabs -->
     <div class="sweep-tabs">
@@ -649,7 +649,7 @@
       <!-- Shared error-div for both login steps (password + TOTP).
            Sits OUTSIDE both forms so it stays visible after
            _showLoginTotpForm() hides #login-form to reveal the
-           TOTP step — pre-fix this div lived inside #login-form
+           TOTP step. Pre-fix this div lived inside #login-form
            and got dragged into display:none with its parent, so
            wrong-TOTP-code attempts had no UI feedback. ID
            unchanged so handleLoginSubmit + handleLoginTotpSubmit
@@ -696,17 +696,17 @@
   <div class="summary-bar">
     <div class="card">
       <div class="card-label">Total PnL</div>
-      <div class="card-value" id="ov-pnl">—</div>
+      <div class="card-value" id="ov-pnl">-</div>
       <div class="card-sub">all bots combined</div>
     </div>
     <div class="card">
       <div class="card-label">Active bots</div>
-      <div class="card-value" id="ov-active">—</div>
-      <div class="card-sub" id="ov-total-sub">of — configured</div>
+      <div class="card-value" id="ov-active">-</div>
+      <div class="card-sub" id="ov-total-sub">of - configured</div>
     </div>
     <div class="card">
       <div class="card-label">Open deals</div>
-      <div class="card-value" id="ov-deals">—</div>
+      <div class="card-value" id="ov-deals">-</div>
       <div class="card-sub">across all bots</div>
     </div>
   </div>
@@ -719,18 +719,18 @@
         <div class="status-item">
           <div class="status-dot status-running"></div>
           <div class="status-label">Running</div>
-          <div class="status-count" id="ov-running-count">—</div>
+          <div class="status-count" id="ov-running-count">-</div>
         </div>
         <div class="status-item">
           <div class="status-dot status-stopped"></div>
           <div class="status-label">Stopped</div>
-          <div class="status-count" id="ov-stopped-count">—</div>
+          <div class="status-count" id="ov-stopped-count">-</div>
         </div>
       </div>
     </div>
 
-    <!-- Live INFO log — all bots combined -->
-    <div class="section-title">Live log — all bots (INFO+)</div>
+    <!-- Live INFO log, all bots combined -->
+    <div class="section-title">Live log: all bots (INFO+)</div>
     <div class="log-wrap log-wrap-overview">
       <div class="log-header">
         <span class="log-title">All bots combined</span>
@@ -800,7 +800,7 @@
   <div class="portfolio-top">
     <div class="card portfolio-total-card">
       <div class="card-label">Total portfolio value</div>
-      <div class="card-value" id="pf-total-value">—</div>
+      <div class="card-value" id="pf-total-value">-</div>
       <div class="card-sub" id="pf-as-of">no snapshots yet</div>
     </div>
     <div class="portfolio-controls">
@@ -825,7 +825,7 @@
       </select>
     </div>
     <div id="pf-history-chart" class="portfolio-chart"></div>
-    <div id="pf-history-empty" class="empty-config-msg hidden">No snapshots yet — the first hourly capture lands at the next top-of-hour.</div>
+    <div id="pf-history-empty" class="empty-config-msg hidden">No snapshots yet. The first hourly capture lands at the next top-of-hour.</div>
   </div>
 
   <div class="section-title">Per exchange</div>
@@ -979,7 +979,7 @@
         <a href="#admin" class="admin-back-link">← Back to Admin</a>
       </div>
       <div class="cl-admin-header">
-        <div class="section-title">Bot Overview — admin</div>
+        <div class="section-title">Bot Overview: admin</div>
         <button class="hbtn hbtn-theme btn-danger" id="admin-emergency-stop-btn" type="button">
           🛑 Emergency stop all bots
         </button>
@@ -1021,7 +1021,7 @@
         <a href="#admin" id="admin-back-link">← Back to Admin</a>
       </div>
       <div class="cl-admin-header">
-        <div class="section-title">Changelog — admin</div>
+        <div class="section-title">Changelog: admin</div>
         <button class="hbtn hbtn-theme btn-accent" id="admin-cl-new-btn" type="button">
           + New entry
         </button>
@@ -1043,7 +1043,7 @@
         </table>
       </div>
     </div>
-    <!-- Roadmap — admin sub-page. List view is a draggable
+    <!-- Roadmap: admin sub-page. List view is a draggable
          <ul> rather than a <table>: drag-and-drop sort-order is
          the primary interaction, and operators inserting a phase
          between two others is the common edit. -->
@@ -1052,7 +1052,7 @@
         <a href="#admin" class="admin-back-link">&larr; Back to Admin</a>
       </div>
       <div class="cl-admin-header">
-        <div class="section-title">Roadmap — admin</div>
+        <div class="section-title">Roadmap: admin</div>
         <div class="cl-actions">
           <button class="hbtn hbtn-theme" id="admin-regen-snapshots-btn" type="button"
                   title="Force-rewrite roadmap.json + changelog.json on the marketing site (reverto.bot). Auto-export already runs on every publish/unpublish/edit; use this if a snapshot has drifted.">
@@ -1067,7 +1067,7 @@
       <div id="admin-roadmap-status" class="cl-empty">Loading…</div>
       <ul id="admin-roadmap-list" class="roadmap-admin-list" hidden></ul>
     </div>
-    <!-- Audit findings tracker — admin sub-page. The seed at
+    <!-- Audit findings tracker: admin sub-page. The seed at
          data/findings_seed.yaml populates 240 rows on first boot;
          operator edits to status/notes/resolution_ref persist via
          PATCH /api/admin/findings/<id>. -->
@@ -1079,7 +1079,7 @@
         <div class="section-title">Audit Findings</div>
         <div class="findings-stats-wrap">
           <div class="findings-stats" id="findings-stats" aria-live="polite"></div>
-          <!-- "Showing X of Y" — visible only while any filter is
+          <!-- "Showing X of Y", visible only while any filter is
                active. Toggled by app.js's _updateShowingIndicator,
                which runs after every loadAdminFindings render. -->
           <div class="findings-showing hidden" id="findings-showing" aria-live="polite"></div>
@@ -1132,7 +1132,7 @@
         </table>
       </div>
     </div>
-    <!-- Exchange accounts — admin sub-page. Backend at
+    <!-- Exchange accounts: admin sub-page. Backend at
          /api/exchange-accounts (CRUD) + /api/exchanges/supported
          for the dropdown. Test-connection round-trips a real
          authenticated call through fetch_balance(). -->
@@ -1180,7 +1180,7 @@
         </p>
         <p>
           Click the button below to generate a one-time link. The link
-          opens our shared bot in Telegram — tap <strong>Start</strong>
+          opens our shared bot in Telegram. Tap <strong>Start</strong>
           there and your account is connected.
         </p>
         <button type="button" class="btn-primary" id="admin-tg-connect-btn">
@@ -1204,9 +1204,9 @@
         <div class="tg-connected-row">
           <div>
             <div class="card-label">Connected chat</div>
-            <div class="card-value" id="admin-tg-chat-id">—</div>
-            <div class="card-sub" id="admin-tg-connected-at">—</div>
-            <div class="card-sub" id="admin-tg-last-message">—</div>
+            <div class="card-value" id="admin-tg-chat-id">-</div>
+            <div class="card-sub" id="admin-tg-connected-at">-</div>
+            <div class="card-sub" id="admin-tg-last-message">-</div>
           </div>
           <div class="tg-connected-actions">
             <button type="button" class="hbtn hbtn-theme" id="admin-tg-test-btn">
@@ -1221,7 +1221,7 @@
         <p class="card-sub">
           Pick which events trigger a Telegram message. Safety alerts
           (errors, liquidation warnings, bot shutdown) are always sent
-          even if un-ticked — they are too important to mute by
+          even if un-ticked. They are too important to mute by
           accident.
         </p>
         <div class="tg-notify-grid" id="admin-tg-notify-grid"></div>
@@ -1477,7 +1477,7 @@
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
-<!-- VIEW: New bot — single page form                                          -->
+<!-- VIEW: New bot, single page form                                          -->
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-new-bot" class="page">
   <div class="wizard wizard-split">
@@ -1486,7 +1486,7 @@
       <div class="wizard-chart-wrap">
         <div class="wizard-chart-header">
           <span class="wizard-chart-label" id="wizard-chart-label">BTC/USD</span>
-          <span id="wizard-chart-price" class="wizard-chart-price">—</span>
+          <span id="wizard-chart-price" class="wizard-chart-price">-</span>
         </div>
         <div class="chart-tool-bar wizard-tool-bar">
           <button type="button" class="chart-tool active" data-wtool="select" title="Select" aria-label="Select (normal chart interaction)">&#x1F5B1;</button>
@@ -1600,7 +1600,7 @@
               <input id="nb-leverage-size" type="range" min="1" max="125" step="1" value="1" disabled>
               <span class="slider-value" id="nb-leverage-value">1x</span>
             </div>
-            <div class="form-hint">Liquidation price: <span id="nb-liq-preview">—</span></div>
+            <div class="form-hint">Liquidation price: <span id="nb-liq-preview">-</span></div>
             <div class="form-hint" id="nb-leverage-warn"></div>
           </div>
         </div>
@@ -1612,7 +1612,7 @@
       <summary class="wizard-section-header">Entry Conditions</summary>
       <div class="wizard-section-body">
         <div class="form-row">
-          <label>Base order size — unit</label>
+          <label>Base order size (unit)</label>
           <div class="toggle-group">
             <button type="button" class="toggle-btn active" data-base-unit="btc">BTC (fixed)</button>
             <button type="button" class="toggle-btn" data-base-unit="pct">% of balance</button>
@@ -1669,7 +1669,7 @@
                    placeholder="optional"
                    aria-describedby="nb-tp-min-pct-hint">
             <span id="nb-tp-min-pct-hint" class="form-hint">
-              Optional — indicator-based TP only fires once the deal
+              Optional. Indicator-based TP only fires once the deal
               is at least this percentage in profit.
             </span>
           </div>
@@ -1724,7 +1724,7 @@
               <input id="nb-use-wick-sim" type="checkbox" checked>
               <span>Check candle wicks for TP/SL</span>
             </label>
-            <div class="form-hint">More realistic — fires TP/SL on the candle's intra-bar high/low instead of only the live tick. Matches backtest behaviour.</div>
+            <div class="form-hint">More realistic. Fires TP/SL on the candle's intra-bar high/low instead of only the live tick. Matches backtest behaviour.</div>
           </div>
         </div>
       </div>
@@ -1766,7 +1766,7 @@
                    type="number" step="0.1" min="0" value="2.5"
                    aria-describedby="nb-dca-spacing-hint">
             <span id="nb-dca-spacing-hint" class="form-hint">
-              Price distance between each DCA — 2.5 = next order at 2.5%
+              Price distance between each DCA. 2.5 = next order at 2.5%
               below the previous one.
             </span>
           </div>
@@ -1857,7 +1857,7 @@
 <!-- ══════════════════════════════════════════════════════════════════════════ -->
 <div id="view-detail" class="page">
 
-  <!-- Sub-nav strip — restored to standalone after iterating on
+  <!-- Sub-nav strip, restored to standalone after iterating on
        breadcrumb / page-title / merged context-bar. Operators leave
        the detail view via the main nav (Bots tab) or the browser
        back button, which is wired through the History API. -->
@@ -1870,7 +1870,7 @@
     <button class="tab" data-dtab="log">Log</button>
   </nav>
 
-  <!-- Bot identity block — bot name (prominent), status pill aligned
+  <!-- Bot identity block: bot name (prominent), status pill aligned
        right, and a muted meta line beneath. Visible on every dtab so
        the operator always sees which bot they are inside. The status
        pill lives here instead of next to the action buttons so the
@@ -1878,7 +1878,7 @@
   <div class="bot-identity">
     <div class="bot-identity-header">
       <h1 class="bot-identity-name" id="bot-name-display"></h1>
-      <span class="running-status" id="bot-identity-status">—</span>
+      <span class="running-status" id="bot-identity-status">-</span>
     </div>
     <div class="bot-identity-meta" id="bot-meta-display"></div>
   </div>
@@ -1887,8 +1887,8 @@
   <div id="dtab-chart" class="detail-content hidden">
     <div class="chart-header">
       <div class="chart-price-block">
-        <div id="chart-price" class="chart-price">—</div>
-        <div id="chart-change" class="chart-change">—</div>
+        <div id="chart-price" class="chart-price">-</div>
+        <div id="chart-change" class="chart-change">-</div>
       </div>
       <div class="chart-tf-selector">
         <button type="button" class="chart-tf-btn" data-tf="15m">15m</button>
@@ -1973,37 +1973,37 @@
     <div class="stat-grid stat-grid-mb skeleton-on-init">
       <div class="card">
         <div class="card-label">Price</div>
-        <div class="card-value" id="d-price">—</div>
+        <div class="card-value" id="d-price">-</div>
         <div class="card-sub" id="d-pair-sub">BTC/USD</div>
       </div>
       <div class="card">
         <div class="card-label">Balance</div>
-        <div class="card-value" id="d-balance">—</div>
+        <div class="card-value" id="d-balance">-</div>
         <div class="card-sub">BTC</div>
       </div>
       <div class="card">
         <div class="card-label">Total PnL</div>
-        <div class="card-value" id="d-pnl">—</div>
+        <div class="card-value" id="d-pnl">-</div>
         <div class="card-sub">realized</div>
       </div>
       <div class="card">
         <div class="card-label">Open deals</div>
-        <div class="card-value" id="d-open-count">—</div>
+        <div class="card-value" id="d-open-count">-</div>
         <div class="card-sub">active</div>
       </div>
       <div class="card">
         <div class="card-label">Win rate</div>
-        <div class="card-value" id="d-winrate">—</div>
+        <div class="card-value" id="d-winrate">-</div>
         <div class="card-sub">of closed deals</div>
       </div>
       <div class="card">
         <div class="card-label">Schedule</div>
-        <div class="card-value" id="d-schedule">—</div>
+        <div class="card-value" id="d-schedule">-</div>
         <div class="card-sub">trading window</div>
       </div>
     </div>
 
-    <!-- Drawdown guard status — hidden until the bot's config enables it -->
+    <!-- Drawdown guard status, hidden until the bot's config enables it -->
     <div id="bot-detail-drawdown-status"
          class="bot-detail-drawdown hidden"
          aria-live="polite">
@@ -2011,15 +2011,15 @@
       <div class="drawdown-info">
         <div class="drawdown-row">
           <span class="label">Status:</span>
-          <span class="value status-value">—</span>
+          <span class="value status-value">-</span>
         </div>
         <div class="drawdown-row">
           <span class="label">Peak value:</span>
-          <span class="value peak-value">—</span>
+          <span class="value peak-value">-</span>
         </div>
         <div class="drawdown-row">
           <span class="label">Trigger reason:</span>
-          <span class="value reason-value">—</span>
+          <span class="value reason-value">-</span>
         </div>
       </div>
       <button class="hbtn hbtn-theme btn-danger"
@@ -2041,19 +2041,19 @@
       <div class="info-bar">
         <div class="info-item">
           <div class="info-item-label">Config</div>
-          <div class="info-item-value text-small" id="d-config">—</div>
+          <div class="info-item-value text-small" id="d-config">-</div>
         </div>
         <div class="info-item">
           <div class="info-item-label">Mode</div>
-          <div class="info-item-value" id="d-mode">—</div>
+          <div class="info-item-value" id="d-mode">-</div>
         </div>
         <div class="info-item">
           <div class="info-item-label">Exchange</div>
-          <div class="info-item-value" id="d-exchange">—</div>
+          <div class="info-item-value" id="d-exchange">-</div>
         </div>
         <div class="info-item">
           <div class="info-item-label">Initial balance</div>
-          <div class="info-item-value" id="d-init">—</div>
+          <div class="info-item-value" id="d-init">-</div>
         </div>
       </div>
     </div>
@@ -2097,7 +2097,7 @@
     </div>
   </div>
 
-  <!-- Backtest tab — client-side simulation, results rendered in place -->
+  <!-- Backtest tab, client-side simulation, results rendered in place -->
   <div id="dtab-backtest" class="detail-content hidden">
     <div class="bt-config card">
       <div class="bt-config-row">
@@ -2243,7 +2243,7 @@
 
 </div>
 
-<!-- SRI hashes — audit r1-074. If unpkg is compromised or MITM'd
+<!-- SRI hashes, audit r1-074. If unpkg is compromised or MITM'd
      the browser rejects the modified script instead of running it.
      Regenerate when bumping versions:
      curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A -->

@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps — copy requirements first so image layers stay
+# Python deps: copy requirements first so image layers stay
 # cacheable across code-only changes.
 COPY requirements.txt requirements-ml.txt ./
 RUN pip install --no-cache-dir \
@@ -46,7 +46,7 @@ RUN pip install --no-cache-dir \
 # App code
 COPY . .
 
-# Non-root user — prevents a compromised bot from writing as root
+# Non-root user: prevents a compromised bot from writing as root
 # on the host.
 RUN useradd -m -u 1000 reverto && \
     chown -R reverto:reverto /app
@@ -130,7 +130,7 @@ is mounted read-only at `/etc/prometheus/prometheus.yml`.
   secrets. NEVER bake credentials into the image; they remain
   visible in every image layer forever.
 - **Firewall**: do not publicly expose `/metrics`, `/healthz`,
-  `/readyz` — only Prometheus inside the stack network (reverse
+  `/readyz`; only Prometheus inside the stack network (reverse
   proxy / ingress ACL). The portal itself can be public as long
   as it is behind TLS.
 - **Volumes**: `logs/` (state.json, reverto.db, credentials.json,
@@ -175,8 +175,8 @@ services:
         max-file: "5"
 ```
 
-Alternative: a log aggregator like Loki / Fluentd / Vector —
-scrape portal.log + per-bot logs from the logs volume.
+Alternative: a log aggregator like Loki / Fluentd / Vector,
+scraping portal.log + per-bot logs from the logs volume.
 
 ## Kubernetes (sketch)
 
@@ -193,7 +193,7 @@ Key points:
   (StateIO's internal 3s DB timeout already feeds into /readyz).
 - Prometheus Operator with a ServiceMonitor on `/metrics`.
 - Emergency-stop workflow via `kubectl exec` into the portal pod
-  + curl to localhost:8080 — NOT via a public endpoint.
+  + curl to localhost:8080, NOT via a public endpoint.
 
 Details are out of scope for this guide; the bare-metal + Docker
 paths cover most operational use cases.

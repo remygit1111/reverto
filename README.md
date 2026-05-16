@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org)
 [![Tests](https://img.shields.io/badge/tests-2113%20passing-success)](#)
 
-> **An open-source (BSL 1.1) automated trading framework for BTC/USD inverse perpetual contracts on Bitget and Kraken.** Self-hosted, paper-trading-ready out of the box, with a commercial Live Plugin coming in a future release.
+> **A source-available automated trading framework, BSL 1.1 licensed, for BTC/USD inverse perpetual contracts on Bitget and Kraken.** Self-hosted, paper-trading-ready out of the box, with a commercial Live Plugin coming in a future release.
 
 > ⚠️ **Trading cryptocurrencies involves substantial financial risk. You may lose all your capital.** Read [DISCLAIMERS.md](DISCLAIMERS.md) before deploying any code from this repository.
 
@@ -69,7 +69,7 @@ python main_paper.py --version
 
 See [docs/RELEASES.md](docs/RELEASES.md) for the release history and [LICENSE](LICENSE) for current license terms.
 
-Reverto is functional for paper trading and backtesting. The framework — paper trading, backtest engine, indicators, web portal — is published under BSL 1.1 (see [License](#license) section) and free for non-production use.
+Reverto is functional for paper trading and backtesting. The framework (paper trading, backtest engine, indicators, web portal) is published under BSL 1.1 (see [License](#license) section) and free for non-production use.
 
 The live trading capability currently ships as an in-tree scaffold; it is being separated into a commercial `reverto-live` plugin in a future release. The framework will continue to be free; the live plugin will be sold separately. Pricing and availability will be announced at [reverto.bot](https://reverto.bot) when ready.
 
@@ -106,15 +106,15 @@ Open <http://localhost:8080>, log in with `admin` + your password, complete TOTP
 
 For detailed self-hoster documentation:
 
-- [docs/INSTALL.md](docs/INSTALL.md) — installation guide
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — env vars, bot YAML, strategies
-- [docs/OPERATIONS.md](docs/OPERATIONS.md) — backups, schema migrations, troubleshooting
-- [docs/architecture.md](docs/architecture.md) — codebase overview
-- [docs/exchange-permissions.md](docs/exchange-permissions.md) — API key permissions
-- [SECURITY.md](SECURITY.md) — security disclosure policy
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to engage with the project
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community guidelines
-- [NOTICE.md](NOTICE.md) — license intent and compliance responsibilities
+- [docs/INSTALL.md](docs/INSTALL.md): installation guide
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md): env vars, bot YAML, strategies
+- [docs/OPERATIONS.md](docs/OPERATIONS.md): backups, schema migrations, troubleshooting
+- [docs/architecture.md](docs/architecture.md): codebase overview
+- [docs/exchange-permissions.md](docs/exchange-permissions.md): API key permissions
+- [SECURITY.md](SECURITY.md): security disclosure policy
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to engage with the project
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): community guidelines
+- [NOTICE.md](NOTICE.md): license intent and compliance responsibilities
 
 ## Configuration
 
@@ -137,7 +137,7 @@ High-level component overview:
 │  Portal (web/app.py via main_web.py)                         │
 │  ├── FastAPI: auth, routing, WebSocket log streaming         │
 │  ├── TOTP 2FA + per-user encrypted exchange credentials      │
-│  ├── BotRegistry — manages bot lifecycle from YAML config    │
+│  ├── BotRegistry - manages bot lifecycle from YAML config    │
 │  └── Spawns bots as subprocesses (paper or live)             │
 └────────────────┬────────────────────────────────────────────-┘
                  │ subprocess.Popen
@@ -225,7 +225,7 @@ For background on the licensing strategy, see
 
 Maintained by **remy1111** ([@remygit1111](https://github.com/remygit1111)).
 
-The Reverto framework is open-source (BSL 1.1) and self-hosted. A separately-licensed Reverto Live Plugin for live trading is planned for a future release. Issues and pull requests on the framework will be reviewed when time permits, but there is no guaranteed response time.
+The Reverto framework is source-available (BSL 1.1) and self-hosted. A separately-licensed Reverto Live Plugin for live trading is planned for a future release. Issues and pull requests on the framework will be reviewed when time permits, but there is no guaranteed response time.
 
 ---
 
