@@ -12,7 +12,7 @@ credentials/
 # audit-findings-tracker seed (PR feat/admin-findings-tracker) is
 # shipped in-repo so the lifespan bootstrap can find it on first
 # boot. Use ``data/*`` (not ``data/``) so the negation re-include
-# below actually applies — git refuses to descend into a
+# below actually applies. Git refuses to descend into a
 # fully-ignored directory.
 data/*
 !data/findings_seed.yaml
@@ -24,7 +24,7 @@ ml/candle_cache/
 notebooks/.ipynb_checkpoints/
 *.log
 *:Zone.Identifier
-# Audit rapporten — lokaal bewaard, niet in git.
+# Audit rapporten: lokaal bewaard, niet in git.
 # Leading slash zodat alleen de top-level audits/ directory wordt
 # genegeerd. Zonder slash matcht `audits/` ook nested dirs zoals
 # docs/audits/, en dat is waar v26-report + latere security-docs
@@ -34,3 +34,6 @@ audit_*.docx
 audit_out/
 backups/
 parity_test_start.txt
+
+# Local sqlite ghost (root). Guard against accidental commit
+/reverto.db
