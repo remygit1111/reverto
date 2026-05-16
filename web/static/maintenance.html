@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Reverto — Maintenance</title>
+<title>Reverto - Maintenance</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow">
 <style>
@@ -91,9 +91,8 @@
 
     <h1><span class="spinner"></span>Under maintenance</h1>
     <p>
-      Reverto is being updated. Your bots continue running &mdash;
-      this page reloads automatically when the portal is back
-      online.
+      Reverto is being updated. Your bots continue running. This
+      page reloads automatically when the portal is back online.
     </p>
 
     <div class="status">
@@ -117,7 +116,7 @@
 
     function checkPortal() {
       attempts += 1;
-      detailEl.textContent = 'Attempt ' + attempts + ' — checking…';
+      detailEl.textContent = 'Attempt ' + attempts + ', checking…';
 
       fetch('/auth/status', {
         cache: 'no-store',
@@ -128,7 +127,7 @@
           // Anything else (200, 401, 3xx) = backend is responding;
           // reload so the SPA picks up the fresh build.
           if (r.status !== 502 && r.status !== 503 && r.status !== 504) {
-            detailEl.textContent = 'Portal online — reloading…';
+            detailEl.textContent = 'Portal online, reloading…';
             setTimeout(function () { window.location.reload(); }, 500);
           }
         })

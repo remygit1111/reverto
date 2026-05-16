@@ -26,7 +26,7 @@ These decisions guide the Phase 2–7 implementation work.
 
 ---
 
-## O1 — Staged refactor
+## O1: Staged refactor
 
 **Decision**: Staged.
 
@@ -53,7 +53,7 @@ both continue to function.
 
 ---
 
-## O2 — Framework license: BSL 1.1 with Additional Use Grant Option 3
+## O2: Framework license: BSL 1.1 with Additional Use Grant Option 3
 
 **Decision**: Business Source License 1.1 with an Additional Use Grant
 that permits non-production use freely and requires either a commercial
@@ -72,7 +72,7 @@ licence or the Reverto Live Plugin for production use.
 
 **Rationale**:
 
-- Source-available aids transparency — crypto users can audit the code
+- Source-available aids transparency. Crypto users can audit the code
   that handles their API keys.
 - The rolling 4-year window protects the newest work continuously.
 - Older versions become Apache 2.0, which is good-citizen behaviour and
@@ -106,12 +106,12 @@ licence or the Reverto Live Plugin for production use.
   happens.
 - The operator decides timing: between Phase 1 and Phase 2, or just
   before the first paid release.
-- No retroactive impact on Apache 2.0 versions — anyone holding an old
+- No retroactive impact on Apache 2.0 versions: anyone holding an old
   version keeps their Apache 2.0 rights for that specific version.
 
 ---
 
-## O3 — Plugin package naming
+## O3: Plugin package naming
 
 **Decision**: Standard Python conventions apply.
 
@@ -128,14 +128,14 @@ pip install reverto-live  # hyphen
 import reverto_live  # underscore
 ```
 
-There is no real choice here — this is Python convention. The decision
+There is no real choice here; this is Python convention. The decision
 is documented for completeness.
 
 ---
 
-## O4 — Pricing model: Hybrid
+## O4: Pricing model: Hybrid
 
-**Decision**: Hybrid — perpetual one-time licence per major-version
+**Decision**: Hybrid, a perpetual one-time licence per major-version
 series, with paid major upgrades.
 
 **Specific structure**:
@@ -161,13 +161,13 @@ series, with paid major upgrades.
 **Future considerations**:
 
 - Pricing levels will be determined in Phase 6.
-- Upgrade discount strategy is TBD — for example, 50% off for existing
-  customers vs full price for new customers.
+- Upgrade discount strategy is TBD (for example, 50% off for existing
+  customers vs full price for new customers).
 - The licence server must support per-version validation from day one.
 
 ---
 
-## O5 — Framework v1.0 versioning: defer
+## O5: Framework v1.0 versioning: defer
 
 **Decision**: Defer the framework v1.0 marker until after Phase 3
 completes.
@@ -176,8 +176,8 @@ completes.
 
 - During the refactor, interfaces may still need breaking changes.
 - v0.x signals "API not stable yet"; operators expect changes.
-- v1.0 commits to API stability — premature during active architectural
-  change.
+- v1.0 commits to API stability, which is premature during active
+  architectural change.
 - After Phase 3 (plugin successfully separated), the interfaces have
   been validated end-to-end and v1.0 becomes a meaningful promise.
 
@@ -190,7 +190,7 @@ completes.
 
 ---
 
-## O6 — Plugin CI runner: GitHub-hosted in Phase 3, revisit in Phase 4
+## O6: Plugin CI runner: GitHub-hosted in Phase 3, revisit in Phase 4
 
 **Decision**: GitHub-hosted runners for Phase 3 work. Re-evaluate
 self-hosted versus Hetzner Cloud runners during Phase 4 when obfuscation
@@ -201,7 +201,7 @@ enters the picture.
 - The plugin is still source-only Python (no Pyarmor yet).
 - "Closed source" status in Phase 3 means private repo, not obfuscation.
 - GitHub-hosted private-repo minutes: 2000/month free tier.
-- Estimated usage: 200–500 min/month — well within the free tier.
+- Estimated usage: 200 to 500 min/month, well within the free tier.
 - Microsoft hosts ephemeral VMs; trust exposure is minimal for
   source-only code that's about to be checked out by paying customers
   anyway.
@@ -218,7 +218,7 @@ enters the picture.
 
 ---
 
-## O7 — Obfuscation: Pyarmor with stub-test
+## O7: Obfuscation: Pyarmor with stub-test
 
 **Decision**: Pyarmor 9 wheel for Live Plugin distribution, with a
 mandatory stub-test in Phase 4 before fully committing to it.
@@ -240,8 +240,8 @@ mandatory stub-test in Phase 4 before fully committing to it.
 **Rationale**:
 
 - Pyarmor is the industry standard for commercial Python.
-- Source-only offers no real protection — trivially bypassable.
-- Cython compilation is too invasive — it breaks Pydantic in some
+- Source-only offers no real protection; it is trivially bypassable.
+- Cython compilation is too invasive; it breaks Pydantic in some
   configurations and complicates debugging.
 - Pyarmor combined with the licence server provides "good enough"
   protection.
@@ -253,7 +253,7 @@ mandatory stub-test in Phase 4 before fully committing to it.
 - Pyarmor Pro licence: roughly $150–200 one-time.
 - A Pyarmor Group licence is required for offline obfuscation (also
   one-time).
-- Rate limits: 100 different devices per 24h — not a constraint for a
+- Rate limits: 100 different devices per 24h, not a constraint for a
   solo-dev release cycle.
 
 **Realistic security expectations**:
@@ -266,7 +266,7 @@ mandatory stub-test in Phase 4 before fully committing to it.
 
 ---
 
-## O8 — License-server host: separate Hetzner CX11
+## O8: License-server host: separate Hetzner CX11
 
 **Decision**: The licence server runs on a dedicated Hetzner CX11 VM,
 fully separate from the `app.reverto.bot` production VPS.
@@ -276,7 +276,7 @@ fully separate from the `app.reverto.bot` production VPS.
 - Hetzner CX11: roughly €5/month.
 - Separate from the production app VPS.
 - Dedicated subdomain (`license.reverto.bot` or `licenses.reverto.bot`).
-- SQLite database for licence records — simple, recoverable, and
+- SQLite database for licence records: simple, recoverable, and
   fits the expected scale comfortably.
 - FastAPI backend with admin endpoints.
 - HTTPS via Let's Encrypt and Caddy (the same stack as production).
@@ -294,7 +294,7 @@ fully separate from the `app.reverto.bot` production VPS.
 
 - The Live Plugin calls `license.reverto.bot` at startup and
   periodically thereafter.
-- A grace period covers licence-server outages — suggested default: 7
+- A grace period covers licence-server outages. Suggested default: 7
   days of cached validation.
 - The plugin must fail safe (refuse to start) on the first run if the
   licence server is unreachable; this only blocks initial activation,
@@ -304,7 +304,7 @@ fully separate from the `app.reverto.bot` production VPS.
 
 ---
 
-## O9 — Payment provider: defer until Phase 6
+## O9: Payment provider: defer until Phase 6
 
 **Decision**: Defer the payment-provider choice until Phase 6 (payment
 integration).
@@ -330,14 +330,14 @@ integration).
 
 **Pre-Phase 6 considerations** (not decisions, just heuristics):
 
-- Mollie tends to win if expected annual revenue exceeds roughly €50k —
+- Mollie tends to win if expected annual revenue exceeds roughly €50k;
   fees become lower than Merchant-of-Record pricing.
 - Lemon Squeezy or Paddle suit a solo dev with minimal admin capacity.
 - Stripe is useful if non-EU expansion becomes a priority.
 
 ---
 
-## O10 — Migration window: 4 weeks
+## O10: Migration window: 4 weeks
 
 **Decision**: A 4-week migration window for existing operators between
 the Phase 7 release and EOL of the pre-plugin architecture.
@@ -348,7 +348,7 @@ the Phase 7 release and EOL of the pre-plugin architecture.
 - Short enough that the operator support burden stays manageable.
 - Aligns with industry norms for major version transitions.
 
-**Current relevance**: low — no external operators exist yet. This
+**Current relevance**: low. No external operators exist yet. This
 decision is for future planning, when Reverto has paying customers
 running the older architecture.
 
@@ -367,11 +367,11 @@ running the older architecture.
 With these 10 decisions locked in, Phase 2 can begin without further
 blocking input from the operator. Specifically:
 
-- `TradingEngine` extraction can proceed — the architectural decisions
+- `TradingEngine` extraction can proceed; the architectural decisions
   in [`plugin_split_design.md`](plugin_split_design.md) remain valid.
 - The `LiveProvider` interface design is unblocked.
 - Branch strategy and PR cadence follow the staged approach (O1).
-- `LICENSE` file changes can be made (O2 — BSL 1.1 with the Option-3
+- `LICENSE` file changes can be made (O2, BSL 1.1 with the Option-3
   grant).
 - Plugin package structure follows the naming standard (O3).
 - CI configuration uses GitHub-hosted runners (O6).
@@ -380,9 +380,9 @@ blocking input from the operator. Specifically:
 
 Three decisions are explicitly deferred:
 
-- **O5** — v1.0 marker, deferred until after Phase 3.
-- **O6** — CI runner re-evaluation, deferred until Phase 4.
-- **O9** — Payment provider, deferred until Phase 6.
+- **O5**: v1.0 marker, deferred until after Phase 3.
+- **O6**: CI runner re-evaluation, deferred until Phase 4.
+- **O9**: Payment provider, deferred until Phase 6.
 
 These deferrals are intentional. Early decisions in those areas would
 be premature given current information.
@@ -404,13 +404,13 @@ affected by these decisions:
 
 ## References
 
-- [`docs/plugin_split_audit.md`](plugin_split_audit.md) — coupling
+- [`docs/plugin_split_audit.md`](plugin_split_audit.md): coupling
   analysis.
-- [`docs/plugin_split_design.md`](plugin_split_design.md) — proposed
+- [`docs/plugin_split_design.md`](plugin_split_design.md): proposed
   architecture.
-- [`docs/plugin_split_migration.md`](plugin_split_migration.md) —
+- [`docs/plugin_split_migration.md`](plugin_split_migration.md):
   phase-by-phase plan.
-- This document — operator decisions on the open questions.
+- This document: operator decisions on the open questions.
 
 ## Revision history
 

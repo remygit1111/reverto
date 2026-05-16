@@ -2,14 +2,14 @@
 
 Reverto reads configuration from three places:
 
-1. **`.env`** in the repo root — process-level settings: portal
+1. **`.env`** in the repo root holds process-level settings: portal
    security, exchange env-var fallbacks, Telegram tokens, log
    level. Sourced by `start.sh` and inherited by every bot
    subprocess via an explicit allowlist.
-2. **`config/bots/<user_id>/<slug>.yaml`** — per-bot strategy
+2. **`config/bots/<user_id>/<slug>.yaml`** holds per-bot strategy
    configuration. One file per bot, validated against the
    Pydantic models in `config/models.py`.
-3. **`logs/reverto.db`** + **`credentials/<user_id>/*.enc`** —
+3. **`logs/reverto.db`** + **`credentials/<user_id>/*.enc`** hold
    runtime state and per-user encrypted exchange credentials.
    Both are managed by the portal; you don't edit them by hand.
 
@@ -28,7 +28,7 @@ procedures see [OPERATIONS.md](OPERATIONS.md).
 sources it via `set -a` so every variable assigned while sourcing
 is exported into the portal process and inherited by every bot
 subprocess. The bot subprocess environment is then filtered down
-to an explicit allowlist (audit r1-023) — if you add a new env
+to an explicit allowlist (audit r1-023). If you add a new env
 var that bots need to see, the allowlist in
 [web/app.py](../web/app.py) needs an entry.
 
@@ -38,7 +38,7 @@ Group-by-group:
 
 These are the only **required** env vars for a working portal.
 Without them Reverto generates throwaway keys per restart and
-emits a WARNING — fine for a 5-minute trial but it loses every
+emits a WARNING. That is fine for a 5-minute trial but it loses every
 session on every restart and breaks any client that pinned the
 old API key.
 
@@ -54,7 +54,7 @@ old API key.
 
 For Phase 2 + Phase 3a, exchange credentials are stored per-user,
 encrypted at rest, in `credentials/<user_id>/<exchange>.enc`. The
-env vars below are a **migration fallback** — used only if the
+env vars below are a **migration fallback**, used only if the
 encrypted store is empty.
 
 | Variable | What it does |
@@ -96,7 +96,7 @@ trade-alert pair otherwise).
 
 | Variable | What it does |
 |----------|--------------|
-| `REVERTO_DESTRUCTIVE_MIGRATE` | Set to `1` to consent to a destructive schema migration (DROP + CREATE of owned tables). Normally unset. The portal refuses to boot with a destructive migration pending until you set this. **Read [OPERATIONS.md](OPERATIONS.md) "Schema migrations" first** — this exists to prevent a routine `make start` from silently wiping data. |
+| `REVERTO_DESTRUCTIVE_MIGRATE` | Set to `1` to consent to a destructive schema migration (DROP + CREATE of owned tables). Normally unset. The portal refuses to boot with a destructive migration pending until you set this. **Read [OPERATIONS.md](OPERATIONS.md) "Schema migrations" first**. This exists to prevent a routine `make start` from silently wiping data. |
 
 ## Bot configuration (`config/bots/<user_id>/<slug>.yaml`)
 
@@ -105,7 +105,7 @@ the seeded admin user; in a multi-user deployment each user gets
 their own integer-named subdirectory.
 
 The wizard generates and validates these files; you typically
-don't edit them by hand. When you do, validation is strict —
+don't edit them by hand. When you do, validation is strict:
 unknown keys at any level fail with a Pydantic `ValidationError`
 instead of being silently dropped.
 
@@ -192,7 +192,7 @@ dca:
   `max_orders` produces an order well beyond any realistic cap.
 - **`max_cumulative_size`**: hard ceiling on `sum(base + every
   DCA)`. `null` = no cap (paper default). **Strongly recommended
-  for live bots** — without it a strategy that worsens monotonically
+  for live bots**. Without it a strategy that worsens monotonically
   can hit `max_orders` worth of progressively larger fills.
   The LiveEngine preflight rejects bots whose
   `multiplier × max_orders` produces an order beyond
@@ -221,16 +221,16 @@ treated as a single implicit group.
 
 Available indicator types (`type:` field):
 
-- `rsi` — period, threshold (e.g. `<30`, `>70`), price source.
-- `ema_cross` — fast, slow.
-- `macd` — macd_fast, macd_slow, macd_signal, signal direction.
-- `bollinger` — period, multiplier, ma_type, value (lower/upper).
-- `parabolic_sar` — initial_af, max_af.
-- `supertrend` — atr_period, multiplier.
-- `market_structure` — lookback, trigger_type.
-- `support_resistance` — left_bars, right_bars, proximity_pct,
+- `rsi`: period, threshold (e.g. `<30`, `>70`), price source.
+- `ema_cross`: fast, slow.
+- `macd`: macd_fast, macd_slow, macd_signal, signal direction.
+- `bollinger`: period, multiplier, ma_type, value (lower/upper).
+- `parabolic_sar`: initial_af, max_af.
+- `supertrend`: atr_period, multiplier.
+- `market_structure`: lookback, trigger_type.
+- `support_resistance`: left_bars, right_bars, proximity_pct,
   volume_threshold, min_touches.
-- `qfl_base_scanner` — base_periods, pump_periods,
+- `qfl_base_scanner`: base_periods, pump_periods,
   pump_from_base_pct, base_crack_pct.
 
 The full list of recognised parameters per indicator is the
@@ -254,7 +254,7 @@ take_profit:
   `current_price >= avg_entry * (1 + target_pct/100)` for longs.
   Standard "fixed % above entry" exit.
 - **Indicator TP** (`indicator_groups`) closes on indicator
-  signals — useful for trend-following exits where the price
+  signals, useful for trend-following exits where the price
   threshold is a guess.
 - **`minimum_tp_pct`**: even when an indicator group fires, only
   close if the deal is above this profit floor. Prevents an
@@ -313,7 +313,7 @@ schedule:
 When `enabled: true`, the bot only takes new entries inside a
 configured window. Existing open deals keep running outside
 windows (TP/SL still fire). `from` > `to` (e.g. `22:00` → `06:00`)
-indicates an overnight window — both days must be listed in
+indicates an overnight window; both days must be listed in
 `days`.
 
 ### Telegram per-bot
@@ -402,8 +402,8 @@ deployment the defaults are appropriate: everything runs on
 `user_id=1` (the seeded admin), one user-directory layer
 under `config/bots/1/`, one Fernet key at `keys/1.key`.
 
-For multi-user deployments — per-user config paths, isolated
-state, separate session epochs — the wiring exists in the code
+For multi-user deployments (per-user config paths, isolated
+state, separate session epochs) the wiring exists in the code
 but is not currently documented for self-hosters. The
 [architecture.md](architecture.md) "Multi-tenant filesystem
 layout (Phase 2)" section is the closest reference. Treat

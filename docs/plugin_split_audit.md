@@ -1,4 +1,4 @@
-# Plugin Split — Phase 1 Audit
+# Plugin Split: Phase 1 Audit
 
 > **Status.** Phase 1 deliverable (analysis only, no code changes). Companion documents: [plugin_split_design.md](plugin_split_design.md), [plugin_split_migration.md](plugin_split_migration.md).
 >
@@ -24,9 +24,9 @@ The split is **mostly mechanical** at the file level. The non-trivial work is th
 
 ### Convention
 
-- **A — Framework only.** No live trading awareness. Stays in the open-source repo verbatim.
-- **B — Live plugin only.** Entire file moves to the closed-source plugin.
-- **C — Shared, currently coupled.** Framework code with an inline live-aware branch, an import from `live/`, or a runtime dependency that has to be inverted via an interface or callback.
+- **A. Framework only.** No live trading awareness. Stays in the source-available repo verbatim.
+- **B. Live plugin only.** Entire file moves to the closed-source plugin.
+- **C. Shared, currently coupled.** Framework code with an inline live-aware branch, an import from `live/`, or a runtime dependency that has to be inverted via an interface or callback.
 
 ### 1.1.1 Top-level runners
 
@@ -45,7 +45,7 @@ The split is **mostly mechanical** at the file level. The non-trivial work is th
 | `paper/paper_engine.py` | 1913 | C | No live imports, but is the inheritance parent of `LiveEngine` | Refactor: extract `TradingEngine` base into `core/trading_engine.py`; leave a thinner `PaperEngine(TradingEngine)` that owns the simulated-balance accounting. |
 | `paper/paper_state.py` | 277 | A | None | Dataclasses for deals/orders/state. Framework. |
 | `paper/state_io.py` | 410 | A | None | JSON serialisation, atomic write. Framework. |
-| `paper/close_handler.py` | 442 | A | None | Deal-close orchestration. Framework — both engines use it. |
+| `paper/close_handler.py` | 442 | A | None | Deal-close orchestration. Framework; both engines use it. |
 | `paper/errors.py` | 185 | A | None | Exception classification. Framework. |
 | `live/live_engine.py` | 324 | B | Inherits PaperEngine; imports `notifications/telegram.py`, `core/clock_monitor.py`, `live/order_reconciliation.py` | Becomes the plugin's `RealOrderProvider` plus the `LiveEngine(TradingEngine)` subclass. The clock-skew gate and reconciler tick stay in the plugin. |
 | `live/order_reconciliation.py` | 259 | B | None outward; only inward from `live_engine.py` | Pure plugin module. |
@@ -58,33 +58,33 @@ The `core/` package is overwhelmingly framework. Two files need callback injecti
 
 | File | LoC | Cat | Coupling |
 |---|---:|---|---|
-| `core/database.py` | 1017 | A | None — generic SQLite + thread-safe pool. |
-| `core/deal_store.py` | 754 | A | None — deal/order ledger ops, mode-agnostic. |
-| `core/credentials.py` | 598 | A | None — Fernet encrypt/decrypt; used by both engines. |
-| `core/user_store.py` | 478 | A | None — auth + user table. |
-| `core/exchange_account_store.py` | 440 | A | None — per-user account metadata. |
-| `core/roadmap_store.py` | 425 | A | None — admin tile. |
-| `core/paths.py` | 399 | A | None — path layout. |
-| `core/telegram_config_store.py` | 318 | A | None — per-user notify prefs (used by both modes). |
+| `core/database.py` | 1017 | A | None. Generic SQLite + thread-safe pool. |
+| `core/deal_store.py` | 754 | A | None. Deal/order ledger ops, mode-agnostic. |
+| `core/credentials.py` | 598 | A | None. Fernet encrypt/decrypt; used by both engines. |
+| `core/user_store.py` | 478 | A | None. Auth + user table. |
+| `core/exchange_account_store.py` | 440 | A | None. Per-user account metadata. |
+| `core/roadmap_store.py` | 425 | A | None. Admin tile. |
+| `core/paths.py` | 399 | A | None. Path layout. |
+| `core/telegram_config_store.py` | 318 | A | None. Per-user notify prefs (used by both modes). |
 | `core/circuit_breaker.py` | 283 | **C** | Imports `notifications/telegram.py` + `telegram_config_store` inside `_make_permanent_open_callback`. The callback is already injectable via constructor (`on_permanent_open=`); the leak is the *default factory* that wires the Telegram fan-out without an opt-in. |
 | `core/changelog_store.py` | 272 | A | None. |
 | `core/audit_findings_store.py` | 257 | A | None. |
-| `core/price_feed.py` | 234 | A | None — CoinGecko/Bitget USD pricing. |
-| `core/portfolio_store.py` | 230 | A | None — snapshot append. |
-| `core/liquidation_guard.py` | 217 | A | None — pure math + threshold checks. |
-| `core/markets.py` | 215 | A | None — markets registry. |
+| `core/price_feed.py` | 234 | A | None. CoinGecko/Bitget USD pricing. |
+| `core/portfolio_store.py` | 230 | A | None. Snapshot append. |
+| `core/liquidation_guard.py` | 217 | A | None. Pure math + threshold checks. |
+| `core/markets.py` | 215 | A | None. Markets registry. |
 | `core/logging_setup.py` | 206 | A | None. |
-| `core/drawdown_guard.py` | 163 | A | None — used by both engines. |
+| `core/drawdown_guard.py` | 163 | A | None. Used by both engines. |
 | `core/totp.py` | 175 | A | None. |
 | Other small `core/*.py` files | <150 each | A | None |
 
-**Coupling detail — `core/circuit_breaker.py` lines 64–142.** `_make_permanent_open_callback()` is constructed at module import and imports `notifications.telegram.TelegramNotifier` plus `core.telegram_config_store`. Both `PublicExchange` and `LiveEngine` use this circuit breaker, so the framework cannot just drop the callback. Fix: the callback factory moves to the plugin and is *registered* with the breaker at framework boot if the plugin is installed (`core.plugin_loader.load_live_provider().on_breaker_permanent_open`); otherwise the breaker logs locally and stops.
+**Coupling detail: `core/circuit_breaker.py` lines 64–142.** `_make_permanent_open_callback()` is constructed at module import and imports `notifications.telegram.TelegramNotifier` plus `core.telegram_config_store`. Both `PublicExchange` and `LiveEngine` use this circuit breaker, so the framework cannot just drop the callback. Fix: the callback factory moves to the plugin and is *registered* with the breaker at framework boot if the plugin is installed (`core.plugin_loader.load_live_provider().on_breaker_permanent_open`); otherwise the breaker logs locally and stops.
 
 ### 1.1.4 `config/`
 
 | File | LoC | Cat | Coupling |
 |---|---:|---|---|
-| `config/config_loader.py` | 42 | A | None — YAML → `BotConfig`. |
+| `config/config_loader.py` | 42 | A | None. YAML to `BotConfig`. |
 | `config/models.py` | 227 | **C** | The `Mode` enum has `LIVE`. `BotConfig.exchange_account_id` is required for live, optional in spirit for paper/backtest (a paper bot does not need real exchange credentials). |
 
 See §1.4 for full Mode-enum analysis and §2.7 of the design doc for the recommended split (`BaseBotConfig` + `LiveBotConfig`).
@@ -93,9 +93,9 @@ See §1.4 for full Mode-enum analysis and §2.7 of the design doc for the recomm
 
 | File | LoC | Cat | Coupling |
 |---|---:|---|---|
-| `exchanges/base_exchange.py` | 195 | A | None — ABC with read-only methods (`get_ticker`, `get_ohlcv`) and trading methods (`place_market_order` etc.) that subclasses implement. |
+| `exchanges/base_exchange.py` | 195 | A | None. ABC with read-only methods (`get_ticker`, `get_ohlcv`) and trading methods (`place_market_order` etc.) that subclasses implement. |
 | `exchanges/public_exchange.py` | 312 | **C** | Same Telegram-callback leak as `core/circuit_breaker.py` (see lines 64–142). Read-only methods are framework-clean; trading methods raise `NotImplementedError` (safe default). |
-| `exchanges/bitget.py` | 355 | B | 100% live-trading — order placement, idempotent retries with client order IDs, leverage configuration. Moves to plugin. |
+| `exchanges/bitget.py` | 355 | B | 100% live-trading: order placement, idempotent retries with client order IDs, leverage configuration. Moves to plugin. |
 | `exchanges/kraken.py` | 214 | B | 100% live-trading. Moves to plugin. |
 
 Recommendation: keep `base_exchange.py` and `public_exchange.py` in framework. The framework's read-only data path uses `PublicExchange`; the plugin's `BitgetExchange` / `KrakenExchange` inherit from `BaseExchange` and override the trading methods.
@@ -115,25 +115,25 @@ Per the agent audit (see §1.4 below for line-level Mode-enum hits):
 
 | File | LoC | Cat | Coupling |
 |---|---:|---|---|
-| `web/app.py` | 3759 | **C** | 2 coupling points: `start_bot_dry_run` (line 1960 — refuses non-LIVE bots) and `restart_bot` (line 2050 — dispatches LIVE bots to dry-run). |
+| `web/app.py` | 3759 | **C** | 2 coupling points: `start_bot_dry_run` (line 1960, refuses non-LIVE bots) and `restart_bot` (line 2050, dispatches LIVE bots to dry-run). |
 | `web/routes/bots.py` | 864 | A | 2 advisory warnings only (lines 417, 443). No behavioural coupling. |
 | `web/routes/deals.py` | 552 | A | Comments reference "LiveEngine is Phase 1 dry-run only" but no runtime branches. Phase 3 will need to call `live_provider.cancel_open_orders()` at line ~462; today the close path is mode-agnostic. |
 | `web/routes/portfolio.py` | 513 | **C** | `_live_bot_slugs()` at line 115 scans every YAML to filter `mode == "live"`. Used by `/api/portfolio/per-bot` (line 347) to restrict the per-bot breakdown to live bots only. |
 | `web/routes/chart.py` | 521 | A | None. |
 | `web/routes/admin_bots.py` | 404 | **C** | `admin_start_bot_dry_run` route at line 158 calls `start_bot_dry_run`. Moves to plugin (or stays as a thin proxy that 404s if plugin absent). |
-| `web/routes/auth.py` | 1091 | A | None — auth is mode-agnostic. |
-| All other route files | — | A | None. |
+| `web/routes/auth.py` | 1091 | A | None. Auth is mode-agnostic. |
+| All other route files | n/a | A | None. |
 
 The 8 runtime coupling points across the entire codebase (excluding `main_live.py` / `live/`) are:
 
-1. `main_paper.py:139` — refuses non-PAPER (defensive guard, not coupling).
-2. `main_live.py:181` — refuses non-LIVE (defensive guard, lives in plugin anyway).
-3. `web/app.py:1960` — `start_bot_dry_run` rejects non-LIVE bots.
-4. `web/app.py:2050` — `restart_bot` dispatches LIVE → dry-run, others → paper.
-5. `web/routes/bots.py:417` — advisory warning on base-order size for live.
-6. `web/routes/bots.py:443` — advisory warning on missing drawdown guard for live.
-7. `web/routes/portfolio.py:141` — `_live_bot_slugs()` filters YAML scan to `mode == "live"`.
-8. `paper/paper_engine.py:563/745/794` — `self.config.mode.value` is *logged* (not branched on).
+1. `main_paper.py:139`. Refuses non-PAPER (defensive guard, not coupling).
+2. `main_live.py:181`. Refuses non-LIVE (defensive guard, lives in plugin anyway).
+3. `web/app.py:1960`. `start_bot_dry_run` rejects non-LIVE bots.
+4. `web/app.py:2050`. `restart_bot` dispatches LIVE to dry-run, others to paper.
+5. `web/routes/bots.py:417`. Advisory warning on base-order size for live.
+6. `web/routes/bots.py:443`. Advisory warning on missing drawdown guard for live.
+7. `web/routes/portfolio.py:141`. `_live_bot_slugs()` filters YAML scan to `mode == "live"`.
+8. `paper/paper_engine.py:563/745/794`. `self.config.mode.value` is *logged* (not branched on).
 
 ### 1.1.8 `scripts/`
 
@@ -155,11 +155,11 @@ The agent audit classified all ~120 test files. Headline counts:
 
 - **115 Category A** (framework, run without plugin installed)
 - **5 Category B** (plugin-only):
-  - `test_live_engine.py` — engine scaffolding and dry-run order path
+  - `test_live_engine.py`: engine scaffolding and dry-run order path
   - `test_order_reconciliation.py` + `test_order_reconciliation_concurrent.py`
-  - `test_clock_monitor_wired.py` — the wiring test (the standalone `test_clock_monitor.py` stays in framework)
-  - `test_main_live.py` — runner-level smoke tests
-- **0 Category C** — no test currently exercises both engines in the same process.
+  - `test_clock_monitor_wired.py`: the wiring test (the standalone `test_clock_monitor.py` stays in framework)
+  - `test_main_live.py`: runner-level smoke tests
+- **0 Category C.** No test currently exercises both engines in the same process.
 
 `tests/conftest.py` is framework-clean (isolated tmp DB, isolated marketing-export dir, no `from live.*` imports anywhere). No fixture refactoring required.
 
@@ -171,9 +171,9 @@ Per the agent audit of `paper/paper_engine.py` (1913 LoC, 34 methods).
 
 ### Buckets
 
-- **TRADING** (13 methods) — shared trading semantics; extract to `TradingEngine` base.
-- **PAPER** (1 method) — `_deduct_balance()` is the only truly paper-specific method; it simulates an insufficient-funds rejection by checking against an in-memory balance that lives in `PaperState`. Live mode replaces this with a hard pre-flight check against the exchange's reported balance.
-- **INFRA** (20 methods) — state I/O, notifications, market-data caches, schedule transitions, sentinel handling, logging.
+- **TRADING** (13 methods). Shared trading semantics; extract to `TradingEngine` base.
+- **PAPER** (1 method). `_deduct_balance()` is the only truly paper-specific method; it simulates an insufficient-funds rejection by checking against an in-memory balance that lives in `PaperState`. Live mode replaces this with a hard pre-flight check against the exchange's reported balance.
+- **INFRA** (20 methods). State I/O, notifications, market-data caches, schedule transitions, sentinel handling, logging.
 
 ### Detailed table
 
@@ -218,7 +218,7 @@ Per the agent audit of `paper/paper_engine.py` (1913 LoC, 34 methods).
 
 ### Implication for design
 
-After extract-base-class, `PaperEngine` shrinks to ~80 lines — only `_deduct_balance()` and the `_place_market_order()`/`_get_current_price()` simulated implementations. Everything else lives in `TradingEngine`.
+After extract-base-class, `PaperEngine` shrinks to ~80 lines: only `_deduct_balance()` and the `_place_market_order()`/`_get_current_price()` simulated implementations. Everything else lives in `TradingEngine`.
 
 `LiveEngine`'s overrides become provider injection rather than inheritance: see §2.2 of the design doc for the proposed shape.
 
@@ -265,7 +265,7 @@ tests/test_order_reconciliation_concurrent.py
 tests/test_web_routes.py    # only an import-presence assertion; no runtime use
 ```
 
-**Critically**: zero `web/routes/*.py` files import `live/` directly. The web layer interacts with live bots through `web/app.py:start_bot_dry_run`, which spawns `main_live.py` as a subprocess. This means the plugin interface boundary is at the **subprocess spawn**, not at a Python-level API call — a much cleaner seam.
+**Critically**: zero `web/routes/*.py` files import `live/` directly. The web layer interacts with live bots through `web/app.py:start_bot_dry_run`, which spawns `main_live.py` as a subprocess. This means the plugin interface boundary is at the **subprocess spawn**, not at a Python-level API call, a much cleaner seam.
 
 This also means the **portal can run without the live plugin installed**. The dry-run endpoint becomes a 404 (or a friendly "live plugin not installed" message); paper bots are unaffected.
 
@@ -310,15 +310,15 @@ All "is live?" checks become `live_provider.X()` calls after the refactor. The "
 
 3. **The portal-↔-live boundary is already a subprocess.** `start_bot_dry_run` spawns `main_live.py` as a child process and communicates via the PID file plus the bot's state.json file. **No live code runs inside the portal process.** This means the portal can ship plugin-less and the only operator-facing degradation is "Live dry-run" button → 404. The web routes do not need to import `live/` at all.
 
-4. **`notifications/telegram.py` belongs to the framework, not the plugin.** It is the per-user notify service used by paper bots, the portal, and admin alerts. The temptation to call this "live infrastructure" because real-money bots need it is wrong — paper bots send the same restart/error/deal-close notifications.
+4. **`notifications/telegram.py` belongs to the framework, not the plugin.** It is the per-user notify service used by paper bots, the portal, and admin alerts. The temptation to call this "live infrastructure" because real-money bots need it is wrong. Paper bots send the same restart/error/deal-close notifications.
 
-5. **The circuit-breaker callback leak is the most subtle issue.** `core/circuit_breaker.py` constructs a default callback that imports `notifications/telegram.py` to fan out "exchange unavailable" alerts. The breaker itself is framework-grade (paper bots use it via `PublicExchange`); the *Telegram fan-out* is plugin-style optional behaviour. This is the only place where the framework will need a plugin-registered hook (rather than a plugin-loaded interface) — see design doc §2.6.
+5. **The circuit-breaker callback leak is the most subtle issue.** `core/circuit_breaker.py` constructs a default callback that imports `notifications/telegram.py` to fan out "exchange unavailable" alerts. The breaker itself is framework-grade (paper bots use it via `PublicExchange`); the *Telegram fan-out* is plugin-style optional behaviour. This is the only place where the framework will need a plugin-registered hook (rather than a plugin-loaded interface); see design doc §2.6.
 
 ---
 
 ## 1.6 What is NOT in scope of this audit
 
-- The frontend (`web/static/app.js`, 14k LoC). The plugin split does not touch the JS layer; the existing mode-aware DOM elements (live bot indicator, dry-run button, per-bot portfolio panel) already degrade gracefully when no live bots exist for the user. The 404 from `/api/portfolio/per-bot` is the only API surface that needs a friendly empty-state handler — already present.
+- The frontend (`web/static/app.js`, 14k LoC). The plugin split does not touch the JS layer; the existing mode-aware DOM elements (live bot indicator, dry-run button, per-bot portfolio panel) already degrade gracefully when no live bots exist for the user. The 404 from `/api/portfolio/per-bot` is the only API surface that needs a friendly empty-state handler, which is already present.
 
 - The plugin's commercial concerns (licensing, payment, distribution, obfuscation). These are Phase 4-6 work and are listed only at the design-doc and migration-plan level.
 

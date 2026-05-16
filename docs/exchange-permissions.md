@@ -12,13 +12,13 @@ The matrix has two purposes:
    key, this is the canonical list of toggles to enable.
 2. **Audit anchor.** A future change that introduces a call requiring
    a new permission scope (e.g. transfers, sub-account ops) must update
-   this doc in the same PR — that prevents permission scope creep from
+   this doc in the same PR. That prevents permission scope creep from
    slipping in unnoticed.
 
 > **Withdrawal permission is intentionally never required.** Reverto
 > does not issue withdrawal calls on any code path. If a key with
 > withdrawal scope is provisioned anyway (e.g. exchange UI defaults
-> the toggle on), strip it before saving — a leaked credential should
+> the toggle on), strip it before saving. A leaked credential should
 > never authorise moving funds out.
 
 ## Permission tiers
@@ -29,7 +29,7 @@ toggles:
 | Tier            | What it lets the key do                            |
 | --------------- | -------------------------------------------------- |
 | **Public**      | No authentication required at all (market data).   |
-| **Read**        | Account balance, positions, orders — read-only.    |
+| **Read**        | Account balance, positions, orders (read-only).    |
 | **Trade**       | Place / amend / cancel orders, set leverage.       |
 
 Reverto requires **Read + Trade** on a live key. Public-only data is
@@ -42,7 +42,7 @@ Source: [`exchanges/bitget.py`](../exchanges/bitget.py)
 
 | Reverto method        | ccxt call                  | Tier    | Notes                                                     |
 | --------------------- | -------------------------- | ------- | --------------------------------------------------------- |
-| `get_ticker`          | `fetch_ticker`             | Public  | No auth — used by both portal and engine.                 |
+| `get_ticker`          | `fetch_ticker`             | Public  | No auth. Used by both portal and engine.                  |
 | `get_ohlcv`           | `fetch_ohlcv`              | Public  | Backtest + live candle fetcher. Capped at 200 bars.       |
 | `get_balance`         | `fetch_balance`            | Read    | BTC equity used for sizing + drawdown gate.               |
 | `get_position`        | `fetch_positions`          | Read    | Inverse-perp position state.                              |
@@ -53,7 +53,7 @@ Source: [`exchanges/bitget.py`](../exchanges/bitget.py)
 | `cancel_order`        | `cancel_order`             | Trade   | Failures are logged + returned as `False`, never raised.  |
 | `set_leverage`        | `set_leverage`             | Trade   | Called once per (symbol, bot-start).                      |
 
-**Third credential — passphrase.** Bitget API keys carry a third
+**Third credential: passphrase.** Bitget API keys carry a third
 factor (the passphrase chosen at key-creation time). Reverto stores
 it inside the encrypted credential blob alongside `api_key` /
 `api_secret`; see [`core/credentials.py`](../core/credentials.py) for
@@ -76,7 +76,7 @@ Source: [`exchanges/kraken.py`](../exchanges/kraken.py)
 | `get_balance`        | `fetch_balance`            | Read    | XBT free balance.                                                         |
 | `get_position`       | `fetch_positions`          | Read    | Inverse-perp position via Kraken Futures.                                 |
 | `get_open_orders`    | `fetch_open_orders`        | Read    | Reconciler input.                                                         |
-| `place_market_order` | `create_order` (`market`)  | Trade   | NOTE: clientOrderId idempotency NOT yet plumbed (pt-037 / r2-002 — open). |
+| `place_market_order` | `create_order` (`market`)  | Trade   | NOTE: clientOrderId idempotency NOT yet plumbed (pt-037 / r2-002, open).  |
 | `place_limit_order`  | `create_order` (`limit`)   | Trade   | Same caveat.                                                              |
 | `cancel_order`       | `cancel_order`             | Trade   | Same logging-and-swallow contract as Bitget.                              |
 | `set_leverage`       | `set_leverage`             | Trade   | Once per (symbol, bot-start).                                             |
@@ -91,7 +91,7 @@ open). When that lands, the table will gain a Read-tier `fetch_order`
 entry and the create_order calls will move to clientOrderId-based
 idempotency. The required permission scope does not change.
 
-## Threat model — why this matters
+## Threat model: why this matters
 
 A credential that was provisioned with scopes wider than this matrix
 expands the blast radius of every credential-leak path on the host:
@@ -99,14 +99,14 @@ expands the blast radius of every credential-leak path on the host:
 * **Withdrawal scope on a leaked key** turns a host compromise into
   fund loss, not just position loss. Refusing withdrawal scope
   upstream is the only scope-aware control that survives a full
-  process compromise — no in-process check can prevent a leaked key
+  process compromise. No in-process check can prevent a leaked key
   from being driven by an attacker outside the Reverto process.
 * **Sub-account / transfer scope** is similarly out-of-band for
   Reverto's design. Don't enable it.
 * **Read-only keys** are fine for paper-mode and for monitoring
   dashboards but will fail at the first `create_order` when wired
   into a live engine. The engine reports the failure and refuses to
-  start, but it would be a costly diagnostic round-trip — provision
+  start, but it would be a costly diagnostic round-trip. Provision
   with Trade from the start when intent is live.
 
 The matrix is the source of truth; if the code grows a new call,

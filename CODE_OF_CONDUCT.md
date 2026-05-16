@@ -1,6 +1,6 @@
 # Code of Conduct
 
-Reverto is a volunteer-maintained open-source project. To keep it
+Reverto is a volunteer-maintained project. To keep it
 productive for everyone who participates, please follow these
 guidelines.
 
@@ -76,7 +76,7 @@ Conduct:
   (without including private information about the violator).
 - **For sensitive matters** (harassment, doxxing): use the
   GitHub Security Advisory channel described in
-  [SECURITY.md](SECURITY.md) — even though it's not strictly a
+  [SECURITY.md](SECURITY.md). Even though it's not strictly a
   security issue, it provides a private channel.
 
 Reports will be reviewed on a best-effort basis. The maintainer is

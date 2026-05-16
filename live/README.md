@@ -1,12 +1,12 @@
 # Reverto Live Trading
 
-## Phase 1 — Dry-run scaffolding
+## Phase 1: Dry-run scaffolding
 
 **Current status: DRY-RUN ONLY. No real orders are placed.**
 
-`live/live_engine.py` inherits the full PaperEngine lifecycle —
-indicator evaluation, DCA spacing, TP/SL monitoring, sentinels,
-drawdown guard — and overrides only the order-execution surface.
+`live/live_engine.py` inherits the full PaperEngine lifecycle
+(indicator evaluation, DCA spacing, TP/SL monitoring, sentinels,
+drawdown guard) and overrides only the order-execution surface.
 Every "order" is logged to `engine.get_live_order_log()` and a
 synthetic fill dict is returned so state bookkeeping stays identical
 to paper mode.
@@ -15,8 +15,8 @@ to paper mode.
 
 Reverto layers runtime guards (enforced while trading) on top of
 advisory configuration warnings (surfaced at setup time). The v25
-refactor removed every static configuration cap from `LiveEngine` —
-the engine now boots any well-formed ladder; risk surfaces to the
+refactor removed every static configuration cap from `LiveEngine`.
+The engine now boots any well-formed ladder; risk surfaces to the
 operator in the wizard's Review step instead of a `ValueError`.
 
 ### Runtime guards (always on)
@@ -79,7 +79,7 @@ DRY_RUN=1 .venv/bin/python main_live.py --bot <slug> --dry-run
 make live BOT=<slug>
 ```
 
-Phase 1 will refuse real orders even from this path — `LiveEngine`
+Phase 1 will refuse real orders even from this path. `LiveEngine`
 raises `NotImplementedError` on `dry_run=False`. The target exists
 now so the operator-facing wiring (prompt, PID file, state file) is
 battle-tested before Phase 3 turns real orders on.
@@ -103,8 +103,8 @@ drawdown_guard:
 | `metric` | `equity` | `equity` = balance + unrealised PnL across open deals. `balance` = realised balance only. |
 | `action` | `pause` | `pause` = stop opening new deals, keep managing open ones. `stop` = halt the engine. |
 
-Once triggered the guard stays triggered until the operator resets it
-— there is no automatic "drawdown recovered" rebound. This is
+Once triggered the guard stays triggered until the operator resets it.
+There is no automatic "drawdown recovered" rebound. This is
 deliberate: a recovery-then-bounce gap would otherwise let the engine
 re-enter right into the next drawdown leg.
 

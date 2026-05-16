@@ -56,7 +56,7 @@ Dit document maakt het nieuwe threat-model expliciet zodat:
 - **Geen volledige risico-analyse** van Reverto als organisatie
 - **Geen incident-response runbook** (zie `OPERATIONS.md`)
 - **Geen compliance-document** (zie `COMMERCIAL_BOUNDARIES.md`)
-- **Geen vervanging voor pentest-rapporten** — die blijven authoritative
+- **Geen vervanging voor pentest-rapporten.** Die blijven authoritative
   voor specifieke vulnerabilities
 
 ---
@@ -67,7 +67,7 @@ Reverto ondersteunt drie deployment-contexten. Elke context heeft een
 ander threat-profiel; dezelfde finding kan in context A kritiek zijn en
 in context B obsoleet.
 
-### 2.1 Context A — Lokaal self-host
+### 2.1 Context A: Lokaal self-host
 
 **Beschrijving:** Reverto draait op de eigen machine van de gebruiker
 (thuis-PC, laptop, NAS), bereikbaar via `http://localhost:8080`.
@@ -98,7 +98,7 @@ Geen TLS, geen externe blootstelling.
 - ❌ TLS-configuratie (geen TLS in gebruik)
 - ❌ Tenant-isolation (single-tenant)
 
-### 2.2 Context B — Self-host op publieke VPS
+### 2.2 Context B: Self-host op publieke VPS
 
 **Beschrijving:** Reverto draait op een publieke VPS (Hetzner,
 DigitalOcean, AWS Lightsail), achter een TLS reverse proxy
@@ -133,7 +133,7 @@ DigitalOcean, AWS Lightsail), achter een TLS reverse proxy
 - ❌ Cross-tenant credential leak
 - ❌ Multi-user authorization bugs
 
-### 2.3 Context C — Reverto-eigen productie
+### 2.3 Context C: Reverto-eigen productie
 
 **Beschrijving:** De huidige `app.reverto.bot` deployment op de
 operator's eigen VPS. Bedoeld voor operator-gebruik (Remy zelf), niet
@@ -183,7 +183,7 @@ Legenda: ❌ = niet relevant, ⚠️ = relevant, ⚠️⚠️ = verhoogd gewicht
 
 **De gebruiker / operator.** Volledig vertrouwd. Heeft fysieke of
 remote toegang tot de installatie, beheert API keys, beheert
-admin-wachtwoord. Deze persoon is altijd "de juiste persoon" — alle
+admin-wachtwoord. Deze persoon is altijd "de juiste persoon". Alle
 authorizatie-logica gaat ervan uit dat een geslaagde authenticatie =
 de gebruiker.
 
@@ -346,7 +346,7 @@ permissions).
 
 ### 4.8 Trade-execution integriteit (KRITIEK)
 
-**Specifiek voor Reverto** — bug in trade-logica = direct geld-verlies.
+**Specifiek voor Reverto.** Bug in trade-logica = direct geld-verlies.
 
 **Relevante threats:**
 - Verkeerde PnL-berekening (linear vs inverse perpetual mismatch)
@@ -388,15 +388,15 @@ permissions).
 Onder single-tenant model zijn de volgende threat-categorieën niet
 langer relevant:
 
-- ❌ **Tenant-isolation breaches** — geen tenants meer
-- ❌ **Cross-user data leak** — één gebruiker per installatie
+- ❌ **Tenant-isolation breaches.** Geen tenants meer
+- ❌ **Cross-user data leak.** Eén gebruiker per installatie
 - ❌ **Per-user encryption-key isolation** (was relevant voor
   tenant-isolation; nu meer een nice-to-have voor in-place backup-
   hygiene)
-- ❌ **Authorization tussen users** — niet van toepassing
-- ❌ **User-impersonation attacks** — niet van toepassing
-- ❌ **Quota / rate-limiting tussen users** — niet van toepassing
-- ❌ **Billing / subscription abuse** — niet van toepassing (tenzij
+- ❌ **Authorization tussen users.** Niet van toepassing
+- ❌ **User-impersonation attacks.** Niet van toepassing
+- ❌ **Quota / rate-limiting tussen users.** Niet van toepassing
+- ❌ **Billing / subscription abuse.** Niet van toepassing (tenzij
   later commercieel met license-server)
 
 ### 5.2 Threats die VERANDERD zijn
@@ -405,18 +405,18 @@ langer relevant:
   veilig". Lagere total-impact bij compromittering (één account, niet
   N), maar gelijke individuele impact.
 - 🔄 **Authorization**: was "tenant-grenzen handhaven", nu "admin vs.
-  niet-admin" — en dat is zelfs geen onderscheid meer in single-user
+  niet-admin", en dat is zelfs geen onderscheid meer in single-user
   context. Meeste authz-findings worden lager geprioriteerd.
 - 🔄 **Information disclosure**: was "lekt info over andere users",
-  nu "lekt info over self of system" — minder kritiek tenzij het
+  nu "lekt info over self of system", minder kritiek tenzij het
   credentials of trade-data raakt.
 - 🔄 **Rate-limiting**: was "tegen abuse door betalende klanten", nu
-  "tegen externe brute-force" — andere drijfveer, andere mitigatie.
+  "tegen externe brute-force". Andere drijfveer, andere mitigatie.
 
 ### 5.3 Threats die NIEUW of VERHOOGD GEWICHT hebben
 
 - ⬆️ **Single point of failure**: één installatie = directe impact
-  op operator. Geen "andere tenants gaan door" — als Reverto down is,
+  op operator. Geen "andere tenants gaan door". Als Reverto down is,
   is alles down.
 - ⬆️ **Supply-chain**: in multi-tenant kon je bv. testen op één tenant
   voor rollout. Nu landt elke update direct bij de gebruiker. Hogere
@@ -528,7 +528,7 @@ threat-model, niet op observed-frequency.
 
 ---
 
-## Appendix A — Findings-review template
+## Appendix A: Findings-review template
 
 Per finding tijdens de review-sessie, vul in:
 
@@ -554,7 +554,7 @@ Date: [YYYY-MM-DD]
 
 ### A.1 Voorbeeld-classificaties
 
-**Voorbeeld 1 — multi-tenant obsoleet:**
+**Voorbeeld 1, multi-tenant obsoleet:**
 
 ```
 Finding ID: r1-059
@@ -570,7 +570,7 @@ correct for single-tenant context.
 Resolution_ref: obsoleet-by-context-shift-2026-05-08
 ```
 
-**Voorbeeld 2 — context-modifier toegepast:**
+**Voorbeeld 2, context-modifier toegepast:**
 
 ```
 Finding ID: pt-v3-NW-014
@@ -585,7 +585,7 @@ Context B/C, less critical without abuse-vector. Context A: LOW.
 Resolution_ref: severity-adjusted-2026-05-08
 ```
 
-**Voorbeeld 3 — onveranderd:**
+**Voorbeeld 3, onveranderd:**
 
 ```
 Finding ID: pt-043
@@ -601,7 +601,7 @@ Resolution_ref: unchanged-2026-05-08
 
 ---
 
-## Appendix B — Snelle context-detectie checklist
+## Appendix B: Snelle context-detectie checklist
 
 Wanneer onduidelijk is welke context van toepassing is op een finding:
 
