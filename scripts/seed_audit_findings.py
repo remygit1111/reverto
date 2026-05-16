@@ -32,7 +32,7 @@ from pathlib import Path
 import yaml
 
 # Ensure the project root is on sys.path so ``core.*`` imports work
-# whether the script is launched from /home/bot/reverto or elsewhere.
+# whether the script is launched from the project root or elsewhere.
 _HERE = Path(__file__).resolve()
 _ROOT = _HERE.parent.parent
 sys.path.insert(0, str(_ROOT))
