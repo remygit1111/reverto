@@ -238,20 +238,92 @@ class BuiltinLiveProvider:
     def on_breaker_permanent_open(
         self, breaker_name: str, reason: str,
     ) -> None:
-        """No-op for BuiltinLiveProvider.
+        """Telegram fan-out for permanent circuit-breaker latches.
 
-        Task 2.8 will rewire the circuit-breaker callback through
-        the LiveProvider Protocol. Until then, the existing
-        in-process telegram fan-out in core/circuit_breaker.py
-        remains the active path. This method exists to satisfy
-        the Protocol; it does not yet receive calls.
+        Phase 2 Task 2.8: this method took ownership of the Telegram
+        broadcast that previously lived in
+        exchanges/public_exchange.py:_make_permanent_open_callback.
+        The body below is a verbatim copy of that callback as of the
+        Task 2.8 commit — same message format, same all-users
+        fan-out, same per-user error isolation, same lazy imports
+        and ValueError handling.
+
+        The broadcast goes to every user with connected Telegram —
+        everyone running bots on the affected exchange needs to
+        know; gating on user-level notify_on would silently drop a
+        critical infra alert.
+
+        ``exchange_name`` is reconstructed from ``breaker_name``
+        because the Protocol method only receives (name, reason).
+        The breaker naming convention is stable: public_exchange.py
+        names breakers ``f"public-{exchange_name}"``.
+
+        Phase 3.7 deletes this file; the real reverto-live plugin
+        owns its own copy with whatever architecture it chooses.
         """
-        logger.debug(
-            "BuiltinLiveProvider.on_breaker_permanent_open called: "
-            "breaker=%s reason=%s (no-op until Task 2.8)",
-            breaker_name,
-            reason,
+        # Breaker name convention: "public-{exchange}" (see
+        # exchanges/public_exchange.py:_breaker_for). Recover the
+        # exchange label so the alert text matches the pre-2.8
+        # framework message byte-for-byte.
+        exchange_name = breaker_name.replace("public-", "", 1)
+
+        # Module-level breaker fan-out: there is no single user_id
+        # in scope here (the wrapper is shared across tenants), so
+        # the alert goes to every connected user. Operationally,
+        # everyone running bots on the affected exchange needs to
+        # know — gating this on user-level notify_on would silently
+        # drop a critical infra alert.
+        try:
+            from core import telegram_config_store
+            from notifications.telegram import TelegramNotifier
+        except Exception:  # noqa: BLE001 — defence-in-depth
+            logger.exception(
+                "Failed to import notifier dependencies for %s",
+                exchange_name,
+            )
+            return
+        message = (
+            "⚠️ <b>Circuit breaker PERMANENT OPEN</b>\n"
+            f"Exchange: {exchange_name}\n"
+            f"Breaker:  {breaker_name}\n"
+            f"Reason:   {reason}\n"
+            f"Action:   investigate API credentials or pair "
+            "config; restart the service or call "
+            "<code>breaker.reset()</code> to clear."
         )
+        try:
+            user_ids = telegram_config_store.all_connected_user_ids()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to enumerate connected users for %s",
+                exchange_name,
+            )
+            return
+        if not user_ids:
+            logger.info(
+                "CircuitBreaker '%s' permanent-open: no users have "
+                "connected Telegram; skipping fan-out. Reason: %s",
+                breaker_name, reason,
+            )
+            return
+        for uid in user_ids:
+            try:
+                TelegramNotifier(user_id=uid).send(message)
+            except ValueError:
+                # TELEGRAM_BOT_TOKEN missing entirely — nothing to
+                # send to anyone. Bail out, log once.
+                logger.info(
+                    "CircuitBreaker '%s' permanent-open: "
+                    "TELEGRAM_BOT_TOKEN not set; skipping. "
+                    "Reason: %s", breaker_name, reason,
+                )
+                return
+            except Exception:  # noqa: BLE001
+                # One bad notifier mustn't poison the fan-out.
+                logger.exception(
+                    "Failed to send permanent-open notification "
+                    "for %s to user=%d", exchange_name, uid,
+                )
 
 
 # Module-level provider singleton — used by core/plugin_loader's
