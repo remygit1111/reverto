@@ -230,15 +230,26 @@ After=network.target
 
 [Service]
 Type=forking
-User=bot
-WorkingDirectory=/home/bot/reverto
-ExecStart=/usr/bin/bash /home/bot/reverto/start.sh
-ExecStop=/usr/bin/bash /home/bot/reverto/stop.sh
+User=<user>
+WorkingDirectory=/home/<user>/reverto
+ExecStart=/usr/bin/bash /home/<user>/reverto/start.sh
+ExecStop=/usr/bin/bash /home/<user>/reverto/stop.sh
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+> Replace `<user>` with the username running the service. systemd
+> unit files do not support `~`, `$HOME`, or shell variable
+> expansion in `WorkingDirectory`/`ExecStart`, so absolute paths
+> are required.
+
+> Note: The files in `deploy/` and `ops/caddy/` in this repository
+> contain the maintainer's own production configuration (with
+> username `bot`). When self-hosting, copy them to the appropriate
+> system location and adjust the paths and username to match your
+> setup. Do not assume they are templates with placeholders.
 
 `systemctl enable --now reverto` after dropping that in.
 [OPERATIONS.md](OPERATIONS.md) covers shutdown semantics,

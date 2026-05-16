@@ -25,8 +25,9 @@
 #   - 3 months of monthly backups (1st of month)
 # Older entries are pruned on each subsequent run.
 #
-# Designed for cron:
-#   0 3 * * * cd /home/bot/reverto && ./scripts/backup.sh >> \
+# Designed for cron (replace /path/to/reverto with your actual
+# installation directory):
+#   0 3 * * * cd /path/to/reverto && ./scripts/backup.sh >> \
 #       logs/backup.log 2>&1
 # Or manual:
 #   make backup
