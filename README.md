@@ -51,9 +51,11 @@ python main_paper.py --version
 
 See [docs/RELEASES.md](docs/RELEASES.md) for the release history and [LICENSE](LICENSE) for current license terms.
 
-Reverto is functional for paper trading and backtesting. The live-trading scaffold exists but requires careful configuration and review before deploying real capital.
+Reverto is functional for paper trading and backtesting. The framework — paper trading, backtest engine, indicators, web portal — is published under BSL 1.1 (see License section below) and free for non-production use.
 
-This project is published as a snapshot of working code. The original maintainer (`remy1111`) uses Reverto for personal trading. There is no commercial roadmap and no service-level agreement.
+The live trading capability currently ships as an in-tree scaffold; it is being separated into a commercial `reverto-live` plugin in a future release. The framework will continue to be free; the live plugin will be sold separately. Pricing and availability will be announced at [reverto.bot](https://reverto.bot) when ready.
+
+The original maintainer (`remy1111`) uses Reverto for personal trading. There is no service-level agreement; this is software you self-host.
 
 ## Quick Start
 
@@ -167,7 +169,7 @@ For background on the licensing strategy, see
 
 Maintained by **remy1111** ([@remygit1111](https://github.com/remygit1111)).
 
-This project is not actively maintained as a commercial product. Issues and pull requests will be reviewed when time permits, but there is no guaranteed response time.
+The Reverto framework is open-source (BSL 1.1) and self-hosted. A separately-licensed Reverto Live Plugin for live trading is planned for a future release. Issues and pull requests on the framework will be reviewed when time permits, but there is no guaranteed response time.
 
 ---
 

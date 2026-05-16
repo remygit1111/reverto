@@ -2,6 +2,16 @@
 
 This document establishes the maintainer's personal-use intent regarding the operation of a Reverto instance at `app.reverto.bot`.
 
+## Scope
+
+This declaration covers the **operation of the Reverto instance at `app.reverto.bot`** specifically. It is NOT a statement about:
+
+- The licensing of the Reverto framework source code (see [LICENSE](LICENSE))
+- The future commercial Reverto Live Plugin (a separately-licensed pip package planned for a future release)
+- Use of the Reverto framework by third parties (each operator is responsible for their own compliance under BSL 1.1)
+
+The Reverto framework being BSL-licensed and a commercial Live Plugin being planned does NOT contradict this declaration's "no revenue" clause — this declaration is about how `app.reverto.bot` is operated by the maintainer, not about the framework or plugin business model.
+
 ## Statement
 
 I, the maintainer of this Reverto repository (`remy1111`), operate a personal instance of Reverto at `app.reverto.bot` for my own automated cryptocurrency trading. This instance:
@@ -14,7 +24,7 @@ I, the maintainer of this Reverto repository (`remy1111`), operate a personal in
 
 ## Open-Source Repository
 
-The Reverto codebase is published as open-source software under the Apache License 2.0 at:
+The Reverto codebase is published under the Business Source License 1.1 (BSL) at:
 
 <https://github.com/remygit1111/reverto>
 
