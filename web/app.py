@@ -1930,86 +1930,28 @@ async def stop_bot(user_id: int, slug: str) -> dict:
 
 
 async def start_bot_dry_run(user_id: int, slug: str) -> dict:
-    """Spawn a LIVE-mode bot in dry-run via main_live.py.
+    """Public entry point for live dry-run bot launches.
 
-    Phase 1 counterpart to start_bot(): uses main_live.py --bot <slug>
-    --dry-run with DRY_RUN=1 so the confirmation prompt is skipped.
-    The resulting subprocess writes the SAME PID/state/log files as
-    the paper runner, so stop_bot/restart_bot work unchanged.
+    Delegates to the loaded LiveProvider (BuiltinLiveProvider in
+    Phase 2, the real reverto-live plugin from Phase 3 onwards) and
+    returns the provider's result dict directly.
+
+    Phase 2 Task 2.5: this function used to contain the ~70-line
+    validation + registry-gate + subprocess implementation. That
+    logic now lives in the provider per the plugin-split design.
+    See docs/plugin_split_design.md §2.3 and
+    docs/task_2_5_design_analysis.md (Optie A) for the rationale.
     """
-    # Defense-in-depth: the route handler validates slug via
-    # _BOT_SLUG_RE and main_live.py's own regex re-validates. Belt-
-    # and-braces here so any non-route caller (tests, scripts) still
-    # gets a safe early-exit instead of reaching subprocess.Popen.
-    if not _BOT_SLUG_RE.match(slug):
-        return {"ok": False, "error": f"Invalid bot slug: {slug!r}"}
-    bot = await registry.get(user_id, slug)
-    if not bot:
-        return {"ok": False, "error": f"Unknown bot: {slug}"}
-    if bot.running:
-        return {"ok": False, "error": f"{slug} already running (PID {bot.pid})"}
+    from core.plugin_loader import load_live_provider
 
-    # Only live-mode bots may be launched dry-run. A paper bot would
-    # fail the hard mode check inside main_live.py, but bouncing it at
-    # the portal is friendlier than letting the subprocess exit 1 and
-    # surface as a silent no-op.
-    try:
-        cfg = load_bot_config(bot.config_file)
-    except Exception as e:
-        return {"ok": False, "error": f"Could not load config: {e}"}
-    if cfg.mode != Mode.LIVE:
+    provider = load_live_provider()
+    if provider is None:
         return {
             "ok": False,
-            "error": (
-                f"{slug} is mode={cfg.mode.value}; dry-run is only for live-mode bots"
-            ),
+            "error": "Live trading provider is not available",
         }
 
-    if not await registry.begin_start(user_id, slug):
-        return {"ok": False, "error": "Bot is already starting"}
-
-    try:
-        paths.user_pid_dir(user_id)
-
-        # Same allowlist-only env as start_bot (r1-023). DRY_RUN is
-        # set explicitly below because this spawn path deliberately
-        # asks main_live.py to skip its input() confirmation.
-        env = _bot_subprocess_env(user_id)
-        env["PYTHONPATH"] = str(BASE_DIR)
-        # main_live.py prompts the operator on non-dry-run launches and
-        # also respects DRY_RUN=1 as a bypass — set it explicitly so a
-        # non-TTY portal subprocess never hangs on input().
-        env["DRY_RUN"] = "1"
-
-        # ``start_new_session=True`` ≡ ``preexec_fn=os.setsid`` — see the
-        # commentary on ``start_bot`` for the full rationale. Identical
-        # PGID-isolation argument applies to live-mode dry-run subprocs.
-        with open(bot.log_file, "a") as log_out:
-            proc = subprocess.Popen(
-                [PYTHON_BIN, str(BASE_DIR / "main_live.py"),
-                 "--bot", slug, "--user-id", str(user_id), "--dry-run"],
-                cwd=str(BASE_DIR),
-                stdout=log_out,
-                stderr=log_out,
-                env=env,
-                start_new_session=True,  # ≡ preexec_fn=os.setsid
-            )
-        logger.info(f"Bot {slug} started in DRY-RUN (PID {proc.pid})")
-
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            if bot.pid_file.exists():
-                break
-            await asyncio.sleep(0.1)
-
-        return {
-            "ok": True,
-            "message": f"{slug} started in DRY-RUN (PID {proc.pid})",
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        await registry.end_start(user_id, slug)
+    return await provider.start_bot_dry_run(user_id, slug)
 
 
 async def restart_bot(user_id: int, slug: str) -> dict:

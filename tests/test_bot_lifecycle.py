@@ -53,6 +53,11 @@ _PAPER_ENGINE = _REPO / "paper" / "paper_engine.py"
 # TradingEngine base. The two source-text guards below scan both files so
 # they keep asserting the field is stamped wherever the engine code lives.
 _TRADING_ENGINE = _REPO / "core" / "trading_engine.py"
+# Phase 2 Task 2.5 moved the live-dry-run subprocess.Popen out of
+# web/app.py:start_bot_dry_run into the BuiltinLiveProvider scaffold
+# (deleted in Phase 3.7). The setsid guard below scans both files so
+# it still covers every bot-launcher wherever the spawn lives.
+_BUILTIN_PROVIDER = _REPO / "live" / "builtin_provider.py"
 
 
 # ─── W1: process-group isolation ─────────────────────────────────────────────
@@ -68,14 +73,20 @@ def test_bot_subprocess_spawn_uses_setsid():
     A regression that drops the kwarg silently re-introduces the bug
     where bots vanish on every ``systemctl restart reverto``.
     """
-    src = _WEB_APP.read_text(encoding="utf-8")
+    src = (
+        _WEB_APP.read_text(encoding="utf-8")
+        + "\n"
+        + _BUILTIN_PROVIDER.read_text(encoding="utf-8")
+    )
 
-    # Both Popen calls live in start_bot / start_bot_dry_run. Count
-    # them so a future third launcher cannot land without the kwarg.
+    # The two Popen launchers: start_bot (paper, web/app.py) and
+    # start_bot_dry_run (live, moved to BuiltinLiveProvider in Task
+    # 2.5). Count across both files so a future third launcher
+    # cannot land without the kwarg.
     popen_calls = src.count("subprocess.Popen(")
     assert popen_calls >= 2, (
-        f"expected at least 2 subprocess.Popen calls in web/app.py, "
-        f"found {popen_calls}"
+        f"expected at least 2 subprocess.Popen calls across web/app.py "
+        f"+ live/builtin_provider.py, found {popen_calls}"
     )
     setsid_calls = src.count("start_new_session=True")
     assert setsid_calls >= popen_calls, (
