@@ -49,7 +49,26 @@ def seeded_db():
 
 @pytest.fixture
 def admin_client():
-    """TestClient with a session cookie for the seeded admin user."""
+    """TestClient with a session cookie for the seeded admin user.
+
+    Flake-hardening (intermittent 401 investigation): the TestClient
+    is used as a context manager so its anyio portal thread — and
+    that thread's thread-local SQLite connection — is torn down at
+    test end. An unclosed TestClient leaks the portal thread; across
+    the full suite a leaked thread from an epoch-bumping test
+    (logout / TOTP / password-change, or a direct
+    user_store.bump_session_epoch(1) in test_user_store /
+    test_auth_totp) can resolve the process-global
+    core.database._DB_PATH lazily and touch a *later* test's
+    freshly-seeded DB, flipping admin's session_epoch 0 -> 1. That
+    makes this fixture's cookie (minted at epoch 0) fail
+    _verify_session_cookie's per-user epoch check with a spurious
+    401 — the exact signature captured during the investigation
+    (cookie_uid=1, cookie_epoch=0, server_epoch=1). Closing the
+    client per test removes the leak vector; the pre-yield
+    assertion turns any residual inconsistency into a clear fixture
+    error instead of a confusing downstream 401.
+    """
     admin = user_store.get_user_by_username("admin")
     assert admin is not None
     user_store.set_password(admin.id, "pytest-findings-admin-pw-12345")
@@ -57,12 +76,19 @@ def admin_client():
     prev_samesite = webapp._COOKIE_SAMESITE
     webapp._COOKIE_SECURE = False
     webapp._COOKIE_SAMESITE = "lax"
-    client = TestClient(webapp.app)
-    client.cookies.set(
-        "reverto_session", webapp._create_session_cookie(admin),
-    )
     try:
-        yield client
+        with TestClient(webapp.app) as client:
+            client.cookies.set(
+                "reverto_session", webapp._create_session_cookie(admin),
+            )
+            assert webapp._verify_session_cookie(
+                client.cookies.get("reverto_session"),
+            ) is not None, (
+                "admin_client minted a session cookie that does not "
+                "validate — admin session_epoch is inconsistent "
+                "(test-isolation leak); see fixture docstring"
+            )
+            yield client
     finally:
         webapp._COOKIE_SECURE = prev_secure
         webapp._COOKIE_SAMESITE = prev_samesite
@@ -83,12 +109,14 @@ def non_admin_client():
     prev_samesite = webapp._COOKIE_SAMESITE
     webapp._COOKIE_SECURE = False
     webapp._COOKIE_SAMESITE = "lax"
-    client = TestClient(webapp.app)
-    client.cookies.set(
-        "reverto_session", webapp._create_session_cookie(bob),
-    )
+    # Context-managed so the portal thread + its SQLite connection
+    # are torn down per test (same leak-hardening as admin_client).
     try:
-        yield client
+        with TestClient(webapp.app) as client:
+            client.cookies.set(
+                "reverto_session", webapp._create_session_cookie(bob),
+            )
+            yield client
     finally:
         webapp._COOKIE_SECURE = prev_secure
         webapp._COOKIE_SAMESITE = prev_samesite
