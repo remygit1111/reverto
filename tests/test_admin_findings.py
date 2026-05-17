@@ -192,8 +192,8 @@ class TestV26V27SeedExtension:
     def test_total_seed_count_matches_documented_total(self):
         raw = yaml.safe_load(_SEED_PATH.read_text(encoding="utf-8"))
         items = raw["findings"]
-        assert len(items) == 353, (
-            f"seed total drifted from 285: got {len(items)}. Update the "
+        assert len(items) == 356, (
+            f"seed total drifted from 356: got {len(items)}. Update the "
             "header comment in data/findings_seed.yaml in the same PR."
         )
 
