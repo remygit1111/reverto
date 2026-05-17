@@ -19,7 +19,8 @@ public discussion before a fix has shipped.
 - **Preferred: GitHub Security Advisory.** Visit the repository
   on GitHub, open the **Security** tab, and click **Report a
   vulnerability**. This creates a private advisory only the
-  maintainers can read.
+  maintainers can read. Direct link:
+  <https://github.com/remygit1111/reverto/security/advisories/new>
 - **Fallback.** If GitHub Security Advisories are not available
   for the fork you found this in, open a public GitHub Issue
   titled **`[SECURITY] Request private disclosure channel`** and
