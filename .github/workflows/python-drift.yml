@@ -33,6 +33,11 @@ concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
+# Default to read-only permissions for the workflow. Individual
+# jobs can opt into more if needed. Least-privilege baseline per
+# OpenSSF Scorecard Token-Permissions check.
+permissions: read-all
+
 jobs:
   drift-check:
     runs-on: ubuntu-latest
