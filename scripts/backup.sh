@@ -40,7 +40,46 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# PT-v4-EI-003: concurrent-execution guard. -xn = take an
+# exclusive lock; if another backup.sh already holds it, exit 1
+# immediately rather than racing on credentials/ + the dated
+# backup dir. fd 200 stays open for the script's whole lifetime,
+# so the lock is auto-released on any exit (normal, error, or
+# signal). flock creates the lock file on first run; no setup
+# needed. Path is overridable via REVERTO_BACKUP_LOCK so the
+# regression test can isolate it (production default unchanged).
+# Falls back to a repo-local lock file if the chosen path is not
+# writable (e.g. a non-root dev environment without /var/lock).
+_LOCK_FILE="${REVERTO_BACKUP_LOCK:-/var/lock/reverto-backup.lock}"
+if ! { exec 200>"${_LOCK_FILE}"; } 2>/dev/null; then
+    _LOCK_FILE="backups/.backup.lock"
+    mkdir -p backups
+    exec 200>"${_LOCK_FILE}"
+fi
+flock -xn 200 || {
+    echo "$(date -u +%FT%TZ): backup.sh already running (lock ${_LOCK_FILE}); exiting" >&2
+    exit 1
+}
+
 BACKUP_ROOT="backups"
+
+# PT-v4-EI-002: monitoring contract. Previously only the
+# DB-missing branch stamped .last_error; every other failure
+# (sqlite3 .backup, cp, MANIFEST write, retention prune,
+# interruption) exited silently under set -euo pipefail, so
+# cron-side mtime monitoring missed almost every real failure.
+# This EXIT trap stamps backups/.last_error with a UTC timestamp
+# + exit code on ANY non-zero exit (incl. SIGINT=130, SIGTERM=143
+# - an interrupted backup MUST be flagged for a cron-driven job).
+# $LINENO is intentionally NOT used: inside an EXIT trap it does
+# not reliably point at the failing line, so it would mislead;
+# the exit code is the actionable signal. The success path still
+# explicitly rm -fs .last_error after a clean completion. The
+# pre-existing DB-missing branch keeps its own echo; the trap
+# then re-stamps on exit (more recent stamp wins) - harmless.
+mkdir -p "${BACKUP_ROOT}"
+trap '_rc=$?; if [ "${_rc}" -ne 0 ]; then echo "$(date -u +%FT%TZ): backup.sh exited ${_rc}" > "${BACKUP_ROOT}/.last_error"; fi' EXIT
+
 TIMESTAMP=$(date -u +"%Y-%m-%d-%H%M%S")
 BACKUP_DIR="${BACKUP_ROOT}/${TIMESTAMP}"
 
@@ -94,16 +133,75 @@ fi
 # keys + .auth.json are best-effort (missing in Phase-3a+).
 # ──────────────────────────────────────────────────────────────
 
+# PT-v4-EI-001: credentials/ and keys/ are mutated AS A SET by
+# the per-user Fernet rotation in core/credentials.py
+# (rotate_user_key re-encrypts every credentials/<uid>/*.enc,
+# then os.replace's keys/<uid>.key). A naive `cp -r` running
+# mid-rotation captures a mix of old-key and new-key ciphertext
+# that no single key can decrypt.
+#
+# The finding's literal suggested fix ("flock matching the lock
+# the rotation flow already takes") is not implementable here:
+# the rotation does NOT lock credentials/<uid>/ — it takes an
+# fcntl advisory lock on an EPHEMERAL per-user sentinel
+# keys/<uid>.key.lock (created on entry via touch, unlinked on
+# exit) using LOCK_EX|LOCK_NB. There is no single stable lock
+# path covering the whole tree, and core/credentials.py is out
+# of scope for this PR, so a bash flock cannot share the
+# rotation's mutex. Worse, flock-ing the rotation's own
+# LOCK_NB sentinel from here would make a concurrent rotation
+# fail outright ("Another Fernet rotation is already running"),
+# and the unlink-on-exit makes it inode-racy anyway. A
+# unilateral flock on a new path would be pure false safety.
+#
+# Implemented instead (the finding's own alternative, made
+# rotation-aware): (a) wait, bounded, for any in-progress
+# rotation to release its sentinel — rotation completes in well
+# under a second for a hobbyist key set; (b) stage the copy in
+# a .tmp dir then atomically rename, so a restore never sees a
+# partially-copied tree. Residual window (a rotation starting
+# mid-copy) is acceptable for a LOW finding: cron runs at 03:00
+# and rotation is rare + operator-initiated. See the PR notes
+# for the full rationale on the path-dynamic deviation.
+_wait_for_rotation_idle() {
+    local _waited=0
+    local _max=30
+    while compgen -G "keys/*.key.lock" > /dev/null 2>&1; do
+        if [ "${_waited}" -ge "${_max}" ]; then
+            echo "WARNING: Fernet rotation sentinel still present after ${_max}s; proceeding with credentials/keys copy anyway" >&2
+            break
+        fi
+        sleep 1
+        _waited=$((_waited + 1))
+    done
+}
+
+_stage_copy() {
+    # _stage_copy <src-dir> <final-dest>: copy <src-dir> into a
+    # sibling .tmp of <final-dest> then atomically rename, so an
+    # interrupted copy never leaves a half-tree at <final-dest>.
+    local _src="$1"
+    local _dest="$2"
+    local _tmp="${_dest}.tmp"
+    rm -rf "${_tmp}"
+    cp -r "${_src}" "${_tmp}"
+    mv "${_tmp}" "${_dest}"
+}
+
+if [ -d "credentials" ] || [ -d "keys" ]; then
+    _wait_for_rotation_idle
+fi
+
 if [ -d "credentials" ]; then
-    cp -r credentials "${BACKUP_DIR}/credentials"
+    _stage_copy credentials "${BACKUP_DIR}/credentials"
 fi
 
 # Per-user Fernet keys live under keys/<user_id>.key today
 # (Phase-3a rename from logs/.credentials.key). Include both
 # paths so a backup restored onto an older codebase still
-# works — and a current restore finds its keys regardless.
+# works - and a current restore finds its keys regardless.
 if [ -d "keys" ]; then
-    cp -r keys "${BACKUP_DIR}/keys"
+    _stage_copy keys "${BACKUP_DIR}/keys"
 fi
 
 if [ -f "logs/.credentials.key" ]; then

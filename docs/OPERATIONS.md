@@ -403,6 +403,41 @@ SQLite schema version (audit r3-008). The schema-version line
 surfaces during `make restore` so you can spot a forward/backward
 schema gap before confirming the restore.
 
+### Failure monitoring and concurrency
+
+`scripts/backup.sh` writes `backups/.last_error` (a single line:
+UTC timestamp + the script exit code) on **any** non-zero exit —
+not only the missing-database case, but also a failed SQLite
+online-backup, a failed `cp`, a MANIFEST write error, a retention
+prune error, or an interruption (Ctrl-C / SIGTERM). A clean run
+removes the file as its last step, so a stale `.last_error`
+unambiguously means "the most recent backup did not complete".
+Monitor it from cron, e.g.:
+
+```
+# alert if the stamp exists OR the newest backup dir is >25h old
+*/30 * * * * test -f ~/reverto/backups/.last_error && \
+    echo "reverto backup FAILED: $(cat ~/reverto/backups/.last_error)" | \
+    mail -s "reverto backup" you@example.com
+```
+
+(PT-v4-EI-002.) A correctly *declined* concurrent run does **not**
+write `.last_error` — see below.
+
+Only one `backup.sh` runs at a time: it takes an exclusive
+`flock` on `/var/lock/reverto-backup.lock` (override with the
+`REVERTO_BACKUP_LOCK` env var; a repo-local fallback is used if
+that path is not writable). A second invocation while one is
+running (cron + a manual `make backup`, say) exits non-zero
+immediately with an "already running" message and changes
+nothing. (PT-v4-EI-003.)
+
+The per-user encrypted `credentials/` and `keys/` trees are
+copied with a brief wait for any in-progress Fernet key rotation
+to finish, then staged to a `.tmp` and atomically renamed, so a
+restore never sees a half-rotated or half-copied credential set.
+(PT-v4-EI-001.)
+
 ### Retention policy
 
 The script prunes older backups on every run:
