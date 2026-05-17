@@ -14,7 +14,7 @@ ccxt==4.5.48
 certifi==2026.2.25
 cffi==2.0.0
 charset-normalizer==3.4.7
-click==8.3.2
+click==8.4.0
 coincurve==21.0.0
 cryptography==46.0.7
 fastapi==0.135.3
