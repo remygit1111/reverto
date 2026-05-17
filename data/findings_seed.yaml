@@ -1,8 +1,10 @@
 # Audit + pentest findings seed for the admin findings tracker.
 #
-# Sourced from eleven markdown documents under docs/audits/ and
-# docs/pentests/. Each YAML entry mirrors the AuditFinding row
-# shape in core.audit_findings_store.
+# Sourced from twelve markdown audit/pentest documents. The PT-v4
+# batch reports have local working copies under the gitignored
+# top-level audits/; tracked security docs (incl. PUB-v1) live under
+# docs/audits/. Each YAML entry mirrors the AuditFinding row shape in
+# core.audit_findings_store.
 #
 # Status mapping rules (applied during extraction):
 #   * "RESOLVED in <commit/branch>"  → status: resolved + ref filled
@@ -19,7 +21,7 @@
 #
 # Counts per source: r1=76, r1.1=6, pd=54, r2=11, r3=15, rha=15,
 # pt-v1=39, pt-v2=24, v26-report=25, v27-report=12, v27-backlog=3,
-# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11, pt-v4-mk=8, pt-v4-ei=10. Total: 353.
+# pt-v3=5, rhav2=14, pt-v4-au=9, pt-v4-az=6, pt-v4-fs=9, pt-v4-nw=11, pt-v4-mk=8, pt-v4-ei=10, pub-v1=3. Total: 356.
 #
 # v26 + v27 status note. The v26 + v27 audit reports were re-verified
 # against HEAD via grep before extraction. Where the audit-doc
@@ -3805,5 +3807,43 @@ findings:
   title: Edge & integration surface structurally well-defended (positive observation)
   description: |
     Pentest probed all 10 attack-vector categories (E1-E10). Bot lifecycle controls are well-thought-out: KillMode=process prevents engine SIGKILL on portal restart, heartbeat-staleness with 6× threshold for silent-exit detection, bounded auto-restart via _BOT_RESTART_HISTORY (rha-003 verified resolved), drain budget + safety margin before SIGKILL escalation, schema migration in transaction with destructive-migrate gate, WAL-aware backup at two sites. The 5 truth sources (registry, state.json, PID file, _pid_alive probe, DB deals) reconcile via documented trust hierarchy at BotInfo.read_state. Findings cluster around BACKUP/RESTORE pipeline (4 of 10) rather than live-system path. Live-system path gets continuous test coverage; backup runs from cron without daily operator scrutiny — an observability gap rather than a structural weakness. No CRITICAL or HIGH findings emerged. Cross-batch series observation: zero CRITICAL/HIGH across all 6 PT-v4 batches confirms structurally solid single-tenant posture.
+  resolution_ref: null
+  notes: ""
+
+# ── pub-v1-baseline (PUB-v1-001 … PUB-v1-003) ────────────────────────────────
+#
+# First audit batch after the public BSL 1.1 release (2026-05-17).
+# Complementary to the PT-v4 series; overlaps with a specific PT-v4
+# finding are deduplicated in audits/PUB-v1-baseline-2026-05-17.md
+# (section 5) rather than re-seeded here. INFO observations live in
+# the report (section 7), not in this seed, per operator decision.
+
+- finding_id: PUB-v1-001
+  source_doc: pub-v1-baseline
+  severity: LOW
+  status: open
+  title: core/paths.py path helpers + bot-config routes do not enforce a safe path-segment token on slug/credentials_uuid
+  description: |
+    core/paths.py is the architecture-designated single home for user-scoped path construction, but bot_yaml_path / bot_state_path / uuid_creds_path interpolate the caller's leaf string verbatim (f"{slug}.yaml", f"{credentials_uuid}.enc") with no assertion that it is a single safe path segment (no "/", no ".."). Validation is delegated to call sites and applied inconsistently: the duplicate (web/routes/bots.py:740), import (bots.py:815), admin (admin_bots.py._validate_slug) and main_live.py paths guard with _BOT_SLUG_RE = ^[A-Za-z0-9_\-]+$, but get_bot_config / update_bot_config / export_bot build _bot_yaml_path(user.id, slug) from the raw {slug} path param with no guard. NOT exploitable today by three independent accidents: (1) create derives the slug via slugify() whose _SLUG_RE strips unsafe chars; (2) Starlette's {slug} converter is [^/]+ and uvicorn percent-decodes before routing, so %2F-smuggled traversal 404s before _bot_yaml_path runs; (3) credentials_uuid is always uuid.uuid4().hex (exchange_account_store.py:182), read only from the DB row, never from request input. Defense-in-depth: the highest-value target (per-user credentials + bot configs) depends on three external invariants instead of one explicit assertion in the module that exists to centralise path safety. A {slug:path} converter, a non-route caller, or any future code feeding request input as credentials_uuid turns this into cross-tenant path traversal (overwrite/delete not blunted by Fernet key divergence). Same class as the already-tracked PT-v4-MK-002 (LOW) but a distinct module, so reported complementarily and calibrated to LOW to match that finding's shape. PT-v4-FS-009's "structurally impossible" claim covers only the int user_id segment, not the str leaf. Suggested remediation: a one-line leaf guard inside core/paths.py (reject leaf != basename, or containing os.sep / "..", or failing ^[A-Za-z0-9_\-]+$), raising ValueError so callers map to 400/404 uniformly.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PUB-v1-002
+  source_doc: pub-v1-baseline
+  severity: LOW
+  status: open
+  title: load_live_provider() only catches ImportError - silent scaffold degradation, cache poisoning, "never raises" contract violation
+  description: |
+    core/plugin_loader.py docstring guarantees "The loader never raises ... falls back to BuiltinLiveProvider when malformed/incompatible". Implementation has two compounding gaps. (1) Only ImportError is caught around importlib.import_module("reverto_live") (line 116); an installed reverto_live whose module-level code raises any non-ImportError (RuntimeError, OSError from a bad C-extension, AttributeError, bare Exception) propagates out of load_live_provider(), contradicting the documented contract that web/app.py callers (start_bot_dry_run, restart_bot) rely on without their own try/except (only exchanges/public_exchange.py guards its call). (2) _loaded = True is set BEFORE the try (line 112), so on any propagated exception the cache is poisoned: _provider stays None, _loaded stays True, every later call returns None for the process lifetime without ever retrying the builtin fallback - one transient import failure permanently disables live capability until restart. Quieter realistic variant: ModuleNotFoundError is an ImportError subclass, so an installed reverto_live with a missing transitive dep is caught as "not installed" and silently degrades to BuiltinLiveProvider with only an INFO log - the operator who installed the live plugin silently runs the scaffold with no ERROR signal. Not reachable today (reverto_live is the unshipped Phase-3 first-party package; current process always hits the ImportError "not installed" branch and the builtin works). Robustness/observability defense-in-depth ahead of Phase-3 ship; no security data impact (live trading not shipped, no cross-tenant/secret dimension), hence LOW. Suggested remediation: catch Exception (not just ImportError); distinguish ModuleNotFoundError for "reverto_live" itself (INFO, fall back) from any other import-time exception (ERROR + traceback, still fall back to builtin); set _loaded only after a terminal outcome (or cache the builtin) so a transient failure does not poison the cache.
+  resolution_ref: null
+  notes: ""
+
+- finding_id: PUB-v1-003
+  source_doc: pub-v1-baseline
+  severity: LOW
+  status: open
+  title: Partial single-use Telegram link bearer token (token[:8]) written to INFO/WARNING logs
+  description: |
+    core/telegram_config_store.py logs a prefix of the raw link token at line 139 (logger.info "Link token lookup miss for token=%r", token[:8]) and line 149 (logger.warning "Unparseable expires_at on token=%r", token[:8]). The link token is secrets.token_hex(16) = 32 hex chars = 128 bits, a single-use TTL-bound bearer credential: presenting a valid token to the Telegram webhook links that chat to the user's account (consume_link_token upserts telegram_configs and returns the user_id). Logging token[:8] writes 32 of 128 bits into portal.log. The line-139 path only fires on a lookup miss (token not in DB - little leaked); the line-149 path fires for a token that DOES exist in the table (a real, potentially still-valid bearer) whose row has an unparseable expires_at. Not directly exploitable: 96 bits remain unlogged, the token is single-use and expires. The defect is that any portion of a bearer is written to a log with broader read access and longer retention (log shipping, portal.log tailing, backups) than the telegram_link_tokens table. Hygiene / best-practice deviation with no direct security impact (LOW per scale). Suggested remediation: log a non-reversible correlator (short prefix of sha256(token)) or just the outcome + user_id (line 149 already has row["user_id"]); mirrors the existing str(e)[:200] redaction discipline used for exchange errors.
   resolution_ref: null
   notes: ""
