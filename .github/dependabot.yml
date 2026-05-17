@@ -1,0 +1,43 @@
+# Dependabot configuration.
+#
+# Manages automated dependency-update PRs for the Reverto
+# repository. Two ecosystems are tracked:
+#
+#   * pip      — Python dependencies in requirements*.txt
+#   * github-actions — Action versions in .github/workflows/
+#
+# Reference: https://docs.github.com/code-security/dependabot
+version: 2
+
+updates:
+  # Python dependencies (requirements.txt, requirements-ml.txt)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Amsterdam"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # GitHub Actions workflow files
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Amsterdam"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
