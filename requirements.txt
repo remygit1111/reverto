@@ -10,7 +10,7 @@ APScheduler==3.11.2
 attrs==26.1.0
 bcrypt==5.0.0
 bleach==6.3.0
-ccxt==4.5.48
+ccxt==4.5.54
 certifi==2026.2.25
 cffi==2.0.0
 charset-normalizer==3.4.7
