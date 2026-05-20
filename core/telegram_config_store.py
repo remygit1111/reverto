@@ -22,6 +22,7 @@ also expire (1 h) so a leaked URL has a short blast radius.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import secrets
@@ -31,6 +32,17 @@ from typing import Optional
 from core.database import get_db
 
 logger = logging.getLogger(__name__)
+
+
+def _token_correlator(token: str) -> str:
+    """Non-reversible 12-char identifier for a link token, safe to log.
+
+    Used in lookup-miss paths where we don't have a user_id to log
+    instead (the token isn't in the DB, so we can't resolve who it
+    belonged to). sha256-truncated so logs stay grep-able for repeat
+    misses without leaking any portion of the bearer.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()[:12]
 
 
 # Single source of truth for valid event-type strings stored in
@@ -136,7 +148,10 @@ def consume_link_token(token: str, chat_id: str) -> Optional[int]:
         (token,),
     ).fetchone()
     if row is None:
-        logger.info("Link token lookup miss for token=%r", token[:8])
+        logger.info(
+            "Link token lookup miss for token-correlator=%s",
+            _token_correlator(token),
+        )
         return None
     if row["used_at"] is not None:
         logger.info(
@@ -146,7 +161,10 @@ def consume_link_token(token: str, chat_id: str) -> Optional[int]:
     try:
         expires_at = datetime.fromisoformat(row["expires_at"])
     except ValueError:
-        logger.warning("Unparseable expires_at on token=%r", token[:8])
+        logger.warning(
+            "Unparseable expires_at on link token for user=%d",
+            int(row["user_id"]),
+        )
         return None
     if expires_at <= now:
         logger.info(
