@@ -273,3 +273,71 @@ class TestNotifyOnRoundtripJSON:
         # The store writes JSON — round-trip parse confirms format.
         parsed = json.loads(row["notify_on"])
         assert isinstance(parsed, list)
+
+
+
+# ───────────────────────────────────────────────────────────────────
+# Regression tests for PUB-v1-003: no token prefix in logs
+# ───────────────────────────────────────────────────────────────────
+#
+# consume_link_token() previously logged a token[:8] prefix on two
+# failure paths (lookup miss, unparseable expires_at). These tests
+# ensure no portion of the raw bearer token appears in log output,
+# even when those failure paths fire.
+
+
+class TestPubV1_003_NoTokenInLogs:
+    """PUB-v1-003 regression: consume_link_token must not log any
+    portion of the bearer token, even on failure paths."""
+
+    def test_lookup_miss_does_not_log_token_prefix(self, caplog):
+        """Miss-path must use sha256 correlator, not token prefix."""
+        unknown_token = "a" * 32  # 32-char hex, never inserted
+
+        with caplog.at_level("INFO"):
+            result = telegram_config_store.consume_link_token(
+                unknown_token, "12345",
+            )
+
+        assert result is None
+        full_log = " ".join(rec.message for rec in caplog.records)
+        # No portion of the raw bearer in logs
+        assert unknown_token not in full_log
+        assert unknown_token[:8] not in full_log
+        # The non-reversible correlator IS expected to appear
+        import hashlib
+        expected = hashlib.sha256(unknown_token.encode()).hexdigest()[:12]
+        assert expected in full_log
+
+    def test_unparseable_expires_at_does_not_log_token_prefix(
+        self, caplog,
+    ):
+        """Parse-fail-path must use user_id, not token prefix.
+
+        Inserts a token row directly with a malformed expires_at so
+        consume_link_token reaches the line-148 ValueError handler.
+        """
+        distinctive_token = "b" * 32
+        target_user_id = 1  # The autouse fixture seeds this user
+
+        conn = get_db()
+        with conn:
+            conn.execute(
+                "INSERT INTO telegram_link_tokens "
+                "(token, user_id, expires_at, used_at) "
+                "VALUES (?, ?, ?, ?)",
+                (distinctive_token, target_user_id, "not-a-date", None),
+            )
+
+        with caplog.at_level("WARNING"):
+            result = telegram_config_store.consume_link_token(
+                distinctive_token, "99999",
+            )
+
+        assert result is None
+        full_log = " ".join(rec.message for rec in caplog.records)
+        # No portion of the raw bearer in logs
+        assert distinctive_token not in full_log
+        assert distinctive_token[:8] not in full_log
+        # The user_id IS expected to appear
+        assert str(target_user_id) in full_log
