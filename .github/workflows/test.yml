@@ -187,10 +187,19 @@ jobs:
         # build. Direct deps are under our control — we can bump the
         # version, test, and re-run. Stop shipping known-vulnerable
         # code before it ships.
+        #
+        # Ignored CVEs:
+        #   PYSEC-2024-277 (CVE-2024-34997) in joblib — DISPUTED
+        #   false-positive per maintainer (joblib/joblib#1588) and
+        #   NVD. No fix exists; Reverto only loads its own trusted
+        #   ML models so the deserialization exploit path is N/A.
+        #   See docs/security/cve-ignore-policy.md for the full
+        #   review and links.
         run: |
           .venv/bin/pip-audit \
             --requirement requirements.txt \
             --requirement requirements-ml.txt \
+            --ignore-vuln PYSEC-2024-277 \
             --strict
 
       - name: Security audit — transitive deps (non-blocking)
