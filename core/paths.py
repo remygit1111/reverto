@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -35,6 +36,56 @@ logger = logging.getLogger(__name__)
 # Resolved once at import; tests override by direct assignment on
 # ``core.paths.BASE_DIR`` if they need to sandbox the layout.
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
+
+
+# ── Leaf validation — PUB-v1-001 ──────────────────────────────────────────
+
+
+# A path leaf is a single filesystem segment: a bot slug or a
+# credentials UUID. The pattern matches ``web.app._BOT_SLUG_RE``
+# byte-for-byte — bot slugs are produced by ``slugify()`` (lowercase
+# alnum + ``-``/``_``) and credentials UUIDs are ``uuid4().hex``
+# (``[a-f0-9]{32}``), both strict subsets of this class. One regex
+# covers every leaf this module interpolates into a path.
+_SAFE_LEAF_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_safe_leaf(name: str, *, field: str) -> None:
+    """Reject any leaf that isn't a single safe path segment.
+
+    PUB-v1-001: ``core/paths.py`` is the architecture-designated
+    single home for user-scoped path construction. Pre-fix it
+    interpolated caller-supplied ``slug`` / ``credentials_uuid``
+    strings verbatim and delegated validation to call sites, which
+    applied it inconsistently. This guard makes the module itself
+    the chokepoint — no path is constructed from an unvalidated
+    leaf, regardless of which caller forgot to check.
+
+    ``field`` is the parameter name (e.g. ``"slug"``,
+    ``"credentials_uuid"``) and is echoed into the error so the
+    caller knows which argument was rejected.
+
+    Raises ``ValueError`` when ``name``:
+      * is not a non-empty string
+      * is the parent-directory token ``..``
+      * contains a path separator (``/``, ``\\``, or ``os.sep``)
+      * fails the safe-character regex ``^[A-Za-z0-9_-]+$``
+    """
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"{field}: must be a non-empty string")
+    if name == "..":
+        raise ValueError(
+            f"{field}: parent-directory token is not allowed"
+        )
+    if os.sep in name or "/" in name or "\\" in name:
+        raise ValueError(
+            f"{field}: must be a single path segment, got: {name!r}"
+        )
+    if not _SAFE_LEAF_RE.fullmatch(name):
+        raise ValueError(
+            f"{field}: must match {_SAFE_LEAF_RE.pattern}, "
+            f"got: {name!r}"
+        )
 
 
 # ── Directory helpers ─────────────────────────────────────────────────────
@@ -161,16 +212,19 @@ def user_credentials_dir(user_id: int) -> Path:
 
 def bot_yaml_path(user_id: int, slug: str) -> Path:
     """``config/bots/<user_id>/<slug>.yaml``."""
+    _validate_safe_leaf(slug, field="slug")
     return user_bots_dir(user_id) / f"{slug}.yaml"
 
 
 def bot_log_path(user_id: int, slug: str) -> Path:
     """``logs/<user_id>/<slug>.log`` — subprocess stdout/stderr."""
+    _validate_safe_leaf(slug, field="slug")
     return user_logs_dir(user_id) / f"{slug}.log"
 
 
 def bot_state_path(user_id: int, slug: str) -> Path:
     """``logs/<user_id>/<slug>.state.json`` — engine state snapshot."""
+    _validate_safe_leaf(slug, field="slug")
     return user_logs_dir(user_id) / f"{slug}.state.json"
 
 
@@ -182,17 +236,20 @@ def bot_state_lock_path(user_id: int, slug: str) -> Path:
     and by a starting bot (during _load_state) so the two processes
     serialise instead of racing on ``state.json``.
     """
+    _validate_safe_leaf(slug, field="slug")
     return user_logs_dir(user_id) / f"{slug}.state.lock"
 
 
 def bot_pid_path(user_id: int, slug: str) -> Path:
     """``logs/<user_id>/pids/<slug>.pid`` — engine-process PID file."""
+    _validate_safe_leaf(slug, field="slug")
     return user_pid_dir(user_id) / f"{slug}.pid"
 
 
 def bot_manual_trigger_path(user_id: int, slug: str) -> Path:
     """``logs/<user_id>/<slug>.manual_trigger`` — sentinel that the
     engine consumes to force-open a deal on the next tick."""
+    _validate_safe_leaf(slug, field="slug")
     return user_logs_dir(user_id) / f"{slug}.manual_trigger"
 
 
@@ -210,6 +267,7 @@ def user_ml_results_path(user_id: int, slug: str) -> Path:
     in ``ml/results_<slug>.json`` (no user folder), so two tenants
     with the same bot-slug would overwrite each other's ML output.
     """
+    _validate_safe_leaf(slug, field="slug")
     parent = _ensure_dir(BASE_DIR / "ml" / str(user_id))
     return parent / f"results_{slug}.json"
 
@@ -222,6 +280,7 @@ def uuid_creds_path(user_id: int, credentials_uuid: str) -> Path:
     Replaces the pre-multi-account ``exchange_creds_path`` which keyed
     the file by exchange name and so could only hold one credential
     pair per (user, exchange_type)."""
+    _validate_safe_leaf(credentials_uuid, field="credentials_uuid")
     return user_credentials_dir(user_id) / f"{credentials_uuid}.enc"
 
 
@@ -308,6 +367,13 @@ def purge_bot(user_id: int, slug: str) -> dict:
     to unlink the YAML and at least make the bot disappear from the
     registry.
     """
+    # PUB-v1-001: fast-fail on a malformed slug BEFORE the DB
+    # transaction runs. The leaf-helper calls further down
+    # (bot_state_path etc.) would raise anyway, but the DB step
+    # executes first — validating up-front keeps a bad slug from
+    # running a (harmless, parametrised but pointless) DELETE pass.
+    _validate_safe_leaf(slug, field="slug")
+
     summary: dict = {
         "files_removed": 0,
         "files_failed": [],

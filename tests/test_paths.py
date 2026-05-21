@@ -352,3 +352,148 @@ class TestEnsureDirSymlinkPolicy:
             "symlink" in r.getMessage().lower()
             for r in caplog.records
         )
+
+
+# ── PUB-v1-001: centralised path-leaf validation ──────────────────────────
+
+
+# Inputs that must be rejected by _validate_safe_leaf. Each is a
+# leaf string that, if interpolated verbatim into a path, would
+# either escape the user-scoped directory or land on an
+# unexpected file. The regex ^[A-Za-z0-9_-]+$ rejects every one;
+# the separate "" / ".." / separator branches give a clearer
+# error message for the common cases.
+_UNSAFE_LEAVES = [
+    "",                       # empty
+    "..",                     # parent-directory token
+    "../etc/passwd",          # classic path traversal
+    "/etc/passwd",            # absolute path
+    "sub/dir",                # embedded forward slash
+    "sub\\dir",               # embedded backslash
+    "with space",             # space — outside the safe class
+    "with.dot",               # dot — outside the safe class (this
+                              # is the realistic one: a slug that
+                              # survives Starlette's [^/]+ converter
+                              # but is not slugify output)
+    "with%2Fslash",           # percent-encoded slash (% rejected)
+    "trailing.",              # trailing dot
+    ".hidden",                # leading dot
+    "tab\tchar",              # control character
+]
+
+
+class TestPUBv1001LeafValidation:
+    """Class-of-issue regression for PUB-v1-001 (LOW).
+
+    core/paths.py is the architecture-designated single home for
+    user-scoped path construction, but pre-fix it interpolated
+    caller-supplied ``slug`` / ``credentials_uuid`` leaves
+    verbatim and delegated validation to call sites — applied
+    inconsistently (duplicate/import/admin guarded; config-read,
+    config-update, export did not).
+
+    Post-fix every leaf-taking helper calls ``_validate_safe_leaf``
+    so the module itself is the chokepoint. These tests pin that
+    behaviour against a parametrised battery of traversal-shaped
+    and out-of-class inputs, and confirm legitimate slug / UUID
+    leaves still resolve cleanly.
+    """
+
+    # ── The validator itself ───────────────────────────────────
+
+    @pytest.mark.parametrize("bad", _UNSAFE_LEAVES)
+    def test_validate_safe_leaf_rejects_unsafe(self, bad):
+        with pytest.raises(ValueError, match="testfield"):
+            paths._validate_safe_leaf(bad, field="testfield")
+
+    @pytest.mark.parametrize("good", [
+        "rsi_test", "rsi-test", "BTC_scalper_v2",
+        "9fc8a8ff54104b7eb09cfaf87e5b0d32",  # uuid4().hex shape
+        "a",                                  # single char
+    ])
+    def test_validate_safe_leaf_accepts_safe(self, good):
+        # Must not raise.
+        paths._validate_safe_leaf(good, field="testfield")
+
+    def test_validate_safe_leaf_rejects_non_string(self):
+        with pytest.raises(ValueError, match="non-empty string"):
+            paths._validate_safe_leaf(None, field="slug")  # type: ignore[arg-type]
+
+    def test_parent_token_gets_specific_message(self):
+        with pytest.raises(ValueError, match="parent-directory"):
+            paths._validate_safe_leaf("..", field="slug")
+
+    def test_separator_gets_specific_message(self):
+        with pytest.raises(ValueError, match="single path segment"):
+            paths._validate_safe_leaf("a/b", field="slug")
+
+    # ── Helpers that take a slug ───────────────────────────────
+    #
+    # The validator's full input battery is exercised once above
+    # (test_validate_safe_leaf_rejects_unsafe). Each helper only
+    # needs a single bad-leaf case to prove it actually CALLS the
+    # validator — re-running all 12 inputs per helper would just
+    # re-test the validator seven times over.
+
+    _SLUG_HELPERS = [
+        "bot_yaml_path", "bot_log_path", "bot_state_path",
+        "bot_state_lock_path", "bot_pid_path",
+        "bot_manual_trigger_path", "user_ml_results_path",
+    ]
+
+    @pytest.mark.parametrize("helper", _SLUG_HELPERS)
+    def test_slug_helpers_reject_unsafe_slug(
+        self, helper, _sandboxed_base,
+    ):
+        fn = getattr(paths, helper)
+        with pytest.raises(ValueError, match="slug"):
+            fn(1, "../etc/passwd")
+
+    @pytest.mark.parametrize("helper", _SLUG_HELPERS)
+    def test_slug_helpers_accept_canonical_slug(
+        self, helper, _sandboxed_base,
+    ):
+        fn = getattr(paths, helper)
+        result = fn(1, "rsi-test")
+        # The slug survives into the filename verbatim.
+        assert "rsi-test" in result.name
+        # And the path stays inside the sandboxed BASE_DIR.
+        assert str(result).startswith(str(_sandboxed_base))
+
+    # ── uuid_creds_path ────────────────────────────────────────
+
+    @pytest.mark.parametrize("bad", ["", "..", "../etc/passwd", "a/b"])
+    def test_uuid_creds_path_rejects_unsafe_uuid(
+        self, bad, _sandboxed_base,
+    ):
+        # Distinct from the slug helpers: the error must name the
+        # ``credentials_uuid`` field, not ``slug``.
+        with pytest.raises(ValueError, match="credentials_uuid"):
+            paths.uuid_creds_path(1, bad)
+
+    def test_uuid_creds_path_accepts_canonical_uuid(
+        self, _sandboxed_base,
+    ):
+        uuid_hex = "9fc8a8ff54104b7eb09cfaf87e5b0d32"
+        result = paths.uuid_creds_path(1, uuid_hex)
+        assert result.name == f"{uuid_hex}.enc"
+        assert str(result).startswith(str(_sandboxed_base))
+
+    # ── purge_bot fast-fail ────────────────────────────────────
+
+    def test_purge_bot_rejects_unsafe_slug_before_db_step(
+        self, _sandboxed_base,
+    ):
+        """purge_bot runs its DB-delete transaction before the
+        leaf-helper calls. The up-front guard must reject a bad
+        slug before any DB work happens — so a ValueError, not a
+        partial purge summary, comes back."""
+        with pytest.raises(ValueError, match="slug"):
+            paths.purge_bot(1, "../escape")
+
+    def test_purge_bot_accepts_canonical_slug(self, _sandboxed_base):
+        # A well-formed slug with nothing on disk + no DB rows is a
+        # clean no-op that returns the summary dict (does not raise).
+        summary = paths.purge_bot(1, "rsi-test")
+        assert summary["files_removed"] == 0
+        assert isinstance(summary["files_failed"], list)

@@ -3528,3 +3528,72 @@ class TestBotImportExportDuplicate:
             headers={"Content-Type": "application/x-yaml"},
         )
         assert r.status_code == 413
+
+
+class TestPUBv1001BotConfigSlugValidation:
+    """Class-of-issue regression for PUB-v1-001 (LOW).
+
+    get_bot_config, update_bot_config and export_bot were the
+    three bot-config routes that interpolated the URL slug into a
+    filesystem path WITHOUT an explicit ``_BOT_SLUG_RE`` check —
+    asymmetric with duplicate / import / admin, which all guarded.
+    core/paths.py now validates the leaf too, but a paths.py
+    ValueError would surface as a 500; the explicit handler-level
+    check turns a malformed slug into a clean 400.
+
+    Test slug shape: ``has.dot`` matches Starlette's ``[^/]+``
+    path converter (so it reaches the handler) but fails
+    ``_BOT_SLUG_RE`` = ``^[A-Za-z0-9_-]+$`` (the dot). That is the
+    realistic bad input — a literal ``../`` would be collapsed by
+    the URL layer before the handler ever sees it.
+
+    Every assertion is "400, not 500 and not 404": 500 would mean
+    an unmapped ValueError leaked; 404 would mean the slug check
+    ran AFTER the file-existence lookup (wrong order — a malformed
+    identifier is a bad request, not a missing resource).
+    """
+
+    def test_get_bot_config_rejects_unsafe_slug(self):
+        r = CLIENT.get("/api/bots/has.dot/config", headers=AUTH)
+        assert r.status_code == 400, r.text
+        assert "slug" in r.json().get("detail", "")
+
+    def test_update_bot_config_rejects_unsafe_slug(self):
+        r = CLIENT.put(
+            "/api/bots/has.dot/config",
+            json={"bot": {"name": "x"}},
+            headers=JSON,
+        )
+        assert r.status_code == 400, r.text
+        assert "slug" in r.json().get("detail", "")
+
+    def test_export_bot_rejects_unsafe_slug(self):
+        r = CLIENT.get("/api/bots/has.dot/export", headers=AUTH)
+        assert r.status_code == 400, r.text
+        assert "slug" in r.json().get("detail", "")
+
+    def test_unsafe_slug_rejected_before_file_lookup(self):
+        """The 400 must fire even though no bot named ``has.dot``
+        exists — i.e. the slug guard runs BEFORE the YAML-exists
+        check. If the order were reversed the response would be
+        404, masking the real reason (malformed input)."""
+        r = CLIENT.get("/api/bots/has.dot/config", headers=AUTH)
+        assert r.status_code == 400
+        assert r.status_code != 404
+
+    def test_space_slug_rejected(self):
+        """A URL-encoded space also fails _BOT_SLUG_RE — second
+        out-of-class character besides the dot, to prove the guard
+        rejects the whole class not just one literal."""
+        r = CLIENT.get("/api/bots/has%20space/config", headers=AUTH)
+        assert r.status_code == 400, r.text
+
+    def test_legitimate_slug_still_reaches_handler(self):
+        """Symmetry check: a well-formed slug passes the guard and
+        proceeds to the normal flow. With no such bot on disk that
+        is a 404 (Bot not found) — crucially NOT a 400, proving the
+        guard does not over-reject canonical slugs."""
+        r = CLIENT.get(
+            "/api/bots/pytest_legit_slug_xyz/config", headers=AUTH,
+        )
+        assert r.status_code == 404, r.text

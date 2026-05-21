@@ -548,6 +548,16 @@ async def get_bot_config(
     actor: str = Depends(_request_actor),
     user: User = Depends(_request_user),
 ):
+    # PUB-v1-001: explicit slug guard for symmetry with the
+    # duplicate / import / admin handlers. core/paths.py also
+    # validates the leaf now, but checking here turns a malformed
+    # slug into a clean 400 instead of letting the paths.py
+    # ValueError surface as a 500.
+    if not _BOT_SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"slug: must match {_BOT_SLUG_RE.pattern}",
+        )
     path = _bot_yaml_path(user.id, slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
@@ -579,6 +589,12 @@ async def update_bot_config(
     """Overwrite a bot YAML in place. Body-size cap mirrors
     ``create_bot`` + ``validate_config`` — same DoS surface, same
     64 KB guard."""
+    # PUB-v1-001: explicit slug guard — see get_bot_config.
+    if not _BOT_SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"slug: must match {_BOT_SLUG_RE.pattern}",
+        )
     path = _bot_yaml_path(user.id, slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
@@ -691,6 +707,12 @@ async def export_bot(
     state, no deal history — just the YAML the operator could re-import
     on another deployment. Header comments record export metadata so a
     future compatibility check has something to anchor on."""
+    # PUB-v1-001: explicit slug guard — see get_bot_config.
+    if not _BOT_SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"slug: must match {_BOT_SLUG_RE.pattern}",
+        )
     path = _bot_yaml_path(user.id, slug)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Bot not found")
