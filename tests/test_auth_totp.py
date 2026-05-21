@@ -408,6 +408,161 @@ class TestSessionEpochBumpOnTotpMutation:
         assert admin.totp_enabled is True
 
 
+# ── PT-v4-AU-002: /auth/totp/verify guards on totp_enabled ───────────────
+
+
+class TestTotpVerifyRefusesWhenAlreadyEnabled:
+    """Class-of-issue: /auth/totp/verify must not commit a fresh
+    secret when TOTP is already enabled on the account. Closes
+    PT-v4-AU-002.
+
+    Pre-fix the handler trusted the pending-cookie flow alone: any
+    caller who had a valid pending cookie (e.g. minted before an
+    admin recovery cleared the seed) could POST /auth/totp/verify
+    and silently replace the stored secret with their own. Combined
+    with AU-001 (admin reset didn't bump session_epoch), an
+    attacker who held a pre-reset cookie + a pending-TOTP cookie
+    could re-enrol their own authenticator under the victim's
+    account without the victim ever noticing.
+
+    Post-fix: 409 Conflict + body {"detail": "totp_already_enabled"}.
+    /auth/totp/setup already refuses symmetrically (400) when TOTP
+    is enabled; the verify guard is the belt-and-braces second
+    line because a stale pending cookie could outlive a setup
+    refusal.
+    """
+
+    def test_verify_returns_409_when_totp_already_enabled(
+        self, totp_user_client,
+    ):
+        client, secret = totp_user_client
+        # Mint a pending cookie by manually setting one — we can't
+        # call /auth/totp/setup because that endpoint refuses (400)
+        # when totp_enabled is True. Simulate the attacker-with-
+        # stale-pending-cookie state directly via the helper.
+        pending_secret = totp.generate_secret()
+        from fastapi import Response as _R
+        tmp = _R()
+        webapp._set_pending_totp_cookie(tmp, pending_secret, user_id=1)
+        token = (
+            tmp.headers["set-cookie"]
+            .split("reverto_totp_pending=", 1)[1]
+            .split(";", 1)[0]
+        )
+        client.cookies.set("reverto_totp_pending", token)
+        # Even with a valid 6-digit code (or any), the handler must
+        # refuse pre-verify because totp_enabled is True.
+        code = pyotp.TOTP(
+            pending_secret,
+            digits=totp.DIGITS,
+            interval=totp.PERIOD_SECONDS,
+        ).now()
+        r = client.post("/auth/totp/verify", json={"code": code})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == "totp_already_enabled"
+        # The stored seed must be unchanged — the original secret
+        # (from totp_user_client) survives, not the new pending one.
+        admin = user_store.get_user_by_id(1)
+        assert admin.totp_enabled is True
+        # Decrypt and confirm the original seed survives. If the
+        # guard had been skipped, the encrypted blob would now
+        # carry pending_secret instead.
+        stored = totp.decrypt_seed_for_user(1, admin.totp_seed_encrypted)
+        assert stored == secret, (
+            "PT-v4-AU-002: a successful re-enrolment would have "
+            "replaced the stored seed — the guard must reject "
+            "BEFORE update_user_totp_seed runs."
+        )
+
+    def test_verify_still_works_on_normal_enrol_flow(self, auth_client):
+        """Happy path: a user without TOTP enabled enrols normally
+        through setup → verify and the guard does not interfere."""
+        setup = auth_client.post("/auth/totp/setup")
+        assert setup.status_code == 200
+        secret = setup.json()["secret"]
+        code = pyotp.TOTP(
+            secret, digits=totp.DIGITS, interval=totp.PERIOD_SECONDS,
+        ).now()
+        r = auth_client.post("/auth/totp/verify", json={"code": code})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"ok": True, "totp_enabled": True}
+
+
+# ── PT-v4-AU-003: /auth/totp/disable bumps failed_login_count ────────────
+
+
+class TestTotpDisableIncrementsFailedLogin:
+    """Class-of-issue: the per-account failed_login_count must
+    advance on both /auth/totp/disable failure branches. Closes
+    PT-v4-AU-003.
+
+    Pre-fix both branches (wrong password, wrong code) emitted a
+    denied audit + raised 401 but did NOT touch the counter. The
+    @limiter.limit("5/minute") slowapi guard is the secondary
+    IP-based wall; the per-account counter is the primary control
+    that pairs with the same threshold the login path enforces
+    (auth.py:321, 584). Without the bump an attacker with a
+    session cookie but not the password could spray /disable
+    requests without consuming the per-account budget.
+
+    Post-fix both failure branches call
+    user_store.increment_failed_login(user.id) before the audit +
+    raise. Tested at the endpoint level so middleware + handler +
+    user_store all participate.
+    """
+
+    def test_wrong_password_increments_failed_login(self, totp_user_client):
+        client, _ = totp_user_client
+        before, _ = user_store.get_failed_login_state(1)
+        r = client.post(
+            "/auth/totp/disable",
+            json={"current_password": "wrong-password", "totp_code": "123456"},
+        )
+        assert r.status_code == 401
+        after, _ = user_store.get_failed_login_state(1)
+        assert after == before + 1, (
+            f"PT-v4-AU-003: wrong-password branch must tick the "
+            f"per-account counter. Before={before}, after={after}."
+        )
+
+    def test_wrong_code_increments_failed_login(self, totp_user_client):
+        client, _ = totp_user_client
+        before, _ = user_store.get_failed_login_state(1)
+        # Password correct, code wrong → trips the code-failure
+        # branch (the second of the two AU-003 sites).
+        r = client.post(
+            "/auth/totp/disable",
+            json={"current_password": _KNOWN_PW, "totp_code": "000000"},
+        )
+        assert r.status_code == 401
+        after, _ = user_store.get_failed_login_state(1)
+        assert after == before + 1, (
+            f"PT-v4-AU-003: wrong-code branch must tick the per-"
+            f"account counter. Before={before}, after={after}."
+        )
+
+    def test_successful_disable_does_not_increment(self, totp_user_client):
+        """Scope-boundary: a successful disable must NOT tick the
+        counter. The bump fires only on the two failure branches —
+        a future refactor that hoisted the increment above the
+        failure-check would silently penalise legitimate use."""
+        client, secret = totp_user_client
+        before, _ = user_store.get_failed_login_state(1)
+        code = pyotp.TOTP(
+            secret, digits=totp.DIGITS, interval=totp.PERIOD_SECONDS,
+        ).now()
+        r = client.post(
+            "/auth/totp/disable",
+            json={"current_password": _KNOWN_PW, "totp_code": code},
+        )
+        assert r.status_code == 200, r.text
+        after, _ = user_store.get_failed_login_state(1)
+        # A successful login-flow also RESETS the counter, but
+        # /auth/totp/disable does not — so we assert no bump
+        # rather than reset. ``after`` should equal ``before``.
+        assert after == before
+
+
 # ── 4. Pending-TOTP cookie helpers ─────────────────────────────────────────
 
 
