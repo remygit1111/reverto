@@ -20,6 +20,7 @@ byte-for-byte; consolidating the gate is a future refactor.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -32,6 +33,16 @@ from web.app import _audit, _request_actor, _request_user, limiter
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["marketing"])
+
+# PT-v4-MK-004: serialises concurrent /api/admin/marketing/regenerate
+# calls so the two snapshot writes don't race themselves. Slowapi
+# already rate-limits at 10/minute (accidental burst protection); the
+# lock catches deliberate parallel invocations from multiple admin
+# sessions, where two concurrent calls could otherwise interleave
+# write_roadmap_snapshot + write_changelog_snapshot for last-write-
+# wins. Module-level so it survives across requests on the same
+# worker process.
+_regenerate_lock = asyncio.Lock()
 
 
 def _require_admin_user(
@@ -64,28 +75,29 @@ async def api_marketing_regenerate(
     includes the per-snapshot result so the operator UI can
     surface a precise error.
     """
-    results = marketing_export.write_all_snapshots()
-    # PT-v4-AZ-001: canonical _audit shape is (action, target_id,
-    # actor, user_id=...). marketing_regenerate is a fleet action
-    # with no per-row target, so slug="-" matches the emergency_stop
-    # pattern (web/routes/admin.py:126). The per-snapshot result
-    # detail used to live in the key_hint position (overriding
-    # actor); operators reading the snapshot results should consult
-    # the portal log + the response body, both of which still carry
-    # the full per-snapshot breakdown.
-    _audit(
-        "marketing_regenerate", "-", actor,
-        user_id=user.id, request=request,
-        result="ok" if all(results.values()) else "error",
-    )
-    if all(results.values()):
-        return {"status": "ok", "results": results}
-    if any(results.values()):
-        return JSONResponse(
-            status_code=207,
-            content={"status": "partial", "results": results},
+    async with _regenerate_lock:
+        results = marketing_export.write_all_snapshots()
+        # PT-v4-AZ-001: canonical _audit shape is (action, target_id,
+        # actor, user_id=...). marketing_regenerate is a fleet action
+        # with no per-row target, so slug="-" matches the emergency_stop
+        # pattern (web/routes/admin.py:126). The per-snapshot result
+        # detail used to live in the key_hint position (overriding
+        # actor); operators reading the snapshot results should consult
+        # the portal log + the response body, both of which still carry
+        # the full per-snapshot breakdown.
+        _audit(
+            "marketing_regenerate", "-", actor,
+            user_id=user.id, request=request,
+            result="ok" if all(results.values()) else "error",
         )
-    return JSONResponse(
-        status_code=500,
-        content={"status": "failed", "results": results},
-    )
+        if all(results.values()):
+            return {"status": "ok", "results": results}
+        if any(results.values()):
+            return JSONResponse(
+                status_code=207,
+                content={"status": "partial", "results": results},
+            )
+        return JSONResponse(
+            status_code=500,
+            content={"status": "failed", "results": results},
+        )

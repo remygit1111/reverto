@@ -136,3 +136,71 @@ class TestPartialAndFailure:
         body = r.json()
         assert body["status"] == "failed"
         assert body["results"] == {"roadmap": False, "changelog": False}
+
+
+# ── PT-v4-MK-004: concurrency lock around regenerate handler ────────────
+
+
+class TestPTv4MK004RegenerateLock:
+    """Class-of-issue regression for PT-v4-MK-004 (INFO).
+
+    Pre-fix the handler had only a slowapi rate-limit. Two
+    concurrent regenerate calls (deliberate parallel invocation
+    from multiple admin sessions on the same worker) could
+    interleave write_roadmap_snapshot + write_changelog_snapshot
+    for last-write-wins semantics.
+
+    Post-fix a module-level ``asyncio.Lock()`` wraps the handler
+    body. The serial-execution guarantee depends on (a) the lock
+    object's existence and (b) it being entered around the
+    snapshot writes. A deterministic two-concurrent-call test
+    against the real handler is flaky (rate-limit + auth + DB
+    state all interact); the light sanity test below pins the
+    lock construct so a future refactor that drops it gets caught.
+    """
+
+    def test_regenerate_lock_exists_and_is_asyncio_lock(self):
+        import asyncio
+        from web.routes import marketing as marketing_routes
+
+        assert hasattr(marketing_routes, "_regenerate_lock"), (
+            "PT-v4-MK-004 regression: module-level _regenerate_lock "
+            "is missing — concurrent regenerate calls can race."
+        )
+        assert isinstance(
+            marketing_routes._regenerate_lock, asyncio.Lock,
+        ), (
+            "_regenerate_lock must be an asyncio.Lock (not a "
+            "threading.Lock or other primitive — handler is async)."
+        )
+
+    def test_regenerate_lock_serialises_two_coroutines(self):
+        """Functional check: when two coroutines contend on
+        _regenerate_lock, the second one is blocked while the
+        first holds it. Tests the lock-construct directly (no
+        TestClient — the starlette TestClient is not safe for
+        parallel calls, so a handler-level concurrent test would
+        only verify TestClient's threading model, not ours)."""
+        import asyncio
+        from web.routes import marketing as marketing_routes
+
+        in_flight = 0
+        max_concurrent = 0
+
+        async def _holder(delay):
+            nonlocal in_flight, max_concurrent
+            async with marketing_routes._regenerate_lock:
+                in_flight += 1
+                max_concurrent = max(max_concurrent, in_flight)
+                await asyncio.sleep(delay)
+                in_flight -= 1
+
+        async def _race():
+            await asyncio.gather(_holder(0.02), _holder(0.02))
+
+        asyncio.run(_race())
+        assert max_concurrent == 1, (
+            f"PT-v4-MK-004 regression: {max_concurrent} concurrent "
+            "holders observed inside the lock. asyncio.Lock must "
+            "serialise the two coroutines."
+        )
