@@ -214,14 +214,15 @@ def _phase_to_public_json(phase: dict) -> dict:
     ``id`` (admin-side handle, not stable public reference; use
     ``phase_key`` instead), ``is_published`` (drafts aren't even
     in the result set), ``created_at``, ``updated_at`` (admin
-    bookkeeping)."""
+    bookkeeping), ``body_md`` (operator-internal markdown source —
+    PT-v4-MK-001; the changelog public shape never exposed the
+    raw markdown, this brings roadmap into line)."""
     return {
         "phase_key": phase["phase_key"],
         "display_name": phase["display_name"],
         "summary": phase["summary"],
         "status": phase["status"],
         "sort_order": phase["sort_order"],
-        "body_md": phase["body_md"],
         "body_html": render_markdown(phase["body_md"]) if phase["body_md"] else "",
         "effort_estimate": phase["effort_estimate"],
         "in_progress_note": phase["in_progress_note"],

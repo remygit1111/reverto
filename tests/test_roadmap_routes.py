@@ -181,8 +181,12 @@ class TestPublicEndpoint:
         # Pre-rendered HTML for safe innerHTML drop on the SPA.
         assert "<strong>bold</strong>" in phase["body_html"]
         assert "<li>item one</li>" in phase["body_html"]
-        # Raw body_md round-trips for admin-side edit.
-        assert phase["body_md"].startswith("**bold**")
+        # PT-v4-MK-001: ``body_md`` is no longer in the public
+        # shape; only the rendered ``body_html`` is. Round-tripping
+        # the raw markdown for an edit form is the ADMIN endpoint's
+        # job (``/api/admin/roadmap/{id}`` via
+        # ``_phase_to_admin_json``), not this public surface.
+        assert "body_md" not in phase
 
 
 # ── Auth gates ────────────────────────────────────────────────────────────

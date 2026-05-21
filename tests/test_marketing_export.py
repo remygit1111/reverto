@@ -91,15 +91,20 @@ class TestRoadmapSnapshot:
 
         data = json.loads((_data_dir() / "roadmap.json").read_text("utf-8"))
         phase = data["phases"][0]
-        # Admin-only fields must NOT appear publicly.
-        for forbidden in ("id", "is_published", "created_at", "updated_at"):
+        # Admin-only fields must NOT appear publicly. PT-v4-MK-001
+        # extended this list with ``body_md`` — operator-internal
+        # markdown source; the marketing site only consumes
+        # ``body_html``.
+        for forbidden in (
+            "id", "is_published", "created_at", "updated_at", "body_md",
+        ):
             assert forbidden not in phase, (
                 f"{forbidden!r} leaked into the marketing snapshot"
             )
         # Public fields must appear.
         for required in (
             "phase_key", "display_name", "summary", "status",
-            "sort_order", "body_md", "body_html", "effort_estimate",
+            "sort_order", "body_html", "effort_estimate",
             "in_progress_note", "audit_checkpoint", "published_at",
         ):
             assert required in phase, f"{required!r} missing from snapshot"
@@ -118,7 +123,12 @@ class TestRoadmapSnapshot:
         phase = data["phases"][0]
         assert "<strong>bold</strong>" in phase["body_html"]
         assert "<li>item one</li>" in phase["body_html"]
-        assert phase["body_md"].startswith("**bold**")
+        # PT-v4-MK-001: ``body_md`` (raw markdown source) is no
+        # longer emitted in the public snapshot. The previous
+        # assertion (``phase["body_md"].startswith("**bold**")``)
+        # would now KeyError; flipped to the absence-assertion that
+        # pins the new contract.
+        assert "body_md" not in phase
 
     def test_empty_when_no_published_phases(self):
         ok = marketing_export.write_roadmap_snapshot()
@@ -280,3 +290,137 @@ class TestWriteAllSnapshots:
         assert results == {"roadmap": False, "changelog": True}
         # Changelog file written.
         assert (_data_dir() / "changelog.json").exists()
+
+
+# ── PT-v4-MK-001: body_md not exposed by public serializer ──────────────
+
+
+class TestPTv4MK001PublicSerializerDropsBodyMd:
+    """Class-of-issue regression for PT-v4-MK-001 (LOW).
+
+    The public roadmap serializer used to emit ``body_md`` (raw
+    operator-internal markdown source) alongside the rendered
+    ``body_html``. The changelog public surface never did; the
+    asymmetry was hygiene drift. This test pins the
+    ``_phase_to_public`` contract so a future "add field" PR
+    that re-introduces ``body_md`` here gets caught immediately.
+
+    The sibling endpoint regression in /api/roadmap is covered by
+    tests/test_roadmap_routes.py::test_body_md_rendered_to_html.
+    """
+
+    def test_body_md_absent_from_phase_serializer(self):
+        phase = {
+            "phase_key": "phase-x",
+            "display_name": "X",
+            "summary": "s",
+            "status": "pending",
+            "sort_order": 1,
+            "body_md": "**this should not leak**",
+            "effort_estimate": "1d",
+            "in_progress_note": None,
+            "audit_checkpoint": None,
+            "published_at": "2026-01-01T00:00:00Z",
+        }
+        public = marketing_export._phase_to_public(phase)
+        assert "body_md" not in public, (
+            "PT-v4-MK-001 regression: body_md leaked back into "
+            "the public roadmap serializer."
+        )
+        # body_html still rendered — the rendered form is what the
+        # marketing site actually consumes.
+        assert "body_html" in public
+        assert "<strong>this should not leak</strong>" in public["body_html"]
+
+
+# ── PT-v4-MK-002: filename validation on _write_atomic ──────────────────
+
+
+class TestPTv4MK002WriteAtomicFilenameValidator:
+    """Class-of-issue regression for PT-v4-MK-002 (LOW).
+
+    ``_write_atomic`` pre-fix built the destination path via
+    ``_data_dir() / filename`` with no validation on ``filename``.
+    All current callers (write_roadmap_snapshot,
+    write_changelog_snapshot) pass hardcoded literals, so there is
+    no exploit today. But the function is a forward-bug-surface
+    — a future caller that forwarded a request-derived string
+    could land an attacker-controlled write outside the data dir.
+
+    Post-fix the filename must match
+    ``[a-z0-9_-]+\\.json`` (single lowercase basename, .json
+    extension). Sibling finding PUB-v1-001 covers the same class
+    of issue in core/paths.py; that fix is separate (do not
+    expect a path-validation guard in core/paths.py from this PR).
+    """
+
+    def test_rejects_path_traversal(self):
+        with pytest.raises(ValueError, match="filename must match"):
+            marketing_export._write_atomic(
+                "../etc/passwd.json", payload={"x": 1},
+            )
+
+    def test_rejects_absolute_path(self):
+        with pytest.raises(ValueError, match="filename must match"):
+            marketing_export._write_atomic(
+                "/etc/passwd.json", payload={"x": 1},
+            )
+
+    def test_rejects_embedded_slash(self):
+        with pytest.raises(ValueError, match="filename must match"):
+            marketing_export._write_atomic(
+                "sub/file.json", payload={"x": 1},
+            )
+
+    def test_rejects_non_json_extension(self):
+        with pytest.raises(ValueError, match="filename must match"):
+            marketing_export._write_atomic(
+                "payload.txt", payload={"x": 1},
+            )
+
+    def test_rejects_uppercase(self):
+        # The regex pins lowercase — defence-in-depth against a
+        # caller passing a request-derived value with mixed case.
+        with pytest.raises(ValueError, match="filename must match"):
+            marketing_export._write_atomic(
+                "Roadmap.json", payload={"x": 1},
+            )
+
+    def test_rejects_empty_filename(self):
+        with pytest.raises(ValueError, match="filename must match"):
+            marketing_export._write_atomic("", payload={"x": 1})
+
+    def test_accepts_canonical_roadmap_json(self):
+        # Happy path: the literal both production callers pass.
+        ok = marketing_export._write_atomic(
+            "roadmap.json", payload={"phases": []},
+        )
+        assert ok is True
+        assert (_data_dir() / "roadmap.json").exists()
+
+    def test_accepts_canonical_changelog_json(self):
+        ok = marketing_export._write_atomic(
+            "changelog.json", payload={"entries": []},
+        )
+        assert ok is True
+        assert (_data_dir() / "changelog.json").exists()
+
+    def test_validator_raises_before_filesystem_touch(self):
+        """The validator must fire BEFORE _data_dir() is read or
+        the target path is constructed — otherwise a future caller
+        that injected a string with a NUL byte or other path-
+        breaking content could still cause a misleading OSError
+        upstream of the validator.
+
+        Spy on Path.mkdir to verify it never gets called when the
+        filename is invalid."""
+        with patch.object(
+            marketing_export.Path, "mkdir",
+        ) as mkdir_spy, pytest.raises(ValueError):
+            marketing_export._write_atomic(
+                "../escape.json", payload={"x": 1},
+            )
+        assert mkdir_spy.call_count == 0, (
+            "PT-v4-MK-002: validator fired AFTER the directory "
+            "touch — must be the first thing in the function."
+        )
