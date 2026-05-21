@@ -330,3 +330,54 @@ class TestDbStateAfterReset:
             (admin.id,),
         ).fetchone()
         assert row["totp_seed_encrypted"] is None
+
+
+# ── PT-v4-AU-001: session_epoch bump on admin recovery ────────────────────
+
+
+class TestSessionEpochBumpOnAdminReset:
+    """Class-of-issue: the admin recovery path must bump
+    session_epoch so pre-recovery cookies (including the
+    pre-compromise attacker session that typically motivates the
+    reset) are invalidated immediately. Closes PT-v4-AU-001.
+
+    Pre-fix the wrapper called update_user_totp_seed and stopped
+    there — any existing session cookie for the affected user
+    kept working until its 24h TTL expired. An attacker who had
+    already established a session via stolen password + TOTP
+    seed continued to hold a live session even after the operator
+    "recovered" the account by running this script.
+
+    Post-fix the wrapper calls bump_session_epoch(user.id) after
+    update_user_totp_seed. Mirrors the /auth/totp/disable path at
+    auth.py:1083, which already did this for in-portal disables.
+    """
+
+    def test_admin_reset_bumps_session_epoch(
+        self, admin_with_totp, audit_log_dir,
+    ):
+        before = user_store.get_session_epoch(admin_with_totp.id)
+        rc = _run_main("--username", "admin", "--yes")
+        assert rc == 0
+        after = user_store.get_session_epoch(admin_with_totp.id)
+        assert after == before + 1, (
+            f"PT-v4-AU-001: admin reset must bump session_epoch "
+            f"by exactly 1. Before={before}, after={after}. "
+            "Without the bump, a pre-compromise attacker session "
+            "survives the recovery until cookie TTL expires."
+        )
+
+    def test_validation_refusal_does_not_bump_session_epoch(
+        self, admin_without_totp, audit_log_dir,
+    ):
+        """Scope-boundary: the bump must fire only on a SUCCESSFUL
+        reset. A validation-refusal (no TOTP enabled) must not
+        bump — there was no security-state change to mirror."""
+        before = user_store.get_session_epoch(admin_without_totp.id)
+        rc = _run_main("--username", "admin", "--yes")
+        assert rc == 1
+        after = user_store.get_session_epoch(admin_without_totp.id)
+        assert after == before, (
+            "validation-refusal path must not bump session_epoch — "
+            "nothing changed in the user's auth state."
+        )

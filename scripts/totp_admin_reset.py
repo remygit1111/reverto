@@ -72,6 +72,7 @@ from core.database import (  # noqa: E402
     init_db,
 )
 from core.user_store import (  # noqa: E402
+    bump_session_epoch,
     get_user_by_username,
     update_user_totp_seed,
 )
@@ -258,6 +259,16 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    # PT-v4-AU-001: bump session_epoch so any pre-recovery session
+    # cookies for this user (including a pre-compromise attacker
+    # session that motivated the reset in the first place) are
+    # invalidated immediately. Without this, an attacker who already
+    # holds a live session-cookie survives the TOTP reset until that
+    # cookie's TTL expires — the in-portal /auth/totp/disable path
+    # bumps at auth.py:1083 for exactly this reason; the admin
+    # recovery path must mirror it.
+    bump_session_epoch(user.id)
 
     print(f"\n✓ TOTP reset for user '{args.username}'.")
     print(f"  Reason logged: {args.reason}")

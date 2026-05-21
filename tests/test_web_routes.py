@@ -480,6 +480,123 @@ class TestAuth:
             "the password"
         )
 
+    def test_change_password_rejects_same_as_current(
+        self, auth_client, monkeypatch,
+    ):
+        """PT-v4-AU-006: a no-op rotation (new_password ==
+        current_password) must 400 with detail "password_unchanged",
+        BEFORE verify_password / HIBP / set_password / bump_session_epoch
+        fire. Pre-fix the handler ran the full ceremony for a
+        new=current request and returned 200, invalidating every
+        cookie via the epoch bump even though no rotation happened
+        — masking the lack of actual change to any client that
+        watched the response."""
+        hibp_calls = {"n": 0}
+
+        async def _counted(_plaintext):
+            hibp_calls["n"] += 1
+            return False
+
+        monkeypatch.setattr(
+            "web.routes.auth.is_password_pwned", _counted,
+        )
+
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+
+        # Capture session_epoch BEFORE the request — must NOT bump.
+        from core import user_store
+        admin = user_store.get_user_by_username("admin")
+        epoch_before = user_store.get_session_epoch(admin.id)
+
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={
+                "current_password": _KNOWN_PW,
+                "new_password": _KNOWN_PW,
+            },
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "password_unchanged"
+        # No bcrypt round, no HIBP call — the early-return is
+        # placed before both.
+        assert hibp_calls["n"] == 0, (
+            "PT-v4-AU-006: the no-op-rotation guard must run "
+            "BEFORE the HIBP network call."
+        )
+        # Most importantly: session_epoch must not bump. The
+        # pre-fix bug invalidated cookies on a no-op rotation.
+        epoch_after = user_store.get_session_epoch(admin.id)
+        assert epoch_after == epoch_before, (
+            "PT-v4-AU-006: a no-op rotation must NOT bump "
+            "session_epoch. Pre-fix the bump fired regardless."
+        )
+
+    def test_change_password_rejects_over_72_bytes_via_pydantic(
+        self, auth_client,
+    ):
+        """PT-v4-AU-007: password fields are capped at 72 chars
+        at the Pydantic boundary. bcrypt silently truncates inputs
+        beyond 72 bytes, so a user setting a 100-byte password
+        would actually be authenticated by the first 72 bytes
+        only — without any feedback that truncation occurred.
+        Capping at the boundary returns a clean 422 instead.
+
+        Pre-fix max_length was 512 on every password Field; post-
+        fix it's 72. Tested by submitting a 73-character new_password
+        and asserting Pydantic rejects with 422 before the handler
+        runs."""
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={
+                "current_password": _KNOWN_PW,
+                "new_password": "a" * 73,
+            },
+        )
+        # Pydantic 422 — not a handler-side 400 — because the
+        # cap is enforced at the model boundary.
+        assert r.status_code == 422, r.text
+
+    def test_change_password_accepts_72_byte_boundary(
+        self, auth_client, monkeypatch,
+    ):
+        """Happy-path complement: exactly-72-byte new_password is
+        accepted (the cap is inclusive). Without this, AU-007
+        could regress in either direction — too tight (rejects 72)
+        or too loose (accepts 73)."""
+        async def _clean(_plaintext):
+            return False
+        monkeypatch.setattr(
+            "web.routes.auth.is_password_pwned", _clean,
+        )
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        r = auth_client.post(
+            "/api/auth/change-password",
+            json={
+                "current_password": _KNOWN_PW,
+                "new_password": "b" * 72,
+            },
+        )
+        assert r.status_code == 200, r.text
+
+    def test_login_rejects_over_72_bytes_via_pydantic(self):
+        """PT-v4-AU-007: LoginBody.password is also capped at 72.
+        A 73-byte login attempt is rejected by Pydantic before the
+        verify_password timing-equalisation runs. (Pre-fix
+        max_length=512 allowed long passwords through and bcrypt
+        silently truncated — meaning the first 72 bytes of any
+        long input authenticated successfully if the stored hash
+        was set from the same prefix.)"""
+        client = TestClient(webapp.app)
+        r = client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "x" * 73},
+        )
+        assert r.status_code == 422, r.text
+
     def test_logout_rate_limited(self, auth_client):
         """Audit v26-04: /auth/logout had no @limiter.limit decorator,
         which meant an attacker with a valid session could flood

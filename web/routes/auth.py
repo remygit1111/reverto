@@ -216,12 +216,12 @@ class LoginBody(BaseModel):
     username: str = Field(
         min_length=1, max_length=64, pattern=_USERNAME_PATTERN,
     )
-    password: str = Field(min_length=1, max_length=512)
+    password: str = Field(min_length=1, max_length=72)
 
 
 class ChangePasswordBody(BaseModel):
-    current_password: str = Field(min_length=1, max_length=512)
-    new_password: str = Field(min_length=1, max_length=512)
+    current_password: str = Field(min_length=1, max_length=72)
+    new_password: str = Field(min_length=1, max_length=72)
 
 
 class LoginTotpBody(BaseModel):
@@ -727,6 +727,18 @@ async def auth_change_password(
             status_code=400,
             detail=f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
         )
+    # PT-v4-AU-006: refuse no-op rotation. Pre-fix the handler ran
+    # the full ceremony (verify_password, is_password_pwned,
+    # set_password, bump_session_epoch) when new == current,
+    # returning 200 + invalidating every cookie even though no
+    # rotation actually happened — the epoch bump misled the client
+    # into thinking a real password change had landed. Placed before
+    # verify_password so the no-op path doesn't pay a bcrypt round.
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=400,
+            detail="password_unchanged",
+        )
     # Audit v26-01: dependency consolidated to ``_request_user``, which
     # already validated uid + active and resolved the row in one go,
     # so the prior helper-local DB re-lookup is gone.
@@ -825,7 +837,7 @@ class TotpDisableBody(BaseModel):
     TOTP code. Both fields are required — Pydantic rejects an empty
     or shape-wrong submission before the handler weighs in."""
 
-    current_password: str = Field(min_length=1, max_length=512)
+    current_password: str = Field(min_length=1, max_length=72)
     totp_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
@@ -935,6 +947,23 @@ async def auth_totp_verify(
             ),
         )
 
+    # PT-v4-AU-002: refuse to commit a fresh secret when TOTP is
+    # already enabled on this account. /auth/totp/setup refuses
+    # symmetrically; this is the belt-and-braces guard against a
+    # caller that already holds a pending cookie (e.g. minted before
+    # an admin reset) trying to re-enrol without going through the
+    # dual-factor disable flow first. The attack chain pre-fix:
+    # admin clears the seed → attacker who still holds the pending
+    # cookie POSTs /auth/totp/verify → their secret silently lands
+    # in users.totp_seed_encrypted. Returning 409 (not 400) so
+    # clients can distinguish "shape-bad request" from "state
+    # refuses".
+    if user.totp_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="totp_already_enabled",
+        )
+
     if not totp.verify_code(pending_secret, body.code):
         _audit(
             "totp_verify_failed",
@@ -1021,6 +1050,15 @@ async def auth_totp_disable(
     )
     if verified is None:
         await asyncio.sleep(0.1)
+        # PT-v4-AU-003: tick the per-account brute-force counter on
+        # password-factor failure. slowapi's @limiter.limit("5/min")
+        # is the outer IP-based wall; this counter is the per-account
+        # primary control that pairs with the same threshold the
+        # login path enforces (auth.py:321, 584). Without it, an
+        # attacker who has the session cookie but not the password
+        # can spray /auth/totp/disable without consuming the
+        # per-account failed_login_count budget.
+        user_store.increment_failed_login(user.id)
         _audit(
             "totp_disable_failed_password",
             user.username,
@@ -1061,6 +1099,12 @@ async def auth_totp_disable(
         )
 
     if not totp.verify_code(secret, body.totp_code):
+        # PT-v4-AU-003: same per-account counter bump on the TOTP-
+        # factor failure branch. Mirrors the login_totp_failed path
+        # at auth.py:584 so a code-spray against /auth/totp/disable
+        # is subject to the same threshold as a code-spray against
+        # /auth/login/totp.
+        user_store.increment_failed_login(user.id)
         _audit(
             "totp_disable_failed_code",
             user.username,
