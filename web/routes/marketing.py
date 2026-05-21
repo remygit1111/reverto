@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 
 from core import marketing_export
 from core.user import User
-from web.app import _audit, _request_user, limiter
+from web.app import _audit, _request_actor, _request_user, limiter
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ def _require_admin_user(
 @limiter.limit("10/minute")
 async def api_marketing_regenerate(
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     """Force-rewrite both marketing snapshots.
@@ -64,10 +65,18 @@ async def api_marketing_regenerate(
     surface a precise error.
     """
     results = marketing_export.write_all_snapshots()
+    # PT-v4-AZ-001: canonical _audit shape is (action, target_id,
+    # actor, user_id=...). marketing_regenerate is a fleet action
+    # with no per-row target, so slug="-" matches the emergency_stop
+    # pattern (web/routes/admin.py:126). The per-snapshot result
+    # detail used to live in the key_hint position (overriding
+    # actor); operators reading the snapshot results should consult
+    # the portal log + the response body, both of which still carry
+    # the full per-snapshot breakdown.
     _audit(
-        "marketing_regenerate", user.username,
-        f"roadmap={results['roadmap']} changelog={results['changelog']}",
-        user_id=user.id,
+        "marketing_regenerate", "-", actor,
+        user_id=user.id, request=request,
+        result="ok" if all(results.values()) else "error",
     )
     if all(results.values()):
         return {"status": "ok", "results": results}

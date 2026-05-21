@@ -300,3 +300,137 @@ def test_audit_jsonl_files_chmod_0640_on_create(tmp_logs):
         f"per-user audit.jsonl mode = "
         f"{oct(user_jsonl.stat().st_mode & 0o777)}, expected 0o640"
     )
+
+
+# ── PT-v4-AZ-001: canonical (action, target_id, actor, ...) shape ──────────
+
+
+def _admin_audit_client():
+    """TestClient with the seeded admin authenticated, suitable for
+    hitting /api/admin/* endpoints. Mirrors the admin_client fixtures
+    in test_changelog_api.py / test_roadmap_routes.py / test_admin_
+    marketing_regenerate.py without importing them across modules."""
+    from fastapi.testclient import TestClient
+    from core import user_store
+
+    admin = user_store.get_user_by_username("admin")
+    assert admin is not None, "admin seed missing"
+    user_store.set_password(admin.id, "pytest-az001-pw")
+    webapp._COOKIE_SECURE = False
+    webapp._COOKIE_SAMESITE = "lax"
+    client = TestClient(webapp.app)
+    client.cookies.set(
+        "reverto_session", webapp._create_session_cookie(admin),
+    )
+    return client, admin
+
+
+def _find_action(jsonl_path, action):
+    """Return the last JSONL entry with action==``action``, or None."""
+    if not jsonl_path.exists():
+        return None
+    for line in reversed(jsonl_path.read_text().splitlines()):
+        entry = json.loads(line)
+        if entry.get("action") == action:
+            return entry
+    return None
+
+
+class TestPTv4AZ001SlugSemantic:
+    """Class-of-issue regression for PT-v4-AZ-001 (LOW).
+
+    The canonical _audit(...) signature is
+    ``(action, slug, key_hint, user_id=..., *, request, result)``.
+    Slug is the TARGET identifier (entry_id, phase_id, "-" for fleet
+    actions); key_hint is the ACTOR identifier (``session:<user>``
+    produced by ``_request_actor``). Pre-fix the changelog, marketing,
+    and roadmap routes swapped these — passing user.username in the
+    slug-position and the target id in the key_hint-position — which
+    made admin audit-log views read "<username> took action on
+    entry: <username>" instead of "<username> took action on entry:
+    <id>".
+
+    These tests drive each fixed route end-to-end against a tmp
+    audit-log dir and assert that the emitted JSONL row has:
+      * slug == target_id (string) — NOT the username
+      * user (key_hint) == "session:admin" — actor identity
+
+    Any future regression that re-swaps the arguments fails one of
+    these assertions immediately.
+    """
+
+    def test_changelog_create_emits_target_id_as_slug(self, tmp_logs):
+        client, admin = _admin_audit_client()
+        r = client.post(
+            "/api/admin/changelog",
+            json={
+                "title": "PT-v4-AZ-001 regression seed",
+                "description": "body",
+                "category": "fix",
+            },
+        )
+        assert r.status_code == 201, r.text
+        entry_id = r.json()["id"]
+        audit = _find_action(
+            tmp_logs / "audit.jsonl", "changelog_api_create",
+        )
+        assert audit is not None, "changelog_api_create audit missing"
+        assert audit["slug"] == str(entry_id), (
+            f"AZ-001 regression: slug must be the entry_id "
+            f"({entry_id!r}), not {audit['slug']!r}. Pre-fix the "
+            "callsite swapped slug and key_hint."
+        )
+        assert audit["slug"] != admin.username, (
+            "AZ-001 regression: slug must NOT carry the username — "
+            "that's the swap the fix closed."
+        )
+        assert audit["user"] == "session:admin"
+        assert audit["user_id"] == admin.id
+
+    def test_roadmap_create_emits_target_id_as_slug(self, tmp_logs):
+        client, admin = _admin_audit_client()
+        r = client.post(
+            "/api/admin/roadmap",
+            json={
+                "phase_key": "az001-seed",
+                "display_name": "AZ-001 regression seed",
+                "summary": "body",
+                "status": "pending",
+                "sort_order": 999,
+            },
+        )
+        assert r.status_code == 201, r.text
+        phase_id = r.json()["id"]
+        audit = _find_action(
+            tmp_logs / "audit.jsonl", "roadmap_api_create",
+        )
+        assert audit is not None, "roadmap_api_create audit missing"
+        assert audit["slug"] == str(phase_id), (
+            f"AZ-001 regression: slug must be the phase_id "
+            f"({phase_id!r}), not {audit['slug']!r}."
+        )
+        assert audit["slug"] != admin.username
+        assert audit["user"] == "session:admin"
+        assert audit["user_id"] == admin.id
+
+    def test_marketing_regenerate_uses_fleet_slug(self, tmp_logs):
+        """marketing_regenerate is a fleet action — no per-row
+        target. Pre-fix the user.username was in the slug-position
+        and a per-snapshot-result string was in the key_hint
+        position (overriding the actor). Post-fix: slug='-' (matches
+        the emergency_stop precedent in admin.py) and key_hint is
+        the resolved actor."""
+        client, admin = _admin_audit_client()
+        r = client.post("/api/admin/marketing/regenerate")
+        assert r.status_code in (200, 207, 500), r.text
+        audit = _find_action(
+            tmp_logs / "audit.jsonl", "marketing_regenerate",
+        )
+        assert audit is not None, "marketing_regenerate audit missing"
+        assert audit["slug"] == "-", (
+            f"AZ-001 regression: marketing_regenerate slug must be "
+            f"'-' (fleet action, no target), not {audit['slug']!r}."
+        )
+        assert audit["slug"] != admin.username
+        assert audit["user"] == "session:admin"
+        assert audit["user_id"] == admin.id

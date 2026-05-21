@@ -2517,6 +2517,81 @@ class TestAnnotationPost:
         assert r.status_code == 422
 
 
+class TestAnnotationBodyBounds:
+    """PT-v4-AZ-005: AnnotationBody had five unbounded string fields
+    pre-fix (bot_slug, type, timeframe, label, color). Defence-in-
+    depth — no known exploit, but the bounded-field convention used
+    everywhere else in the codebase was missing here, and a future
+    render path that dropped one of these values into the DOM would
+    have had unbounded attacker-controlled input. Tests pin the
+    rejected/accepted shapes so a future refactor that drops the
+    bounds gets caught immediately."""
+
+    _BASE = {
+        "bot_slug": "test", "type": "hline", "timeframe": "1h",
+        "x1": 1700000000, "y1": 80000.0,
+    }
+
+    def _post(self, auth_client, **overrides):
+        token = _admin_cookie()
+        auth_client.cookies.set("reverto_session", token)
+        body = {**self._BASE, **overrides}
+        return auth_client.post("/api/db/annotations", json=body)
+
+    def test_oversized_bot_slug_is_422(self, auth_client):
+        r = self._post(auth_client, bot_slug="a" * 65)
+        assert r.status_code == 422, r.text
+
+    def test_bot_slug_with_invalid_chars_is_422(self, auth_client):
+        # Pattern is ^[A-Za-z0-9_\-]+$ — a slash would let an
+        # attacker land path-traversal-shaped values in the DB row.
+        r = self._post(auth_client, bot_slug="bad/slash")
+        assert r.status_code == 422, r.text
+
+    def test_empty_bot_slug_is_422(self, auth_client):
+        r = self._post(auth_client, bot_slug="")
+        assert r.status_code == 422, r.text
+
+    def test_oversized_type_is_422(self, auth_client):
+        r = self._post(auth_client, type="a" * 33)
+        assert r.status_code == 422, r.text
+
+    def test_oversized_timeframe_is_422(self, auth_client):
+        # max_length=8 — anything beyond "monthly" / "weekly" is junk.
+        r = self._post(auth_client, timeframe="a" * 9)
+        assert r.status_code == 422, r.text
+
+    def test_oversized_label_is_422(self, auth_client):
+        r = self._post(auth_client, label="a" * 201)
+        assert r.status_code == 422, r.text
+
+    def test_malformed_color_is_422(self, auth_client):
+        # Pattern ^#[0-9a-fA-F]{6}$ — "not-a-hex" violates the shape.
+        r = self._post(auth_client, color="not-a-hex")
+        assert r.status_code == 422, r.text
+
+    def test_short_color_is_422(self, auth_client):
+        # 3-digit hex shorthand is rejected by the pinned 6-digit
+        # pattern. Closing the door on shorthand keeps the
+        # downstream parser simple.
+        r = self._post(auth_client, color="#abc")
+        assert r.status_code == 422, r.text
+
+    def test_happy_path_within_bounds_is_200(self, auth_client):
+        """Bounds are inclusive; verify the cap values land
+        successfully — without this, a future too-tight regression
+        could rewrite max_length=64 → 32 silently."""
+        r = self._post(
+            auth_client,
+            bot_slug="A" * 64,
+            type="T" * 32,
+            timeframe="12345678",
+            label="L" * 200,
+            color="#abcDEF",
+        )
+        assert r.status_code == 200, r.text
+
+
 # ── Delete backtest runs endpoint ─────────────────────────────────────────────
 
 class TestDeleteBacktestRuns:
