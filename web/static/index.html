@@ -38,12 +38,13 @@
 <link rel="stylesheet" href="/static/changelog.css?v=3">
 <link rel="stylesheet" href="/static/roadmap.css?v=1">
 <link rel="stylesheet" href="/static/workspace.css?v=11">
-<!-- SRI, audit r1-074. Regenerate hashes when bumping versions:
-     curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A -->
+<!-- GridStack stylesheet — vendored to /static/vendor/gridstack/
+     to close PT-v4-NW-009 (drop unpkg.com from CSP). The SRI
+     hash + crossorigin attrs are obsolete for same-origin assets
+     served under 'self' and have been removed. Provenance +
+     upgrade procedure live in web/static/vendor/README.md. -->
 <link rel="stylesheet"
-      href="https://unpkg.com/gridstack@11.5.1/dist/gridstack.min.css"
-      integrity="sha384-fRUp/mDL0+m5arebhwfhn579teBw1KChegdnq0Ga3+JYL20f5wS2vtROixpQBno3"
-      crossorigin="anonymous">
+      href="/static/vendor/gridstack/gridstack.min.css">
 </head>
 <body>
 
@@ -2243,16 +2244,14 @@
 
 </div>
 
-<!-- SRI hashes, audit r1-074. If unpkg is compromised or MITM'd
-     the browser rejects the modified script instead of running it.
-     Regenerate when bumping versions:
-     curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A -->
-<script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"
-        integrity="sha384-ExNwjbclSLY2LS3S2c6aDJDjpBHGZLct23WX65fLzj0ob1bRrCh9H90WThES5wQA"
-        crossorigin="anonymous"></script>
-<script src="https://unpkg.com/gridstack@11.5.1/dist/gridstack-all.js"
-        integrity="sha384-C6xDcgmIkJjuPEwOp1k2ZZPrQLhSlaD1+c5W0smmrrAnBNLbwzPA4ZCKmV3oN3TU"
-        crossorigin="anonymous"></script>
+<!-- Lightweight Charts + GridStack — vendored to
+     /static/vendor/<lib>/ to close PT-v4-NW-009 (drop unpkg.com
+     from CSP). SRI + crossorigin attrs are obsolete for same-
+     origin assets served under 'self'. Both libraries are
+     byte-for-byte identical to the previous unpkg copies (the
+     old integrity= hashes still match — see vendor/README.md). -->
+<script src="/static/vendor/lightweight-charts/lightweight-charts.standalone.production.js"></script>
+<script src="/static/vendor/gridstack/gridstack-all.js"></script>
 <!-- chart_module.js hosts the shared indicator-math helpers that
      all three candle-chart sites use. Must load BEFORE app.js so
      the top-level function declarations are visible to app.js's

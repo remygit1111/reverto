@@ -60,14 +60,19 @@ def test_csp_no_ws_wildcard():
     assert "wss:" not in connect_src, f"connect-src contains wss: {connect_src!r}"
 
 
-def test_csp_still_allows_self_and_unpkg():
-    """connect-src must retain 'self' (same-origin WS + fetch) and
-    unpkg.com (lightweight-charts + gridstack sourcemaps)."""
+def test_csp_connect_src_still_allows_self():
+    """connect-src must retain 'self' (same-origin WS + fetch).
+
+    Pre-PT-v4-NW-009 this also asserted ``https://unpkg.com``
+    in CSP (sourcemap fetches for the CDN-hosted bundles). With
+    Lightweight Charts + GridStack now vendored under
+    /static/vendor/, no external origin is needed any more; the
+    inverted "unpkg.com NOT in csp" assertion lives in
+    ``TestPTv4NW009UnpkgRemoved`` below."""
     client = TestClient(app)
     r = client.get("/health")
     csp = r.headers.get("Content-Security-Policy", "")
     assert "connect-src 'self'" in csp
-    assert "https://unpkg.com" in csp
 
 
 def test_server_header_stripped_by_middleware():
@@ -196,6 +201,197 @@ def test_csp_keeps_unsafe_inline_off_for_scripts():
         f"script-src must not allow 'unsafe-inline' — defeats the "
         f"per-script hash whitelist. script-src was: {script_src!r}"
     )
+
+
+# ── PT-v4-NW-009: drop unpkg.com from CSP, vendor libs under 'self' ────────
+
+
+class TestPTv4NW009UnpkgRemoved:
+    """Class-of-issue regression for PT-v4-NW-009 (INFO).
+
+    Pre-fix the SPA loaded Lightweight Charts and GridStack from
+    https://unpkg.com and the CSP allow-listed that CDN in three
+    directives (script-src, style-src, connect-src). Even with
+    SRI hashes on every <script>/<link> tag, the "trust forever"
+    gap remained: a future bump that forgot to regenerate the SRI
+    hashes, or a CSP-only callsite that bypassed SRI, would have
+    consumed unpkg-served bytes blindly.
+
+    Post-fix both libraries are vendored under
+    ``web/static/vendor/`` and served from 'self'. The CSP no
+    longer mentions unpkg.com anywhere. The SRI + crossorigin
+    attributes were dropped from the tags because they're
+    obsolete for same-origin assets.
+
+    Tests below pin:
+      1. Every CSP directive — no "unpkg" substring anywhere.
+      2. The strict script-src / style-src / connect-src shapes
+         survive (defence-in-depth against a partial revert that
+         drops the *whole* directive instead of just the
+         unpkg.com token).
+      3. The vendored libraries are actually present on disk
+         (so a future PR that deletes the vendor dir without
+         updating index.html gets caught here, not in browser
+         console errors at runtime).
+      4. index.html no longer LOADS anything from
+         https://unpkg.com (a comment explaining the removal is
+         allowed to survive).
+    """
+
+    def test_csp_contains_no_unpkg_reference(self):
+        client = TestClient(app)
+        r = client.get("/health")
+        csp = r.headers.get("Content-Security-Policy", "")
+        assert "unpkg" not in csp, (
+            f"PT-v4-NW-009 regression: CSP still allow-lists "
+            f"unpkg.com somewhere. CSP was: {csp!r}"
+        )
+
+    def test_csp_script_src_strict_self_plus_hash_only(self):
+        """script-src must be exactly ``'self' '<INLINE_HASH>'``
+        — no external origins at all. The inline-script hash
+        whitelist remains (it covers the auth-checked safety-net
+        in index.html); nothing else needs to slip through."""
+        from web import app as webapp
+
+        client = TestClient(app)
+        r = client.get("/health")
+        csp = r.headers.get("Content-Security-Policy", "")
+        directives = {
+            part.strip().split(" ", 1)[0]: part.strip()
+            for part in csp.split(";") if part.strip()
+        }
+        script_src = directives.get("script-src", "")
+        # Tokens after the directive name.
+        tokens = set(script_src.split()[1:])
+        assert tokens == {
+            "'self'", f"'{webapp._INLINE_SCRIPT_CSP_HASH}'",
+        }, (
+            f"PT-v4-NW-009: script-src must be 'self' + inline "
+            f"hash only — no external CDN. Got: {script_src!r}"
+        )
+
+    def test_csp_style_src_strict_self_plus_unsafe_inline_only(self):
+        """style-src loses its unpkg.com entry. 'unsafe-inline'
+        stays per the r1-076 carve-out (inline styles across
+        chart tooltips, dynamic panel layouts, theme switching)."""
+        client = TestClient(app)
+        r = client.get("/health")
+        csp = r.headers.get("Content-Security-Policy", "")
+        directives = {
+            part.strip().split(" ", 1)[0]: part.strip()
+            for part in csp.split(";") if part.strip()
+        }
+        style_src = directives.get("style-src", "")
+        tokens = set(style_src.split()[1:])
+        assert tokens == {"'self'", "'unsafe-inline'"}, (
+            f"PT-v4-NW-009: style-src must be 'self' + "
+            f"'unsafe-inline' only. Got: {style_src!r}"
+        )
+
+    def test_csp_connect_src_strict_self_only(self):
+        """connect-src loses its unpkg.com entry (sourcemap
+        fetches no longer cross origins). 'self' is sufficient
+        for same-origin XHR + WS endpoints."""
+        client = TestClient(app)
+        r = client.get("/health")
+        csp = r.headers.get("Content-Security-Policy", "")
+        directives = {
+            part.strip().split(" ", 1)[0]: part.strip()
+            for part in csp.split(";") if part.strip()
+        }
+        connect_src = directives.get("connect-src", "")
+        tokens = set(connect_src.split()[1:])
+        assert tokens == {"'self'"}, (
+            f"PT-v4-NW-009: connect-src must be 'self' only. "
+            f"Got: {connect_src!r}"
+        )
+
+    def test_vendored_libraries_present_on_disk(self):
+        """The three vendored asset files must exist where
+        index.html points and have non-trivial size. A future PR
+        that deleted the vendor dir while leaving the references
+        in place would produce 404 spam in the browser console
+        at runtime — this test catches that at CI time."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parent.parent
+        for relpath, lo, hi in (
+            (
+                "web/static/vendor/lightweight-charts/"
+                "lightweight-charts.standalone.production.js",
+                100_000, 1_000_000,
+            ),
+            (
+                "web/static/vendor/gridstack/gridstack-all.js",
+                40_000, 500_000,
+            ),
+            (
+                "web/static/vendor/gridstack/gridstack.min.css",
+                1_000, 50_000,
+            ),
+        ):
+            p = repo_root / relpath
+            assert p.exists(), f"vendored asset missing: {relpath}"
+            size = p.stat().st_size
+            assert lo < size < hi, (
+                f"unexpected size for {relpath}: {size} bytes "
+                f"(expected {lo} < size < {hi}). The bundle may "
+                "have been replaced with a placeholder."
+            )
+
+    def test_index_html_uses_vendored_paths(self):
+        """The script + stylesheet refs in index.html must point
+        at ``/static/vendor/...``, not at unpkg. A future bump
+        that mistakenly re-introduced an unpkg href would break
+        immediately because the CSP no longer allows it — but
+        the failure mode at runtime would be a blank chart with
+        a console CSP-violation, not an actionable test failure.
+        Pin the source-of-truth here instead."""
+        from pathlib import Path
+
+        index_html = (
+            Path(__file__).resolve().parent.parent
+            / "web" / "static" / "index.html"
+        ).read_text(encoding="utf-8")
+        # Match the operational URL form (``https://unpkg.com``),
+        # not the bare word — the file legitimately carries a
+        # comment explaining *why* the unpkg dependency was
+        # removed, and that breadcrumb should survive.
+        assert "https://unpkg.com" not in index_html, (
+            "PT-v4-NW-009 regression: index.html still loads an "
+            "asset from https://unpkg.com. Move it to "
+            "/static/vendor/ and update the tag."
+        )
+        # Positive assertion: the vendored paths landed.
+        assert (
+            "/static/vendor/lightweight-charts/"
+            "lightweight-charts.standalone.production.js"
+        ) in index_html
+        assert "/static/vendor/gridstack/gridstack-all.js" in index_html
+        assert "/static/vendor/gridstack/gridstack.min.css" in index_html
+
+    def test_vendored_assets_served_through_static_mount(self):
+        """End-to-end check that the static mount actually serves
+        the vendored files at the URLs index.html references —
+        catches a future "moved web/static" or "renamed mount
+        prefix" PR that would 404 every browser hit."""
+        client = TestClient(app)
+        for url in (
+            "/static/vendor/lightweight-charts/"
+            "lightweight-charts.standalone.production.js",
+            "/static/vendor/gridstack/gridstack-all.js",
+            "/static/vendor/gridstack/gridstack.min.css",
+        ):
+            r = client.get(url)
+            assert r.status_code == 200, (
+                f"{url} returned {r.status_code} — vendored asset "
+                "not reachable through the static mount."
+            )
+            assert len(r.content) > 1_000, (
+                f"{url} returned only {len(r.content)} bytes — "
+                "static mount is serving an empty / stub file."
+            )
 
 
 def test_permissions_policy_header_present():

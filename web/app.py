@@ -2340,11 +2340,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # safety-net in index.html (see _INLINE_SCRIPT_CSP_HASH
             # comment block above). Every OTHER inline script stays
             # blocked — no ``'unsafe-inline'`` here.
-            f"script-src 'self' '{_INLINE_SCRIPT_CSP_HASH}' https://unpkg.com; "
-            # unpkg also hosts the GridStack stylesheet that the
-            # Workspace view pulls in. Without this entry the
-            # panel grid loses its layout rules and panels render
-            # as plain vertically-stacked divs.
+            # PT-v4-NW-009: dropped ``https://unpkg.com`` from
+            # script-src / style-src / connect-src. Lightweight
+            # Charts + GridStack are now vendored under
+            # web/static/vendor/ and served from 'self' instead
+            # of the unpkg CDN. Closes the "trust forever" gap
+            # against an unpkg supply-chain incident and removes
+            # the only external script source from the CSP.
+            f"script-src 'self' '{_INLINE_SCRIPT_CSP_HASH}'; "
             # r1-076: 'unsafe-inline' on style-src stays by necessity
             # for now — the SPA uses inline styles across chart
             # tooltips, dynamic panel layouts, theme-switching, and
@@ -2352,16 +2355,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # every inline style-attribute + <style> block into CSS
             # classes; deferred to post-launch hardening (tracked
             # in the audit report).
-            "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+            "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
-            # unpkg.com is allowed here so DevTools can fetch the
-            # Lightweight Charts + GridStack sourcemap files that
-            # accompany the minified bundles we load. Pure-
-            # developer-ergonomics: the browser emits CSP-violation
-            # console noise for every missing .map otherwise. No
-            # data-endpoint risk — the files are public static
-            # assets.
-            #
             # r1-076 (VPS-1): ws:/wss: wildcards removed. All
             # Reverto WebSocket endpoints (/ws/state, /ws/logs/*)
             # are same-origin and are covered by 'self', which
@@ -2369,7 +2364,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # wss:// on https://). Browsers with partial SameSite
             # implementations or subdomain-takeover scenarios no
             # longer have an open WS channel to abuse.
-            "connect-src 'self' https://unpkg.com; "
+            #
+            # PT-v4-NW-009: unpkg.com used to be allow-listed
+            # here so DevTools could fetch sourcemaps for the
+            # CDN-hosted bundles. With both bundles now vendored
+            # the sourcemap fetch becomes same-origin (or simply
+            # missing — the production-minified builds we vendor
+            # ship without sourcemaps) and no external origin is
+            # needed.
+            "connect-src 'self'; "
             "frame-ancestors 'none'; "
             # Audit PT-v4-NW-001 — added 2026-05-04. Two OWASP-
             # recommended hardening directives that the marketing-side

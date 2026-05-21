@@ -19,10 +19,12 @@
 // touch pure math (no DOM, no chart state) — safe to move without
 // touching call sites.
 //
-// Loading order in index.html: Lightweight Charts (unpkg) →
-// chart_module.js → app.js. Script tags at top level share the
-// same global scope, so function declarations here land alongside
-// the ones in app.js with no import/export ceremony.
+// Loading order in index.html: Lightweight Charts (vendored at
+// /static/vendor/lightweight-charts/, see web/static/vendor/
+// README.md) → chart_module.js → app.js. Script tags at top
+// level share the same global scope, so function declarations
+// here land alongside the ones in app.js with no import/export
+// ceremony.
 //
 // Each function is ALSO attached to window.RevertoChart below so
 // a future PR 3b chart-panel factory has a namespaced home for
