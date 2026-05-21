@@ -468,16 +468,39 @@ async def api_deal_action(
 # ── Chart annotations ───────────────────────────────────────────────────────
 
 class AnnotationBody(BaseModel):
-    bot_slug: str
-    type: str
-    timeframe: str
+    # PT-v4-AZ-005: every string field is bounded at the Pydantic
+    # boundary. Pre-fix these were ``str`` with no max — defence-in-
+    # depth hygiene rather than a known exploit (the DB columns are
+    # TEXT and the JSON consumer never trusted the values for
+    # rendering), but bringing the model in line with the
+    # bounded-field convention used elsewhere closes the auditor's
+    # finding and prevents a future render-the-raw-string-into-the-
+    # DOM regression from being weaponisable.
+    #
+    # bot_slug: matches ``_BOT_SLUG_RE`` (web/app.py:1199) — the
+    # canonical slug pattern used by every other path-slug
+    # validation. The chart module embeds ``workspace-panel-<id>``
+    # under this field; max_length=64 fits that with headroom.
+    bot_slug: str = Field(
+        min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$",
+    )
+    # Short label values today: arrow, text, trendline, hline.
+    type: str = Field(min_length=1, max_length=32)
+    # Timeframe codes: 1m, 5m, 15m, 1h, 4h, 1d, etc.
+    timeframe: str = Field(min_length=1, max_length=8)
     # Unix-second timestamps, clamped to a sane range (1970-01-01 .. ~2033).
     x1: int = Field(ge=0, le=2_000_000_000)
     y1: Optional[float] = None
     x2: Optional[int] = Field(default=None, ge=0, le=2_000_000_000)
     y2: Optional[float] = None
-    label: Optional[str] = None
-    color: str = "#00d4aa"
+    # Optional user-facing note attached to the annotation.
+    label: Optional[str] = Field(default=None, max_length=200)
+    # Hex colour shape: #RRGGBB. Pinned via pattern so a future
+    # render path that drops the value into ``style=`` cannot land
+    # an attacker-controlled string in the DOM.
+    color: str = Field(
+        default="#00d4aa", pattern=r"^#[0-9a-fA-F]{6}$",
+    )
 
 
 @router.post("/api/db/annotations")

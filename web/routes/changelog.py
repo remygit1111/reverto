@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from core import changelog_store, marketing_export
 from core.markdown_render import render_markdown
 from core.user import User
-from web.app import _audit, _request_user, limiter
+from web.app import _audit, _request_actor, _request_user, limiter
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,7 @@ async def api_admin_changelog_list(
 async def api_admin_changelog_create(
     body: _ChangelogCreateBody,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     try:
@@ -204,7 +205,15 @@ async def api_admin_changelog_create(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _audit("changelog_api_create", user.username, f"id={entry_id}", user_id=user.id)
+    # PT-v4-AZ-001: canonical _audit shape is
+    # (action, target_id, actor, user_id=...). Pre-fix this passed
+    # user.username in the slug-position and the entry id in the
+    # actor-position, so admin audit views showed the operator's
+    # name in place of the entry id.
+    _audit(
+        "changelog_api_create", str(entry_id), actor,
+        user_id=user.id, request=request,
+    )
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
 
@@ -228,6 +237,7 @@ async def api_admin_changelog_update(
     entry_id: int,
     body: _ChangelogPatchBody,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     if changelog_store.get_entry(entry_id) is None:
@@ -241,7 +251,10 @@ async def api_admin_changelog_update(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _audit("changelog_api_update", user.username, f"id={entry_id}", user_id=user.id)
+    _audit(
+        "changelog_api_update", str(entry_id), actor,
+        user_id=user.id, request=request,
+    )
     _snapshot_marketing_changelog()
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
@@ -252,11 +265,15 @@ async def api_admin_changelog_update(
 async def api_admin_changelog_publish(
     entry_id: int,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     if not changelog_store.publish_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
-    _audit("changelog_api_publish", user.username, f"id={entry_id}", user_id=user.id)
+    _audit(
+        "changelog_api_publish", str(entry_id), actor,
+        user_id=user.id, request=request,
+    )
     _snapshot_marketing_changelog()
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
@@ -267,11 +284,15 @@ async def api_admin_changelog_publish(
 async def api_admin_changelog_unpublish(
     entry_id: int,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     if not changelog_store.unpublish_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
-    _audit("changelog_api_unpublish", user.username, f"id={entry_id}", user_id=user.id)
+    _audit(
+        "changelog_api_unpublish", str(entry_id), actor,
+        user_id=user.id, request=request,
+    )
     _snapshot_marketing_changelog()
     entry = changelog_store.get_entry(entry_id)
     return _entry_to_admin_json(entry)
@@ -282,10 +303,14 @@ async def api_admin_changelog_unpublish(
 async def api_admin_changelog_delete(
     entry_id: int,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     if not changelog_store.delete_entry(entry_id):
         raise HTTPException(status_code=404, detail="Entry not found")
-    _audit("changelog_api_delete", user.username, f"id={entry_id}", user_id=user.id)
+    _audit(
+        "changelog_api_delete", str(entry_id), actor,
+        user_id=user.id, request=request,
+    )
     _snapshot_marketing_changelog()
     return JSONResponse(content=None, status_code=204)

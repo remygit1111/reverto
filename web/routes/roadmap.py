@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field
 from core import marketing_export, roadmap_store
 from core.markdown_render import render_markdown
 from core.user import User
-from web.app import _audit, _request_user, limiter
+from web.app import _audit, _request_actor, _request_user, limiter
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +300,7 @@ async def api_admin_roadmap_list(
 async def api_admin_roadmap_create(
     body: _RoadmapCreateBody,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     try:
@@ -322,9 +323,13 @@ async def api_admin_roadmap_create(
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # PT-v4-AZ-001: canonical _audit shape is
+    # (action, target_id, actor, user_id=...). Pre-fix the username
+    # sat in the slug-position and the phase id sat in the actor-
+    # position.
     _audit(
-        "roadmap_api_create", user.username, f"id={phase_id}",
-        user_id=user.id,
+        "roadmap_api_create", str(phase_id), actor,
+        user_id=user.id, request=request,
     )
     phase = roadmap_store.get_phase(phase_id)
     return _phase_to_admin_json(phase)
@@ -349,6 +354,7 @@ async def api_admin_roadmap_update(
     phase_id: int,
     body: _RoadmapPatchBody,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     if roadmap_store.get_phase(phase_id) is None:
@@ -362,8 +368,8 @@ async def api_admin_roadmap_update(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     _audit(
-        "roadmap_api_update", user.username, f"id={phase_id}",
-        user_id=user.id,
+        "roadmap_api_update", str(phase_id), actor,
+        user_id=user.id, request=request,
     )
     _snapshot_marketing_roadmap()
     phase = roadmap_store.get_phase(phase_id)
@@ -375,6 +381,7 @@ async def api_admin_roadmap_update(
 async def api_admin_roadmap_reorder(
     body: _RoadmapReorderBody,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     """Drag-and-drop reorder. Body: ``{"ids": [int, int, ...]}``
@@ -395,9 +402,15 @@ async def api_admin_roadmap_reorder(
             detail=f"Unknown phase ids: {missing}",
         )
     roadmap_store.reorder_phases(body.ids)
+    # Reorder has no per-row target — slug="-" matches the
+    # emergency_stop fleet-action precedent (admin.py:126). The
+    # ``count`` detail used to live in the key_hint position, which
+    # overrode the actor identity; operators wanting the count
+    # should consult the response body ({"ok": true, "count": N})
+    # or the portal log.
     _audit(
-        "roadmap_api_reorder", user.username,
-        f"count={len(body.ids)}", user_id=user.id,
+        "roadmap_api_reorder", "-", actor,
+        user_id=user.id, request=request,
     )
     _snapshot_marketing_roadmap()
     return {"ok": True, "count": len(body.ids)}
@@ -408,13 +421,14 @@ async def api_admin_roadmap_reorder(
 async def api_admin_roadmap_publish(
     phase_id: int,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     if not roadmap_store.publish_phase(phase_id):
         raise HTTPException(status_code=404, detail="Phase not found")
     _audit(
-        "roadmap_api_publish", user.username, f"id={phase_id}",
-        user_id=user.id,
+        "roadmap_api_publish", str(phase_id), actor,
+        user_id=user.id, request=request,
     )
     _snapshot_marketing_roadmap()
     phase = roadmap_store.get_phase(phase_id)
@@ -426,13 +440,14 @@ async def api_admin_roadmap_publish(
 async def api_admin_roadmap_unpublish(
     phase_id: int,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     if not roadmap_store.unpublish_phase(phase_id):
         raise HTTPException(status_code=404, detail="Phase not found")
     _audit(
-        "roadmap_api_unpublish", user.username, f"id={phase_id}",
-        user_id=user.id,
+        "roadmap_api_unpublish", str(phase_id), actor,
+        user_id=user.id, request=request,
     )
     _snapshot_marketing_roadmap()
     phase = roadmap_store.get_phase(phase_id)
@@ -444,13 +459,14 @@ async def api_admin_roadmap_unpublish(
 async def api_admin_roadmap_delete(
     phase_id: int,
     request: Request,
+    actor: str = Depends(_request_actor),
     user: User = Depends(_require_admin_user),
 ):
     if not roadmap_store.delete_phase(phase_id):
         raise HTTPException(status_code=404, detail="Phase not found")
     _audit(
-        "roadmap_api_delete", user.username, f"id={phase_id}",
-        user_id=user.id,
+        "roadmap_api_delete", str(phase_id), actor,
+        user_id=user.id, request=request,
     )
     _snapshot_marketing_roadmap()
     return JSONResponse(content=None, status_code=204)
