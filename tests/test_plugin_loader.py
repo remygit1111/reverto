@@ -11,6 +11,7 @@ Verify:
 - reset_cache() works
 """
 
+import logging
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -255,3 +256,197 @@ class TestBuiltinLiveProvider:
         cfg.mode = Mode.PAPER
         result = asyncio.run(BuiltinLiveProvider().is_live_config(cfg))
         assert result is False
+
+
+class TestPUBv1002PluginLoaderHardening:
+    """Class-of-issue regression for PUB-v1-002 (LOW).
+
+    load_live_provider() had two compounding gaps pre-fix:
+
+    1. Too-narrow catch — only ``ImportError`` was handled. Any
+       other exception at import time (RuntimeError, OSError, …)
+       propagated out, breaking the documented never-raises
+       contract that web/app.py callers depend on.
+    2. Cache poisoning — ``_loaded = True`` was set BEFORE the
+       try-block. A propagated exception left ``_loaded=True`` /
+       ``_provider=None``, so every later call returned None for
+       the whole process lifetime.
+
+    Post-fix: three exception buckets (ModuleNotFoundError split
+    by ``exc.name``, other ImportError, any other Exception) all
+    fall back to the builtin scaffold, and ``_loaded`` flips only
+    after a terminal ``_provider`` assignment.
+
+    These tests patch ``importlib.import_module`` to raise each
+    failure mode. (_load_builtin_provider() uses a statement-level
+    ``from live.builtin_provider import provider`` — NOT
+    importlib.import_module — so the patch does not disturb the
+    fallback path.)
+    """
+
+    def setup_method(self):
+        plugin_loader.reset_cache()
+
+    def teardown_method(self):
+        sys.modules.pop("reverto_live", None)
+        plugin_loader.reset_cache()
+
+    def test_module_not_found_reverto_live_uses_builtin_and_logs_info(
+        self, caplog,
+    ):
+        """Routine path: reverto_live itself not installed →
+        INFO log, builtin fallback, NO error."""
+        from live.builtin_provider import BuiltinLiveProvider
+
+        err = ModuleNotFoundError(
+            "No module named 'reverto_live'", name="reverto_live",
+        )
+        with caplog.at_level(logging.INFO, logger="core.plugin_loader"):
+            with patch.object(
+                plugin_loader.importlib, "import_module",
+                side_effect=err,
+            ):
+                result = plugin_loader.load_live_provider()
+
+        assert isinstance(result, BuiltinLiveProvider)
+        assert any(
+            "not installed" in r.getMessage() for r in caplog.records
+        )
+        # The routine path must not log at ERROR — an operator
+        # filtering for ERROR should see nothing for "plugin
+        # simply unshipped".
+        assert not any(
+            r.levelno >= logging.ERROR for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+    def test_transitive_module_not_found_logs_error(self, caplog):
+        """reverto_live IS installed but a transitive dep is
+        missing → ERROR log (operator-actionable), builtin
+        fallback."""
+        from live.builtin_provider import BuiltinLiveProvider
+
+        err = ModuleNotFoundError(
+            "No module named 'some_transitive_dep'",
+            name="some_transitive_dep",
+        )
+        with caplog.at_level(logging.ERROR, logger="core.plugin_loader"):
+            with patch.object(
+                plugin_loader.importlib, "import_module",
+                side_effect=err,
+            ):
+                result = plugin_loader.load_live_provider()
+
+        assert isinstance(result, BuiltinLiveProvider)
+        error_records = [
+            r for r in caplog.records if r.levelno >= logging.ERROR
+        ]
+        assert len(error_records) >= 1
+        assert "transitive" in error_records[0].getMessage().lower()
+        # The missing-module name is surfaced for the operator.
+        assert "some_transitive_dep" in error_records[0].getMessage()
+
+    def test_other_import_error_logs_error(self, caplog):
+        """A non-ModuleNotFoundError ImportError (circular import,
+        explicit raise in package __init__) → ERROR, builtin."""
+        from live.builtin_provider import BuiltinLiveProvider
+
+        with caplog.at_level(logging.ERROR, logger="core.plugin_loader"):
+            with patch.object(
+                plugin_loader.importlib, "import_module",
+                side_effect=ImportError("circular import detected"),
+            ):
+                result = plugin_loader.load_live_provider()
+
+        assert isinstance(result, BuiltinLiveProvider)
+        error_records = [
+            r for r in caplog.records if r.levelno >= logging.ERROR
+        ]
+        assert len(error_records) >= 1
+        assert "ImportError" in error_records[0].getMessage()
+
+    def test_non_import_exception_does_not_propagate(self, caplog):
+        """The core contract: load_live_provider NEVER raises.
+
+        Pre-fix only ImportError was caught, so a RuntimeError from
+        the plugin's package __init__ propagated straight out and
+        crashed the web/app.py caller. This test calls the loader
+        OUTSIDE any pytest.raises — if it raises, the test errors.
+        """
+        from live.builtin_provider import BuiltinLiveProvider
+
+        with caplog.at_level(logging.ERROR, logger="core.plugin_loader"):
+            with patch.object(
+                plugin_loader.importlib, "import_module",
+                side_effect=RuntimeError("plugin __init__ blew up"),
+            ):
+                result = plugin_loader.load_live_provider()  # must not raise
+
+        assert isinstance(result, BuiltinLiveProvider)
+        error_records = [
+            r for r in caplog.records if r.levelno >= logging.ERROR
+        ]
+        assert len(error_records) >= 1
+        assert "non-import" in error_records[0].getMessage().lower()
+
+    def test_cache_not_poisoned_by_transient_exception(self):
+        """Critical regression test for the cache-ordering fix.
+
+        Pre-fix: a propagated exception set ``_loaded=True`` with
+        ``_provider=None``; every later call returned None for the
+        process lifetime — a single transient import failure
+        permanently disabled live capability until restart.
+
+        Post-fix: ``_loaded`` flips only after ``_provider`` holds a
+        terminal value, so the first (failing) call still produces
+        a usable builtin provider and the cached value is that
+        provider, never None.
+        """
+        # First call hits the exception path.
+        with patch.object(
+            plugin_loader.importlib, "import_module",
+            side_effect=RuntimeError("transient import blow-up"),
+        ):
+            first = plugin_loader.load_live_provider()
+        assert first is not None, (
+            "PUB-v1-002 regression: an exception left the loader "
+            "returning None instead of the builtin fallback"
+        )
+
+        # Second call — no patch. The cache must hand back the same
+        # non-None provider, NOT a poisoned None.
+        second = plugin_loader.load_live_provider()
+        assert second is first
+        assert plugin_loader._loaded is True
+        assert plugin_loader._provider is not None, (
+            "PUB-v1-002 regression: cache poisoned — _loaded=True "
+            "but _provider=None"
+        )
+
+    def test_successful_load_caches_real_provider(self):
+        """Happy path: importlib returns a well-formed module whose
+        ``provider`` attribute carries the supported interface
+        version. The external provider is returned and cached.
+
+        NB: the loader reads ``module.provider`` (an already-
+        instantiated attribute), NOT ``module.LiveProvider()`` — the
+        mock mirrors that shape.
+        """
+        from types import SimpleNamespace
+
+        fake_provider = SimpleNamespace(
+            interface_version=SUPPORTED_INTERFACE_VERSION,
+        )
+        fake_module = SimpleNamespace(provider=fake_provider)
+
+        with patch.object(
+            plugin_loader.importlib, "import_module",
+            return_value=fake_module,
+        ):
+            result = plugin_loader.load_live_provider()
+        assert result is fake_provider
+
+        # Cached — a second call returns the same external provider
+        # without re-importing.
+        second = plugin_loader.load_live_provider()
+        assert second is fake_provider
+        assert plugin_loader._loaded is True
