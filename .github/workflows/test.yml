@@ -77,11 +77,19 @@ jobs:
           cache: pip
 
       - name: Install core dependencies
+        # PT-v4-r1-060: ``--require-hashes`` enforces that every package
+        # in requirements.txt carries a sha256. A missing hash fails CI
+        # explicitly instead of silently downloading whatever PyPI
+        # currently serves (closes the OpenSSF Scorecard
+        # Pinned-Dependencies gap). Dev tools come from
+        # requirements-dev.txt — those are not hash-pinned by design
+        # (the dev workflow tracks latest patch releases of ruff /
+        # pip-audit / pytest-cov / pip-tools).
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install ruff pip-audit pytest-cov
+          .venv/bin/pip install --require-hashes -r requirements.txt
+          .venv/bin/pip install -r requirements-dev.txt
 
       - name: Smoke-import core modules
         # Audit v25 #3 guard. A production module whose dependency
@@ -147,7 +155,12 @@ jobs:
           "
 
       - name: Install ML dependencies
-        run: .venv/bin/pip install -r requirements-ml.txt
+        # PT-v4-r1-060: same --require-hashes contract as the core
+        # install above. requirements-ml.txt carries the ``-c
+        # requirements.txt`` constraint so shared transitives stay
+        # at the core-pinned versions; pip honours that across both
+        # install calls.
+        run: .venv/bin/pip install --require-hashes -r requirements-ml.txt
 
       - name: Smoke-import ML dependencies
         # Prove that requirements-ml.txt itself resolves to a

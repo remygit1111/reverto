@@ -5,7 +5,7 @@
 PYTHON  := .venv/bin/python3
 PORTAL  := logs/pids/portal.pid
 
-.PHONY: help setup start stop stop-all restart status log test lint clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin recover-test seed-findings deploy deploy-marketing rollback backup restore scheduler-status scheduler-restart scheduler-logs telegram-register-webhook telegram-clear-webhook release
+.PHONY: help setup start stop stop-all restart status log test lint compile-deps clean backtest notebook beep live live-dry parity-compare reset-db migrate-fs wipe-deals setup-admin recover-test seed-findings deploy deploy-marketing rollback backup restore scheduler-status scheduler-restart scheduler-logs telegram-register-webhook telegram-clear-webhook release
 
 # ── Default target ───────────────────────────────────────────────────────────
 help:
@@ -23,6 +23,7 @@ help:
 	@echo "  make log a=1         Follow the audit log (start/stop/restart events)"
 	@echo "  make test            Run all pytest tests"
 	@echo "  make lint            Check code with ruff"
+	@echo "  make compile-deps    Recompile requirements*.txt from .in (hashes)"
 	@echo "  make backtest        Run backtest with default config"
 	@echo "  make backtest tf=4h  Backtest on 4h candles"
 	@echo "  make clean           Remove stale PID files and .tmp state files"
@@ -184,6 +185,24 @@ test:
 # ── Lint ─────────────────────────────────────────────────────────────────────
 lint:
 	@$(PYTHON) -m ruff check . 2>/dev/null || echo "ruff not installed — pip install ruff"
+
+# ── Dependency lock recompile (PT-v4-r1-060) ─────────────────────────────────
+# Edits to requirements.in / requirements-ml.in don't take effect until
+# they're compiled into the hashed lock files. Run this whenever you add,
+# upgrade, or remove a runtime dependency in either .in file, then commit
+# BOTH the .in and the .txt in the same PR.
+#
+# Why --allow-unsafe: pip-tools refuses to pin setuptools/pip/distribute
+# by default (they're "unsafe" because pip itself manages them). Reverto
+# needs setuptools in the lock (ccxt imports it at runtime), so we opt in.
+compile-deps:
+	@.venv/bin/pip-compile --generate-hashes --allow-unsafe \
+		--output-file=requirements.txt requirements.in
+	@.venv/bin/pip-compile --generate-hashes --allow-unsafe \
+		--output-file=requirements-ml.txt requirements-ml.in
+	@echo ""
+	@echo "Compiled: requirements.txt + requirements-ml.txt"
+	@echo "Review the diff, then commit BOTH the .in and the .txt files."
 
 # ── Backtest ─────────────────────────────────────────────────────────────────
 backtest:

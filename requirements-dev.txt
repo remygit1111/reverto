@@ -1,0 +1,28 @@
+# Developer-only dependencies.
+#
+# NOT installed on production (the VPS runtime only needs
+# requirements.txt). Tooling here covers:
+#
+#   * pip-tools  — recompiles requirements.txt / requirements-ml.txt
+#                  from the .in intent files via ``make compile-deps``
+#   * ruff       — lint, run by ``make lint`` and CI
+#   * pip-audit  — CVE scan against requirements*.txt, run by CI
+#   * pytest-cov — coverage plugin for the test suite
+#
+# This file is deliberately NOT hash-pinned: the dev workflow uses
+# the latest patched releases of these tools, and a stale hash here
+# would create friction every time pip-audit or ruff cuts a new
+# version (which is often). The hash-pin contract (PT-v4-r1-060)
+# applies to requirements.txt / requirements-ml.txt — the
+# production install surface.
+#
+# To set up a dev venv:
+#
+#   .venv/bin/pip install -r requirements-dev.txt
+#
+# Versions below are loosely pinned to the current minor — bump
+# freely.
+pip-tools>=7.5
+ruff>=0.15
+pip-audit>=2.10
+pytest-cov>=7.1
