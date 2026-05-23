@@ -53,10 +53,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m venv .venv
-          .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install -r requirements-ml.txt
-          .venv/bin/pip install pytest pytest-cov ruff
+          .venv/bin/pip install --require-hashes -r requirements.txt
+          .venv/bin/pip install --require-hashes -r requirements-ml.txt
+          .venv/bin/pip install --require-hashes -r requirements-dev.txt
 
       - name: Smoke-import core modules
         # Slim version of the per-PR smoke-import. Imports the

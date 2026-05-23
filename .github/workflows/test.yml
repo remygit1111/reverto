@@ -87,9 +87,8 @@ jobs:
         # pip-audit / pytest-cov / pip-tools).
         run: |
           python -m venv .venv
-          .venv/bin/pip install --upgrade pip
           .venv/bin/pip install --require-hashes -r requirements.txt
-          .venv/bin/pip install -r requirements-dev.txt
+          .venv/bin/pip install --require-hashes -r requirements-dev.txt
 
       - name: Smoke-import core modules
         # Audit v25 #3 guard. A production module whose dependency

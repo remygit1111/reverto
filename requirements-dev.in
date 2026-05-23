@@ -1,0 +1,20 @@
+# Developer-only dependencies — intent file.
+#
+# NOT installed on production. Used by:
+#   - test.yml CI for running the test suite
+#   - python-drift.yml CI for the daily 3.13 drift check
+#   - local dev for ``make lint``, ``make test``, ``make compile-deps``,
+#     ``make audit``
+#
+# To upgrade a dev-tool: bump the version here, then run
+# ``make compile-deps`` and commit BOTH requirements-dev.in
+# and requirements-dev.txt.
+#
+# Hash-pinned (PT-v4-r1-060 + Scorecard Pinned-Dependencies):
+# dev-tooling supply chain is part of CI's trusted compute base.
+
+pip-tools==7.5.3
+ruff==0.15.10
+pip-audit==2.10.0
+pytest==9.0.3
+pytest-cov==7.1.0

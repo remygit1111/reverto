@@ -200,6 +200,8 @@ compile-deps:
 		--output-file=requirements.txt requirements.in
 	@.venv/bin/pip-compile --generate-hashes --allow-unsafe \
 		--output-file=requirements-ml.txt requirements-ml.in
+	@.venv/bin/pip-compile --generate-hashes --allow-unsafe \
+		--output-file=requirements-dev.txt requirements-dev.in
 	@echo ""
 	@echo "Compiled: requirements.txt + requirements-ml.txt"
 	@echo "Review the diff, then commit BOTH the .in and the .txt files."
