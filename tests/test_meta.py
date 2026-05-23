@@ -49,6 +49,18 @@ class TestPTv4r1060PinnedDependencies:
             "Regenerate with: make compile-deps."
         )
 
+    def test_requirements_dev_uses_sha256_hashes(self):
+        """Dev tooling (pip-tools, ruff, pip-audit, pytest,
+        pytest-cov) is part of CI's trusted compute base. The
+        Scorecard Pinned-Dependencies check flagged
+        unpinned dev installs as a gap; hash-pinning closes it.
+        """
+        content = (_REPO_ROOT / "requirements-dev.txt").read_text()
+        assert "--hash=sha256:" in content, (
+            "requirements-dev.txt must be hash-pinned. "
+            "Regenerate with: make compile-deps."
+        )
+
     def test_every_pinned_package_has_at_least_one_hash(self):
         """A more careful check than substring: every ``foo==X.Y``
         line in requirements.txt must be followed (via line-
@@ -143,6 +155,7 @@ class TestPTv4r1060PinnedDependencies:
         engineering the lock first."""
         for in_file in (
             "requirements.in", "requirements-ml.in",
+            "requirements-dev.in",
         ):
             path = _REPO_ROOT / in_file
             assert path.exists(), (
