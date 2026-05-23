@@ -3,7 +3,7 @@
 [![Version](https://img.shields.io/github/v/release/remygit1111/reverto)](https://github.com/remygit1111/reverto/releases)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org)
-[![Tests](https://img.shields.io/badge/tests-2119%20passing-success)](#)
+[![Tests](https://img.shields.io/github/actions/workflow/status/remygit1111/reverto/test.yml?branch=main&label=tests)](https://github.com/remygit1111/reverto/actions/workflows/test.yml)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/remy1111)
 
 > **A source-available automated trading framework, BSL 1.1 licensed, for BTC/USD inverse perpetual contracts on Bitget and Kraken.** Self-hosted, paper-trading-ready out of the box, with a commercial Live Plugin coming in a future release.
