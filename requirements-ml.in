@@ -1,0 +1,32 @@
+# ML dependencies — INTENT file.
+#
+# Not required for paper / live trading. The ml/ modules import
+# these lazily and fail open when any one is missing, so a
+# paper-only deploy can skip the ML install entirely.
+#
+# Edit this file, then run:
+#
+#   make compile-deps
+#
+# That recompiles requirements-ml.txt with full transitive deps +
+# sha256 hashes via ``pip-compile --generate-hashes``. Commit BOTH
+# this file and the generated requirements-ml.txt.
+#
+# Audit v26-26: ``-c requirements.txt`` pins every shared transitive
+# dependency (numpy, pandas, scipy, etc.) to the same versions as
+# the core install. Without this constraint, pip-compile can resolve
+# a newer numpy for the ML side, which causes runtime
+# incompatibilities when the ML subsystem runs in the same process
+# as the paper engine. The constraint applies BOTH at compile time
+# (pip-compile honours it when resolving versions) AND at install
+# time (the operator should install requirements.txt first; pip
+# refuses to downgrade a package already at the constrained
+# version).
+-c requirements.txt
+
+lightgbm==4.6.0
+llvmlite==0.44.0
+numba==0.61.2
+scikit-learn==1.8.0
+scipy==1.17.1
+xgboost==3.2.0

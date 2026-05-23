@@ -33,8 +33,17 @@ def test_requirements_ml_comments_are_english():
     surrounding ecosystem (requirements.txt, pyproject, every other
     dep file) is English; the lone Dutch comment was an outlier.
     Translate to English while keeping the v26-26 audit reference
-    intact."""
-    contents = _read("requirements-ml.txt")
+    intact.
+
+    PT-v4-r1-060 update: the human-edited comment block moved
+    from ``requirements-ml.txt`` (now a pip-compile-generated
+    lockfile whose comments are overwritten on every recompile)
+    to ``requirements-ml.in`` (the intent file the operator
+    edits). The invariants below are checked against BOTH so a
+    future re-organisation of the dependency-file layout still
+    catches a Dutch-fragment regression in whichever file holds
+    the human prose."""
+    contents = _read("requirements-ml.in") + _read("requirements-ml.txt")
     # Dutch markers that appeared in the original comment block.
     # If any of these surface again, somebody copy-pasted from
     # the pre-translation source.
@@ -47,13 +56,18 @@ def test_requirements_ml_comments_are_english():
     ]
     leftover = [m for m in dutch_markers if m in contents]
     assert leftover == [], (
-        f"rha-015: requirements-ml.txt still contains Dutch fragments: "
-        f"{leftover}. Comment block must be English to match the rest "
-        "of the dependency-file ecosystem."
+        f"rha-015: requirements-ml.{{in,txt}} still contain "
+        f"Dutch fragments: {leftover}. Comment block must be "
+        "English to match the rest of the dependency-file "
+        "ecosystem."
     )
-    # The audit-cross-reference must survive translation.
+    # The audit-cross-reference must survive translation. It now
+    # lives in requirements-ml.in (the .txt is auto-generated and
+    # pip-compile drops free-form .in comments — only the ``-c``
+    # constraint line is preserved). Concatenating both above is
+    # tolerant to a future reorganisation that moves it back.
     assert "v26-26" in contents, (
-        "rha-015: the v26-26 audit cross-reference in the comment "
-        "block must survive the NL→EN translation."
+        "rha-015: the v26-26 audit cross-reference in the "
+        "comment block must survive the NL→EN translation."
     )
 

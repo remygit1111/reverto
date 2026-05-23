@@ -61,6 +61,13 @@ directly, so the venv path is fixed. Don't rename `.venv`.
 pip install -r requirements.txt
 ```
 
+`requirements.txt` carries sha256 hashes for every package
+(PT-v4-r1-060 — closes the OpenSSF Scorecard
+Pinned-Dependencies gap against PyPI-account compromise). `pip
+install -r` auto-detects the hashes and validates each download.
+Add `--require-hashes` if you want pip to fail explicitly when a
+hash is missing rather than fall back to unverified install.
+
 Optional ML dependencies (NOT required to run the portal):
 
 ```bash
@@ -69,6 +76,36 @@ pip install -r requirements-ml.txt
 
 The ML stack is a forward-looking placeholder; the engine ignores
 ML config today. Skip it on a first install.
+
+#### Editing dependencies (dev workflow)
+
+Two files per dependency set:
+
+| File | Role | Edited by humans? |
+| --- | --- | --- |
+| `requirements.in`        | Runtime intent: direct deps only, exact `==` pins | YES |
+| `requirements.txt`       | Generated lockfile: every transitive + sha256 hashes | NO |
+| `requirements-ml.in`     | ML-extra intent | YES |
+| `requirements-ml.txt`    | Generated ML lockfile | NO |
+| `requirements-dev.txt`   | Dev tooling (pip-tools, ruff, pip-audit, pytest-cov) | YES |
+
+Adding or upgrading a runtime dep:
+
+```bash
+# 1. edit requirements.in (add ``package==X.Y.Z``)
+# 2. recompile both lockfiles + hashes
+make compile-deps
+# 3. install
+.venv/bin/pip install --require-hashes -r requirements.txt
+# 4. tests + commit BOTH .in and .txt
+make test
+git add requirements.in requirements.txt
+```
+
+`make compile-deps` calls `pip-compile --generate-hashes
+--allow-unsafe` for both `.in` files. The `--allow-unsafe` flag
+lets `setuptools` land in the lock (ccxt imports it at runtime).
+A dev venv needs the tool: `pip install -r requirements-dev.txt`.
 
 ### 4. Configure environment variables
 
